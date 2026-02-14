@@ -27,13 +27,8 @@ impl RootProvider for MettaStateGcRoots {
         // Lock ordering: source first, then output
         let source = self.source.lock();
         let output = self.output.lock();
-        eprintln!("[GC] MettaState roots: {} source, {} output", source.len(), output.len());
         roots.extend(source.iter().copied());
         roots.extend(output.iter().copied());
-    }
-
-    fn provider_name(&self) -> &'static str {
-        "MettaState"
     }
 }
 

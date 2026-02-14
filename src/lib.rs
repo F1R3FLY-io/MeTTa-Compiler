@@ -92,6 +92,8 @@ pub use backend::{
     global_factory, global_allocator, GcFactory,
     // Data model types (used by bytecode VM, JIT, and tiered cache internals)
     models::MettaState,
+    // Signal-triggered diagnostic dump (SIGTERM/SIGUSR1)
+    diagnostics::install_signal_handlers,
 };
 
 // State evaluation API

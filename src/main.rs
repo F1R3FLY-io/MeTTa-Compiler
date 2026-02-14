@@ -27,7 +27,6 @@ fn print_usage() {
     eprintln!("    --eval                  Evaluate and print results (default)");
     eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
     eprintln!("    --no-gc                 Disable garbage collection");
-    eprintln!("    --gc-stats              Print GC statistics on exit");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
@@ -50,7 +49,6 @@ struct Options {
     repl_mode: bool,
     strict_mode: bool,
     no_gc: bool,
-    gc_stats: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -62,7 +60,6 @@ fn parse_args() -> Result<Options, String> {
     let mut repl_mode = false;
     let mut strict_mode = false;
     let mut no_gc = false;
-    let mut gc_stats = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -97,9 +94,6 @@ fn parse_args() -> Result<Options, String> {
             "--no-gc" => {
                 no_gc = true;
             }
-            "--gc-stats" => {
-                gc_stats = true;
-            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -120,7 +114,6 @@ fn parse_args() -> Result<Options, String> {
         repl_mode,
         strict_mode,
         no_gc,
-        gc_stats,
     })
 }
 
@@ -431,6 +424,11 @@ fn run_repl(options: &Options) {
 }
 
 fn main() {
+    // Install signal-triggered diagnostic handlers (SIGTERM/SIGUSR1) early.
+    // Also auto-installed by global_allocator(), but explicit call ensures
+    // coverage even if main() fails before first allocation.
+    mettatron::backend::diagnostics::install_signal_handlers();
+
     let options = match parse_args() {
         Ok(opts) => opts,
         Err(e) => {
@@ -449,9 +447,6 @@ fn main() {
     // REPL mode
     if options.repl_mode {
         run_repl(&options);
-        if options.gc_stats || env::var("METTA_GC_STATS").map_or(false, |v| v == "1") {
-            print_gc_stats();
-        }
         return;
     }
 
@@ -483,10 +478,5 @@ fn main() {
     if let Err(e) = write_output(options.output.as_deref(), &output) {
         eprintln!("Error: {}", e);
         process::exit(1);
-    }
-
-    // Print GC stats if requested (via CLI flag or env var)
-    if options.gc_stats || env::var("METTA_GC_STATS").map_or(false, |v| v == "1") {
-        print_gc_stats();
     }
 }

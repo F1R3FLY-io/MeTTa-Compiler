@@ -61,6 +61,11 @@ pub type EvalResult = (Vec<MettaValue>, MettaEnvironment);
 /// 3. Bytecode VM (2+ executions)
 /// 4. Tree-walker interpreter (fallback)
 ///
+/// The `EvalGuard` is explicitly scoped so it is dropped before attempting
+/// GC lifecycle work. This ensures library and test code that calls `eval()`
+/// directly (without the `main.rs` between-expression loop) still reaches
+/// quiescent points where GC can trigger and backpressure can be released.
+///
 /// # Arguments
 /// * `value` - The MettaValue expression to evaluate
 /// * `env` - The arena-based environment
@@ -88,15 +93,41 @@ pub fn eval(
     env: MettaEnvironment,
     state: &crate::backend::models::MettaState,
 ) -> EvalResult {
+    use crate::backend::models::EvalGuard;
+
+    // Scope the EvalGuard so it drops before GC lifecycle.
+    let result = {
+        let _guard = EvalGuard::enter();
+        eval_inner(value, env, state)
+    };
+    // _guard dropped here — ACTIVE_EVALUATORS decremented.
+
+    // Try GC lifecycle only at outermost eval boundary (ACTIVE_EVALUATORS == 0).
+    // This is cheap: one atomic load on every eval return, GC work only when quiescent.
+    // This makes GC accessible from any code path (library, tests, REPL) — not just main.rs.
+    if crate::backend::models::gc_allocator::active_evaluator_count() == 0 {
+        crate::backend::models::gc_allocator::maybe_process_gc_response();
+        crate::backend::models::gc_allocator::maybe_quiescent_gc();
+    }
+
+    result
+}
+
+/// Inner eval body — bytecode/JIT tiered execution with tree-walker fallback.
+///
+/// Called from `eval()` while an `EvalGuard` is held (ACTIVE_EVALUATORS > 0).
+/// This function must NOT create its own `EvalGuard` — the caller manages the
+/// guard's lifetime to ensure proper quiescent-state transitions.
+fn eval_inner(
+    value: MettaValue,
+    env: MettaEnvironment,
+    state: &crate::backend::models::MettaState,
+) -> EvalResult {
     use crate::backend::bytecode::{
         can_compile, can_compile_with_env, eval_bytecode_arena_with_env,
         execute_arena, global_tiered_cache,
         ExecutionTier, TierStatusKind,
     };
-    use crate::backend::models::EvalGuard;
-
-    // Track this eval as active (prevents GC during evaluation)
-    let _guard = EvalGuard::enter();
 
     // Record execution in arena tiered cache
     // This triggers background bytecode and JIT compilation at thresholds

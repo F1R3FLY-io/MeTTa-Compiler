@@ -15,7 +15,8 @@
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, RwLock};
+use std::sync::LazyLock;
+use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3;
 
 use lru::LruCache;
@@ -169,18 +170,14 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
 #[inline]
 pub fn get_cached_can_compile(hash: u64) -> Option<bool> {
     // Use peek() + read lock for faster lookups (doesn't update LRU order)
-    let cache = CAN_COMPILE_CACHE
-        .read()
-        .expect("can_compile cache lock poisoned");
+    let cache = CAN_COMPILE_CACHE.read();
     cache.peek(&hash).copied()
 }
 
 /// Store can_compile result in cache
 #[inline]
 pub fn cache_can_compile(hash: u64, compilable: bool) {
-    let mut cache = CAN_COMPILE_CACHE
-        .write()
-        .expect("can_compile cache lock poisoned");
+    let mut cache = CAN_COMPILE_CACHE.write();
     cache.put(hash, compilable);
 }
 
@@ -188,16 +185,14 @@ pub fn cache_can_compile(hash: u64, compilable: bool) {
 #[inline]
 pub fn get_cached_bytecode(hash: u64) -> Option<Arc<BytecodeChunk>> {
     // Use peek() + read lock for faster lookups (doesn't update LRU order)
-    let cache = BYTECODE_CACHE.read().expect("bytecode cache lock poisoned");
+    let cache = BYTECODE_CACHE.read();
     cache.peek(&hash).cloned()
 }
 
 /// Store compiled bytecode chunk in cache
 #[inline]
 pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
-    let mut cache = BYTECODE_CACHE
-        .write()
-        .expect("bytecode cache lock poisoned");
+    let mut cache = BYTECODE_CACHE.write();
     cache.put(hash, chunk);
 }
 
@@ -208,20 +203,16 @@ pub fn get_stats() -> BytecodeCacheStatsSnapshot {
 
 /// Clear all caches (mainly for testing)
 pub fn clear_caches() {
-    if let Ok(mut cache) = CAN_COMPILE_CACHE.write() {
-        cache.clear();
-    }
-    if let Ok(mut cache) = BYTECODE_CACHE.write() {
-        cache.clear();
-    }
+    CAN_COMPILE_CACHE.write().clear();
+    BYTECODE_CACHE.write().clear();
     // Reset stats atomically (no lock needed)
     CACHE_STATS.reset();
 }
 
 /// Get current cache sizes (for diagnostics)
 pub fn cache_sizes() -> (usize, usize) {
-    let can_compile_size = CAN_COMPILE_CACHE.read().map(|c| c.len()).unwrap_or(0);
-    let bytecode_size = BYTECODE_CACHE.read().map(|c| c.len()).unwrap_or(0);
+    let can_compile_size = CAN_COMPILE_CACHE.read().len();
+    let bytecode_size = BYTECODE_CACHE.read().len();
     (can_compile_size, bytecode_size)
 }
 

@@ -31,7 +31,8 @@
 //! after the allocator is dropped (only at program exit).
 
 use std::alloc::Layout;
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::{Arc, OnceLock, Weak};
+use parking_lot::{Condvar, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use portable_atomic::AtomicU128;
 
@@ -501,8 +502,6 @@ struct DataClassAllocator {
     slot_size: usize,
     pages: RwLock<Vec<Box<DataPage>>>,
     free_list: TreiberStack,
-    total_allocated: AtomicUsize,
-    live_count: AtomicIsize,
     /// Pointer to the current page for bump allocation.
     current_page: AtomicPtr<DataPage>,
 }
@@ -513,17 +512,12 @@ impl DataClassAllocator {
             slot_size,
             pages: RwLock::new(Vec::new()),
             free_list: TreiberStack::new(),
-            total_allocated: AtomicUsize::new(0),
-            live_count: AtomicIsize::new(0),
             current_page: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
     /// Allocate a slot of this size class (lock-free hot path).
     fn alloc(&self) -> *mut u8 {
-        self.total_allocated.fetch_add(1, Ordering::Relaxed);
-        self.live_count.fetch_add(1, Ordering::Relaxed);
-
         // Fast path: pop from Treiber stack free list
         if let Some(ptr) = self.free_list.pop() {
             // ASAN: unpoison the slot before reuse
@@ -549,7 +543,7 @@ impl DataClassAllocator {
 
     /// Slow path: allocate a new page.
     fn alloc_new_page(&self) -> *mut u8 {
-        let mut pages = self.pages.write().expect("data pages lock poisoned");
+        let mut pages = self.pages.write();
         // Double-check: another thread may have added a page
         if let Some(last) = pages.last() {
             if let Some(ptr) = last.bump_alloc(self.slot_size) {
@@ -569,7 +563,7 @@ impl DataClassAllocator {
 
     /// Increment the live_count of the page containing the given pointer.
     fn increment_page_live_count(&self, ptr: *mut u8) {
-        let pages = self.pages.read().expect("data pages lock poisoned");
+        let pages = self.pages.read();
         for page in pages.iter() {
             if page.contains(ptr as *const u8, self.slot_size) {
                 page.live_count.fetch_add(1, Ordering::Relaxed);
@@ -580,10 +574,9 @@ impl DataClassAllocator {
 
     /// Return a slot to the free list (lock-free).
     fn free(&self, ptr: *mut u8) {
-        self.live_count.fetch_sub(1, Ordering::Relaxed);
         // Decrement page live_count
         {
-            let pages = self.pages.read().expect("data pages lock poisoned");
+            let pages = self.pages.read();
             for page in pages.iter() {
                 if page.contains(ptr as *const u8, self.slot_size) {
                     page.live_count.fetch_sub(1, Ordering::Relaxed);
@@ -598,16 +591,26 @@ impl DataClassAllocator {
         self.free_list.push(ptr);
     }
 
-    /// Total bytes committed by this size class.
-    fn committed_bytes(&self) -> usize {
-        let pages = self.pages.read().expect("data pages lock poisoned");
-        pages.len() * PAGE_SIZE
+    /// Free a batch of slots with O(D log P) page lookups.
+    /// Builds sorted page index once, amortizing across all pointers.
+    fn free_batch(&self, ptrs: &[*mut u8]) {
+        if ptrs.is_empty() { return; }
+        let pages = self.pages.read();
+        let index = DataPageIndex::new(&pages);
+        for &ptr in ptrs {
+            if let Some(page_idx) = index.find_page(&pages, ptr as *const u8, self.slot_size) {
+                pages[page_idx].live_count.fetch_sub(1, Ordering::Relaxed);
+            }
+            // ASAN: poison the freed slot BEFORE push (skip FreeNode header used by Treiber stack).
+            unsafe { asan_poison_slab_slot(ptr, self.slot_size); }
+            self.free_list.push(ptr);
+        }
     }
 
-    /// Live bytes in this size class.
-    fn live_bytes(&self) -> usize {
-        let count = self.live_count.load(Ordering::Relaxed);
-        if count > 0 { count as usize * self.slot_size } else { 0 }
+    /// Total bytes committed by this size class.
+    fn committed_bytes(&self) -> usize {
+        let pages = self.pages.read();
+        pages.len() * PAGE_SIZE
     }
 
     /// Release empty pages via atomic drain + filter + rebuild of the free list.
@@ -621,7 +624,7 @@ impl DataClassAllocator {
     fn release_empty_pages(&self) {
         // Phase 1: Quick check with read lock (common case: no empty pages)
         {
-            let pages = self.pages.read().expect("data pages lock poisoned");
+            let pages = self.pages.read();
             let has_empty = pages.iter().any(|page| {
                 page.live_count.load(Ordering::Relaxed) <= 0
                     && page.bump_count.load(Ordering::Relaxed) > 0
@@ -632,7 +635,7 @@ impl DataClassAllocator {
         }
 
         // Phase 2: Write lock — identify empty pages, excluding current_page
-        let mut pages = self.pages.write().expect("data pages lock poisoned");
+        let mut pages = self.pages.write();
         let current_page_ptr = self.current_page.load(Ordering::Acquire);
 
         // Collect address ranges of empty pages (for fast membership check during walk)
@@ -652,6 +655,9 @@ impl DataClassAllocator {
             return;
         }
 
+        // Sort for O(log R) binary search instead of O(R) linear scan
+        release_ranges.sort_unstable_by_key(|&(start, _)| start);
+
         // Phase 3: Drain free list (atomic swap, O(1))
         let old_head = self.free_list.drain();
 
@@ -663,8 +669,10 @@ impl DataClassAllocator {
             let next = unsafe { (*(ptr as *const FreeNode)).next };
 
             let addr = ptr as usize;
-            let in_released = release_ranges.iter()
-                .any(|&(start, end)| addr >= start && addr < end);
+            let in_released = {
+                let pos = release_ranges.partition_point(|&(start, _)| start <= addr);
+                pos > 0 && addr < release_ranges[pos - 1].1
+            };
 
             if !in_released {
                 self.free_list.push(ptr);
@@ -679,7 +687,7 @@ impl DataClassAllocator {
         while i > 0 {
             i -= 1;
             let page_start = pages[i].data.as_ptr() as usize;
-            if release_ranges.iter().any(|&(start, _)| start == page_start) {
+            if release_ranges.binary_search_by_key(&page_start, |&(start, _)| start).is_ok() {
                 pages.swap_remove(i);
             }
         }
@@ -705,10 +713,6 @@ struct ValueAllocator {
     pages: RwLock<Vec<Box<ValuePage>>>,
     /// Lock-free Treiber stack free list.
     free_list: TreiberStack,
-    /// Total number of slots allocated (lifetime counter).
-    total_allocated: AtomicUsize,
-    /// Number of slots currently live.
-    live_count: AtomicIsize,
     /// Monotonic epoch counter for TOCTOU prevention.
     epoch: AtomicU64,
     /// Pointer to current page for bump allocation.
@@ -723,8 +727,6 @@ impl ValueAllocator {
             slot_size,
             pages: RwLock::new(Vec::new()),
             free_list: TreiberStack::new(),
-            total_allocated: AtomicUsize::new(0),
-            live_count: AtomicIsize::new(0),
             epoch: AtomicU64::new(0),
             current_page: AtomicPtr::new(std::ptr::null_mut()),
         }
@@ -735,15 +737,12 @@ impl ValueAllocator {
     /// Free-list allocations increment the epoch and tag the slot.
     /// Bump allocations don't need epoch tagging.
     fn alloc(&self) -> *mut u8 {
-        self.total_allocated.fetch_add(1, Ordering::Relaxed);
-        self.live_count.fetch_add(1, Ordering::Relaxed);
-
         // Fast path: pop from Treiber stack free list
         if let Some(ptr) = self.free_list.pop() {
             // EPOCH: increment and tag the re-allocated slot
             let new_epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
             // Find the page and set the slot's epoch + increment page live_count
-            let pages = self.pages.read().expect("value pages lock poisoned");
+            let pages = self.pages.read();
             for page in pages.iter() {
                 if let Some(idx) = page.slot_index(ptr as *const u8, self.slot_size) {
                     page.set_slot_epoch(idx, new_epoch);
@@ -772,7 +771,7 @@ impl ValueAllocator {
 
     /// Slow path: allocate a new page.
     fn alloc_new_page(&self) -> *mut u8 {
-        let mut pages = self.pages.write().expect("value pages lock poisoned");
+        let mut pages = self.pages.write();
         // Double-check: another thread may have added a page while we waited
         if let Some(last) = pages.last() {
             if let Some((ptr, _idx)) = last.bump_alloc(self.slot_size) {
@@ -804,10 +803,9 @@ impl ValueAllocator {
     ///
     /// Corresponds to TLA+ model's `freeSet` tracking in `ProcessGcResponse`.
     fn free(&self, ptr: *mut u8) {
-        self.live_count.fetch_sub(1, Ordering::Relaxed);
         // Decrement page live_count and set slot epoch to u64::MAX (sentinel)
         {
-            let pages = self.pages.read().expect("value pages lock poisoned");
+            let pages = self.pages.read();
             for page in pages.iter() {
                 if let Some(idx) = page.slot_index(ptr as *const u8, self.slot_size) {
                     page.live_count.fetch_sub(1, Ordering::Relaxed);
@@ -825,20 +823,14 @@ impl ValueAllocator {
 
     /// Check if a pointer belongs to this allocator.
     fn contains(&self, ptr: *const u8) -> bool {
-        let pages = self.pages.read().expect("value pages lock poisoned");
+        let pages = self.pages.read();
         pages.iter().any(|page| page.contains(ptr, self.slot_size))
     }
 
     /// Total committed bytes.
     fn committed_bytes(&self) -> usize {
-        let pages = self.pages.read().expect("value pages lock poisoned");
+        let pages = self.pages.read();
         pages.len() * PAGE_SIZE
-    }
-
-    /// Live bytes.
-    fn live_bytes(&self) -> usize {
-        let count = self.live_count.load(Ordering::Relaxed);
-        if count > 0 { count as usize * self.slot_size } else { 0 }
     }
 
     /// Release empty pages via atomic drain + filter + rebuild of the free list.
@@ -856,7 +848,7 @@ impl ValueAllocator {
     fn release_empty_pages(&self) {
         // Phase 1: Quick check with read lock (common case: no empty pages)
         {
-            let pages = self.pages.read().expect("value pages lock poisoned");
+            let pages = self.pages.read();
             let has_empty = pages.iter().any(|page| {
                 page.live_count.load(Ordering::Relaxed) <= 0
                     && page.bump_count.load(Ordering::Relaxed) > 0
@@ -867,7 +859,7 @@ impl ValueAllocator {
         }
 
         // Phase 2: Write lock — identify empty pages, excluding current_page
-        let mut pages = self.pages.write().expect("value pages lock poisoned");
+        let mut pages = self.pages.write();
         let current_page_ptr = self.current_page.load(Ordering::Acquire);
 
         // Collect address ranges of empty pages (for fast membership check during walk)
@@ -887,6 +879,9 @@ impl ValueAllocator {
             return;
         }
 
+        // Sort for O(log R) binary search instead of O(R) linear scan
+        release_ranges.sort_unstable_by_key(|&(start, _)| start);
+
         // Phase 3: Drain free list (atomic swap, O(1))
         let old_head = self.free_list.drain();
 
@@ -898,8 +893,10 @@ impl ValueAllocator {
             let next = unsafe { (*(ptr as *const FreeNode)).next };
 
             let addr = ptr as usize;
-            let in_released = release_ranges.iter()
-                .any(|&(start, end)| addr >= start && addr < end);
+            let in_released = {
+                let pos = release_ranges.partition_point(|&(start, _)| start <= addr);
+                pos > 0 && addr < release_ranges[pos - 1].1
+            };
 
             if !in_released {
                 self.free_list.push(ptr);
@@ -914,7 +911,7 @@ impl ValueAllocator {
         while i > 0 {
             i -= 1;
             let page_start = pages[i].data.as_ptr() as usize;
-            if release_ranges.iter().any(|&(start, _)| start == page_start) {
+            if release_ranges.binary_search_by_key(&page_start, |&(start, _)| start).is_ok() {
                 pages.swap_remove(i);
             }
         }
@@ -1090,7 +1087,7 @@ impl SlabAllocator {
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);
         }
-        self.large_allocs.lock().expect("large_allocs lock poisoned").push((ptr, layout));
+        self.large_allocs.lock().push((ptr, layout));
         ptr
     }
 
@@ -1106,21 +1103,45 @@ impl SlabAllocator {
             }
         }
         // Large allocation
-        let mut large = self.large_allocs.lock().expect("large_allocs lock poisoned");
+        let mut large = self.large_allocs.lock();
         if let Some(pos) = large.iter().position(|(p, _)| *p == ptr) {
             let (ptr, layout) = large.swap_remove(pos);
             unsafe { std::alloc::dealloc(ptr, layout); }
         }
     }
 
-    /// Live bytes across all allocators.
-    pub fn allocated_bytes(&self) -> usize {
-        let value_bytes = self.values.live_bytes();
-        let data_bytes: usize = self.data_classes.iter().map(|dc| dc.live_bytes()).sum();
-        let large_bytes: usize = self.large_allocs.lock()
-            .expect("large_allocs lock poisoned")
-            .iter().map(|(_, l)| l.size()).sum();
-        value_bytes + data_bytes + large_bytes
+    /// Free a batch of data slots with O(D log P) page lookups per size class.
+    /// Groups dead data by size class, then calls `free_batch` per class.
+    fn free_data_slots_batch(&self, dead_data: Vec<(*mut u8, usize)>) {
+        if dead_data.is_empty() { return; }
+
+        // Group by size class (9 classes + large)
+        let mut by_class: [Vec<*mut u8>; 9] = Default::default();
+        let mut large_ptrs: Vec<(*mut u8, usize)> = Vec::new();
+
+        for (ptr, size) in dead_data {
+            if size == 0 { continue; }
+            match DATA_SIZE_CLASSES.iter().position(|&cs| size <= cs) {
+                Some(i) => by_class[i].push(ptr),
+                None => large_ptrs.push((ptr, size)),
+            }
+        }
+
+        for (i, ptrs) in by_class.iter().enumerate() {
+            if !ptrs.is_empty() {
+                self.data_classes[i].free_batch(ptrs);
+            }
+        }
+
+        if !large_ptrs.is_empty() {
+            let mut large = self.large_allocs.lock();
+            for (ptr, _) in large_ptrs {
+                if let Some(pos) = large.iter().position(|(p, _)| *p == ptr) {
+                    let (ptr, layout) = large.swap_remove(pos);
+                    unsafe { std::alloc::dealloc(ptr, layout); }
+                }
+            }
+        }
     }
 
     /// Total committed bytes (all pages).
@@ -1128,14 +1149,8 @@ impl SlabAllocator {
         let value_bytes = self.values.committed_bytes();
         let data_bytes: usize = self.data_classes.iter().map(|dc| dc.committed_bytes()).sum();
         let large_bytes: usize = self.large_allocs.lock()
-            .expect("large_allocs lock poisoned")
             .iter().map(|(_, l)| l.size()).sum();
         value_bytes + data_bytes + large_bytes
-    }
-
-    /// Whether GC should be triggered.
-    pub fn needs_gc(&self) -> bool {
-        self.allocated_bytes() >= self.gc_threshold.load(Ordering::Relaxed)
     }
 
     /// Get the GC threshold.
@@ -1160,7 +1175,7 @@ impl SlabAllocator {
 
     /// Check if a slot was re-allocated after a given epoch.
     pub fn is_realloc_after_epoch(&self, ptr: *const u8, snapshot_epoch: u64) -> bool {
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
+        let pages = self.values.pages.read();
         for page in pages.iter() {
             if let Some(idx) = page.slot_index(ptr, self.values.slot_size) {
                 return page.slot_epoch(idx) > snapshot_epoch;
@@ -1189,12 +1204,6 @@ impl SlabAllocator {
     pub fn contains_value(&self, ptr: *const u8) -> bool {
         self.values.contains(ptr)
     }
-
-    /// Number of live value slots.
-    pub fn live_value_count(&self) -> usize {
-        let count = self.values.live_count.load(Ordering::Relaxed);
-        if count > 0 { count as usize } else { 0 }
-    }
 }
 
 impl Default for SlabAllocator {
@@ -1206,7 +1215,7 @@ impl Default for SlabAllocator {
 impl Drop for SlabAllocator {
     fn drop(&mut self) {
         // Free large allocations
-        let mut large = self.large_allocs.lock().expect("large_allocs lock poisoned");
+        let mut large = self.large_allocs.lock();
         for (ptr, layout) in large.drain(..) {
             unsafe { std::alloc::dealloc(ptr, layout); }
         }
@@ -1216,11 +1225,11 @@ impl Drop for SlabAllocator {
 
 impl std::fmt::Debug for SlabAllocator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
+        let pages = self.values.pages.read();
         f.debug_struct("SlabAllocator")
             .field("value_pages", &pages.len())
             .field("value_slot_size", &self.values.slot_size)
-            .field("allocated_bytes", &self.allocated_bytes())
+            .field("committed_bytes", &self.committed_bytes())
             .field("gc_threshold", &self.gc_threshold.load(Ordering::Relaxed))
             .finish()
     }
@@ -1241,8 +1250,14 @@ pub fn init_global_allocator() {
 }
 
 /// Get the global allocator. Auto-initializes on first call.
+///
+/// Also installs signal-triggered diagnostic handlers (SIGTERM/SIGUSR1)
+/// on first call, so every code path (binary, tests, benchmarks) gets
+/// coverage without explicit setup.
 pub fn global_allocator() -> &'static SlabAllocator {
-    GLOBAL_ALLOCATOR.get_or_init(SlabAllocator::new)
+    let alloc = GLOBAL_ALLOCATOR.get_or_init(SlabAllocator::new);
+    crate::backend::diagnostics::install_signal_handlers();
+    alloc
 }
 
 /// Get a factory backed by the global allocator.
@@ -1284,7 +1299,7 @@ pub fn is_gc_requested() -> bool {
 // ============================================================================
 
 /// Global GC cron manager singleton. Lazily spawned on first use.
-/// No `Mutex` needed — `CronHandle` is `Clone + Send` and `CronStats` uses atomics.
+/// No `Mutex` needed — `CronHandle` is `Clone + Send`.
 static GLOBAL_GC_CRON: OnceLock<super::gc_cron::GcCronSingleton> = OnceLock::new();
 
 /// Get the global GC cron manager, spawning it if needed.
@@ -1349,9 +1364,16 @@ pub fn is_gc_disabled() -> bool {
 static ACTIVE_EVALUATORS: AtomicU32 = AtomicU32::new(0);
 
 /// Set by `maybe_quiescent_gc()` during snapshot building (sub-millisecond).
-/// `EvalGuard::enter()` spins until this is false.
+/// `EvalGuard::enter()` parks on condvar until this is false.
 /// NOT stop-the-world: only guards the brief snapshot capture, not mark-sweep.
 static GC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Mutex + Condvar pair for parking evaluator threads while GC snapshot is in
+/// progress. The mutex protects against lost wakeups: `GcInProgressGuard::drop()`
+/// holds the mutex when clearing `GC_IN_PROGRESS`, ensuring threads that checked
+/// the flag and are about to `wait()` cannot miss the notification.
+static GC_PROGRESS_MUTEX: Mutex<()> = Mutex::new(());
+static GC_PROGRESS_CONDVAR: Condvar = Condvar::new();
 
 /// Set when a GC snapshot is sent to the GC thread, cleared when the response
 /// is processed. Prevents queueing multiple snapshots in the mpsc channel.
@@ -1368,7 +1390,7 @@ static GC_CYCLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// increments `ACTIVE_EVALUATORS` on creation and decrements on drop). GC can
 /// only trigger at quiescent points when all guards have been dropped.
 ///
-/// The guard also blocks briefly (spin-loop) if a GC snapshot is currently
+/// The guard also blocks briefly (condvar park) if a GC snapshot is currently
 /// being built (`GC_IN_PROGRESS`), ensuring the snapshot sees a consistent
 /// root set.
 pub struct EvalGuard;
@@ -1377,21 +1399,25 @@ impl EvalGuard {
     /// Enter an evaluation — blocks briefly if GC snapshot is in progress.
     ///
     /// Increments `ACTIVE_EVALUATORS` and checks `GC_IN_PROGRESS`. If a
-    /// snapshot is being built, backs off and retries to prevent a TOCTOU
-    /// race where a new eval starts between the quiescent check and snapshot
-    /// capture.
+    /// snapshot is being built, backs off and parks on a condvar to prevent
+    /// a TOCTOU race where a new eval starts between the quiescent check
+    /// and snapshot capture.
     #[inline]
     pub fn enter() -> Self {
         loop {
             ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);
             if !GC_IN_PROGRESS.load(Ordering::Acquire) {
-                break; // No GC in progress, safe to proceed
+                break; // Fast path: no GC in progress (common case)
             }
-            // GC in progress — back off and retry
+            // GC snapshot in progress — back off and park
             ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+            // Double-checked locking: park on condvar instead of spinning.
+            // The mutex prevents lost wakeups (see GcInProgressGuard::drop).
+            let mut lock = GC_PROGRESS_MUTEX.lock();
             while GC_IN_PROGRESS.load(Ordering::Acquire) {
-                std::hint::spin_loop();
+                GC_PROGRESS_CONDVAR.wait(&mut lock);
             }
+            drop(lock);
         }
         EvalGuard
     }
@@ -1407,6 +1433,30 @@ impl Drop for EvalGuard {
 /// Get the current active evaluator count (for testing and diagnostics).
 pub fn active_evaluator_count() -> u32 {
     ACTIVE_EVALUATORS.load(Ordering::Acquire)
+}
+
+/// RAII guard that sets `GC_IN_PROGRESS = true` on creation and clears it on drop.
+/// Ensures the flag is always cleared, even if the GC snapshot path panics.
+struct GcInProgressGuard;
+
+impl GcInProgressGuard {
+    fn enter() -> Self {
+        GC_IN_PROGRESS.store(true, Ordering::Release);
+        GcInProgressGuard
+    }
+}
+
+impl Drop for GcInProgressGuard {
+    fn drop(&mut self) {
+        // Must hold mutex when clearing flag to prevent lost wakeups:
+        // a thread that checked GC_IN_PROGRESS=true under the mutex and is
+        // about to call wait() would miss a notify_all without this.
+        {
+            let _lock = GC_PROGRESS_MUTEX.lock();
+            GC_IN_PROGRESS.store(false, Ordering::Release);
+        }
+        GC_PROGRESS_CONDVAR.notify_all();
+    }
 }
 
 /// Check if a GC cycle is currently in flight (snapshot sent, response not processed).
@@ -1429,7 +1479,8 @@ pub fn gc_cycle_in_flight() -> bool {
 //
 // Two tiers of application:
 //   Tier 1 (apply_backpressure_tier1): Called from SessionContext::maybe_gc()
-//     every 256 trampoline iterations. Yields or sleeps to slow allocation.
+//     every 256 trampoline iterations. Only active when gc_cycle_in_flight(),
+//     otherwise a no-op. Yields or sleeps to slow allocation.
 //   Tier 2 (apply_backpressure_tier2): Called from main.rs between top-level
 //     expressions. At MAX level, spin-yields until gc_cycle_in_flight() is false.
 //
@@ -1445,6 +1496,19 @@ pub fn gc_cycle_in_flight() -> bool {
 /// Current backpressure level (0..MAX_BACKPRESSURE). Set by cron monitor,
 /// read by eval threads. Relaxed ordering suffices since this is advisory.
 static BACKPRESSURE_LEVEL: AtomicU8 = AtomicU8::new(0);
+
+/// Heartbeat counter incremented each time GC lifecycle is reached
+/// (`maybe_quiescent_gc()` or `maybe_process_gc_response()` called).
+/// The cron monitor reads this to avoid escalating backpressure when
+/// GC is unreachable (no quiescent points being hit), which would cause
+/// permanent throttling in library/test code.
+static GC_REACHABLE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Mutex + Condvar pair for Tier 2 backpressure blocking.
+/// Replaces 1ms polling loop with instant wakeup when GC cycle completes.
+/// Notified from `maybe_process_gc_response()` after clearing `GC_CYCLE_IN_FLIGHT`.
+static GC_CYCLE_MUTEX: Mutex<()> = Mutex::new(());
+static GC_CYCLE_CONDVAR: Condvar = Condvar::new();
 
 /// Maximum backpressure level. At this level, Tier 2 blocks until GC completes.
 pub const MAX_BACKPRESSURE: u8 = 3;
@@ -1463,12 +1527,44 @@ pub fn set_backpressure_level(level: u8) {
     BACKPRESSURE_LEVEL.store(level.min(MAX_BACKPRESSURE), Ordering::Relaxed);
 }
 
+/// Bump the GC reachability heartbeat counter.
+///
+/// Called from `maybe_quiescent_gc()` and `maybe_process_gc_response()` to
+/// signal that the GC lifecycle is reachable. The cron monitor uses this to
+/// avoid escalating backpressure when GC is unreachable.
+#[inline]
+fn bump_gc_reachable() {
+    GC_REACHABLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Get the current GC reachability heartbeat counter.
+///
+/// Read by the cron monitor to determine if GC lifecycle code is being
+/// reached. If this counter hasn't advanced between polls, backpressure
+/// is not escalated (would cause permanent throttling).
+#[inline]
+pub fn gc_reachable_counter() -> u64 {
+    GC_REACHABLE_COUNTER.load(Ordering::Relaxed)
+}
+
 /// Tier 1 backpressure: graduated yield/sleep during eval.
 ///
 /// Called from `SessionContext::maybe_gc()` every 256 trampoline iterations.
+/// Only active when a GC cycle is in flight — if no GC is running, sleeping
+/// is pointless (nothing to wait for). This prevents the test-path livelock
+/// where cron sets backpressure to MAX but GC never fires because nobody
+/// calls `maybe_quiescent_gc()` in tests.
+///
 /// At level 0, this is a no-op (zero overhead on the hot path).
 #[inline]
 pub fn apply_backpressure_tier1() {
+    // Only apply backpressure when GC is actively running. If no GC cycle
+    // is in flight, sleeping wastes time without benefit — there's nothing
+    // to wait for. Cost: one atomic load (~1-2 ns), but avoids the
+    // backpressure_level() load entirely when GC is idle (net win).
+    if !gc_cycle_in_flight() {
+        return;
+    }
     match backpressure_level() {
         0 => {} // No backpressure — hot path, zero overhead
         1 => std::thread::yield_now(),
@@ -1479,9 +1575,10 @@ pub fn apply_backpressure_tier1() {
 
 /// Tier 2 backpressure: block at max level until GC cycle completes.
 ///
-/// Called from main.rs between top-level expressions. At MAX level,
-/// waits until `gc_cycle_in_flight()` returns false by sleeping briefly
-/// and processing any pending GC response each iteration.
+/// Called from main.rs between top-level expressions and from the eval()
+/// return path. At MAX level, parks on `GC_CYCLE_CONDVAR` until
+/// `gc_cycle_in_flight()` returns false (notified from
+/// `maybe_process_gc_response()` after clearing `GC_CYCLE_IN_FLIGHT`).
 ///
 /// The caller should also call `maybe_process_gc_response()` as a
 /// standalone action before this function (matching TLA+ ProcessGcResponse
@@ -1489,19 +1586,20 @@ pub fn apply_backpressure_tier1() {
 /// response is handled without entering the loop.
 ///
 /// At levels below MAX, this is a no-op.
+///
+/// Uses a condvar with 100ms timeout instead of polling (zero CPU while
+/// waiting, instant wakeup on GC completion, timeout as safety net against
+/// lost notifications).
 #[inline]
 pub fn apply_backpressure_tier2() {
-    if backpressure_level() >= MAX_BACKPRESSURE {
-        while gc_cycle_in_flight() {
-            // Process GC response if available — clears gc_cycle_in_flight
-            // and updates backpressure level.
-            if maybe_process_gc_response() {
-                break; // Response processed, in-flight flag cleared
-            }
-            // GC thread still working — sleep briefly instead of burning CPU.
-            // 1ms is short enough to not delay eval noticeably but avoids
-            // the 98%+ CPU usage from sched_yield spin-looping.
-            std::thread::sleep(std::time::Duration::from_millis(1));
+    if backpressure_level() >= MAX_BACKPRESSURE && gc_cycle_in_flight() {
+        let mut lock = GC_CYCLE_MUTEX.lock();
+        // Re-check under lock (double-checked locking pattern)
+        while backpressure_level() >= MAX_BACKPRESSURE && gc_cycle_in_flight() {
+            // Timeout prevents infinite wait if GC response notification is lost.
+            // 100ms matches cron monitor poll interval — at worst we retry at
+            // the same cadence as before.
+            GC_CYCLE_CONDVAR.wait_for(&mut lock, std::time::Duration::from_millis(100));
         }
     }
 }
@@ -1524,6 +1622,9 @@ pub fn apply_backpressure_tier2() {
 ///
 /// Returns `true` if a GC cycle was triggered.
 pub fn maybe_quiescent_gc() -> bool {
+    // Signal that the GC lifecycle is reachable (for cron backpressure gating)
+    bump_gc_reachable();
+
     // Fast path: skip if GC is disabled
     if is_gc_disabled() {
         GC_REQUESTED.store(false, Ordering::Relaxed);
@@ -1555,22 +1656,23 @@ pub fn maybe_quiescent_gc() -> bool {
         return false;
     }
 
-    // Set GC_IN_PROGRESS to prevent new evals from starting
-    GC_IN_PROGRESS.store(true, Ordering::Release);
+    // Set GC_IN_PROGRESS to prevent new evals from starting.
+    // RAII guard ensures the flag is always cleared, even on panic.
+    let _gc_guard = GcInProgressGuard::enter();
 
     // Double-check no eval snuck in between our check and the flag set
     if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
-        GC_IN_PROGRESS.store(false, Ordering::Release);
+        drop(_gc_guard);
         // Re-set GC_REQUESTED so we try again at the next quiescent point
         GC_REQUESTED.store(true, Ordering::Release);
         return false;
     }
 
-    // Safe: no evaluators active, build snapshot and trigger GC
-    let gc = global_gc_thread().lock().expect("gc thread mutex poisoned");
+    // Safe: no evaluators active, build snapshot and trigger GC.
+    let gc = global_gc_thread().lock();
     let result = trigger_gc_cycle_locked(&gc);
 
-    GC_IN_PROGRESS.store(false, Ordering::Release);
+    drop(_gc_guard);
     result
 }
 
@@ -1587,84 +1689,61 @@ pub fn maybe_quiescent_gc() -> bool {
 ///
 /// Returns `true` if a GC response was processed.
 pub fn maybe_process_gc_response() -> bool {
+    // Signal that the GC lifecycle is reachable (for cron backpressure gating)
+    bump_gc_reachable();
+
     // Lazily spawn the GC cron manager (idempotent via OnceLock)
     let _ = global_gc_cron();
 
-    let gc = global_gc_thread().lock().expect("gc thread mutex poisoned");
+    let gc = global_gc_thread().lock();
     let alloc = global_allocator();
 
-    if let Some(response) = gc.try_recv_response() {
-        // DIAGNOSTIC: Log response stats to stderr to understand what's being freed
-        eprintln!(
-            "[GC] Response: {} dead values, {} dead data, {} live values, {} live bytes, epoch {}",
-            response.dead_values.len(),
-            response.dead_data.len(),
-            response.live_values,
-            response.live_bytes,
-            response.snapshot_epoch,
-        );
+    match gc.try_recv_response() {
+        super::gc_thread::TryRecvGcResponse::Response(response) => {
+            alloc.process_gc_response(&response);
+            // Page release is handled inside process_gc_response() (Phase 5).
 
-        alloc.process_gc_response(&response);
-        // Page release is handled inside process_gc_response() (Phase 5).
+            // Adaptive threshold: next_threshold = max(live_bytes * GROWTH_FACTOR, MIN_GC_THRESHOLD)
+            let new_threshold = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
+            alloc.set_gc_threshold(new_threshold.max(MIN_GC_THRESHOLD));
 
-        // Adaptive threshold: next_threshold = max(live_bytes * GROWTH_FACTOR, MIN_GC_THRESHOLD)
-        let new_threshold = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
-        alloc.set_gc_threshold(new_threshold.max(MIN_GC_THRESHOLD));
+            // Clear in-flight flag — aligns with TLA+ `hasGcResponse' = FALSE`
+            // in ProcessGcResponse. A new GC cycle can now be triggered.
+            GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
 
-        // Clear in-flight flag — aligns with TLA+ `hasGcResponse' = FALSE`
-        // in ProcessGcResponse. A new GC cycle can now be triggered.
-        GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+            // Wake any thread blocked in apply_backpressure_tier2().
+            // Must notify AFTER clearing GC_CYCLE_IN_FLIGHT so the woken thread
+            // sees the updated flag when it re-checks the while condition.
+            GC_CYCLE_CONDVAR.notify_all();
 
-        // Immediate backpressure feedback — don't wait for next cron poll (100ms).
-        // Re-evaluate backpressure level based on current committed/threshold ratio.
-        // Models TLA+ ProcessGcResponse: backpressureLevel' = max(bp - 1, 0).
-        let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
-        let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
-        let new_level = if threshold > 0 {
-            if committed >= threshold * 2 { 3 }
-            else if committed >= threshold * 3 / 2 { 2 }
-            else if committed >= threshold { 1 }
-            else { 0 }
-        } else { 0 };
-        set_backpressure_level(new_level);
+            // Immediate backpressure feedback — don't wait for next cron poll (100ms).
+            // Re-evaluate backpressure level based on current committed/threshold ratio.
+            // Models TLA+ ProcessGcResponse: backpressureLevel' = max(bp - 1, 0).
+            let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
+            let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
+            let new_level = if threshold > 0 {
+                if committed >= threshold * 2 { 3 }
+                else if committed >= threshold * 3 / 2 { 2 }
+                else if committed >= threshold { 1 }
+                else { 0 }
+            } else { 0 };
+            set_backpressure_level(new_level);
 
-        return true;
+            return true;
+        }
+        super::gc_thread::TryRecvGcResponse::Disconnected => {
+            // GC thread crashed or shut down — clear in-flight flag to prevent
+            // indefinite blocking in apply_backpressure_tier2().
+            if gc_cycle_in_flight() {
+                GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+                // Wake blocked threads since in-flight was cleared
+                GC_CYCLE_CONDVAR.notify_all();
+                set_backpressure_level(0);
+            }
+        }
+        super::gc_thread::TryRecvGcResponse::Empty => {}
     }
     false
-}
-
-/// Print GC statistics to stderr.
-///
-/// Prints slab allocator stats, GC cron stats, and active evaluator count.
-/// Called from CLI `--gc-stats` flag or when `METTA_GC_STATS=1` env var is set.
-pub fn print_gc_stats() {
-    let alloc = global_allocator();
-    let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
-    let alloc_count = alloc.alloc_count_atomic().load(Ordering::Relaxed);
-    let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
-
-    eprintln!("=== GC Statistics ===");
-    eprintln!("  Slab allocator:");
-    eprintln!("    Committed bytes:  {}", committed);
-    eprintln!("    Total allocs:     {}", alloc_count);
-    eprintln!("    GC threshold:     {}", threshold);
-    eprintln!("    GC disabled:      {}", is_gc_disabled());
-
-    // GC cron stats (if initialized)
-    if let Some(cron) = GLOBAL_GC_CRON.get() {
-        let stats = cron.stats.snapshot();
-        eprintln!("  GC cron:");
-        eprintln!("    Tasks executed:   {}", stats.tasks_executed);
-        eprintln!("    Tasks failed:     {}", stats.tasks_failed);
-        eprintln!("    Tasks panicked:   {}", stats.tasks_panicked);
-        eprintln!("    Transitions:      {}", stats.transitions);
-    } else {
-        eprintln!("  GC cron: not initialized");
-    }
-
-    eprintln!("  Active evaluators:  {}", active_evaluator_count());
-    eprintln!("  GC cycle in flight: {}", gc_cycle_in_flight());
-    eprintln!("=====================");
 }
 
 // ============================================================================
@@ -1687,11 +1766,6 @@ pub trait RootProvider: Send + Sync {
     /// Implementations should push all `MettaValue` values that are
     /// currently reachable from this provider into the `roots` vector.
     fn collect_roots(&self, roots: &mut Vec<MettaValue>);
-
-    /// Human-readable name for diagnostic logging.
-    fn provider_name(&self) -> &'static str {
-        "unknown"
-    }
 }
 
 /// Global registry of active root providers using weak references.
@@ -1713,7 +1787,7 @@ fn root_registry() -> &'static RwLock<Vec<Weak<dyn RootProvider>>> {
 /// Stores a `Weak` reference — the provider is automatically removed from the
 /// registry when all strong `Arc` references are dropped.
 pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {
-    let mut registry = root_registry().write().expect("root registry write lock poisoned");
+    let mut registry = root_registry().write();
     registry.push(Arc::downgrade(provider));
 }
 
@@ -1725,72 +1799,16 @@ pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {
 ///
 /// Dead (dropped) providers are automatically pruned during collection.
 pub fn collect_all_roots() -> Vec<MettaValue> {
-    let mut registry = root_registry().write().expect("root registry write lock poisoned");
-    let total_providers = registry.len();
+    let mut registry = root_registry().write();
     let mut roots = Vec::with_capacity(registry.len() * 64); // heuristic pre-alloc
-    let mut alive_providers = 0usize;
-    let mut dead_providers = 0usize;
     registry.retain(|weak| {
         if let Some(strong) = weak.upgrade() {
-            let before = roots.len();
             strong.collect_roots(&mut roots);
-            let contributed = roots.len() - before;
-            alive_providers += 1;
-            eprintln!("[GC] Root provider #{} ({}): {} roots contributed", alive_providers, strong.provider_name(), contributed);
             true
         } else {
-            dead_providers += 1;
             false // Provider was dropped — remove from registry
         }
     });
-    eprintln!(
-        "[GC] Root collection: {} providers ({} alive, {} dead), {} total roots",
-        total_providers, alive_providers, dead_providers, roots.len()
-    );
-
-    // Diagnostic: log variant breakdown and Space root addresses
-    {
-        let mut n_atom = 0usize;
-        let mut n_sexpr = 0usize;
-        let mut n_space = 0usize;
-        let mut n_long = 0usize;
-        let mut n_bool = 0usize;
-        let mut n_string = 0usize;
-        let mut n_float = 0usize;
-        let mut n_error = 0usize;
-        let mut n_type = 0usize;
-        let mut n_unit = 0usize;
-        let mut n_empty = 0usize;
-        let mut n_state = 0usize;
-        let mut n_conj = 0usize;
-        let mut n_memo = 0usize;
-        for root in &roots {
-            match root.inner() {
-                MettaValueInner::Atom(_) => n_atom += 1,
-                MettaValueInner::SExpr(_) => n_sexpr += 1,
-                MettaValueInner::Space(h) => {
-                    n_space += 1;
-                    eprintln!("[GC] Root Space: {:p} name={:?}", root.inner_ptr(), h.name);
-                }
-                MettaValueInner::Long(_) => n_long += 1,
-                MettaValueInner::Bool(_) => n_bool += 1,
-                MettaValueInner::String(_) => n_string += 1,
-                MettaValueInner::Float(_) => n_float += 1,
-                MettaValueInner::Error(_, _) => n_error += 1,
-                MettaValueInner::Type(_) => n_type += 1,
-                MettaValueInner::Unit => n_unit += 1,
-                MettaValueInner::Empty => n_empty += 1,
-                MettaValueInner::State(_) => n_state += 1,
-                MettaValueInner::Conjunction(_) => n_conj += 1,
-                MettaValueInner::Memo(_) => n_memo += 1,
-            }
-        }
-        eprintln!(
-            "[GC] Root variants: atom={} sexpr={} space={} long={} bool={} string={} float={} error={} type={} unit={} empty={} state={} conj={} memo={}",
-            n_atom, n_sexpr, n_space, n_long, n_bool, n_string, n_float, n_error, n_type, n_unit, n_empty, n_state, n_conj, n_memo
-        );
-    }
-
     roots
 }
 
@@ -1836,10 +1854,19 @@ pub fn trigger_gc_cycle(gc_thread: &super::gc_thread::GcThread) -> bool {
     let alloc = global_allocator();
 
     // First, process any pending GC response from previous cycle
-    if let Some(response) = gc_thread.try_recv_response() {
-        alloc.process_gc_response(&response);
-        // Page release is handled inside process_gc_response() (Phase 5).
-        GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+    match gc_thread.try_recv_response() {
+        super::gc_thread::TryRecvGcResponse::Response(response) => {
+            alloc.process_gc_response(&response);
+            // Page release is handled inside process_gc_response() (Phase 5).
+            GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+        }
+        super::gc_thread::TryRecvGcResponse::Disconnected => {
+            // GC thread crashed or shut down — can't trigger GC.
+            GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+            set_backpressure_level(0);
+            return false;
+        }
+        super::gc_thread::TryRecvGcResponse::Empty => {}
     }
 
     // Don't queue another cycle if one is already in flight
@@ -1939,10 +1966,87 @@ pub struct GcResponse {
 
 unsafe impl Send for GcResponse {}
 
+/// Sorted page index for O(log P) pointer-to-page lookup.
+/// Pages are non-overlapping mmap regions; sorting by start address
+/// enables binary search via `partition_point`.
+struct PageIndex {
+    /// (page_data_start_addr, page_vec_index), sorted by start addr.
+    sorted: Vec<(usize, usize)>,
+}
+
+impl PageIndex {
+    /// Build sorted index from pages. O(P log P), done once per GC response.
+    fn new(pages: &[Box<ValuePage>]) -> Self {
+        let mut sorted: Vec<(usize, usize)> = pages.iter().enumerate()
+            .map(|(i, page)| (page.data.as_ptr() as usize, i))
+            .collect();
+        sorted.sort_unstable_by_key(|&(start, _)| start);
+        Self { sorted }
+    }
+
+    /// Find (page_vec_index, slot_index) for a pointer. O(log P).
+    #[inline]
+    fn find(&self, pages: &[Box<ValuePage>], ptr: *const u8, slot_size: usize)
+        -> Option<(usize, usize)>
+    {
+        let addr = ptr as usize;
+        // partition_point returns the first index where start > addr,
+        // so pos - 1 is the last page whose start <= addr.
+        let pos = self.sorted.partition_point(|&(start, _)| start <= addr);
+        if pos == 0 { return None; }
+        let (_, page_idx) = self.sorted[pos - 1];
+        pages[page_idx].slot_index(ptr, slot_size).map(|slot_idx| (page_idx, slot_idx))
+    }
+}
+
+/// Sorted data page index for O(log P) pointer-to-page lookup.
+/// Same approach as `PageIndex` but for `DataPage` (no per-slot epochs).
+struct DataPageIndex {
+    /// (page_data_start_addr, page_vec_index), sorted by start addr.
+    sorted: Vec<(usize, usize)>,
+}
+
+impl DataPageIndex {
+    /// Build sorted index from data pages. O(P log P), done once per batch.
+    fn new(pages: &[Box<DataPage>]) -> Self {
+        let mut sorted: Vec<(usize, usize)> = pages.iter().enumerate()
+            .map(|(i, page)| (page.data.as_ptr() as usize, i))
+            .collect();
+        sorted.sort_unstable_by_key(|&(start, _)| start);
+        Self { sorted }
+    }
+
+    /// Find the page index containing the given pointer. O(log P).
+    #[inline]
+    fn find_page(&self, pages: &[Box<DataPage>], ptr: *const u8, slot_size: usize)
+        -> Option<usize>
+    {
+        let addr = ptr as usize;
+        // partition_point returns the first index where start > addr,
+        // so pos - 1 is the last page whose start <= addr.
+        let pos = self.sorted.partition_point(|&(start, _)| start <= addr);
+        if pos == 0 { return None; }
+        let (_, page_idx) = self.sorted[pos - 1];
+        if pages[page_idx].contains(ptr, slot_size) {
+            Some(page_idx)
+        } else {
+            None
+        }
+    }
+}
+
+/// Dead value with pre-resolved page/slot location from Phase 1.
+/// Caches the binary search result so Phase 3 needs zero page lookups.
+struct ResolvedDead {
+    ptr: *mut u8,
+    page_idx: usize,
+    slot_idx: usize,
+}
+
 impl SlabAllocator {
     /// Build a snapshot for the GC thread.
     pub fn build_snapshot(&self, roots: Vec<MettaValue>) -> GcSnapshot {
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
+        let pages = self.values.pages.read();
         let slot_size = self.values.slot_size;
 
         let page_snapshots: Vec<PageSnapshot> = pages.iter().map(|page| {
@@ -1983,198 +2087,80 @@ impl SlabAllocator {
     /// Process a GC response with epoch-based TOCTOU filtering.
     ///
     /// Three-phase structure to avoid reading from freed slots:
-    /// 1. Epoch filter: identify non-filtered dead values
+    /// 1. Epoch filter: identify non-filtered dead values (binary search, O(D log P))
     /// 2. Collect dead data from non-filtered values (slot content still valid)
-    /// 3. Free value slots (push to free list + ASAN poison)
+    /// 3. Free value slots (push to free list + ASAN poison, O(D') with cached indices)
     /// 4. Free data slots
+    /// 5. Release empty pages
+    ///
+    /// Phases 1-3 share a single read lock on the page array.
     pub fn process_gc_response(&self, response: &GcResponse) {
-        // === Phase 1: Epoch filtering ===
-        // Separate dead values into filtered (re-allocated after snapshot) and
-        // non-filtered (genuinely dead, safe to reclaim).
-        let mut filtered_values: std::collections::HashSet<*mut u8> =
-            std::collections::HashSet::new();
-        let mut non_filtered_dead: Vec<*mut u8> = Vec::new();
+        let mut filtered_count = 0usize;
+        let mut non_filtered_dead: Vec<ResolvedDead> = Vec::with_capacity(response.dead_values.len());
 
+        // Declare outside the block so it outlives the read lock.
+        // It's an owned Vec<(*mut u8, usize)> — no borrows on pages.
+        let dead_data_to_free: Vec<(*mut u8, usize)>;
+
+        // Single read lock across Phases 1-3. Safe because:
+        // - No pages added (alloc_new_page takes write lock)
+        // - No pages removed (release_empty_pages is Phase 5, after this block)
+        // - collect_dead_data (Phase 2) only reads slot content in mmap pages
+        // - free_list.push (Phase 3) is lock-free Treiber stack, doesn't touch pages
         {
-            let pages = self.values.pages.read().expect("value pages lock poisoned");
+            let pages = self.values.pages.read();
+            let page_index = PageIndex::new(&pages);
+
+            // === Phase 1: Epoch filtering — O(D log P) ===
+            // Separate dead values into filtered (re-allocated after snapshot) and
+            // non-filtered (genuinely dead, safe to reclaim).
             for &ptr in &response.dead_values {
-                let mut skip = false;
-                for page in pages.iter() {
-                    if let Some(idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
-                        if page.slot_epoch(idx) > response.snapshot_epoch {
-                            filtered_values.insert(ptr);
-                            skip = true;
-                        }
-                        break;
+                if let Some((page_idx, slot_idx)) = page_index.find(
+                    &pages, ptr as *const u8, self.values.slot_size,
+                ) {
+                    if pages[page_idx].slot_epoch(slot_idx) > response.snapshot_epoch {
+                        filtered_count += 1;
+                    } else {
+                        non_filtered_dead.push(ResolvedDead { ptr, page_idx, slot_idx });
                     }
                 }
-                if !skip {
-                    non_filtered_dead.push(ptr);
-                }
+                // else: ptr not in any page (released in prior cycle) — skip
             }
-        }
 
-        // === Phase 2: Collect dead data BEFORE freeing value slots ===
-        // The slot content is still valid here — we haven't pushed to the free list yet.
-        // This fixes a bug in the previous code where the filtered-values branch read
-        // from slots that had already been pushed to the free list (use-after-free).
-        let dead_data_to_free: Vec<(*mut u8, usize)> = if filtered_values.is_empty() {
-            // No filtering needed — use the pre-computed dead_data from the GC response
-            response.dead_data.clone()
-        } else {
-            // Filtering needed — re-derive dead data from non-filtered values only
-            let mut data = Vec::new();
-            for &ptr in &non_filtered_dead {
-                let inner_val = unsafe { &*(ptr as *const MettaValueInner) };
-                let mut data_entries = Vec::new();
-                collect_dead_data(inner_val, &mut data_entries);
-                data.extend(data_entries);
-            }
-            data
-        };
-
-        // === Phase 3: Free value slots (push to free list + ASAN poison) ===
-        //
-        // DIAGNOSTIC modes (controlled by METTA_GC_NO_FREE env var):
-        //   "1" = skip all freeing (confirms GC incorrectly classifies live values as dead)
-        //   "2" = ASAN-poison dead slots but DON'T push to free list (prevents reuse,
-        //         so ASAN can detect the exact stale access without ABA interference)
-        //   unset = normal freeing (production path)
-        //
-        // TODO: Remove diagnostic modes after the bug is fixed.
-        let gc_no_free = std::env::var("METTA_GC_NO_FREE").unwrap_or_default();
-        match gc_no_free.as_str() {
-            "1" => {
-                eprintln!(
-                    "[GC] DIAGNOSTIC: skipping free of {} value slots and {} data entries",
-                    non_filtered_dead.len(),
-                    dead_data_to_free.len(),
-                );
-            }
-            "2" => {
-                // ASAN-poison dead slots to detect stale accesses, but don't
-                // push to free list — prevents ABA (reuse masks the bug).
-                eprintln!(
-                    "[GC] DIAGNOSTIC: poisoning {} dead value slots (no free-list push)",
-                    non_filtered_dead.len(),
-                );
-
-                // Diagnostic: variant breakdown of dead values + flag Space values
-                {
-                    let mut n_atom = 0usize;
-                    let mut n_sexpr = 0usize;
-                    let mut n_space = 0usize;
-                    let mut n_long = 0usize;
-                    let mut n_bool = 0usize;
-                    let mut n_string = 0usize;
-                    let mut n_float = 0usize;
-                    let mut n_error = 0usize;
-                    let mut n_type = 0usize;
-                    let mut n_unit = 0usize;
-                    let mut n_empty = 0usize;
-                    let mut n_state = 0usize;
-                    let mut n_conj = 0usize;
-                    let mut n_memo = 0usize;
-                    for &ptr in &non_filtered_dead {
-                        let inner = unsafe { &*(ptr as *const MettaValueInner) };
-                        match inner {
-                            MettaValueInner::Atom(_) => n_atom += 1,
-                            MettaValueInner::SExpr(_) => n_sexpr += 1,
-                            MettaValueInner::Space(h) => {
-                                n_space += 1;
-                                eprintln!("[GC] DEAD Space: {:p} name={:?}", ptr, h.name);
-                            }
-                            MettaValueInner::Long(_) => n_long += 1,
-                            MettaValueInner::Bool(_) => n_bool += 1,
-                            MettaValueInner::String(_) => n_string += 1,
-                            MettaValueInner::Float(_) => n_float += 1,
-                            MettaValueInner::Error(_, _) => n_error += 1,
-                            MettaValueInner::Type(_) => n_type += 1,
-                            MettaValueInner::Unit => n_unit += 1,
-                            MettaValueInner::Empty => n_empty += 1,
-                            MettaValueInner::State(_) => n_state += 1,
-                            MettaValueInner::Conjunction(_) => n_conj += 1,
-                            MettaValueInner::Memo(_) => n_memo += 1,
-                        }
-                    }
-                    eprintln!(
-                        "[GC] Dead variants: atom={} sexpr={} space={} long={} bool={} string={} float={} error={} type={} unit={} empty={} state={} conj={} memo={}",
-                        n_atom, n_sexpr, n_space, n_long, n_bool, n_string, n_float, n_error, n_type, n_unit, n_empty, n_state, n_conj, n_memo
-                    );
+            // === Phase 2: Collect dead data BEFORE freeing value slots ===
+            // The slot content is still valid here — we haven't pushed to the free list yet.
+            // This fixes a bug in the previous code where the filtered-values branch read
+            // from slots that had already been pushed to the free list (use-after-free).
+            dead_data_to_free = if filtered_count == 0 {
+                // No filtering needed — use the pre-computed dead_data from the GC response
+                response.dead_data.clone()
+            } else {
+                // Filtering needed — re-derive dead data from non-filtered values only
+                let mut data = Vec::new();
+                for entry in &non_filtered_dead {
+                    let inner_val = unsafe { &*(entry.ptr as *const MettaValueInner) };
+                    let mut data_entries = Vec::new();
+                    collect_dead_data(inner_val, &mut data_entries);
+                    data.extend(data_entries);
                 }
+                data
+            };
 
-                let pages = self.values.pages.read().expect("value pages lock poisoned");
-                for &ptr in &non_filtered_dead {
-                    // Set sentinel epoch so future GC cycles skip this slot
-                    // (prevents re-sweep of already-poisoned memory).
-                    for page in pages.iter() {
-                        if let Some(idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
-                            page.set_slot_epoch(idx, u64::MAX);
-                            break;
-                        }
-                    }
-                    // Poison the ENTIRE slot (not just bytes 16+) since we're
-                    // not pushing to the free list (no FreeNode needed).
-                    #[cfg(sanitize = "address")]
-                    unsafe {
-                        extern "C" {
-                            fn __asan_poison_memory_region(
-                                addr: *const std::ffi::c_void,
-                                size: usize,
-                            );
-                        }
-                        __asan_poison_memory_region(
-                            ptr as *const std::ffi::c_void,
-                            self.values.slot_size,
-                        );
-                    }
-                    let _ = ptr; // suppress unused warning when ASAN is off
-                }
-                drop(pages);
-                // Also poison dead data slots
-                for &(ptr, size) in &dead_data_to_free {
-                    #[cfg(sanitize = "address")]
-                    unsafe {
-                        extern "C" {
-                            fn __asan_poison_memory_region(
-                                addr: *const std::ffi::c_void,
-                                size: usize,
-                            );
-                        }
-                        __asan_poison_memory_region(
-                            ptr as *const std::ffi::c_void,
-                            size,
-                        );
-                    }
-                    let _ = (ptr, size);
-                }
+            // === Phase 3: Free value slots — O(D'), zero page lookups ===
+            for entry in &non_filtered_dead {
+                let page = &pages[entry.page_idx];
+                page.live_count.fetch_sub(1, Ordering::Relaxed);
+                // Sentinel epoch: prevents double-free by future GC cycles.
+                page.set_slot_epoch(entry.slot_idx, u64::MAX);
+                // ASAN: poison the freed slot BEFORE push (skip FreeNode header).
+                unsafe { asan_poison_slab_slot(entry.ptr, self.values.slot_size); }
+                self.values.free_list.push(entry.ptr);
             }
-            _ => {
-                // Normal freeing path
-                let pages = self.values.pages.read().expect("value pages lock poisoned");
-                for &ptr in &non_filtered_dead {
-                    self.values.live_count.fetch_sub(1, Ordering::Relaxed);
-                    for page in pages.iter() {
-                        if let Some(idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
-                            page.live_count.fetch_sub(1, Ordering::Relaxed);
-                            // Sentinel epoch: prevents double-free by future GC cycles.
-                            page.set_slot_epoch(idx, u64::MAX);
-                            break;
-                        }
-                    }
-                    // ASAN: poison the freed slot BEFORE push (skip FreeNode header).
-                    unsafe { asan_poison_slab_slot(ptr, self.values.slot_size); }
-                    self.values.free_list.push(ptr);
-                }
-            }
-        }
+        } // read lock released
 
-        // === Phase 4: Free dead data slots ===
-        if gc_no_free.is_empty() {
-            for (ptr, size) in dead_data_to_free {
-                self.free_data_slot(ptr, size);
-            }
-        }
+        // === Phase 4: Free dead data slots — O(D_data log P_data) ===
+        // Batch by size class, build sorted page index once per class.
+        self.free_data_slots_batch(dead_data_to_free);
 
         // === Phase 5: Release empty pages ===
         // Safe: free-list entries from released pages are filtered out via
@@ -2190,7 +2176,7 @@ impl SlabAllocator {
 
     /// Take a watermark snapshot.
     pub fn watermark(&self) -> AllocationWatermark {
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
+        let pages = self.values.pages.read();
         AllocationWatermark {
             value_page_count: pages.len(),
             last_page_bump_count: pages.last()
@@ -2201,7 +2187,7 @@ impl SlabAllocator {
 
     /// Mark a value pointer as reachable.
     pub fn mark_value(&self, ptr: *const u8) -> bool {
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
+        let pages = self.values.pages.read();
         for page in pages.iter() {
             if let Some(idx) = page.slot_index(ptr, self.values.slot_size) {
                 if page.is_marked(idx) {
@@ -2216,7 +2202,7 @@ impl SlabAllocator {
 
     /// Check if a value pointer is marked.
     pub fn is_value_marked(&self, ptr: *const u8) -> bool {
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
+        let pages = self.values.pages.read();
         for page in pages.iter() {
             if let Some(idx) = page.slot_index(ptr, self.values.slot_size) {
                 return page.is_marked(idx);
@@ -2227,7 +2213,7 @@ impl SlabAllocator {
 
     /// Clear all mark bits.
     pub fn clear_marks(&self) {
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
+        let pages = self.values.pages.read();
         for page in pages.iter() {
             page.clear_marks();
         }
@@ -2468,7 +2454,7 @@ pub fn mark_from_roots(
 
 /// Legacy sweep phase.
 pub fn sweep(alloc: &SlabAllocator, watermark: &AllocationWatermark) -> DeadSet {
-    let pages = alloc.values.pages.read().expect("value pages lock poisoned");
+    let pages = alloc.values.pages.read();
     let slot_size = alloc.values.slot_size;
 
     let mut dead = DeadSet::default();
@@ -2854,8 +2840,7 @@ mod tests {
     #[test]
     fn test_slab_allocator_creation() {
         let alloc = SlabAllocator::new();
-        assert_eq!(alloc.allocated_bytes(), 0);
-        assert!(!alloc.needs_gc());
+        assert_eq!(alloc.committed_bytes(), 0);
     }
 
     #[test]
@@ -2973,14 +2958,14 @@ mod tests {
     }
 
     #[test]
-    fn test_allocated_bytes_grows() {
+    fn test_committed_bytes_grows() {
         let alloc = SlabAllocator::new();
-        let before = alloc.allocated_bytes();
+        let before = alloc.committed_bytes();
         for i in 0..1000 {
             alloc.alloc_value(MettaValueInner::Long(i));
         }
-        let after = alloc.allocated_bytes();
-        assert!(after > before, "allocated bytes should grow");
+        let after = alloc.committed_bytes();
+        assert!(after > before, "committed bytes should grow");
     }
 
     #[test]
@@ -2998,10 +2983,12 @@ mod tests {
     #[test]
     fn test_gc_threshold() {
         let alloc = SlabAllocator::new();
-        assert!(!alloc.needs_gc());
+        assert_eq!(alloc.gc_threshold.load(Ordering::Relaxed), MIN_GC_THRESHOLD);
         alloc.set_gc_threshold(1);
+        assert_eq!(alloc.gc_threshold.load(Ordering::Relaxed), 1);
         alloc.alloc_value(MettaValueInner::Long(1));
-        assert!(alloc.needs_gc());
+        // committed_bytes should exceed threshold of 1
+        assert!(alloc.committed_bytes() >= 1);
     }
 
     #[test]
@@ -3042,7 +3029,7 @@ mod tests {
             alloc.alloc_value(MettaValueInner::Long(i as i64));
         }
 
-        let pages = alloc.values.pages.read().expect("lock poisoned");
+        let pages = alloc.values.pages.read();
         assert!(pages.len() >= 2,
             "expected at least 2 pages, got {}", pages.len());
     }
@@ -3406,18 +3393,6 @@ mod tests {
         alloc.clear_marks();
     }
 
-    #[test]
-    fn test_live_value_count() {
-        let alloc = SlabAllocator::new();
-        assert_eq!(alloc.live_value_count(), 0);
-        alloc.alloc_value(MettaValueInner::Long(1));
-        alloc.alloc_value(MettaValueInner::Long(2));
-        assert_eq!(alloc.live_value_count(), 2);
-        let inner = alloc.alloc_value(MettaValueInner::Long(3));
-        let ptr = inner as *const MettaValueInner as *mut u8;
-        unsafe { alloc.free_value(ptr); }
-        assert_eq!(alloc.live_value_count(), 2);
-    }
 
     #[test]
     fn test_full_gc_cycle() {
@@ -3428,17 +3403,14 @@ mod tests {
         let _garbage1 = factory.long(999);
         let _garbage2 = factory.atom("throw-away");
         let _garbage3 = factory.sexpr(vec![factory.atom("dead"), factory.atom("expr")]);
-        let initial_live = alloc.live_value_count();
         let wm = alloc.watermark();
         mark_from_roots(vec![root1, root2].into_iter(), &alloc);
         let dead_set = sweep(&alloc, &wm);
         assert!(dead_set.dead_values.len() >= 3,
             "expected at least 3 dead values, got {}", dead_set.dead_values.len());
         alloc.process_dead_set(&dead_set);
-        let after_gc_live = alloc.live_value_count();
-        assert!(after_gc_live < initial_live,
-            "live count should decrease after GC: {} -> {}", initial_live, after_gc_live);
         alloc.clear_marks();
+        // Verify live values are still accessible after GC
         assert_eq!(root1.as_sexpr().expect("root1 is sexpr").len(), 3);
         assert_eq!(root2.as_atom(), Some("keep-me"));
     }

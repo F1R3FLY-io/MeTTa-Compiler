@@ -9,12 +9,75 @@
 //! variable capture bugs when rules from different scopes share the same
 //! De Bruijn index but represent different logical variables.
 
+use std::cell::RefCell;
+
 use mork::space::Space;
 use mork_expr::{maybe_byte_item, Expr, Tag};
 use tracing::warn;
 
 use super::MettaValue;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+
+// ============================================================================
+// Thread-local deserialization state — eliminates per-call String allocations
+// ============================================================================
+
+thread_local! {
+    static DESER_STATE: RefCell<DeserState> = RefCell::new(DeserState::new());
+}
+
+/// Thread-local deserialization state for variable name caching.
+///
+/// Variable names have the format `$<base>%<epoch>` (e.g., `$a%42`).
+/// Each deserialization call gets a unique epoch, but the String heap capacity
+/// is reused across calls. After warmup, zero allocations per deserialization.
+///
+/// Names are built lazily — only up to the count actually used.
+struct DeserState {
+    /// The epoch for which cached names are valid.
+    cached_epoch: u64,
+    /// How many names have been built for the current epoch.
+    names_built: u8,
+    /// Pre-allocated variable name strings (capacity reused across calls).
+    cached_var_names: [String; 64],
+}
+
+impl DeserState {
+    fn new() -> Self {
+        // Initialize with empty strings that will gain capacity on first use
+        const EMPTY: String = String::new();
+        Self {
+            cached_epoch: u64::MAX, // Sentinel — forces rebuild on first call
+            names_built: 0,
+            cached_var_names: [EMPTY; 64],
+        }
+    }
+
+    /// Get the variable name for the given index and epoch.
+    ///
+    /// Lazily builds names up to the requested index. Reuses String heap
+    /// capacity from previous epochs (zero allocation after warmup).
+    #[inline]
+    fn get_var_name(&mut self, index: u8, epoch: u64) -> &str {
+        if self.cached_epoch != epoch {
+            self.cached_epoch = epoch;
+            self.names_built = 0;
+        }
+        // Build names up to and including index if not yet built
+        while self.names_built <= index {
+            let i = self.names_built as usize;
+            let name = &mut self.cached_var_names[i];
+            name.clear(); // Retains heap capacity
+            name.push('$');
+            name.push_str(VARNAME_BASES[i]);
+            name.push('%');
+            let mut ibuf = itoa::Buffer::new();
+            name.push_str(ibuf.format(epoch));
+            self.names_built += 1;
+        }
+        &self.cached_var_names[index as usize]
+    }
+}
 
 /// Base variable names for MORK variables (without `$` prefix).
 /// Each invocation of a MORK-to-value conversion generates unique variable names
@@ -241,160 +304,162 @@ where
     let mut offset = 0usize;
     let mut newvar_count = 0u8;
     let epoch = VARNAME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut var_names: Vec<String> = Vec::new();
 
-    'parsing: loop {
-        if offset >= bytes.len() {
-            return Err("Unexpected end of MORK bytes".to_string());
-        }
-        let byte = bytes[offset];
-        let tag = match maybe_byte_item(byte) {
-            Ok(t) => t,
-            Err(reserved_byte) => {
-                warn!(
-                    target: "mettatron::environment::mork_expr_to_generic_value",
-                    reserved_byte, offset,
-                    "Reserved byte encountered during MORK conversion"
-                );
-                return Err(format!(
-                    "Reserved byte {} at offset {}",
-                    reserved_byte, offset
-                ));
+    // Use thread-local DeserState for variable name caching (zero alloc after warmup)
+    DESER_STATE.with(|state| {
+        let mut ds = state.borrow_mut();
+
+        'parsing: loop {
+            if offset >= bytes.len() {
+                return Err("Unexpected end of MORK bytes".to_string());
             }
-        };
-
-        offset += 1;
-
-        let value = match tag {
-            Tag::NewVar => {
-                // De Bruijn index - NewVar introduces a new variable with the next index
-                // Use epoch-suffixed names to prevent variable capture across scopes
-                let base = if (newvar_count as usize) < VARNAME_BASES.len() {
-                    VARNAME_BASES[newvar_count as usize]
-                } else {
-                    return Err(format!("Too many variables: {}", newvar_count));
-                };
-                let var_name = format!("${}%{}", base, epoch);
-                newvar_count += 1;
-                let atom = factory.atom(&var_name);
-                var_names.push(var_name);
-                atom
-            }
-            Tag::VarRef(i) => {
-                if (i as usize) < var_names.len() {
-                    factory.atom(&var_names[i as usize])
-                } else {
+            let byte = bytes[offset];
+            let tag = match maybe_byte_item(byte) {
+                Ok(t) => t,
+                Err(reserved_byte) => {
+                    warn!(
+                        target: "mettatron::environment::mork_expr_to_generic_value",
+                        reserved_byte, offset,
+                        "Reserved byte encountered during MORK conversion"
+                    );
                     return Err(format!(
-                        "Variable reference {} out of range (only {} vars defined)",
-                        i,
-                        var_names.len()
+                        "Reserved byte {} at offset {}",
+                        reserved_byte, offset
                     ));
-                }
-            }
-            Tag::SymbolSize(size) => {
-                let end = offset + size as usize;
-                if end > bytes.len() {
-                    return Err(format!("Symbol size {} exceeds available bytes at offset {}", size, offset));
-                }
-                let symbol_bytes = &bytes[offset..end];
-                offset = end;
-
-                // Symbol table lookup (same logic as existing decoders)
-                let symbol_str: &str = {
-                    #[cfg(feature = "interning")]
-                    {
-                        if symbol_bytes.len() == 8 {
-                            let symbol_id = i64::from_be_bytes(
-                                symbol_bytes.try_into().expect("8 bytes expected"),
-                            )
-                            .to_be_bytes();
-                            if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
-                                // Found in symbol table - use actual symbol string
-                                // SAFETY: MORK stores valid UTF-8 symbols
-                                std::str::from_utf8(actual_bytes).unwrap_or("")
-                            } else {
-                                std::str::from_utf8(symbol_bytes).unwrap_or("")
-                            }
-                        } else {
-                            std::str::from_utf8(symbol_bytes).unwrap_or("")
-                        }
-                    }
-                    #[cfg(not(feature = "interning"))]
-                    {
-                        std::str::from_utf8(symbol_bytes).unwrap_or("")
-                    }
-                };
-
-                // Parse as number, bool, or string
-                let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
-                let could_be_number = first_byte.is_ascii_digit()
-                    || (first_byte == b'-'
-                        && symbol_str.len() > 1
-                        && symbol_str
-                            .as_bytes()
-                            .get(1)
-                            .is_some_and(|b| b.is_ascii_digit()));
-
-                if could_be_number {
-                    if let Ok(n) = symbol_str.parse::<i64>() {
-                        factory.long(n)
-                    } else {
-                        factory.atom(symbol_str)
-                    }
-                } else if symbol_str == "true" {
-                    factory.bool(true)
-                } else if symbol_str == "false" {
-                    factory.bool(false)
-                } else if symbol_str.starts_with('"')
-                    && symbol_str.ends_with('"')
-                    && symbol_str.len() >= 2
-                {
-                    factory.string(&symbol_str[1..symbol_str.len() - 1])
-                } else {
-                    factory.atom(symbol_str)
-                }
-            }
-            Tag::Arity(arity) => {
-                if arity == 0 {
-                    factory.unit()
-                } else {
-                    stack.push(StackFrame::Arity {
-                        remaining: arity,
-                        items: Vec::with_capacity(arity as usize),
-                    });
-                    continue 'parsing;
-                }
-            }
-        };
-
-        // Value complete - add to parent or return
-        let mut current_value = Some(value);
-        'popping: loop {
-            let v = current_value
-                .take()
-                .expect("value must be Some at start of popping loop");
-
-            if stack.is_empty() {
-                return Ok(v);
-            }
-
-            let should_pop = match stack.last_mut() {
-                None => unreachable!(),
-                Some(StackFrame::Arity { remaining, items }) => {
-                    items.push(v);
-                    *remaining -= 1;
-                    *remaining == 0
                 }
             };
 
-            if should_pop {
-                if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
-                    current_value = Some(factory.sexpr(items));
-                    continue 'popping;
+            offset += 1;
+
+            let value = match tag {
+                Tag::NewVar => {
+                    // De Bruijn index - NewVar introduces a new variable with the next index
+                    // Use epoch-suffixed names to prevent variable capture across scopes
+                    if (newvar_count as usize) >= VARNAME_BASES.len() {
+                        return Err(format!("Too many variables: {}", newvar_count));
+                    }
+                    let var_name = ds.get_var_name(newvar_count, epoch);
+                    let atom = factory.atom(var_name);
+                    newvar_count += 1;
+                    atom
                 }
-            } else {
-                continue 'parsing;
+                Tag::VarRef(i) => {
+                    if (i as usize) < (newvar_count as usize) {
+                        let var_name = ds.get_var_name(i, epoch);
+                        factory.atom(var_name)
+                    } else {
+                        return Err(format!(
+                            "Variable reference {} out of range (only {} vars defined)",
+                            i,
+                            newvar_count
+                        ));
+                    }
+                }
+                Tag::SymbolSize(size) => {
+                    let end = offset + size as usize;
+                    if end > bytes.len() {
+                        return Err(format!("Symbol size {} exceeds available bytes at offset {}", size, offset));
+                    }
+                    let symbol_bytes = &bytes[offset..end];
+                    offset = end;
+
+                    // Symbol table lookup (same logic as existing decoders)
+                    let symbol_str: &str = {
+                        #[cfg(feature = "interning")]
+                        {
+                            if symbol_bytes.len() == 8 {
+                                let symbol_id = i64::from_be_bytes(
+                                    symbol_bytes.try_into().expect("8 bytes expected"),
+                                )
+                                .to_be_bytes();
+                                if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
+                                    // Found in symbol table - use actual symbol string
+                                    // SAFETY: MORK stores valid UTF-8 symbols
+                                    std::str::from_utf8(actual_bytes).unwrap_or("")
+                                } else {
+                                    std::str::from_utf8(symbol_bytes).unwrap_or("")
+                                }
+                            } else {
+                                std::str::from_utf8(symbol_bytes).unwrap_or("")
+                            }
+                        }
+                        #[cfg(not(feature = "interning"))]
+                        {
+                            std::str::from_utf8(symbol_bytes).unwrap_or("")
+                        }
+                    };
+
+                    // Parse as number, bool, or string
+                    let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
+                    let could_be_number = first_byte.is_ascii_digit()
+                        || (first_byte == b'-'
+                            && symbol_str.len() > 1
+                            && symbol_str
+                                .as_bytes()
+                                .get(1)
+                                .is_some_and(|b| b.is_ascii_digit()));
+
+                    if could_be_number {
+                        if let Ok(n) = symbol_str.parse::<i64>() {
+                            factory.long(n)
+                        } else {
+                            factory.atom(symbol_str)
+                        }
+                    } else if symbol_str == "true" {
+                        factory.bool(true)
+                    } else if symbol_str == "false" {
+                        factory.bool(false)
+                    } else if symbol_str.starts_with('"')
+                        && symbol_str.ends_with('"')
+                        && symbol_str.len() >= 2
+                    {
+                        factory.string(&symbol_str[1..symbol_str.len() - 1])
+                    } else {
+                        factory.atom(symbol_str)
+                    }
+                }
+                Tag::Arity(arity) => {
+                    if arity == 0 {
+                        factory.unit()
+                    } else {
+                        stack.push(StackFrame::Arity {
+                            remaining: arity,
+                            items: Vec::with_capacity(arity as usize),
+                        });
+                        continue 'parsing;
+                    }
+                }
+            };
+
+            // Value complete - add to parent or return
+            let mut current_value = Some(value);
+            'popping: loop {
+                let v = current_value
+                    .take()
+                    .expect("value must be Some at start of popping loop");
+
+                if stack.is_empty() {
+                    return Ok(v);
+                }
+
+                let should_pop = match stack.last_mut() {
+                    None => unreachable!(),
+                    Some(StackFrame::Arity { remaining, items }) => {
+                        items.push(v);
+                        *remaining -= 1;
+                        *remaining == 0
+                    }
+                };
+
+                if should_pop {
+                    if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
+                        current_value = Some(factory.sexpr(items));
+                        continue 'popping;
+                    }
+                } else {
+                    continue 'parsing;
+                }
             }
         }
-    }
+    })
 }

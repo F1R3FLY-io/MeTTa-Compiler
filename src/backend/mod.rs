@@ -9,6 +9,7 @@
 pub mod builtin_signatures;
 pub mod bytecode;
 pub mod compile;
+pub mod diagnostics;
 pub mod environment;
 pub mod eval;
 pub mod fuzzy_match;

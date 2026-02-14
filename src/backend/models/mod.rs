@@ -15,12 +15,12 @@ pub use gc_allocator::{
     backpressure_level, collect_all_roots, disable_gc, gc_cycle_in_flight,
     global_allocator, global_factory, global_gc_cron, global_gc_thread,
     init_global_allocator, is_gc_disabled, is_gc_requested,
-    maybe_process_gc_response, maybe_quiescent_gc, print_gc_stats,
+    maybe_process_gc_response, maybe_quiescent_gc,
     register_root_provider, request_gc, set_backpressure_level, trigger_gc_cycle,
     try_register_env_roots, EvalGuard, GcFactory, RootProvider, SlabAllocator,
     MAX_BACKPRESSURE,
 };
-pub use gc_cron::{GcCronSingleton, CronHandle, CronStats, CronStatsSnapshot};
+pub use gc_cron::{GcCronSingleton, CronHandle};
 pub use bindings::SmartBindings as Bindings;
 pub use generic_bindings::{GenericBindings, GenericBindingsIter};
 pub use memo_handle::MemoHandle;

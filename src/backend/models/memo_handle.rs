@@ -13,7 +13,8 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
@@ -131,7 +132,7 @@ impl MemoHandle {
 
         // Fast path: check cache with read lock, update atomics without lock
         {
-            let inner = self.inner.read().unwrap();
+            let inner = self.inner.read();
             if let Some(entry) = inner.cache.get(&hash) {
                 // Deserialize results using the provided factory
                 let results: Vec<V> = entry
@@ -144,7 +145,7 @@ impl MemoHandle {
                 if inner.max_size > 0 {
                     drop(inner);
                     // Slow path: update LRU order with write lock
-                    let mut inner = self.inner.write().unwrap();
+                    let mut inner = self.inner.write();
                     if let Some(pos) = inner.lru_order.iter().position(|&h| h == hash) {
                         inner.lru_order.remove(pos);
                         inner.lru_order.push(hash);
@@ -173,7 +174,7 @@ impl MemoHandle {
     /// If max_size is set and exceeded, evicts LRU entry.
     pub fn store_generic<V: MettaValueTrait>(&self, expr: &V, results: &[V]) {
         let hash = Self::hash_bytes(&expr.serialize());
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
 
         // Check if we need to evict (before inserting)
         if inner.max_size > 0 && inner.cache.len() >= inner.max_size {
@@ -213,7 +214,7 @@ impl MemoHandle {
 
     /// Clear all cached entries
     pub fn clear(&self) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         inner.cache.clear();
         inner.lru_order.clear();
         // Note: don't reset hit/miss counters - those are cumulative stats
@@ -223,7 +224,7 @@ impl MemoHandle {
     ///
     /// Returns (hits, misses, current_size, max_size)
     pub fn stats(&self) -> (u64, u64, usize, usize) {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
         (hits, misses, inner.cache.len(), inner.max_size)

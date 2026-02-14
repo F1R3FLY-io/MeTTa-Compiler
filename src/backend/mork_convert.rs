@@ -4,17 +4,20 @@
 //! - MettaValue → MORK Expr (for pattern queries)
 //! - MORK bindings → SmallVec<[(String, MettaValue); 8]> (for pattern match results)
 //!
-//! ## Optimization: Buffer Pooling
+//! ## Optimization: Unified Thread-Local State
 //!
-//! Instead of allocating a new 256KB buffer for every `metta_to_mork_bytes` call,
-//! we maintain a thread-local pool of reusable buffers. This eliminates:
-//! - ~4% overhead from malloc/free for 256KB buffers
-//! - Arena fragmentation from frequent large allocations
+//! All conversion state (256KB buffer, scratch buffer, variable context) is held in a
+//! single thread-local `ConvertState`. This eliminates:
+//! - Pool management overhead (acquire/release/size hints)
+//! - Multiple RefCell borrows per conversion
+//! - Heap allocations for intermediate strings (using itoa/ryu + scratch buffer)
 //!
-//! ## Optimization: Context Pooling
+//! ## Zero-Copy Callback API
 //!
-//! The `ConversionContext` (containing HashMap and Vec) is now pooled to avoid
-//! allocation overhead for these internal structures.
+//! The primary API uses callbacks (`with_mork_bytes`, `with_mork_query_bytes`) that
+//! receive `&[u8]` from the thread-local buffer, avoiding the final `to_vec()` copy
+//! on every serialization call. Backward-compatible wrappers are provided for callers
+//! that need owned `Vec<u8>`.
 
 use super::models::{Bindings, MettaValue, MettaValueInner, MettaValueTrait};
 use mork::space::{ParDataParser, Space};
@@ -26,127 +29,42 @@ use std::collections::HashMap;
 use tracing::{debug, trace, warn};
 
 // ============================================================================
-// Buffer Pool - Reuse 256KB buffers across calls
+// Unified Thread-Local Conversion State
 // ============================================================================
 
-/// Thread-local buffer pool for MORK conversion.
-/// Avoids repeated 256KB allocations.
+/// Maximum buffer size for MORK expression serialization (256KB).
+const MAX_MORK_BUFFER: usize = 262144;
+
 thread_local! {
-    static BUFFER_POOL: RefCell<BufferPool> = RefCell::new(BufferPool::new());
-    static CONTEXT_POOL: RefCell<Vec<ConversionContext>> = RefCell::new(Vec::new());
+    static CONVERT_STATE: RefCell<ConvertState> = RefCell::new(ConvertState::new());
 }
 
-/// Pool of reusable byte buffers for MORK conversion.
-struct BufferPool {
-    /// Available buffers ready for reuse
-    buffers: Vec<Vec<u8>>,
-    /// Size hint for new buffers based on recent usage
-    size_hint: usize,
+/// Unified thread-local state for MORK conversion.
+///
+/// Combines the buffer, scratch space, and variable context into a single struct
+/// to minimize RefCell borrows and avoid pool management overhead.
+struct ConvertState {
+    /// Reusable 256KB buffer for ExprZipper writing.
+    buffer: Vec<u8>,
+    /// Reusable scratch buffer for assembling quoted strings, numeric formatting, etc.
+    scratch: Vec<u8>,
+    /// Reusable ConversionContext (var_map + var_names for De Bruijn tracking).
+    context: ConversionContext,
 }
 
-impl BufferPool {
-    /// Create a new empty buffer pool.
+impl ConvertState {
     fn new() -> Self {
-        BufferPool {
-            buffers: Vec::new(),
-            // Start with 4KB, grow based on usage
-            size_hint: 4096,
-        }
-    }
-
-    /// Acquire a buffer from the pool or create a new one.
-    fn acquire(&mut self) -> Vec<u8> {
-        if let Some(mut buffer) = self.buffers.pop() {
-            // Clear the buffer for reuse
-            buffer.clear();
-            // Ensure capacity meets current size hint
-            if buffer.capacity() < self.size_hint {
-                buffer.reserve(self.size_hint - buffer.capacity());
-            }
-            buffer
-        } else {
-            // No buffer available, create new one
-            // Use max of size_hint and minimum 4KB
-            let capacity = self.size_hint.max(4096);
-            vec![0u8; capacity]
-        }
-    }
-
-    /// Return a buffer to the pool for reuse.
-    fn release(&mut self, buffer: Vec<u8>) {
-        // Update size hint based on actual usage
-        // This allows the pool to adapt to workload patterns
-        if buffer.len() > self.size_hint {
-            // Double the size hint to reduce reallocations, capped at 256KB
-            self.size_hint = (buffer.len() * 2).min(262144);
-        }
-
-        // Keep up to 4 buffers in the pool
-        if self.buffers.len() < 4 {
-            self.buffers.push(buffer);
-        }
-        // Otherwise let the buffer drop
-    }
-}
-
-/// RAII guard that returns buffer to pool on drop.
-pub struct PooledBuffer {
-    buffer: Option<Vec<u8>>,
-}
-
-impl PooledBuffer {
-    /// Get a buffer from the thread-local pool.
-    pub fn acquire() -> Self {
-        let buffer = BUFFER_POOL.with(|pool| pool.borrow_mut().acquire());
-        PooledBuffer {
-            buffer: Some(buffer),
-        }
-    }
-
-    /// Get mutable access to the buffer.
-    pub fn as_mut(&mut self) -> &mut Vec<u8> {
-        self.buffer.as_mut().expect("buffer already released")
-    }
-
-    /// Get the buffer's slice.
-    pub fn as_slice(&self) -> &[u8] {
-        self.buffer.as_ref().expect("buffer already released")
-    }
-}
-
-impl Drop for PooledBuffer {
-    fn drop(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            BUFFER_POOL.with(|pool| pool.borrow_mut().release(buffer));
+        Self {
+            buffer: vec![0u8; MAX_MORK_BUFFER],
+            scratch: Vec::with_capacity(256),
+            context: ConversionContext::new(),
         }
     }
 }
 
 // ============================================================================
-// Context Pooling - Reuse ConversionContext across calls
+// ConversionContext — Variable tracking for De Bruijn encoding
 // ============================================================================
-
-/// Acquire a ConversionContext from the pool or create a new one.
-pub fn acquire_context() -> ConversionContext {
-    CONTEXT_POOL.with(|pool| {
-        pool.borrow_mut().pop().unwrap_or_else(ConversionContext::new)
-    })
-}
-
-/// Return a ConversionContext to the pool for reuse.
-pub fn release_context(mut ctx: ConversionContext) {
-    // Reset for reuse
-    ctx.var_map.clear();
-    ctx.var_names.clear();
-
-    CONTEXT_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        // Keep up to 4 contexts
-        if pool.len() < 4 {
-            pool.push(ctx);
-        }
-    });
-}
 
 /// Context for tracking variables during MettaValue → Expr conversion
 #[derive(Default)]
@@ -183,273 +101,140 @@ impl ConversionContext {
     }
 }
 
-/// Convert MettaValue to MORK Expr bytes
+// ============================================================================
+// Zero-Copy Callback API
+// ============================================================================
+
+/// Serialize a MettaValueTrait value to MORK bytes (literal symbol encoding for storage).
 ///
-/// This creates a MORK s-expression that can be used with query_multi.
-/// Variables are converted to De Bruijn indices.
+/// Zero heap allocation — the callback receives `&[u8]` from a thread-local buffer.
+/// Variables are written as literal symbols, preserving names through MORK round-trip.
 ///
-/// ## Optimization: Buffer Pooling
+/// ## Re-entrancy
 ///
-/// Instead of allocating a new 256KB buffer for each call, we use a thread-local
-/// buffer pool. This eliminates ~4% malloc/free overhead for large expressions.
+/// The thread-local `CONVERT_STATE` is borrowed for the duration of the callback.
+/// The callback must NOT call `with_mork_bytes` or `with_mork_query_bytes` again
+/// (this would panic on double RefCell borrow). Deserialization via `DESER_STATE`
+/// in `mork_encoding.rs` is safe because it uses a separate thread-local.
+pub fn with_mork_bytes<V: MettaValueTrait, R>(
+    value: &V,
+    sm: &SharedMappingHandle,
+    f: impl FnOnce(&[u8]) -> R,
+) -> Result<R, String> {
+    CONVERT_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let ConvertState { buffer, scratch, context } = &mut *state;
+        context.var_map.clear();
+        context.var_names.clear();
+        // buffer is initialized to MAX_MORK_BUFFER in ConvertState::new()
+        // and never shrinks, so no resize check needed
+        let expr = Expr { ptr: buffer.as_mut_ptr() };
+        let mut ez = ExprZipper::new(expr);
+        let mut pdp = ParDataParser::new(sm);
+        // Dispatch through MettaValueInner for efficient single-match (jump table)
+        let inner = unsafe { &*value.inner_ptr() };
+        write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch)?;
+        if ez.loc > MAX_MORK_BUFFER {
+            return Err(format!(
+                "Expression too large: {} bytes (max {})",
+                ez.loc, MAX_MORK_BUFFER
+            ));
+        }
+        Ok(f(&buffer[..ez.loc]))
+    })
+}
+
+/// Serialize a MettaValueTrait value to MORK query bytes (De Bruijn encoding for pattern matching).
+///
+/// Zero heap allocation — the callback receives both `&[u8]` AND `&ConversionContext`
+/// for variable name recovery in binding results.
+///
+/// Variables (`$x`, `&y`, `'z`) are encoded as MORK NewVar/VarRef using De Bruijn indices.
+/// Wildcards (`_`) are encoded as MORK NewVar (anonymous variables).
+pub fn with_mork_query_bytes<V: MettaValueTrait, R>(
+    value: &V,
+    sm: &SharedMappingHandle,
+    f: impl FnOnce(&[u8], &ConversionContext) -> R,
+) -> Result<R, String> {
+    CONVERT_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let ConvertState { buffer, scratch, context } = &mut *state;
+        context.var_map.clear();
+        context.var_names.clear();
+        let expr = Expr { ptr: buffer.as_mut_ptr() };
+        let mut ez = ExprZipper::new(expr);
+        let mut pdp = ParDataParser::new(sm);
+        let inner = unsafe { &*value.inner_ptr() };
+        write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch)?;
+        if ez.loc > MAX_MORK_BUFFER {
+            return Err(format!(
+                "Expression too large: {} bytes (max {})",
+                ez.loc, MAX_MORK_BUFFER
+            ));
+        }
+        Ok(f(&buffer[..ez.loc], context))
+    })
+}
+
+// ============================================================================
+// Backward-Compatible Wrappers (allocate Vec<u8>)
+// ============================================================================
+
+/// Convert MettaValue to MORK Expr bytes (backward-compatible wrapper).
+///
+/// This allocates a `Vec<u8>` copy. Prefer `with_mork_bytes()` when the bytes
+/// are used transiently (e.g., PathMap insert/lookup within a callback).
+///
+/// The `ctx` parameter is accepted for API compatibility but ignored —
+/// the thread-local context is used instead.
 pub fn metta_to_mork_bytes(
     value: &MettaValue,
     sm: &SharedMappingHandle,
-    ctx: &mut ConversionContext,
+    _ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
     trace!(
         target: "mettatron::conversion::metta_to_mork_bytes",
         ?value, "Converting MettaValue to MORK bytes"
     );
-
-    // Use pooled buffer instead of allocating fresh 256KB each time
-    let mut pooled = PooledBuffer::acquire();
-    let buffer = pooled.as_mut();
-
-    // Ensure buffer has enough capacity (grow if needed)
-    // Most expressions are small, but mmverify can have complex nested structures
-    const MAX_BUFFER_SIZE: usize = 262144;
-    if buffer.len() < MAX_BUFFER_SIZE {
-        buffer.resize(MAX_BUFFER_SIZE, 0);
-    }
-
-    let expr = Expr {
-        ptr: buffer.as_mut_ptr(),
-    };
-    let mut ez = ExprZipper::new(expr);
-
-    // Create ParDataParser once for the entire conversion to avoid data races.
-    // MORK's threading model assumes each thread holds ONE WritePermit for the duration
-    // of operations. Creating a new ParDataParser per symbol (as was done before) violated
-    // this assumption and caused races when multiple threads accessed the same Slab chain.
-    let mut pdp = ParDataParser::new(sm);
-
-    write_metta_value(value, &mut pdp, ctx, &mut ez).map_err(|e| {
-        debug!(
-            target: "mettatron::conversion::metta_to_mork_bytes",
-            error = %e, "Conversion to MORK bytes failed"
-        );
-        e
-    })?;
-
-    // Safety check: ensure we didn't overflow the buffer
-    if ez.loc > MAX_BUFFER_SIZE {
-        return Err(format!(
-            "Expression too large for MORK conversion: {} bytes (max {})",
-            ez.loc, MAX_BUFFER_SIZE
-        ));
-    }
-
-    // Copy result to a new Vec (buffer returns to pool on drop)
-    Ok(buffer[..ez.loc].to_vec())
+    with_mork_bytes(value, sm, |bytes| bytes.to_vec())
 }
 
-/// Convert MettaValue to MORK Expr bytes using a pooled context.
+/// Convert MettaValue to MORK query pattern bytes (backward-compatible wrapper).
 ///
-/// This is a convenience function that acquires and releases the context automatically.
-/// Use this when you don't need to access the variable mappings after conversion.
-pub fn metta_to_mork_bytes_pooled(
-    value: &MettaValue,
-    sm: &SharedMappingHandle,
-) -> Result<Vec<u8>, String> {
-    let mut ctx = acquire_context();
-    let result = metta_to_mork_bytes(value, sm, &mut ctx);
-    release_context(ctx);
-    result
-}
-
-/// Convert MettaValue to MORK query pattern bytes using De Bruijn encoding.
-///
-/// Variables (`$x`, `&y`, `'z`) are encoded as MORK NewVar/VarRef using De Bruijn indices.
-/// Wildcards (`_`) are encoded as MORK NewVar (anonymous variables).
-///
-/// This is the encoding needed for MORK's `query_multi()` structural matching, where
-/// NewVar matches any bytes in the trie. The `ctx.var_names` records the original
-/// variable names so `mork_bindings_to_metta()` can recover them from match results.
-///
-/// For storage (adding atoms/rules to PathMap), use `metta_to_mork_bytes()` instead,
-/// which encodes variables as literal symbols to preserve names through round-trip.
+/// Variables are encoded using De Bruijn indices for MORK's `query_multi()`.
+/// The `ctx` is populated with variable mappings for `mork_bindings_to_metta()`.
 pub fn metta_to_mork_query_bytes(
     value: &MettaValue,
     sm: &SharedMappingHandle,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
-    let mut pooled = PooledBuffer::acquire();
-    let buffer = pooled.as_mut();
-
-    const MAX_BUFFER_SIZE: usize = 262144;
-    if buffer.len() < MAX_BUFFER_SIZE {
-        buffer.resize(MAX_BUFFER_SIZE, 0);
-    }
-
-    let expr = Expr {
-        ptr: buffer.as_mut_ptr(),
-    };
-    let mut ez = ExprZipper::new(expr);
-    let mut pdp = ParDataParser::new(sm);
-
-    write_metta_value_debruijn(value, &mut pdp, ctx, &mut ez)?;
-
-    if ez.loc > MAX_BUFFER_SIZE {
-        return Err(format!(
-            "Expression too large for MORK conversion: {} bytes (max {})",
-            ez.loc, MAX_BUFFER_SIZE
-        ));
-    }
-
-    Ok(buffer[..ez.loc].to_vec())
+    with_mork_query_bytes(value, sm, |bytes, inner_ctx| {
+        // Copy var_names to caller's ctx for backward compat
+        ctx.var_map.clone_from(&inner_ctx.var_map);
+        ctx.var_names.clone_from(&inner_ctx.var_names);
+        bytes.to_vec()
+    })
 }
 
-/// Recursively write MettaValue to ExprZipper using De Bruijn encoding for variables.
-///
-/// This is the old encoding that uses NewVar/VarRef for pattern matching queries.
-/// Variables get De Bruijn indices; wildcards (`_`) become anonymous NewVar.
-fn write_metta_value_debruijn(
-    value: &MettaValue,
-    pdp: &mut ParDataParser,
-    ctx: &mut ConversionContext,
-    ez: &mut ExprZipper,
-) -> Result<(), String> {
-    match value.inner() {
-        MettaValueInner::Atom(name) => {
-            if *name == "&" || *name == "&self" || *name == "&kb" || *name == "&stack" {
-                write_symbol(name.as_bytes(), pdp, ez)?;
-            } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
-                let var_id = &name[1..];
-                match ctx.get_or_create_var(var_id)? {
-                    None => {
-                        ez.write_new_var();
-                        ez.loc += 1;
-                    }
-                    Some(idx) => {
-                        ez.write_var_ref(idx);
-                        ez.loc += 1;
-                    }
-                }
-            } else if *name == "_" {
-                // Wildcard — each occurrence is a unique anonymous variable.
-                // Register in context to keep De Bruijn indices in sync.
-                let anon_id = format!("__anon{}", ctx.var_names.len());
-                ctx.get_or_create_var(&anon_id)?;
-                ez.write_new_var();
-                ez.loc += 1;
-            } else {
-                write_symbol(name.as_bytes(), pdp, ez)?;
-            }
-        }
+// ============================================================================
+// Internal Write Functions — MettaValueInner dispatch with scratch buffer
+// ============================================================================
 
-        MettaValueInner::Bool(b) => {
-            let s = if *b { "true" } else { "false" };
-            write_symbol(s.as_bytes(), pdp, ez)?;
-        }
-
-        MettaValueInner::Long(n) => {
-            let s = n.to_string();
-            write_symbol(s.as_bytes(), pdp, ez)?;
-        }
-
-        MettaValueInner::Float(f) => {
-            let s = f.to_string();
-            write_symbol(s.as_bytes(), pdp, ez)?;
-        }
-
-        MettaValueInner::String(s) => {
-            let quoted = format!("\"{}\"", s);
-            write_symbol(quoted.as_bytes(), pdp, ez)?;
-        }
-
-        MettaValueInner::Unit => {
-            ez.write_arity(0);
-            ez.loc += 1;
-        }
-
-        MettaValueInner::SExpr(items) => {
-            if items.len() >= 64 {
-                return Err(format!(
-                    "Expression has too many children ({}) - MORK arity limit is 63",
-                    items.len()
-                ));
-            }
-            ez.write_arity(items.len() as u8);
-            ez.loc += 1;
-            for item in *items {
-                write_metta_value_debruijn(item, pdp, ctx, ez)?;
-            }
-        }
-
-        MettaValueInner::Error(msg, details) => {
-            ez.write_arity(3);
-            ez.loc += 1;
-            write_symbol(b"error", pdp, ez)?;
-            write_symbol(format!("\"{}\"", msg).as_bytes(), pdp, ez)?;
-            write_metta_value_debruijn(details, pdp, ctx, ez)?;
-        }
-
-        MettaValueInner::Type(t) => {
-            write_metta_value_debruijn(t, pdp, ctx, ez)?;
-        }
-
-        MettaValueInner::Conjunction(goals) => {
-            let total_arity = goals.len() + 1;
-            if total_arity >= 64 {
-                return Err(format!(
-                    "Conjunction has too many goals ({}) - MORK arity limit is 63",
-                    goals.len()
-                ));
-            }
-            ez.write_arity(total_arity as u8);
-            ez.loc += 1;
-            write_symbol(b",", pdp, ez)?;
-            for goal in *goals {
-                write_metta_value_debruijn(goal, pdp, ctx, ez)?;
-            }
-        }
-
-        MettaValueInner::Space(handle) => {
-            ez.write_arity(3);
-            ez.loc += 1;
-            write_symbol(b"Space", pdp, ez)?;
-            write_symbol(handle.id.to_string().as_bytes(), pdp, ez)?;
-            write_symbol(format!("\"{}\"", handle.name).as_bytes(), pdp, ez)?;
-        }
-
-        MettaValueInner::State(id) => {
-            ez.write_arity(2);
-            ez.loc += 1;
-            write_symbol(b"State", pdp, ez)?;
-            write_symbol(id.to_string().as_bytes(), pdp, ez)?;
-        }
-
-        MettaValueInner::Memo(handle) => {
-            return Err(format!(
-                "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
-                handle.name, handle.id
-            ));
-        }
-
-        MettaValueInner::Empty => {
-            return Err(
-                "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Recursively write MettaValue to ExprZipper.
+/// Recursively write MettaValueInner to ExprZipper.
 ///
 /// Variables (`$x`, `&y`, `'z`) and wildcards (`_`) are written as literal symbols,
 /// preserving their names through MORK round-trip (storage → PathMap → deserialization).
 ///
-/// For MORK query patterns that need De Bruijn encoding (NewVar/VarRef), use
-/// `write_metta_value_debruijn()` instead.
-fn write_metta_value(
-    value: &MettaValue,
+/// Uses `scratch` buffer for string quoting and `itoa`/`ryu` for numeric formatting
+/// to avoid heap String allocations.
+fn write_metta_value_inner(
+    inner: &MettaValueInner,
     pdp: &mut ParDataParser,
     ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
+    scratch: &mut Vec<u8>,
 ) -> Result<(), String> {
-    match value.inner() {
+    match inner {
         MettaValueInner::Atom(name) => {
             // All atoms (including variables like $x and wildcards _) are written as symbols.
             // This preserves names through MORK round-trip for correct rule matching.
@@ -457,24 +242,31 @@ fn write_metta_value(
         }
 
         MettaValueInner::Bool(b) => {
-            let s = if *b { "true" } else { "false" };
-            write_symbol(s.as_bytes(), pdp, ez)?;
+            if *b {
+                write_symbol(b"true", pdp, ez)?;
+            } else {
+                write_symbol(b"false", pdp, ez)?;
+            }
         }
 
         MettaValueInner::Long(n) => {
-            let s = n.to_string();
+            let mut ibuf = itoa::Buffer::new();
+            let s = ibuf.format(*n);
             write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
         MettaValueInner::Float(f) => {
-            let s = f.to_string();
+            let mut rbuf = ryu::Buffer::new();
+            let s = rbuf.format(*f);
             write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
         MettaValueInner::String(s) => {
-            // MORK uses quoted strings
-            let quoted = format!("\"{}\"", s);
-            write_symbol(quoted.as_bytes(), pdp, ez)?;
+            scratch.clear();
+            scratch.push(b'"');
+            scratch.extend_from_slice(s.as_bytes());
+            scratch.push(b'"');
+            write_symbol(scratch, pdp, ez)?;
         }
 
         MettaValueInner::Unit => {
@@ -491,14 +283,11 @@ fn write_metta_value(
                     items.len()
                 ));
             }
-            // Write arity tag
-            let arity = items.len() as u8;
-            ez.write_arity(arity);
+            ez.write_arity(items.len() as u8);
             ez.loc += 1;
 
-            // Write each element
             for item in *items {
-                write_metta_value(item, pdp, ctx, ez)?;
+                write_metta_value_inner(item.inner(), pdp, ctx, ez, scratch)?;
             }
         }
 
@@ -507,13 +296,17 @@ fn write_metta_value(
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"error", pdp, ez)?;
-            write_symbol(format!("\"{}\"", msg).as_bytes(), pdp, ez)?;
-            write_metta_value(details, pdp, ctx, ez)?;
+            scratch.clear();
+            scratch.push(b'"');
+            scratch.extend_from_slice(msg.as_bytes());
+            scratch.push(b'"');
+            write_symbol(scratch, pdp, ez)?;
+            write_metta_value_inner(details.inner(), pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Type(t) => {
             // Types are just atoms/expressions
-            write_metta_value(t, pdp, ctx, ez)?;
+            write_metta_value_inner(t.inner(), pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Conjunction(goals) => {
@@ -526,7 +319,6 @@ fn write_metta_value(
                     goals.len()
                 ));
             }
-            // Conjunctions are written as (, goal1 goal2 ...) with comma as first symbol
             ez.write_arity(total_arity as u8);
             ez.loc += 1;
 
@@ -535,7 +327,7 @@ fn write_metta_value(
 
             // Write each goal
             for goal in *goals {
-                write_metta_value(goal, pdp, ctx, ez)?;
+                write_metta_value_inner(goal.inner(), pdp, ctx, ez, scratch)?;
             }
         }
 
@@ -544,8 +336,14 @@ fn write_metta_value(
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"Space", pdp, ez)?;
-            write_symbol(handle.id.to_string().as_bytes(), pdp, ez)?;
-            write_symbol(format!("\"{}\"", handle.name).as_bytes(), pdp, ez)?;
+            let mut ibuf = itoa::Buffer::new();
+            let id_str = ibuf.format(handle.id);
+            write_symbol(id_str.as_bytes(), pdp, ez)?;
+            scratch.clear();
+            scratch.push(b'"');
+            scratch.extend_from_slice(handle.name.as_bytes());
+            scratch.push(b'"');
+            write_symbol(scratch, pdp, ez)?;
         }
 
         // State references are written as (State id)
@@ -553,7 +351,9 @@ fn write_metta_value(
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"State", pdp, ez)?;
-            write_symbol(id.to_string().as_bytes(), pdp, ez)?;
+            let mut ibuf = itoa::Buffer::new();
+            let id_str = ibuf.format(*id);
+            write_symbol(id_str.as_bytes(), pdp, ez)?;
         }
 
         // Memo tables are runtime-only and cannot be stored in MORK
@@ -575,6 +375,168 @@ fn write_metta_value(
     Ok(())
 }
 
+/// Recursively write MettaValueInner to ExprZipper using De Bruijn encoding for variables.
+///
+/// Variables get De Bruijn indices; wildcards (`_`) become anonymous NewVar.
+/// This is the encoding needed for MORK's `query_multi()` structural matching.
+fn write_metta_value_debruijn_inner(
+    inner: &MettaValueInner,
+    pdp: &mut ParDataParser,
+    ctx: &mut ConversionContext,
+    ez: &mut ExprZipper,
+    scratch: &mut Vec<u8>,
+) -> Result<(), String> {
+    match inner {
+        MettaValueInner::Atom(name) => {
+            if *name == "&" || *name == "&self" || *name == "&kb" || *name == "&stack" {
+                write_symbol(name.as_bytes(), pdp, ez)?;
+            } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
+                let var_id = &name[1..];
+                match ctx.get_or_create_var(var_id)? {
+                    None => {
+                        ez.write_new_var();
+                        ez.loc += 1;
+                    }
+                    Some(idx) => {
+                        ez.write_var_ref(idx);
+                        ez.loc += 1;
+                    }
+                }
+            } else if *name == "_" {
+                // Wildcard — each occurrence is a unique anonymous variable.
+                // Register in context to keep De Bruijn indices in sync.
+                let mut ibuf = itoa::Buffer::new();
+                let suffix = ibuf.format(ctx.var_names.len());
+                scratch.clear();
+                scratch.extend_from_slice(b"__anon");
+                scratch.extend_from_slice(suffix.as_bytes());
+                let anon_id = std::str::from_utf8(scratch).expect("valid utf8: __anon + integer");
+                ctx.get_or_create_var(anon_id)?;
+                ez.write_new_var();
+                ez.loc += 1;
+            } else {
+                write_symbol(name.as_bytes(), pdp, ez)?;
+            }
+        }
+
+        MettaValueInner::Bool(b) => {
+            if *b {
+                write_symbol(b"true", pdp, ez)?;
+            } else {
+                write_symbol(b"false", pdp, ez)?;
+            }
+        }
+
+        MettaValueInner::Long(n) => {
+            let mut ibuf = itoa::Buffer::new();
+            let s = ibuf.format(*n);
+            write_symbol(s.as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::Float(f) => {
+            let mut rbuf = ryu::Buffer::new();
+            let s = rbuf.format(*f);
+            write_symbol(s.as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::String(s) => {
+            scratch.clear();
+            scratch.push(b'"');
+            scratch.extend_from_slice(s.as_bytes());
+            scratch.push(b'"');
+            write_symbol(scratch, pdp, ez)?;
+        }
+
+        MettaValueInner::Unit => {
+            ez.write_arity(0);
+            ez.loc += 1;
+        }
+
+        MettaValueInner::SExpr(items) => {
+            if items.len() >= 64 {
+                return Err(format!(
+                    "Expression has too many children ({}) - MORK arity limit is 63",
+                    items.len()
+                ));
+            }
+            ez.write_arity(items.len() as u8);
+            ez.loc += 1;
+            for item in *items {
+                write_metta_value_debruijn_inner(item.inner(), pdp, ctx, ez, scratch)?;
+            }
+        }
+
+        MettaValueInner::Error(msg, details) => {
+            ez.write_arity(3);
+            ez.loc += 1;
+            write_symbol(b"error", pdp, ez)?;
+            scratch.clear();
+            scratch.push(b'"');
+            scratch.extend_from_slice(msg.as_bytes());
+            scratch.push(b'"');
+            write_symbol(scratch, pdp, ez)?;
+            write_metta_value_debruijn_inner(details.inner(), pdp, ctx, ez, scratch)?;
+        }
+
+        MettaValueInner::Type(t) => {
+            write_metta_value_debruijn_inner(t.inner(), pdp, ctx, ez, scratch)?;
+        }
+
+        MettaValueInner::Conjunction(goals) => {
+            let total_arity = goals.len() + 1;
+            if total_arity >= 64 {
+                return Err(format!(
+                    "Conjunction has too many goals ({}) - MORK arity limit is 63",
+                    goals.len()
+                ));
+            }
+            ez.write_arity(total_arity as u8);
+            ez.loc += 1;
+            write_symbol(b",", pdp, ez)?;
+            for goal in *goals {
+                write_metta_value_debruijn_inner(goal.inner(), pdp, ctx, ez, scratch)?;
+            }
+        }
+
+        MettaValueInner::Space(handle) => {
+            ez.write_arity(3);
+            ez.loc += 1;
+            write_symbol(b"Space", pdp, ez)?;
+            let mut ibuf = itoa::Buffer::new();
+            let id_str = ibuf.format(handle.id);
+            write_symbol(id_str.as_bytes(), pdp, ez)?;
+            scratch.clear();
+            scratch.push(b'"');
+            scratch.extend_from_slice(handle.name.as_bytes());
+            scratch.push(b'"');
+            write_symbol(scratch, pdp, ez)?;
+        }
+
+        MettaValueInner::State(id) => {
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"State", pdp, ez)?;
+            let mut ibuf = itoa::Buffer::new();
+            let id_str = ibuf.format(*id);
+            write_symbol(id_str.as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::Memo(handle) => {
+            return Err(format!(
+                "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
+                handle.name, handle.id
+            ));
+        }
+
+        MettaValueInner::Empty => {
+            return Err(
+                "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Write a symbol to ExprZipper using the provided ParDataParser
 ///
 /// The caller must provide a ParDataParser (which holds a WritePermit) that is held
@@ -588,262 +550,8 @@ fn write_symbol(bytes: &[u8], pdp: &mut ParDataParser, ez: &mut ExprZipper) -> R
 }
 
 // ============================================================================
-// Generic MORK Conversion - Zero-Conversion for MettaValue
+// MORK Bindings → MeTTa Bindings
 // ============================================================================
-
-/// Convert any MettaValueTrait value to MORK Expr bytes (GENERIC VERSION).
-///
-/// This function uses `MettaValueTrait` methods instead of `MettaValueInner` pattern
-/// matching, enabling zero-conversion for MettaValue ↔ MORK operations.
-///
-/// ## Zero-Conversion Path
-///
-/// For MettaValue:
-/// ```text
-/// MettaValue → value_to_mork_bytes_generic() → MORK bytes → PathMap
-/// PathMap → MORK bytes → mork_expr_to_metta_value() → MettaValue
-/// ```
-///
-/// No MettaValue involved, no heap allocations for transient values.
-///
-/// ## Performance
-///
-/// Uses the same optimizations as `metta_to_mork_bytes`:
-/// - Buffer pooling (thread-local reusable buffers)
-/// - Context pooling (reusable variable tracking)
-/// - Single ParDataParser per conversion (proper MORK threading)
-pub fn value_to_mork_bytes_generic<V>(
-    value: &V,
-    sm: &SharedMappingHandle,
-    ctx: &mut ConversionContext,
-) -> Result<Vec<u8>, String>
-where
-    V: MettaValueTrait,
-{
-    trace!(
-        target: "mettatron::conversion::value_to_mork_bytes_generic",
-        "Converting generic value to MORK bytes"
-    );
-
-    // Use pooled buffer instead of allocating fresh 256KB each time
-    let mut pooled = PooledBuffer::acquire();
-    let buffer = pooled.as_mut();
-
-    // Ensure buffer has enough capacity (grow if needed)
-    const MAX_BUFFER_SIZE: usize = 262144;
-    if buffer.len() < MAX_BUFFER_SIZE {
-        buffer.resize(MAX_BUFFER_SIZE, 0);
-    }
-
-    let expr = Expr {
-        ptr: buffer.as_mut_ptr(),
-    };
-    let mut ez = ExprZipper::new(expr);
-
-    // Create ParDataParser once for the entire conversion
-    let mut pdp = ParDataParser::new(sm);
-
-    write_value_generic(value, &mut pdp, ctx, &mut ez).map_err(|e| {
-        debug!(
-            target: "mettatron::conversion::value_to_mork_bytes_generic",
-            error = %e, "Generic conversion to MORK bytes failed"
-        );
-        e
-    })?;
-
-    // Safety check
-    if ez.loc > MAX_BUFFER_SIZE {
-        return Err(format!(
-            "Expression too large for MORK conversion: {} bytes (max {})",
-            ez.loc, MAX_BUFFER_SIZE
-        ));
-    }
-
-    // Copy result to a new Vec (buffer returns to pool on drop)
-    Ok(buffer[..ez.loc].to_vec())
-}
-
-/// Convenience wrapper for value_to_mork_bytes_generic with pooled context.
-pub fn value_to_mork_bytes_generic_pooled<V>(
-    value: &V,
-    sm: &SharedMappingHandle,
-) -> Result<Vec<u8>, String>
-where
-    V: MettaValueTrait,
-{
-    let mut ctx = acquire_context();
-    let result = value_to_mork_bytes_generic(value, sm, &mut ctx);
-    release_context(ctx);
-    result
-}
-
-/// Generic recursive writer using MettaValueTrait methods (stack-based to avoid recursion).
-///
-/// Uses trait accessors (`as_atom()`, `as_sexpr()`, etc.) instead of `MettaValueInner`
-/// pattern matching. This enables the same code to work with both MettaValue and MettaValue.
-fn write_value_generic<V: MettaValueTrait>(
-    value: &V,
-    pdp: &mut ParDataParser,
-    _ctx: &mut ConversionContext,
-    ez: &mut ExprZipper,
-) -> Result<(), String> {
-    // Stack-based traversal to handle deep S-expressions without stack overflow
-    enum WorkItem<'a, V: MettaValueTrait> {
-        Process(&'a V),
-    }
-
-    let mut work_stack: Vec<WorkItem<V>> = vec![WorkItem::Process(value)];
-
-    while let Some(item) = work_stack.pop() {
-        match item {
-            WorkItem::Process(v) => {
-                // Atoms (including variables and wildcards) — written as literal symbols
-                // to preserve names through MORK round-trip for correct rule matching.
-                if let Some(name) = v.as_atom() {
-                    write_symbol(name.as_bytes(), pdp, ez)?;
-                    continue;
-                }
-
-                // Booleans
-                if let Some(b) = v.as_bool() {
-                    let s = if b { "true" } else { "false" };
-                    write_symbol(s.as_bytes(), pdp, ez)?;
-                    continue;
-                }
-
-                // Long integers
-                if let Some(n) = v.as_long() {
-                    let s = n.to_string();
-                    write_symbol(s.as_bytes(), pdp, ez)?;
-                    continue;
-                }
-
-                // Floats
-                if let Some(f) = v.as_float() {
-                    let s = f.to_string();
-                    write_symbol(s.as_bytes(), pdp, ez)?;
-                    continue;
-                }
-
-                // Strings
-                if let Some(s) = v.as_string() {
-                    let quoted = format!("\"{}\"", s);
-                    write_symbol(quoted.as_bytes(), pdp, ez)?;
-                    continue;
-                }
-
-                // S-expressions
-                if let Some(items) = v.as_sexpr() {
-                    if items.len() >= 64 {
-                        return Err(format!(
-                            "Expression has too many children ({}) - MORK arity limit is 63",
-                            items.len()
-                        ));
-                    }
-                    let arity = items.len() as u8;
-                    ez.write_arity(arity);
-                    ez.loc += 1;
-
-                    if !items.is_empty() {
-                        // Push marker to track when we're done with this S-expr (not needed for writing)
-                        // Process children in reverse order (stack is LIFO)
-                        for item in items.iter().rev() {
-                            work_stack.push(WorkItem::Process(item));
-                        }
-                    }
-                    continue;
-                }
-
-                // Conjunctions - written as (, goal1 goal2 ...)
-                if let Some(goals) = v.as_conjunction() {
-                    let total = goals.len() + 1;
-                    if total >= 64 {
-                        return Err(format!(
-                            "Conjunction has too many goals ({}) - MORK arity limit is 63",
-                            goals.len()
-                        ));
-                    }
-                    ez.write_arity(total as u8);
-                    ez.loc += 1;
-
-                    // Write comma symbol first
-                    write_symbol(b",", pdp, ez)?;
-
-                    // Process goals in reverse order
-                    for goal in goals.iter().rev() {
-                        work_stack.push(WorkItem::Process(goal));
-                    }
-                    continue;
-                }
-
-                // Unit - empty list in MORK
-                if v.is_unit() {
-                    ez.write_arity(0);
-                    ez.loc += 1;
-                    continue;
-                }
-
-                // Errors - (error "msg" details)
-                if let Some((msg, details)) = v.as_error() {
-                    ez.write_arity(3);
-                    ez.loc += 1;
-                    write_symbol(b"error", pdp, ez)?;
-                    write_symbol(format!("\"{}\"", msg).as_bytes(), pdp, ez)?;
-                    work_stack.push(WorkItem::Process(details));
-                    continue;
-                }
-
-                // Types - recurse into inner value
-                if let Some(inner) = v.as_type() {
-                    work_stack.push(WorkItem::Process(inner));
-                    continue;
-                }
-
-                // Space handles - (Space id name)
-                if let Some(handle) = v.as_space() {
-                    ez.write_arity(3);
-                    ez.loc += 1;
-                    write_symbol(b"Space", pdp, ez)?;
-                    write_symbol(handle.id.to_string().as_bytes(), pdp, ez)?;
-                    write_symbol(format!("\"{}\"", handle.name).as_bytes(), pdp, ez)?;
-                    continue;
-                }
-
-                // State handles - (State id)
-                if let Some(id) = v.as_state() {
-                    ez.write_arity(2);
-                    ez.loc += 1;
-                    write_symbol(b"State", pdp, ez)?;
-                    write_symbol(id.to_string().as_bytes(), pdp, ez)?;
-                    continue;
-                }
-
-                // Memo tables - cannot be stored in MORK
-                if let Some(handle) = v.as_memo() {
-                    return Err(format!(
-                        "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
-                        handle.name, handle.id
-                    ));
-                }
-
-                // Empty sentinel - should be filtered before MORK conversion
-                if v.is_empty() {
-                    return Err(
-                        "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
-                    );
-                }
-
-                // Fallback - unknown value type
-                return Err(format!(
-                    "Unsupported value type for MORK conversion: {}",
-                    v.friendly_type_name()
-                ));
-            }
-        }
-    }
-
-    Ok(())
-}
 
 /// Convert MORK bindings to Mettatron Bindings format
 ///
@@ -985,71 +693,65 @@ mod tests {
     }
 
     // =========================================================================
-    // Generic MORK Conversion Tests
+    // Zero-Copy Callback API Tests
     // =========================================================================
 
     #[test]
-    fn test_generic_simple_atom_conversion() {
+    fn test_with_mork_bytes_atom() {
         let env = MettaEnvironment::default();
         let space = env.create_space();
-        let mut ctx = ConversionContext::new();
 
         let atom = MettaValue::Atom("foo".to_string());
-        // Test generic version produces same result as original
-        let original_result = metta_to_mork_bytes(&atom, &space.sm, &mut ctx);
-        assert!(original_result.is_ok());
-
-        let mut generic_ctx = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&atom, &space.sm, &mut generic_ctx);
-        assert!(generic_result.is_ok());
-
-        // Both should produce identical bytes
-        assert_eq!(original_result.unwrap(), generic_result.unwrap());
+        let len = with_mork_bytes(&atom, &space.sm, |bytes| bytes.len());
+        assert!(len.is_ok());
+        assert!(len.expect("should succeed") > 0);
     }
 
     #[test]
-    fn test_generic_variable_conversion() {
+    fn test_with_mork_bytes_matches_compat() {
         let env = MettaEnvironment::default();
         let space = env.create_space();
 
-        let var = MettaValue::Atom("$x".to_string());
+        let atom = MettaValue::Atom("foo".to_string());
+        let mut ctx = ConversionContext::new();
+        let compat_bytes = metta_to_mork_bytes(&atom, &space.sm, &mut ctx).expect("compat ok");
 
-        let mut ctx1 = ConversionContext::new();
-        let original_result = metta_to_mork_bytes(&var, &space.sm, &mut ctx1);
-        assert!(original_result.is_ok());
+        let callback_bytes = with_mork_bytes(&atom, &space.sm, |bytes| bytes.to_vec())
+            .expect("callback ok");
 
-        let mut ctx2 = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&var, &space.sm, &mut ctx2);
-        assert!(generic_result.is_ok());
-
-        assert_eq!(original_result.unwrap(), generic_result.unwrap());
-        assert_eq!(ctx1.var_names, ctx2.var_names);
+        assert_eq!(compat_bytes, callback_bytes);
     }
 
     #[test]
-    fn test_generic_sexpr_conversion() {
+    fn test_with_mork_bytes_ground_types() {
         let env = MettaEnvironment::default();
         let space = env.create_space();
 
-        // (double $x)
-        let sexpr = MettaValue::SExpr(vec![
-            MettaValue::Atom("double".to_string()),
-            MettaValue::Atom("$x".to_string()),
-        ]);
+        let values = vec![
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+            MettaValue::Long(42),
+            MettaValue::Long(-123),
+            MettaValue::Float(3.14159),
+            MettaValue::String("hello world".to_string()),
+            MettaValue::Unit(),
+            MettaValue::Unit(),
+        ];
 
-        let mut ctx1 = ConversionContext::new();
-        let original_result = metta_to_mork_bytes(&sexpr, &space.sm, &mut ctx1);
-        assert!(original_result.is_ok());
+        for value in values {
+            let mut ctx = ConversionContext::new();
+            let compat = metta_to_mork_bytes(&value, &space.sm, &mut ctx)
+                .unwrap_or_else(|e| panic!("compat failed for {:?}: {}", value, e));
 
-        let mut ctx2 = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&sexpr, &space.sm, &mut ctx2);
-        assert!(generic_result.is_ok());
+            let callback = with_mork_bytes(&value, &space.sm, |bytes| bytes.to_vec())
+                .unwrap_or_else(|e| panic!("callback failed for {:?}: {}", value, e));
 
-        assert_eq!(original_result.unwrap(), generic_result.unwrap());
+            assert_eq!(compat, callback, "Mismatch for {:?}", value);
+        }
     }
 
     #[test]
-    fn test_generic_complex_nested_sexpr() {
+    fn test_with_mork_bytes_complex_nested() {
         let env = MettaEnvironment::default();
         let space = env.create_space();
 
@@ -1073,61 +775,17 @@ mod tests {
             ])]),
         ]);
 
-        let mut ctx1 = ConversionContext::new();
-        let original_result = metta_to_mork_bytes(&sexpr, &space.sm, &mut ctx1);
-        assert!(original_result.is_ok());
+        let mut ctx = ConversionContext::new();
+        let compat = metta_to_mork_bytes(&sexpr, &space.sm, &mut ctx).expect("compat ok");
 
-        let mut ctx2 = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&sexpr, &space.sm, &mut ctx2);
-        assert!(generic_result.is_ok());
+        let callback = with_mork_bytes(&sexpr, &space.sm, |bytes| bytes.to_vec())
+            .expect("callback ok");
 
-        // Both should produce identical bytes
-        assert_eq!(
-            original_result.unwrap(),
-            generic_result.unwrap(),
-            "Generic conversion must match original for complex nested expressions"
-        );
-        // Both should track the same variable
-        assert_eq!(ctx1.var_names, ctx2.var_names);
+        assert_eq!(compat, callback);
     }
 
     #[test]
-    fn test_generic_ground_types() {
-        let env = MettaEnvironment::default();
-        let space = env.create_space();
-
-        // Test various ground types
-        let values = vec![
-            MettaValue::Bool(true),
-            MettaValue::Bool(false),
-            MettaValue::Long(42),
-            MettaValue::Long(-123),
-            MettaValue::Float(3.14159),
-            MettaValue::String("hello world".to_string()),
-            MettaValue::Unit(),
-            MettaValue::Unit(),
-        ];
-
-        for value in values {
-            let mut ctx1 = ConversionContext::new();
-            let original = metta_to_mork_bytes(&value, &space.sm, &mut ctx1);
-
-            let mut ctx2 = ConversionContext::new();
-            let generic = value_to_mork_bytes_generic(&value, &space.sm, &mut ctx2);
-
-            assert!(original.is_ok(), "Original conversion failed for {:?}", value);
-            assert!(generic.is_ok(), "Generic conversion failed for {:?}", value);
-            assert_eq!(
-                original.unwrap(),
-                generic.unwrap(),
-                "Mismatch for {:?}",
-                value
-            );
-        }
-    }
-
-    #[test]
-    fn test_generic_error_conversion() {
+    fn test_with_mork_bytes_error_value() {
         let env = MettaEnvironment::default();
         let space = env.create_space();
 
@@ -1140,14 +798,32 @@ mod tests {
             ]),
         );
 
-        let mut ctx1 = ConversionContext::new();
-        let original = metta_to_mork_bytes(&error, &space.sm, &mut ctx1);
+        let mut ctx = ConversionContext::new();
+        let compat = metta_to_mork_bytes(&error, &space.sm, &mut ctx).expect("compat ok");
 
-        let mut ctx2 = ConversionContext::new();
-        let generic = value_to_mork_bytes_generic(&error, &space.sm, &mut ctx2);
+        let callback = with_mork_bytes(&error, &space.sm, |bytes| bytes.to_vec())
+            .expect("callback ok");
 
-        assert!(original.is_ok());
-        assert!(generic.is_ok());
-        assert_eq!(original.unwrap(), generic.unwrap());
+        assert_eq!(compat, callback);
+    }
+
+    #[test]
+    fn test_with_mork_query_bytes_variables() {
+        let env = MettaEnvironment::default();
+        let space = env.create_space();
+
+        let pattern = MettaValue::SExpr(vec![
+            MettaValue::Atom("double".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (callback_bytes, var_count) =
+            with_mork_query_bytes(&pattern, &space.sm, |bytes, ctx| {
+                (bytes.to_vec(), ctx.var_names.len())
+            })
+            .expect("callback ok");
+
+        assert!(!callback_bytes.is_empty());
+        assert_eq!(var_count, 1); // $x
     }
 }

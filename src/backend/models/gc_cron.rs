@@ -47,7 +47,6 @@
 //! |---------------------|----------------------------|------------|
 //! | Task submission     | crossbeam-channel (MPSC)   | ✅ Yes     |
 //! | Termination flag    | AtomicBool                 | ✅ Yes     |
-//! | Statistics          | AtomicU64                  | ✅ Yes     |
 //! | State machine       | Thread-local, no sharing   | ✅ Yes     |
 //! | Task queue          | BinaryHeap (thread-local)  | ✅ Yes     |
 //!
@@ -56,22 +55,20 @@
 //! The `GcCronSingleton` wraps the generic `CronStateMachine` with GC-specific
 //! tasks:
 //!
-//! 1. **Memory monitor** (100ms interval): Reads atomics, computes allocation
-//!    rate (allocs/s), calls `request_gc()` if rate exceeds threshold OR
-//!    committed bytes exceed `gc_threshold`.
-//!
-//! 2. **Stats reporter** (5s interval, optional): Logs memory statistics.
-//!    Enabled by `METTA_GC_STATS=1` environment variable.
+//! **Memory monitor** (100ms interval): Reads atomics, computes allocation
+//! rate (allocs/s), calls `request_gc()` if rate exceeds threshold OR
+//! committed bytes exceed `gc_threshold`.
 
 use std::cmp::{Ord, Ordering, PartialOrd};
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
-use tracing::{debug, error, info, warn};
+use tracing::{error, warn};
 
 use super::gc_allocator::request_gc;
 
@@ -81,9 +78,6 @@ use super::gc_allocator::request_gc;
 
 /// Memory monitor poll interval (100ms).
 const MONITOR_INTERVAL_MS: u64 = 100;
-
-/// Stats reporter interval (5000ms = 5s).
-const STATS_INTERVAL_MS: u64 = 5000;
 
 /// Allocation rate threshold (allocs/s) to set gc_requested.
 /// When exceeded, the cron sets the flag so the trampoline's `maybe_gc()`
@@ -251,74 +245,6 @@ impl PartialEq for ScheduledTask {
 impl Eq for ScheduledTask {}
 
 // ============================================================================
-// CronStats — Lock-free statistics
-// ============================================================================
-
-/// Statistics for the cron manager (lock-free).
-#[derive(Default)]
-pub struct CronStats {
-    /// Total tasks executed.
-    pub tasks_executed: AtomicU64,
-    /// Tasks that returned false (failed).
-    pub tasks_failed: AtomicU64,
-    /// Tasks that panicked.
-    pub tasks_panicked: AtomicU64,
-    /// State transitions performed.
-    pub transitions: AtomicU64,
-}
-
-impl CronStats {
-    /// Record a successful task execution.
-    #[inline]
-    fn record_success(&self) {
-        self.tasks_executed.fetch_add(1, AtomicOrdering::Relaxed);
-    }
-
-    /// Record a failed task execution.
-    #[inline]
-    fn record_failure(&self) {
-        self.tasks_executed.fetch_add(1, AtomicOrdering::Relaxed);
-        self.tasks_failed.fetch_add(1, AtomicOrdering::Relaxed);
-    }
-
-    /// Record a panicked task.
-    #[inline]
-    fn record_panic(&self) {
-        self.tasks_executed.fetch_add(1, AtomicOrdering::Relaxed);
-        self.tasks_panicked.fetch_add(1, AtomicOrdering::Relaxed);
-    }
-
-    /// Record a state transition.
-    #[inline]
-    fn record_transition(&self) {
-        self.transitions.fetch_add(1, AtomicOrdering::Relaxed);
-    }
-
-    /// Get snapshot of current statistics.
-    pub fn snapshot(&self) -> CronStatsSnapshot {
-        CronStatsSnapshot {
-            tasks_executed: self.tasks_executed.load(AtomicOrdering::Relaxed),
-            tasks_failed: self.tasks_failed.load(AtomicOrdering::Relaxed),
-            tasks_panicked: self.tasks_panicked.load(AtomicOrdering::Relaxed),
-            transitions: self.transitions.load(AtomicOrdering::Relaxed),
-        }
-    }
-}
-
-/// Immutable snapshot of cron statistics.
-#[derive(Debug, Clone, Copy)]
-pub struct CronStatsSnapshot {
-    /// Total tasks executed.
-    pub tasks_executed: u64,
-    /// Tasks that returned false (failed).
-    pub tasks_failed: u64,
-    /// Tasks that panicked.
-    pub tasks_panicked: u64,
-    /// State transitions performed.
-    pub transitions: u64,
-}
-
-// ============================================================================
 // CronStateMachine — Lock-free reactive state machine scheduler
 // ============================================================================
 
@@ -352,9 +278,6 @@ pub struct CronStateMachine {
     /// Channel disconnected flag (set once, never cleared).
     channel_disconnected: bool,
 
-    /// Statistics (atomic counters - no lock).
-    stats: Arc<CronStats>,
-
     /// One-shot ready signal sender (sent at start of run()).
     ready_tx: Option<Sender<()>>,
 }
@@ -368,13 +291,11 @@ impl CronStateMachine {
     /// # Arguments
     /// * `task_rx` - Receiver for new tasks from the channel
     /// * `terminating` - Atomic flag for graceful shutdown
-    /// * `stats` - Shared statistics counters
     /// * `poll_interval_ms` - Maximum sleep duration between polls
     /// * `ready_tx` - Optional one-shot channel to signal when event loop starts
     pub fn new(
         task_rx: Receiver<ScheduledTask>,
         terminating: Arc<AtomicBool>,
-        stats: Arc<CronStats>,
         poll_interval_ms: u64,
         ready_tx: Option<Sender<()>>,
     ) -> Self {
@@ -385,7 +306,6 @@ impl CronStateMachine {
             poll_interval_ms,
             terminating,
             channel_disconnected: false,
-            stats,
             ready_tx,
         }
     }
@@ -398,11 +318,6 @@ impl CronStateMachine {
     /// INSIDE the event loop, ensuring that any tasks scheduled after the
     /// caller receives the ready signal will be processed by this event loop.
     pub fn run(&mut self) {
-        info!(
-            poll_interval_ms = self.poll_interval_ms,
-            "CronStateMachine started (lock-free reactive design)"
-        );
-
         // Signal ready INSIDE the event loop (not before it starts).
         // This ensures tasks scheduled after receiving the ready signal
         // will be processed by this event loop iteration.
@@ -415,14 +330,6 @@ impl CronStateMachine {
             let event = self.poll_event();
             self.transition(event);
         }
-
-        info!(
-            tasks_executed = self.stats.tasks_executed.load(AtomicOrdering::Relaxed),
-            tasks_failed = self.stats.tasks_failed.load(AtomicOrdering::Relaxed),
-            tasks_panicked = self.stats.tasks_panicked.load(AtomicOrdering::Relaxed),
-            transitions = self.stats.transitions.load(AtomicOrdering::Relaxed),
-            "CronStateMachine terminated"
-        );
     }
 
     /// Poll for the next event based on current state.
@@ -514,13 +421,9 @@ impl CronStateMachine {
     /// This is the core of the reactive design - a pure function
     /// from (state, event) to new state with side effects.
     fn transition(&mut self, event: CronEvent) {
-        self.stats.record_transition();
-        let old_state = self.state;
-
         self.state = match (self.state, event) {
             // === Termination (highest priority, from any state) ===
             (_, CronEvent::TerminationRequested) => {
-                let _ = old_state; // suppress unused warning
                 CronState::Terminated
             }
 
@@ -564,12 +467,7 @@ impl CronStateMachine {
             }
 
             // === ExecutingTask transitions ===
-            (CronState::ExecutingTask, CronEvent::TaskCompleted { success, .. }) => {
-                if success {
-                    self.stats.record_success();
-                } else {
-                    self.stats.record_failure();
-                }
+            (CronState::ExecutingTask, CronEvent::TaskCompleted { .. }) => {
                 // Requeuing handled in execute_one_task
                 CronState::CheckEvents
             }
@@ -603,7 +501,6 @@ impl CronStateMachine {
 
         match result {
             Ok(true) => {
-                self.stats.record_success();
                 // Re-queue if recurring
                 if let Some(interval) = task.metadata.recurrence_interval() {
                     task.scheduled_time_ms = now_ms() + interval;
@@ -611,11 +508,9 @@ impl CronStateMachine {
                 }
             }
             Ok(false) => {
-                self.stats.record_failure();
-                debug!(task_name = task.metadata.name(), "Task returned false, not re-queuing");
+                // Task returned false — not re-queuing
             }
             Err(e) => {
-                self.stats.record_panic();
                 error!(task_name = task.metadata.name(), panic = ?e, "Task panicked");
             }
         }
@@ -749,14 +644,12 @@ impl CronHandle {
 /// Returns:
 /// - `CronHandle` for submitting tasks (clone-able, thread-safe, lock-free)
 /// - `JoinHandle` for the cron thread
-/// - `Arc<CronStats>` for reading statistics (lock-free)
 /// - `Receiver<()>` that signals when the scheduler is ready
 pub fn spawn_cron(
     terminating: Arc<AtomicBool>,
 ) -> (
     CronHandle,
     JoinHandle<()>,
-    Arc<CronStats>,
     Receiver<()>,
 ) {
     spawn_cron_with_interval(terminating, CronStateMachine::DEFAULT_POLL_INTERVAL_MS)
@@ -767,7 +660,6 @@ pub fn spawn_cron(
 /// Returns:
 /// - `CronHandle` for submitting tasks (clone-able, thread-safe, lock-free)
 /// - `JoinHandle` for the cron thread
-/// - `Arc<CronStats>` for reading statistics (lock-free)
 /// - `Receiver<()>` that signals when the scheduler is ready
 ///
 /// # Ready Signal
@@ -781,7 +673,6 @@ pub fn spawn_cron_with_interval(
 ) -> (
     CronHandle,
     JoinHandle<()>,
-    Arc<CronStats>,
     Receiver<()>,
 ) {
     // Lock-free unbounded MPSC channel for tasks
@@ -790,8 +681,6 @@ pub fn spawn_cron_with_interval(
     // One-shot channel to signal when the scheduler is ready
     let (ready_tx, ready_rx) = unbounded::<()>();
 
-    let stats = Arc::new(CronStats::default());
-    let stats_clone = Arc::clone(&stats);
     let terminating_clone = Arc::clone(&terminating);
 
     let thread_handle = std::thread::Builder::new()
@@ -801,7 +690,6 @@ pub fn spawn_cron_with_interval(
             let mut sm = CronStateMachine::new(
                 task_rx,
                 terminating_clone,
-                stats_clone,
                 poll_interval_ms,
                 Some(ready_tx),
             );
@@ -815,7 +703,7 @@ pub fn spawn_cron_with_interval(
         terminating,
     };
 
-    (handle, thread_handle, stats, ready_rx)
+    (handle, thread_handle, ready_rx)
 }
 
 // ============================================================================
@@ -828,6 +716,10 @@ struct MonitorState {
     prev_alloc_count: u64,
     /// Timestamp of the previous poll.
     prev_poll_time: Instant,
+    /// GC reachability heartbeat at the previous poll.
+    /// If this hasn't advanced, GC lifecycle is unreachable and backpressure
+    /// must not be escalated (would cause permanent throttling).
+    prev_reachable_counter: u64,
 }
 
 impl MonitorState {
@@ -835,6 +727,7 @@ impl MonitorState {
         Self {
             prev_alloc_count: 0,
             prev_poll_time: Instant::now(),
+            prev_reachable_counter: 0,
         }
     }
 }
@@ -845,13 +738,11 @@ impl MonitorState {
 
 /// GC cron manager singleton wrapping `CronStateMachine` with GC-specific tasks.
 ///
-/// Immutable after initialization — `CronHandle` is `Clone + Send` and
-/// `CronStats` uses atomics, so no `Mutex` is needed.
+/// Immutable after initialization — `CronHandle` is `Clone + Send`,
+/// so no `Mutex` is needed.
 pub struct GcCronSingleton {
     /// Handle for dynamic task scheduling (Clone + Send, lock-free).
     pub handle: CronHandle,
-    /// Statistics (lock-free atomic counters).
-    pub stats: Arc<CronStats>,
     /// Thread join handle (for graceful shutdown).
     thread_handle: Mutex<Option<JoinHandle<()>>>,
 }
@@ -860,10 +751,9 @@ impl GcCronSingleton {
     /// Request graceful shutdown and join the cron thread.
     pub fn shutdown(&self) {
         self.handle.request_shutdown();
-        if let Ok(mut guard) = self.thread_handle.lock() {
-            if let Some(handle) = guard.take() {
-                let _ = handle.join();
-            }
+        let mut guard = self.thread_handle.lock();
+        if let Some(handle) = guard.take() {
+            let _ = handle.join();
         }
     }
 }
@@ -884,8 +774,7 @@ impl Drop for GcCronSingleton {
 /// 1. Spawns a `CronStateMachine` via `spawn_cron()`
 /// 2. Waits for the ready signal to ensure the event loop is running
 /// 3. Schedules the **memory monitor** task (100ms recurring)
-/// 4. Optionally schedules the **stats reporter** task (5s recurring, `METTA_GC_STATS=1`)
-/// 5. Returns a `GcCronSingleton` for lifetime management
+/// 4. Returns a `GcCronSingleton` for lifetime management
 ///
 /// # Arguments
 ///
@@ -898,7 +787,7 @@ pub fn spawn_gc_cron(
     gc_threshold: Arc<AtomicUsize>,
 ) -> GcCronSingleton {
     let terminating = Arc::new(AtomicBool::new(false));
-    let (handle, thread_handle, stats, ready_rx) = spawn_cron(Arc::clone(&terminating));
+    let (handle, thread_handle, ready_rx) = spawn_cron(Arc::clone(&terminating));
 
     // Wait for the event loop to start before scheduling tasks.
     // This prevents a race where tasks are submitted before the receiver is live.
@@ -917,20 +806,8 @@ pub fn spawn_gc_cron(
         true // always reschedule
     });
 
-    // Schedule stats reporter (recurring, 5s) if METTA_GC_STATS=1
-    if std::env::var("METTA_GC_STATS").is_ok() {
-        let committed_clone2 = Arc::clone(&committed_bytes);
-        let alloc_clone2 = Arc::clone(&alloc_count);
-
-        handle.schedule_recurring(STATS_INTERVAL_MS, STATS_INTERVAL_MS, "stats-reporter", move || {
-            execute_stats_reporter(&committed_clone2, &alloc_clone2);
-            true
-        });
-    }
-
     GcCronSingleton {
         handle,
-        stats,
         thread_handle: Mutex::new(Some(thread_handle)),
     }
 }
@@ -974,8 +851,19 @@ fn execute_memory_monitor(
         should_gc = true;
     }
 
-    // Back-pressure computation: throttle allocation when GC can't keep up
-    let bp_level = if threshold > 0 {
+    // Back-pressure computation: throttle allocation when GC can't keep up.
+    //
+    // IMPORTANT: Only escalate backpressure if GC lifecycle is reachable.
+    // If the reachable counter hasn't advanced since the last poll, it means
+    // no code path is calling maybe_quiescent_gc() / maybe_process_gc_response().
+    // Escalating backpressure when GC is unreachable causes permanent throttling
+    // (livelock) in library/test code that calls eval() without the main.rs
+    // between-expression loop.
+    let current_reachable = super::gc_allocator::gc_reachable_counter();
+    let bp_level = if current_reachable == monitor.prev_reachable_counter {
+        // GC lifecycle unreachable — don't escalate (would cause permanent throttling)
+        0
+    } else if threshold > 0 {
         if current_committed >= threshold * 2 {
             3 // Heavy: > 2x threshold
         } else if current_committed >= threshold * 3 / 2 {
@@ -988,6 +876,7 @@ fn execute_memory_monitor(
     } else {
         0
     };
+    monitor.prev_reachable_counter = current_reachable;
     super::gc_allocator::set_backpressure_level(bp_level);
 
     if should_gc {
@@ -998,20 +887,6 @@ fn execute_memory_monitor(
     monitor.prev_poll_time = now;
 }
 
-/// Stats reporter task: logs memory statistics to stderr.
-fn execute_stats_reporter(
-    committed_bytes: &AtomicUsize,
-    alloc_count: &AtomicU64,
-) {
-    let committed = committed_bytes.load(AtomicOrdering::Relaxed);
-    let allocs = alloc_count.load(AtomicOrdering::Relaxed);
-
-    info!(
-        committed_mb = format_args!("{:.1}", committed as f64 / (1024.0 * 1024.0)),
-        total_allocs = allocs,
-        "GC cron stats"
-    );
-}
 
 // ============================================================================
 // Tests
@@ -1032,9 +907,8 @@ mod tests {
     fn test_state_transitions() {
         let (_, rx) = unbounded::<ScheduledTask>();
         let terminating = Arc::new(AtomicBool::new(false));
-        let stats = Arc::new(CronStats::default());
 
-        let sm = CronStateMachine::new(rx, terminating.clone(), stats.clone(), 100, None);
+        let sm = CronStateMachine::new(rx, terminating.clone(), 100, None);
 
         // Initial state is CheckEvents
         assert_eq!(sm.current_state(), CronState::CheckEvents);
@@ -1045,9 +919,8 @@ mod tests {
     fn test_termination_from_any_state() {
         let (_, rx) = unbounded::<ScheduledTask>();
         let terminating = Arc::new(AtomicBool::new(false));
-        let stats = Arc::new(CronStats::default());
 
-        let mut sm = CronStateMachine::new(rx, terminating.clone(), stats.clone(), 100, None);
+        let mut sm = CronStateMachine::new(rx, terminating.clone(), 100, None);
 
         // Request termination
         terminating.store(true, AtomicOrdering::Release);
@@ -1061,7 +934,7 @@ mod tests {
     #[test]
     fn test_concurrent_task_submission() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, stats, _ready) = spawn_cron(Arc::clone(&terminating));
+        let (handle, thread, _ready) = spawn_cron(Arc::clone(&terminating));
 
         let counter = Arc::new(StdAtomicU64::new(0));
 
@@ -1100,17 +973,13 @@ mod tests {
 
         // All 1000 tasks should have executed
         assert_eq!(counter.load(Ordering::Relaxed), 1000);
-        assert_eq!(stats.tasks_executed.load(Ordering::Relaxed), 1000);
-
-        // State machine should have performed many transitions
-        assert!(stats.transitions.load(Ordering::Relaxed) > 0);
     }
 
     /// Test that recurring tasks are requeued.
     #[test]
     fn test_recurring_task() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _stats, _ready) =
+        let (handle, thread, _ready) =
             spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
@@ -1140,7 +1009,7 @@ mod tests {
     #[test]
     fn test_recurring_task_stops_on_false() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _stats, _ready) =
+        let (handle, thread, _ready) =
             spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
@@ -1166,7 +1035,7 @@ mod tests {
     #[test]
     fn test_one_shot_task() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _stats, _ready) =
+        let (handle, thread, _ready) =
             spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
@@ -1192,7 +1061,7 @@ mod tests {
     #[test]
     fn test_panic_safety() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, stats, ready_rx) =
+        let (handle, thread, ready_rx) =
             spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         // Wait for scheduler to be ready (prevents race condition where tasks are
@@ -1230,16 +1099,13 @@ mod tests {
         // Normal task should have executed despite the panic
         let count = counter.load(Ordering::Relaxed);
         assert_eq!(count, 1, "Normal task should have executed");
-
-        // Stats should show one panic
-        assert_eq!(stats.tasks_panicked.load(Ordering::Relaxed), 1);
     }
 
     /// Test that channel disconnection terminates the scheduler when queue is empty.
     #[test]
     fn test_channel_disconnect_empty_queue() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, stats, _ready) =
+        let (handle, thread, _ready) =
             spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         // Don't schedule any tasks, just drop the handle
@@ -1247,16 +1113,13 @@ mod tests {
 
         // Scheduler should terminate since queue is empty and channel is disconnected
         thread.join().expect("Cron thread panicked");
-
-        // Should have at least one transition (to check events, then to terminated)
-        assert!(stats.transitions.load(Ordering::Relaxed) >= 1);
     }
 
     /// Test that channel disconnection keeps scheduler running when tasks remain.
     #[test]
     fn test_channel_disconnect_with_tasks() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _stats, _ready) =
+        let (handle, thread, _ready) =
             spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
@@ -1280,36 +1143,6 @@ mod tests {
 
         let count = counter.load(Ordering::Relaxed);
         assert_eq!(count, 1, "Delayed task should have executed");
-    }
-
-    /// Test statistics snapshot.
-    #[test]
-    fn test_stats_snapshot() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, stats, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
-
-        // Schedule tasks
-        for _ in 0..5 {
-            handle.schedule_once(0, "success", || true);
-        }
-        for _ in 0..3 {
-            handle.schedule_once(0, "failure", || false);
-        }
-
-        // Wait for execution
-        std::thread::sleep(Duration::from_millis(100));
-
-        // Get snapshot
-        let snapshot = stats.snapshot();
-
-        handle.request_shutdown();
-        thread.join().expect("Cron thread panicked");
-
-        // Verify snapshot
-        assert_eq!(snapshot.tasks_executed, 8);
-        assert_eq!(snapshot.tasks_failed, 3);
-        assert_eq!(snapshot.tasks_panicked, 0);
     }
 
     /// Test task metadata types.
@@ -1374,7 +1207,7 @@ mod tests {
     #[test]
     fn test_handle_cloning() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _stats, _ready) = spawn_cron(Arc::clone(&terminating));
+        let (handle, thread, _ready) = spawn_cron(Arc::clone(&terminating));
 
         let counter = Arc::new(StdAtomicU64::new(0));
 
@@ -1407,7 +1240,7 @@ mod tests {
     #[test]
     fn test_shutdown_flag() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _stats, _ready) = spawn_cron(Arc::clone(&terminating));
+        let (handle, thread, _ready) = spawn_cron(Arc::clone(&terminating));
 
         // Initially not shutting down
         assert!(!handle.is_shutting_down());

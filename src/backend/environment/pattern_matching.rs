@@ -24,7 +24,7 @@ use super::multiplicity::get_multiplicity;
 use super::{MettaEnvironment, MettaValue};
 use crate::backend::eval::{apply_bindings, pattern_match};
 use crate::backend::models::metta_value_trait::MettaValueTrait;
-use crate::backend::mork_convert::{metta_to_mork_query_bytes, mork_bindings_to_metta, ConversionContext};
+use crate::backend::mork_convert::{mork_bindings_to_metta, with_mork_query_bytes};
 
 // Re-export the generic MultiplicityMatch specialized for MettaValue
 pub use super::generic::MultiplicityMatch;
@@ -79,47 +79,47 @@ impl MettaEnvironment {
 
         let space = self.create_space();
 
-        // Create conversion context to track variable mappings
-        let mut ctx = ConversionContext::new();
+        // Convert pattern to MORK query bytes and run query_multi in callback
+        let query_result = with_mork_query_bytes(pattern, &self.shared_mapping, |pattern_bytes, ctx| {
+            let pattern_expr = Expr {
+                ptr: pattern_bytes.as_ptr().cast_mut(),
+            };
 
-        // Convert pattern to MORK bytes
-        let pattern_bytes = match metta_to_mork_query_bytes(pattern, &self.shared_mapping, &mut ctx) {
-            Ok(bytes) => bytes,
+            // Collect matches using MORK's native query_multi
+            let mut results: Vec<MultiplicityMatch<MettaValue>> = Vec::new();
+
+            mork::space::Space::query_multi(&space.btm, pattern_expr, |result, matched_expr| {
+                if let Err(mork_bindings) = result {
+                    // Convert MORK bindings to our format
+                    if let Ok(bindings) = mork_bindings_to_metta(&mork_bindings, ctx, &space) {
+                        // Apply bindings to template
+                        let instantiated = apply_bindings(template, &bindings).into_owned();
+
+                        // Extract multiplicity from the matched expression's PathMap path.
+                        // matched_expr.span() returns *const [u8] — the serialized MORK bytes
+                        // that form the exact PathMap key for this entry. We look up the
+                        // multiplicity in the same PathMap that query_multi is traversing.
+                        // SAFETY: matched_expr.ptr points to valid MORK bytes within PathMap
+                        // memory. The span() traversal is bounded by the expression's length.
+                        let mork_bytes = unsafe { &*matched_expr.span() };
+                        let multiplicity = get_multiplicity(&space.btm, mork_bytes).max(1) as usize;
+
+                        results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                    }
+                }
+                true // Continue searching for ALL matches
+            });
+
+            results
+        });
+
+        let mut results = match query_result {
+            Ok(r) => r,
             Err(_) => {
                 // Conversion failed (e.g., arity too high) - return None to trigger fallback
                 return None;
             }
         };
-
-
-        let pattern_expr = Expr {
-            ptr: pattern_bytes.as_ptr().cast_mut(),
-        };
-
-        // Collect matches using MORK's native query_multi
-        let mut results: Vec<MultiplicityMatch<MettaValue>> = Vec::new();
-
-        mork::space::Space::query_multi(&space.btm, pattern_expr, |result, matched_expr| {
-            if let Err(mork_bindings) = result {
-                // Convert MORK bindings to our format
-                if let Ok(bindings) = mork_bindings_to_metta(&mork_bindings, &ctx, &space) {
-                    // Apply bindings to template
-                    let instantiated = apply_bindings(template, &bindings).into_owned();
-
-                    // Extract multiplicity from the matched expression's PathMap path.
-                    // matched_expr.span() returns *const [u8] — the serialized MORK bytes
-                    // that form the exact PathMap key for this entry. We look up the
-                    // multiplicity in the same PathMap that query_multi is traversing.
-                    // SAFETY: matched_expr.ptr points to valid MORK bytes within PathMap
-                    // memory. The span() traversal is bounded by the expression's length.
-                    let mork_bytes = unsafe { &*matched_expr.span() };
-                    let multiplicity = get_multiplicity(&space.btm, mork_bytes).max(1) as usize;
-
-                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
-                }
-            }
-            true // Continue searching for ALL matches
-        });
 
         // Also check large expression fallback PathMap
         // parking_lot::RwLock - no .expect()

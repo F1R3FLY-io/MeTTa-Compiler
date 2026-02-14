@@ -29,7 +29,7 @@ use super::multiplicity::{
 };
 use super::{MettaEnvironment, MettaValue};
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
-use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+use crate::backend::mork_convert::with_mork_bytes;
 
 /// Extract (lhs, rhs) from a deserialized rule value `(= lhs rhs)`.
 ///
@@ -277,11 +277,10 @@ impl MettaEnvironment {
                 rhs.clone(),
             ]);
 
-            let mut ctx = ConversionContext::new();
-            let mork_bytes = metta_to_mork_bytes(&rule_sexpr, &self.shared_mapping, &mut ctx)
-                .map_err(|e| format!("MORK conversion failed for rule {:?}: {}", rule_sexpr, e))?;
-
-            rule_trie.insert(&mork_bytes, Multiplicity::new(1));
+            with_mork_bytes(&rule_sexpr, &self.shared_mapping, |mork_bytes| {
+                rule_trie.insert(mork_bytes, Multiplicity::new(1));
+            })
+            .map_err(|e| format!("MORK conversion failed for rule {:?}: {}", rule_sexpr, e))?;
 
             // Update bloom filter
             if let Some(head) = lhs.get_head_symbol() {
@@ -315,14 +314,12 @@ impl MettaEnvironment {
             rhs.clone(),
         ]);
 
-        let mut ctx = ConversionContext::new();
-
-        match metta_to_mork_bytes(&rule_sexpr, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let btm = self.shared.btm.read();
-                let count = get_multiplicity(&btm, &mork_bytes);
-                if count == 0 { 1 } else { count as usize }
-            }
+        match with_mork_bytes(&rule_sexpr, &self.shared_mapping, |mork_bytes| {
+            let btm = self.shared.btm.read();
+            let count = get_multiplicity(&btm, mork_bytes);
+            if count == 0 { 1 } else { count as usize }
+        }) {
+            Ok(count) => count,
             Err(_) => 1,
         }
     }
@@ -402,18 +399,16 @@ impl MettaEnvironment {
         trace!(target: "mettatron::environment::increment_rule_multiplicity", ?rule_sexpr);
         self.make_owned();
 
-        let mut ctx = ConversionContext::new();
+        match with_mork_bytes(rule_sexpr, &self.shared_mapping, |mork_bytes| {
+            let mut btm = self.shared.btm.write();
+            let new_count = increment_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
 
-        match metta_to_mork_bytes(rule_sexpr, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let mut btm = self.shared.btm.write();
-                let new_count = increment_multiplicity(&mut btm, &mork_bytes);
-                drop(btm);
-
-                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
-                self.modified.store(true, Ordering::Release);
-                new_count as usize
-            }
+            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => count,
             Err(_) => {
                 self.modified.store(true, Ordering::Release);
                 1
@@ -432,28 +427,26 @@ impl MettaEnvironment {
         trace!(target: "mettatron::environment::decrement_rule_multiplicity", ?rule_sexpr);
         self.make_owned();
 
-        let mut ctx = ConversionContext::new();
+        match with_mork_bytes(rule_sexpr, &self.shared_mapping, |mork_bytes| {
+            let old_count = {
+                let btm = self.shared.btm.read();
+                get_multiplicity(&btm, mork_bytes)
+            };
 
-        match metta_to_mork_bytes(rule_sexpr, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let old_count = {
-                    let btm = self.shared.btm.read();
-                    get_multiplicity(&btm, &mork_bytes)
-                };
-
-                if old_count == 0 {
-                    self.modified.store(true, Ordering::Release);
-                    return 0;
-                }
-
-                let mut btm = self.shared.btm.write();
-                let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
-                drop(btm);
-
-                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            if old_count == 0 {
                 self.modified.store(true, Ordering::Release);
-                new_count as usize
+                return 0;
             }
+
+            let mut btm = self.shared.btm.write();
+            let new_count = decrement_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
+
+            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => count,
             Err(_) => {
                 self.modified.store(true, Ordering::Release);
                 0
@@ -481,18 +474,16 @@ impl MettaEnvironment {
     pub fn increment_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        let mut ctx = ConversionContext::new();
+        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            let mut btm = self.shared.btm.write();
+            let new_count = increment_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
 
-        match metta_to_mork_bytes(value, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let mut btm = self.shared.btm.write();
-                let new_count = increment_multiplicity(&mut btm, &mork_bytes);
-                drop(btm);
-
-                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
-                self.modified.store(true, Ordering::Release);
-                new_count as usize
-            }
+            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => count,
             Err(_) => {
                 self.modified.store(true, Ordering::Release);
                 1
@@ -504,41 +495,37 @@ impl MettaEnvironment {
     pub fn decrement_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        let mut ctx = ConversionContext::new();
+        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            let old_count = {
+                let btm = self.shared.btm.read();
+                get_multiplicity(&btm, mork_bytes)
+            };
 
-        match metta_to_mork_bytes(value, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let old_count = {
-                    let btm = self.shared.btm.read();
-                    get_multiplicity(&btm, &mork_bytes)
-                };
-
-                if old_count == 0 {
-                    return 0;
-                }
-
-                let mut btm = self.shared.btm.write();
-                let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
-                drop(btm);
-
-                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.modified.store(true, Ordering::Release);
-                new_count as usize
+            if old_count == 0 {
+                return 0;
             }
+
+            let mut btm = self.shared.btm.write();
+            let new_count = decrement_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
+
+            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => count,
             Err(_) => 0,
         }
     }
 
     /// Get multiplicity for ANY atom.
     pub fn get_atom_multiplicity(&self, value: &MettaValue) -> usize {
-        let mut ctx = ConversionContext::new();
-
-        match metta_to_mork_bytes(value, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let btm = self.shared.btm.read();
-                let count = get_multiplicity(&btm, &mork_bytes);
-                if count == 0 { 1 } else { count as usize }
-            }
+        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            let btm = self.shared.btm.read();
+            let count = get_multiplicity(&btm, mork_bytes);
+            if count == 0 { 1 } else { count as usize }
+        }) {
+            Ok(count) => count,
             Err(_) => 1,
         }
     }

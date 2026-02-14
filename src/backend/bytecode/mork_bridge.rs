@@ -23,7 +23,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use tracing::warn;
 
 use crate::backend::environment::MettaEnvironment;
@@ -86,7 +87,7 @@ pub struct MorkBridge {
 
 impl std::fmt::Debug for MorkBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let cache_size = self.rule_cache.read().map(|c| c.len()).unwrap_or(0);
+        let cache_size = self.rule_cache.read().len();
         f.debug_struct("MorkBridge")
             .field("cache_size", &cache_size)
             .field("stats", &self.stats.snapshot())
@@ -189,7 +190,7 @@ impl MorkBridge {
         self.stats.lookups.fetch_add(1, Ordering::Relaxed);
 
         // Get matching rules from environment
-        let env = self.env.read().expect("env lock");
+        let env = self.env.read();
         let matches = self.find_matching_rules(expr, &env);
 
         // Update stats with match count (lock-free)
@@ -254,7 +255,7 @@ impl MorkBridge {
 
         // Check cache first
         {
-            let cache = self.rule_cache.read().expect("cache lock");
+            let cache = self.rule_cache.read();
             if let Some(chunk) = cache.get(&key) {
                 self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(Arc::clone(chunk));
@@ -267,7 +268,7 @@ impl MorkBridge {
 
         // Store in cache
         {
-            let mut cache = self.rule_cache.write().expect("cache lock");
+            let mut cache = self.rule_cache.write();
             cache.insert(key, Arc::clone(&chunk));
             self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
         }
@@ -282,12 +283,12 @@ impl MorkBridge {
 
     /// Clear the rule cache
     pub fn clear_cache(&self) {
-        self.rule_cache.write().expect("cache lock").clear();
+        self.rule_cache.write().clear();
     }
 
     /// Get the number of cached rules
     pub fn cache_size(&self) -> usize {
-        self.rule_cache.read().expect("cache lock").len()
+        self.rule_cache.read().len()
     }
 }
 

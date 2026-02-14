@@ -40,19 +40,18 @@ pub unsafe extern "C" fn jit_runtime_mork_lookup(ctx: *mut JitContext, path: u64
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
         let env_arc = bridge.environment();
-        let env_guard = env_arc.read();
-        if let Ok(env_read) = env_guard {
-            // Check if this is an atom and it exists in the space
-            if let MettaValueInner::Atom(name) = path_metta.inner() {
-                if env_read.has_fact(name) {
-                    return metta_to_jit(&path_metta).to_bits();
-                }
-            }
+        let env_read = env_arc.read();
 
-            // Check if this is an S-expression that exists in space
-            if env_read.has_sexpr_fact(&path_metta) {
+        // Check if this is an atom and it exists in the space
+        if let MettaValueInner::Atom(name) = path_metta.inner() {
+            if env_read.has_fact(name) {
                 return metta_to_jit(&path_metta).to_bits();
             }
+        }
+
+        // Check if this is an S-expression that exists in space
+        if env_read.has_sexpr_fact(&path_metta) {
+            return metta_to_jit(&path_metta).to_bits();
         }
     }
 
@@ -109,11 +108,9 @@ pub unsafe extern "C" fn jit_runtime_mork_insert(
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
         let env_arc = bridge.environment();
-        let env_guard = env_arc.write();
-        if let Ok(mut env_write) = env_guard {
-            env_write.add_to_space(&value_metta);
-            return 0; // Success
-        }
+        let mut env_write = env_arc.write();
+        env_write.add_to_space(&value_metta);
+        return 0; // Success
     }
 
     -1 // Error (no bridge available)
@@ -143,11 +140,9 @@ pub unsafe extern "C" fn jit_runtime_mork_delete(ctx: *mut JitContext, path: u64
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
         let env_arc = bridge.environment();
-        let env_guard = env_arc.write();
-        if let Ok(mut env_write) = env_guard {
-            env_write.remove_from_space(&path_metta);
-            return 1; // Deleted (or at least attempted)
-        }
+        let mut env_write = env_arc.write();
+        env_write.remove_from_space(&path_metta);
+        return 1; // Deleted (or at least attempted)
     }
 
     0 // Not found (no bridge available)

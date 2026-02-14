@@ -1115,9 +1115,6 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
         }
     }
 
-    fn provider_name(&self) -> &'static str {
-        "Environment"
-    }
 }
 
 
@@ -1210,41 +1207,42 @@ where
     ///
     /// Uses MeTTa HE semantics: each `add_to_space` call increments the atom's multiplicity.
     pub fn add_to_space(&mut self, value: &V) {
-        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::mork_convert::with_mork_bytes;
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::add_atom;
 
         self.make_owned();
 
-        let mut ctx = ConversionContext::new();
+        // Direct V → MORK bytes conversion via zero-copy callback
+        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            let mut btm = self.shared.btm.write();
+            add_atom(&mut btm, mork_bytes);
+            drop(btm);
 
-        // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let mut btm = self.shared.btm.write();
-                add_atom(&mut btm, &mork_bytes);
-                drop(btm);
+            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
 
-                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
-
-                // Use trait method for head symbol extraction
-                if let Some(head) = value.get_head_symbol() {
-                    let arity = value.get_arity() as u8;
-                    self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
-                }
+            // Use trait method for head symbol extraction
+            if let Some(head) = value.get_head_symbol() {
+                let arity = value.get_arity() as u8;
+                self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
             }
+        }) {
+            Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64)
                 // Store V directly (zero-conversion)
                 let key = value_to_varint_key_generic(value);
 
-                let mut guard = self.shared.large_expr_pathmap.write();
-                let fallback = guard.get_or_insert_with(PathMap::new);
-                fallback.insert(&key, value.clone());
-
+                // Lock ordering: btm before large_expr_pathmap (consistent with remove_from_space)
                 {
                     let mut btm = self.shared.btm.write();
                     add_atom(&mut btm, &key);
+                }
+
+                {
+                    let mut guard = self.shared.large_expr_pathmap.write();
+                    let fallback = guard.get_or_insert_with(PathMap::new);
+                    fallback.insert(&key, value.clone());
                 }
 
                 self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
@@ -1263,40 +1261,38 @@ where
     ///
     /// Decrements the atom's multiplicity. If multiplicity reaches 0, the atom is removed.
     pub fn remove_from_space(&mut self, value: &V) {
-        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::mork_convert::with_mork_bytes;
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::{get_multiplicity, remove_atom};
 
         self.make_owned();
 
-        let mut ctx = ConversionContext::new();
+        // Direct V → MORK bytes conversion via zero-copy callback
+        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            let mut btm = self.shared.btm.write();
 
-        // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let mut btm = self.shared.btm.write();
-
-                let current_count = get_multiplicity(&btm, &mork_bytes);
-                if current_count == 0 {
-                    if !btm.contains(&mork_bytes) {
-                        return;
-                    }
-                    btm.remove(&mork_bytes);
-                    drop(btm);
-                    self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.head_arity_bloom.write().note_deletion();
+            let current_count = get_multiplicity(&btm, mork_bytes);
+            if current_count == 0 {
+                if !btm.contains(mork_bytes) {
                     return;
                 }
-
-                let new_count = remove_atom(&mut btm, &mork_bytes);
-
-                if new_count == 0 {
-                    self.shared.head_arity_bloom.write().note_deletion();
-                }
-
+                btm.remove(mork_bytes);
                 drop(btm);
                 self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.shared.head_arity_bloom.write().note_deletion();
+                return;
             }
+
+            let new_count = remove_atom(&mut btm, mork_bytes);
+
+            if new_count == 0 {
+                self.shared.head_arity_bloom.write().note_deletion();
+            }
+
+            drop(btm);
+            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+        }) {
+            Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64)
                 let key = value_to_varint_key_generic(value);
@@ -1362,39 +1358,40 @@ where
     /// - In loops where calling `add_to_space()` would trigger repeated CoW copies
     /// - In arena mode evaluation where state must persist across cloned environments
     pub fn add_to_space_shared(&self, value: &V) {
-        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::mork_convert::with_mork_bytes;
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::add_atom;
 
-        let mut ctx = ConversionContext::new();
+        // Direct V → MORK bytes conversion via zero-copy callback
+        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            let mut btm = self.shared.btm.write();
+            add_atom(&mut btm, mork_bytes);
+            drop(btm);
 
-        // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let mut btm = self.shared.btm.write();
-                add_atom(&mut btm, &mork_bytes);
-                drop(btm);
+            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
 
-                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
-
-                // Use trait method for head symbol extraction
-                if let Some(head) = value.get_head_symbol() {
-                    let arity = value.get_arity() as u8;
-                    self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
-                }
+            // Use trait method for head symbol extraction
+            if let Some(head) = value.get_head_symbol() {
+                let arity = value.get_arity() as u8;
+                self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
             }
+        }) {
+            Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64)
                 // Store V directly (zero-conversion)
                 let key = value_to_varint_key_generic(value);
 
-                let mut guard = self.shared.large_expr_pathmap.write();
-                let fallback = guard.get_or_insert_with(PathMap::new);
-                fallback.insert(&key, value.clone());
-
+                // Lock ordering: btm before large_expr_pathmap (consistent with remove_from_space_shared)
                 {
                     let mut btm = self.shared.btm.write();
                     add_atom(&mut btm, &key);
+                }
+
+                {
+                    let mut guard = self.shared.large_expr_pathmap.write();
+                    let fallback = guard.get_or_insert_with(PathMap::new);
+                    fallback.insert(&key, value.clone());
                 }
 
                 self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
@@ -1415,39 +1412,37 @@ where
     /// Uses `RwLock::write()` for PathMap access and atomic operations for counters.
     /// Safe to call from multiple clones of the same environment.
     pub fn remove_from_space_shared(&self, value: &V) {
-        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::mork_convert::with_mork_bytes;
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::{get_multiplicity, remove_atom};
 
-        let mut ctx = ConversionContext::new();
+        // Direct V → MORK bytes conversion via zero-copy callback
+        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            let mut btm = self.shared.btm.write();
 
-        // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
-            Ok(mork_bytes) => {
-                let mut btm = self.shared.btm.write();
-
-                let current_count = get_multiplicity(&btm, &mork_bytes);
-                if current_count == 0 {
-                    if !btm.contains(&mork_bytes) {
-                        return;
-                    }
-                    btm.remove(&mork_bytes);
-                    drop(btm);
-                    self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.head_arity_bloom.write().note_deletion();
-                    self.mark_modified();
+            let current_count = get_multiplicity(&btm, mork_bytes);
+            if current_count == 0 {
+                if !btm.contains(mork_bytes) {
                     return;
                 }
-
-                let new_count = remove_atom(&mut btm, &mork_bytes);
-
-                if new_count == 0 {
-                    self.shared.head_arity_bloom.write().note_deletion();
-                }
-
+                btm.remove(mork_bytes);
                 drop(btm);
                 self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.shared.head_arity_bloom.write().note_deletion();
+                self.mark_modified();
+                return;
             }
+
+            let new_count = remove_atom(&mut btm, mork_bytes);
+
+            if new_count == 0 {
+                self.shared.head_arity_bloom.write().note_deletion();
+            }
+
+            drop(btm);
+            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+        }) {
+            Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64)
                 let key = value_to_varint_key_generic(value);

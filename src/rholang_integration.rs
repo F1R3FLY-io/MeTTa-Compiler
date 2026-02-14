@@ -328,6 +328,8 @@ pub fn run_state(
             outputs.extend(results);
         }
 
+        // Process any pending GC response (clears GC_CYCLE_IN_FLIGHT)
+        crate::backend::models::maybe_process_gc_response();
         // Quiescent point: try GC between top-level expressions
         crate::backend::models::maybe_quiescent_gc();
     }
@@ -597,6 +599,8 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
             }
         }
 
+        // Process any pending GC response (clears GC_CYCLE_IN_FLIGHT)
+        crate::backend::models::maybe_process_gc_response();
         // Quiescent point: try GC between top-level expressions
         crate::backend::models::maybe_quiescent_gc();
     }
@@ -683,6 +687,8 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
             }
         }
 
+        // Process any pending GC response (clears GC_CYCLE_IN_FLIGHT)
+        crate::backend::models::maybe_process_gc_response();
         // Quiescent point: try GC between top-level expressions
         crate::backend::models::maybe_quiescent_gc();
     }

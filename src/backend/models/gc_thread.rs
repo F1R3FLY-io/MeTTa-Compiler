@@ -63,6 +63,24 @@ pub enum GcRequest {
 unsafe impl Send for GcRequest {}
 
 // ============================================================================
+// TryRecvGcResponse — Tri-State Result for Non-Blocking Receive
+// ============================================================================
+
+/// Result of a non-blocking GC response receive attempt.
+///
+/// Distinguishes between a response being available, no response yet
+/// (GC thread still working), and the channel being disconnected
+/// (GC thread crashed or shut down).
+pub enum TryRecvGcResponse {
+    /// GC cycle completed, response available.
+    Response(GcResponse),
+    /// No response available yet (GC thread still working).
+    Empty,
+    /// GC thread channel disconnected (thread crashed or shut down).
+    Disconnected,
+}
+
+// ============================================================================
 // GcThread
 // ============================================================================
 
@@ -112,12 +130,14 @@ impl GcThread {
 
     /// Try to receive a GC response (non-blocking).
     ///
-    /// Returns `Some(response)` if the GC thread has completed a cycle,
-    /// `None` if no response is available yet.
-    pub fn try_recv_response(&self) -> Option<GcResponse> {
+    /// Returns a tri-state result distinguishing between a response being
+    /// available, no response yet (GC thread still working), and the GC
+    /// thread channel being disconnected (thread crashed or shut down).
+    pub fn try_recv_response(&self) -> TryRecvGcResponse {
         match self.response_rx.try_recv() {
-            Ok(response) => Some(response),
-            Err(_) => None,
+            Ok(response) => TryRecvGcResponse::Response(response),
+            Err(std::sync::mpsc::TryRecvError::Empty) => TryRecvGcResponse::Empty,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => TryRecvGcResponse::Disconnected,
         }
     }
 
@@ -256,8 +276,8 @@ mod tests {
         let factory = GcFactory::new(alloc);
         let mut gc = GcThread::spawn();
 
-        // No request sent yet — try_recv should return None
-        assert!(gc.try_recv_response().is_none());
+        // No request sent yet — try_recv should return Empty
+        assert!(matches!(gc.try_recv_response(), TryRecvGcResponse::Empty));
 
         // Send a request
         let alive = factory.long(1);
@@ -269,7 +289,7 @@ mod tests {
 
         // Should now have a response
         let response = gc.try_recv_response();
-        assert!(response.is_some(), "expected response after waiting");
+        assert!(matches!(response, TryRecvGcResponse::Response(_)), "expected response after waiting");
 
         gc.shutdown();
     }

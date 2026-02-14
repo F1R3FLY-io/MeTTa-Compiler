@@ -42,7 +42,7 @@ use super::MettaValue;
 use crate::backend::environment::multiplicity::{self, Multiplicity};
 use crate::backend::environment::mork_encoding;
 use crate::backend::environment::MultiplicityMatch;
-use crate::backend::mork_convert::metta_to_mork_bytes_pooled;
+use crate::backend::mork_convert::with_mork_bytes;
 use crate::backend::modules::{ModId, ModuleSpace};
 
 /// Generic version of MultiplicityMatch that works with any value type.
@@ -162,9 +162,9 @@ impl SpaceHandle {
         let sm = new_space_mapping();
         let mut pm = PathMap::new();
         for atom in &atoms {
-            if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, &sm) {
-                multiplicity::add_atom(&mut pm, &bytes);
-            }
+            let _ = with_mork_bytes(atom, &sm, |bytes| {
+                multiplicity::add_atom(&mut pm, bytes);
+            });
         }
         Self {
             id,
@@ -238,9 +238,9 @@ impl SpaceHandle {
                 let sm = new_space_mapping();
                 let mut pm = PathMap::new();
                 for atom in &module_atoms {
-                    if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, &sm) {
-                        multiplicity::add_atom(&mut pm, &bytes);
-                    }
+                    let _ = with_mork_bytes(atom, &sm, |bytes| {
+                        multiplicity::add_atom(&mut pm, bytes);
+                    });
                 }
                 Self {
                     id: self.id,
@@ -292,10 +292,10 @@ impl SpaceHandle {
                 shared_mapping,
                 ..
             } => {
-                if let Ok(bytes) = metta_to_mork_bytes_pooled(&atom, shared_mapping) {
+                let _ = with_mork_bytes(&atom, shared_mapping, |bytes| {
                     let mut pm = atoms.write();
-                    multiplicity::add_atom(&mut pm, &bytes);
-                }
+                    multiplicity::add_atom(&mut pm, bytes);
+                });
             }
             SpaceBacking::Module { space, .. } => {
                 let mut space = space.write();
@@ -313,17 +313,18 @@ impl SpaceHandle {
                 shared_mapping,
                 ..
             } => {
-                if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, shared_mapping) {
+                match with_mork_bytes(atom, shared_mapping, |bytes| {
                     let mut pm = atoms.write();
-                    let old_count = multiplicity::get_multiplicity(&pm, &bytes);
+                    let old_count = multiplicity::get_multiplicity(&pm, bytes);
                     if old_count > 0 {
-                        multiplicity::remove_atom(&mut pm, &bytes);
+                        multiplicity::remove_atom(&mut pm, bytes);
                         true
                     } else {
                         false
                     }
-                } else {
-                    false
+                }) {
+                    Ok(removed) => removed,
+                    Err(_) => false,
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -466,11 +467,12 @@ impl SpaceHandle {
                 shared_mapping,
                 ..
             } => {
-                if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, shared_mapping) {
+                match with_mork_bytes(atom, shared_mapping, |bytes| {
                     let pm = atoms.read();
-                    multiplicity::get_multiplicity(&pm, &bytes) > 0
-                } else {
-                    false
+                    multiplicity::get_multiplicity(&pm, bytes) > 0
+                }) {
+                    Ok(found) => found,
+                    Err(_) => false,
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -488,11 +490,12 @@ impl SpaceHandle {
                 shared_mapping,
                 ..
             } => {
-                if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, shared_mapping) {
+                match with_mork_bytes(atom, shared_mapping, |bytes| {
                     let pm = atoms.read();
-                    multiplicity::get_multiplicity(&pm, &bytes) as usize
-                } else {
-                    0
+                    multiplicity::get_multiplicity(&pm, bytes) as usize
+                }) {
+                    Ok(count) => count,
+                    Err(_) => 0,
                 }
             }
             SpaceBacking::Module { space, .. } => {

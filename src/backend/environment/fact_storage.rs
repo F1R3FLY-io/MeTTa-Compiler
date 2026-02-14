@@ -150,7 +150,7 @@ impl MettaEnvironment {
     /// Expected speedup: 3-10x for repeated ground patterns
     #[allow(dead_code)]
     pub(crate) fn metta_to_mork_bytes_cached(&self, value: &MettaValue) -> Result<Vec<u8>, String> {
-        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+        use crate::backend::mork_convert::with_mork_bytes;
 
         // Only cache ground (variable-free) patterns
         // Variable patterns need fresh ConversionContext for correct De Bruijn indices
@@ -171,9 +171,10 @@ impl MettaEnvironment {
             }
         }
 
-        // Cache miss or variable pattern - perform conversion
-        let mut ctx = ConversionContext::new();
-        let bytes = metta_to_mork_bytes(value, &self.shared_mapping, &mut ctx)?;
+        // Cache miss or variable pattern - perform conversion via callback (zero-copy from thread-local)
+        let bytes = with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            mork_bytes.to_vec()
+        })?;
 
         if is_ground {
             // Store ground patterns in cache for future use (write access)
@@ -391,35 +392,23 @@ impl MettaEnvironment {
 
         self.make_owned(); // CoW: ensure we own data before modifying
 
-        // OPTIMIZATION: Use direct MORK byte conversion
+        // OPTIMIZATION: Build temporary PathMap directly from callback (zero-copy per fact)
         use super::multiplicity::Multiplicity;
-        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+        use crate::backend::mork_convert::with_mork_bytes;
 
-        // Pre-convert all facts to MORK bytes (outside lock)
-        // This works for both ground terms AND variable-containing terms
-        // Variables are encoded using De Bruijn indices
         let sm = &self.shared_mapping;
-        let mork_facts: Vec<Vec<u8>> = facts
-            .iter()
-            .map(|fact| {
-                let mut ctx = ConversionContext::new();
-                metta_to_mork_bytes(fact, sm, &mut ctx)
-                    .map_err(|e| format!("MORK conversion failed for {:?}: {}", fact, e))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        trace!(
-            target: "mettatron::environment::add_facts_bulk",
-            facts_ctr = mork_facts.len(), "Pre-convert all facts to MORK bytes"
-        );
-
-        // STRATEGY 1: Simple iterator-based PathMap construction
-        // Build temporary PathMap outside the lock using individual inserts
-        // This is faster than anamorphism due to avoiding excessive cloning
         let mut fact_trie: PathMap<Multiplicity> = PathMap::new();
 
-        for mork_bytes in mork_facts {
-            fact_trie.insert(&mork_bytes, Multiplicity::new(1));
+        for fact in facts {
+            with_mork_bytes(fact, sm, |mork_bytes| {
+                fact_trie.insert(mork_bytes, Multiplicity::new(1));
+            })
+            .map_err(|e| format!("MORK conversion failed for {:?}: {}", fact, e))?;
         }
+        trace!(
+            target: "mettatron::environment::add_facts_bulk",
+            facts_ctr = facts.len(), "Converted all facts to MORK bytes"
+        );
 
         // Single lock acquisition → union → unlock
         // This is the only critical section, minimizing lock contention

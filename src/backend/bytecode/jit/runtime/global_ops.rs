@@ -62,19 +62,17 @@ pub unsafe extern "C" fn jit_runtime_load_global(
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
         let env_arc = bridge.environment();
-        let env_guard = env_arc.read();
+        let env_read = env_arc.read();
 
         // First check if there's a type annotation for this symbol
-        if let Ok(env_read) = env_guard {
-            if let Some(type_val) = env_read.get_type(&name) {
-                return metta_to_jit(&type_val).to_bits();
-            }
+        if let Some(type_val) = env_read.get_type(&name) {
+            return metta_to_jit(&type_val).to_bits();
+        }
 
-            // Check if the atom itself exists in the space
-            if env_read.has_fact(&name) {
-                // Return the atom itself as the value
-                return metta_to_jit(&MettaValue::Atom(name)).to_bits();
-            }
+        // Check if the atom itself exists in the space
+        if env_read.has_fact(&name) {
+            // Return the atom itself as the value
+            return metta_to_jit(&MettaValue::Atom(name)).to_bits();
         }
     }
 

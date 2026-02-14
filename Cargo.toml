@@ -148,6 +148,10 @@ toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 # Hex - Hex encoding for MORK bytes serialization
 hex = "0.4"
+# itoa - Fast integer-to-string formatting on stack (no heap allocation)
+itoa = "1"
+# ryu - Fast float-to-string formatting on stack (no heap allocation)
+ryu = "1"
 # Semver - Version constraint parsing and validation
 semver = "1.0"
 
@@ -210,6 +214,9 @@ parking_lot = "0.12"
 # libc - Low-level C bindings for mmap/munmap page allocation
 # Used by the GC slab allocator for guaranteed OS memory release
 libc = "0.2"
+
+# Signal handling for diagnostic dump (SIGTERM/SIGUSR1)
+signal-hook = "0.3"
 
 # portable-atomic - 128-bit atomics for lock-free Treiber stack (CMPXCHG16B / LL-SC)
 portable-atomic = { version = "1", features = ["fallback"] }

@@ -935,13 +935,13 @@ mod tests {
         // This test verifies that high-priority tasks tend to execute before low-priority
         // Note: Due to concurrency, this is probabilistic
         let pool = PriorityEvalThreadPool::new(1, SchedulerConfig::default()); // Single worker for determinism
-        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let order = Arc::new(Mutex::new(Vec::new()));
 
         // Submit low priority first, then high priority
         let order_clone = Arc::clone(&order);
         pool.spawn_with_priority(
             move || {
-                order_clone.lock().unwrap().push("low");
+                order_clone.lock().push("low");
             },
             10,
             TaskTypeId::Generic,
@@ -950,7 +950,7 @@ mod tests {
         let order_clone = Arc::clone(&order);
         pool.spawn_with_priority(
             move || {
-                order_clone.lock().unwrap().push("high");
+                order_clone.lock().push("high");
             },
             0,
             TaskTypeId::Generic,
@@ -959,7 +959,7 @@ mod tests {
         // Give time for tasks to execute
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let execution_order = order.lock().unwrap();
+        let execution_order = order.lock();
         // With single worker and immediate scheduling, high should execute first
         // (though timing may vary)
         assert_eq!(execution_order.len(), 2);

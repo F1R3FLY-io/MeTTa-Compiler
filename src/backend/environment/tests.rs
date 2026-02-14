@@ -433,10 +433,10 @@ fn stress_concurrent_clone_and_mutate() {
 #[test]
 fn integration_parallel_eval_with_dynamic_rules() {
     // Integration: Simulate parallel evaluation where each thread adds rules dynamically
-    use std::sync::Mutex as StdMutex;
+    use parking_lot::Mutex;
 
     let base_env = MettaEnvironment::default();
-    let results = StdArc::new(StdMutex::new(Vec::new()));
+    let results = StdArc::new(Mutex::new(Vec::new()));
     let num_threads = 4;
 
     let handles: Vec<_> = (0..num_threads)
@@ -452,7 +452,7 @@ fn integration_parallel_eval_with_dynamic_rules() {
                 }
 
                 let count = env.rule_count();
-                results.lock().unwrap().push(count);
+                results.lock().push(count);
             })
         })
         .collect();
@@ -462,7 +462,7 @@ fn integration_parallel_eval_with_dynamic_rules() {
     }
 
     // Each thread should have 10 rules
-    let results = results.lock().unwrap();
+    let results = results.lock();
     assert_eq!(
         results.len(),
         num_threads,

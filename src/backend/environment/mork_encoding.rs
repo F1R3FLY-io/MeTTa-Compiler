@@ -275,6 +275,41 @@ unsafe fn mork_expr_len(ptr: *const u8) -> usize {
     offset
 }
 
+/// Compute the byte length of one MORK expression starting at `bytes[0]`.
+///
+/// Traverses the tag structure (Arity/SymbolSize/NewVar/VarRef) to determine
+/// where the expression ends. No allocation, no value construction.
+///
+/// Returns 0 if the slice is empty. Returns a best-effort length on reserved bytes.
+///
+/// This is the safe, slice-based counterpart to `mork_expr_len(ptr)`.
+#[inline]
+pub(crate) fn mork_expr_byte_len(bytes: &[u8]) -> usize {
+    let mut offset = 0usize;
+    let mut depth = 1u32; // One expression to consume
+
+    while depth > 0 && offset < bytes.len() {
+        let byte = bytes[offset];
+        let tag = match maybe_byte_item(byte) {
+            Ok(t) => t,
+            Err(_) => return offset + 1, // Reserved byte — include it and stop
+        };
+        offset += 1;
+        depth -= 1;
+
+        match tag {
+            Tag::NewVar | Tag::VarRef(_) => {}
+            Tag::SymbolSize(size) => {
+                offset += size as usize;
+            }
+            Tag::Arity(arity) => {
+                depth += arity as u32;
+            }
+        }
+    }
+    offset
+}
+
 /// Convert MORK bytes directly to a generic value V without Expr wrapper.
 ///
 /// This is the zero-wrapper version that operates directly on byte slices.

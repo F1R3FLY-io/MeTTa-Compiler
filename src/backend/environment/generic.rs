@@ -288,6 +288,11 @@ where
 
     /// Current module path for relative path resolution
     pub(crate) current_module_path: Option<PathBuf>,
+
+    /// Cached MORK byte prefix for rules: [Arity(3)] + "=" symbol bytes.
+    /// Computed once at construction. Constant for the lifetime of the environment.
+    /// Used by `get_matching_rules_for_expr()` for trie prefix navigation.
+    pub(crate) rule_prefix: Vec<u8>,
 }
 
 impl<V, F> GenericEnvironment<V, F>
@@ -356,6 +361,23 @@ where
         // Register as GC root provider (no-op if V != MettaValue)
         crate::backend::models::gc_allocator::try_register_env_roots(&shared);
 
+        // Compute the MORK byte prefix for rules: [Arity(3)] + "=" symbol bytes.
+        // This is constant for the lifetime of the environment (determined by shared_mapping).
+        let rule_prefix = {
+            let eq_atom = factory.atom("=");
+            crate::backend::mork_convert::with_mork_bytes(
+                &eq_atom,
+                &shared_mapping,
+                |eq_bytes| {
+                    let mut prefix = Vec::with_capacity(1 + eq_bytes.len());
+                    prefix.push(0x03); // Arity(3) — compile-time constant for (= lhs rhs)
+                    prefix.extend_from_slice(eq_bytes);
+                    prefix
+                },
+            )
+            .unwrap_or_else(|_| vec![0x03]) // Fallback: just arity byte (should never happen)
+        };
+
         GenericEnvironment {
             shared,
             factory,
@@ -363,6 +385,7 @@ where
             owns_data: true,
             modified: AtomicBool::new(false),
             current_module_path: None,
+            rule_prefix,
         }
     }
 
@@ -485,6 +508,7 @@ where
             owns_data: true,
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
+            rule_prefix: self.rule_prefix.clone(),
         }
     }
 
@@ -516,6 +540,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
+                rule_prefix: self.rule_prefix.clone(),
             };
         }
 
@@ -531,6 +556,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
+                rule_prefix: self.rule_prefix.clone(),
             };
         }
 
@@ -543,6 +569,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
+                rule_prefix: self.rule_prefix.clone(),
             };
         }
 
@@ -555,6 +582,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: other.current_module_path.clone(),
+                rule_prefix: self.rule_prefix.clone(),
             };
         }
 
@@ -686,6 +714,7 @@ where
             owns_data: true,
             modified: AtomicBool::new(true),
             current_module_path: other.current_module_path.clone().or_else(|| self.current_module_path.clone()),
+            rule_prefix: self.rule_prefix.clone(),
         }
     }
 
@@ -790,6 +819,7 @@ where
             owns_data: false,
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
+            rule_prefix: self.rule_prefix.clone(),
         }
     }
 
@@ -956,6 +986,7 @@ where
             owns_data: true,
             modified: AtomicBool::new(true),
             current_module_path: last_env.current_module_path.clone().or_else(|| self.current_module_path.clone()),
+            rule_prefix: self.rule_prefix.clone(),
         }
     }
 
@@ -1031,7 +1062,9 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: clones do not own data initially
-            modified: AtomicBool::new(false),            current_module_path: self.current_module_path.clone(),
+            modified: AtomicBool::new(false),
+            current_module_path: self.current_module_path.clone(),
+            rule_prefix: self.rule_prefix.clone(),
         }
     }
 }

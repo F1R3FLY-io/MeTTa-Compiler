@@ -10,8 +10,15 @@
 //!
 //! # Rule Discovery
 //!
-//! Rules are discovered by iterating PathMap entries and filtering for (= lhs rhs)
-//! s-expressions. Bloom filter provides O(1) rejection for non-matching patterns.
+//! Rules are discovered via **trie prefix navigation**: the cached rule prefix
+//! `[Arity(3)] + "=" symbol bytes` navigates directly to rule entries, and an
+//! optional head+arity extension further narrows to rules matching a specific LHS head.
+//!
+//! LHS and RHS are deserialized independently from their contiguous byte ranges,
+//! bypassing the `"="` atom, outer SExpr wrapper, and `extract_rule_parts()`.
+//! Multiplicity is read in-place from the zipper's `val()`.
+//!
+//! Bloom filter provides O(1) rejection for non-matching head/arity combinations.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -22,7 +29,7 @@ use pathmap::PathMap;
 use tracing::trace;
 
 use super::generic::GenericEnvironment;
-use super::mork_encoding::mork_expr_to_generic_value;
+use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
 use super::multiplicity::{
     decrement_multiplicity, get_multiplicity, increment_multiplicity, set_multiplicity,
     Multiplicity,
@@ -45,6 +52,45 @@ fn extract_rule_parts<V: MettaValueTrait + Clone>(value: &V) -> Option<(V, V)> {
         }
     }
     None
+}
+
+/// Build the head+arity MORK byte prefix for targeted rule lookup.
+///
+/// Extends the cached rule prefix with `[Arity(arity+1)] + [head symbol MORK bytes]`.
+/// The MORK arity includes the head element, so MeTTa arity (excludes head) needs `+1`.
+///
+/// Returns `None` if the head is empty, arity exceeds the MORK 6-bit limit (63),
+/// or MORK serialization fails.
+fn build_head_arity_prefix<V, F>(
+    rule_prefix: &[u8],
+    head: &str,
+    arity: usize,
+    factory: &F,
+    sm: &mork_interning::SharedMappingHandle,
+) -> Option<Vec<u8>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if head.is_empty() {
+        return None;
+    }
+    let mork_arity = (arity + 1) as u8; // MORK arity includes head
+    if mork_arity >= 64 {
+        return None; // MORK arity limit (6 bits)
+    }
+
+    // Serialize head symbol to get its MORK bytes (SymbolSize tag + interned key)
+    let head_atom = factory.atom(head);
+    with_mork_bytes(&head_atom, sm, |head_bytes| {
+        let mut prefix = Vec::with_capacity(rule_prefix.len() + 1 + head_bytes.len());
+        prefix.extend_from_slice(rule_prefix);
+        // Arity tag: upper 2 bits = 00, lower 6 bits = arity value
+        prefix.push(mork_arity);
+        prefix.extend_from_slice(head_bytes);
+        prefix
+    })
+    .ok()
 }
 
 /// Iterator over rule heads with their arities and counts.
@@ -128,7 +174,7 @@ where
         self.modified.store(true, Ordering::Release);
     }
 
-    /// Get matching rules for an expression from PathMap.
+    /// Get matching rules for an expression from PathMap via trie prefix navigation.
     ///
     /// Returns `(lhs, rhs, multiplicity)` tuples for all rules whose LHS
     /// head symbol and arity match the given expression. The caller is
@@ -136,8 +182,15 @@ where
     /// candidates.
     ///
     /// # Performance
-    /// O(n) where n = number of rules. Bloom filter provides O(1)
-    /// rejection before iteration for non-matching head/arity combinations.
+    ///
+    /// Uses two-level trie prefix navigation instead of full PathMap iteration:
+    ///
+    /// 1. **Bloom filter** — O(1) rejection for non-matching head/arity combinations
+    /// 2. **Rule prefix** — `[Arity(3)] + "=" bytes` navigates past all non-rule entries
+    /// 3. **Head+arity prefix** — Further narrows to rules with matching LHS head and arity
+    /// 4. **Split deserialization** — LHS and RHS deserialized independently from byte ranges,
+    ///    never constructing the intermediate `(= LHS RHS)` value
+    /// 5. **In-place multiplicity** — Read directly from zipper `val()`, no separate lookup
     pub fn get_matching_rules_for_expr(&self, expr: &V) -> Vec<(V, V, u64)> {
         let head = expr.get_head_symbol().unwrap_or("");
         let arity = expr.get_arity();
@@ -155,35 +208,182 @@ where
         }
 
         let space = self.create_space();
+        let rule_prefix_len = self.rule_prefix.len();
         let mut rules: Vec<(V, V, u64)> = Vec::new();
 
-        // Iterate PathMap entries, filter for (= lhs rhs) rules
-        for (path_bytes, _) in space.btm.iter() {
-            let expr_ref = Expr {
-                ptr: path_bytes.as_ptr().cast_mut(),
-            };
-
-            if let Ok(value) = mork_expr_to_generic_value::<V, F, Multiplicity>(
-                &expr_ref, &space, &self.factory,
+        // 1. Head+arity-specific prefix navigation (most selective)
+        if !head.is_empty() {
+            if let Some(head_prefix) = build_head_arity_prefix::<V, F>(
+                &self.rule_prefix,
+                head,
+                arity,
+                &self.factory,
+                &self.shared_mapping,
             ) {
-                if let Some((lhs, rhs)) = extract_rule_parts(&value) {
-                    // Check if head/arity match before doing full pattern match
-                    let rule_head = lhs.get_head_symbol().unwrap_or("");
-                    let rule_arity = lhs.get_arity();
-
-                    // Match either same head+arity, or wildcard rule (no head)
-                    let head_matches = rule_head.is_empty()
-                        || (rule_head == head && rule_arity == arity);
-
-                    if head_matches {
-                        let multiplicity = get_multiplicity(&space.btm, &path_bytes).max(1);
-                        rules.push((lhs, rhs, multiplicity));
-                    }
-                }
+                self.collect_rules_from_prefix(
+                    &space,
+                    &head_prefix,
+                    rule_prefix_len,
+                    &mut rules,
+                );
             }
+        } else {
+            // No head info — collect all rules under the rule prefix
+            self.collect_rules_from_prefix(
+                &space,
+                &self.rule_prefix,
+                rule_prefix_len,
+                &mut rules,
+            );
         }
 
+        // 2. Collect wildcard rules (LHS is atom/variable, not S-expression)
+        self.collect_wildcard_rules(&space, &self.rule_prefix, rule_prefix_len, head, arity, &mut rules);
+
         rules
+    }
+
+    /// Collect rules from a trie subtree rooted at `prefix`.
+    ///
+    /// Navigates the trie to `prefix`, then for each entry:
+    /// 1. Splits the MORK path bytes into LHS and RHS ranges using `mork_expr_byte_len()`
+    /// 2. Deserializes LHS and RHS independently — never constructs `(= LHS RHS)`
+    /// 3. Reads multiplicity in-place from zipper `val()`
+    fn collect_rules_from_prefix(
+        &self,
+        space: &Space<Multiplicity>,
+        prefix: &[u8],
+        rule_prefix_len: usize,
+        rules: &mut Vec<(V, V, u64)>,
+    ) {
+        use pathmap::zipper::*;
+        let mut rz = space.btm.read_zipper();
+        let descended = rz.descend_to_existing(prefix);
+        if descended < prefix.len() {
+            return; // Prefix doesn't exist in trie
+        }
+        while rz.to_next_val() {
+            let path = rz.path();
+            if !path.starts_with(prefix) {
+                break; // Left the subtree
+            }
+            // Multiplicity directly from zipper value (no separate lookup)
+            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1).max(1);
+
+            // Split path into LHS and RHS byte ranges.
+            // path layout: [Arity(3)] ["=" bytes] [LHS bytes] [RHS bytes]
+            //              |--- rule_prefix_len --|
+            if path.len() <= rule_prefix_len {
+                continue; // Path too short to contain LHS+RHS
+            }
+            let lhs_start = rule_prefix_len;
+            let lhs_byte_len = mork_expr_byte_len(&path[lhs_start..]);
+            let rhs_start = lhs_start + lhs_byte_len;
+
+            if rhs_start >= path.len() || lhs_byte_len == 0 {
+                continue; // Malformed: no RHS bytes
+            }
+
+            // Deserialize LHS and RHS independently — no intermediate (= LHS RHS)
+            let lhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                &path[lhs_start..rhs_start],
+                space,
+                &self.factory,
+            ) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let rhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                &path[rhs_start..],
+                space,
+                &self.factory,
+            ) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            rules.push((lhs, rhs, multiplicity));
+        }
+    }
+
+    /// Collect wildcard rules (LHS is atom/variable, not S-expression).
+    ///
+    /// Wildcard rules like `(= $x $x)` have a non-S-expression LHS. Their LHS byte
+    /// starts with `SymbolSize` (0xC1-0xFF), `NewVar` (0xC0), or `VarRef` (0x80-0xBF),
+    /// not `Arity` (0x00-0x3F). After collecting head-specific matches, this scans
+    /// the rule prefix subtree for non-Arity LHS entries.
+    ///
+    /// Rules are filtered by head+arity to match the old behavior:
+    /// - Variable LHS (no head symbol) matches everything
+    /// - Atom LHS with a specific head matches only when head+arity agree
+    fn collect_wildcard_rules(
+        &self,
+        space: &Space<Multiplicity>,
+        rule_prefix: &[u8],
+        rule_prefix_len: usize,
+        query_head: &str,
+        query_arity: usize,
+        rules: &mut Vec<(V, V, u64)>,
+    ) {
+        use pathmap::zipper::*;
+        let mut rz = space.btm.read_zipper();
+        let descended = rz.descend_to_existing(rule_prefix);
+        if descended < rule_prefix.len() {
+            return;
+        }
+        while rz.to_next_val() {
+            let path = rz.path();
+            if !path.starts_with(rule_prefix) {
+                break;
+            }
+            if path.len() <= rule_prefix_len {
+                continue;
+            }
+            let lhs_first_byte = path[rule_prefix_len];
+            // Arity tag (0x00-0x3F) = S-expr LHS → skip (handled by head_prefix or rule_prefix)
+            if (lhs_first_byte & 0b1100_0000) == 0b0000_0000 {
+                continue;
+            }
+
+            // Atom/variable LHS — potential wildcard rule. Split and deserialize.
+            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1).max(1);
+            let lhs_start = rule_prefix_len;
+            let lhs_byte_len = mork_expr_byte_len(&path[lhs_start..]);
+            let rhs_start = lhs_start + lhs_byte_len;
+
+            if rhs_start >= path.len() || lhs_byte_len == 0 {
+                continue;
+            }
+
+            let lhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                &path[lhs_start..rhs_start],
+                space,
+                &self.factory,
+            ) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Filter by head+arity: variable LHS (no head) matches everything,
+            // atom LHS with a specific head must match the query head+arity.
+            let rule_head = lhs.get_head_symbol().unwrap_or("");
+            if !rule_head.is_empty()
+                && (rule_head != query_head || lhs.get_arity() != query_arity)
+            {
+                continue;
+            }
+
+            let rhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                &path[rhs_start..],
+                space,
+                &self.factory,
+            ) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            rules.push((lhs, rhs, multiplicity));
+        }
     }
 }
 

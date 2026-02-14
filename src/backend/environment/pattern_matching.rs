@@ -15,7 +15,7 @@
 //! Call `.expand()` on each `MultiplicityMatch` to get an iterator of cloned values,
 //! or use `.into_iter().flat_map(|m| m.expand()).collect()` to expand all results.
 
-use mork_expr::Expr;
+use mork_expr::{maybe_byte_item, Expr};
 #[allow(unused_imports)]
 use pathmap::zipper::ZipperValues;
 use tracing::trace;
@@ -101,6 +101,20 @@ impl MettaEnvironment {
                         // multiplicity in the same PathMap that query_multi is traversing.
                         // SAFETY: matched_expr.ptr points to valid MORK bytes within PathMap
                         // memory. The span() traversal is bounded by the expression's length.
+
+                        // Validate matched_expr starts with a valid MORK tag before calling
+                        // span() — span() uses ExprZipper::new() which calls byte_item()
+                        // and panics on reserved bytes (0x40-0x7F).
+                        let first_byte = unsafe { *matched_expr.ptr };
+                        if let Err(reserved) = maybe_byte_item(first_byte) {
+                            tracing::warn!(
+                                target: "mettatron::match_space_query_multi",
+                                "Matched expr has reserved first byte 0x{:02x}, skipping",
+                                reserved
+                            );
+                            return true; // Continue searching
+                        }
+
                         let mork_bytes = unsafe { &*matched_expr.span() };
                         let multiplicity = get_multiplicity(&space.btm, mork_bytes).max(1) as usize;
 

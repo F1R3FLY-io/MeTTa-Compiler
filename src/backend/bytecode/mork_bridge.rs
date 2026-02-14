@@ -28,7 +28,8 @@ use parking_lot::RwLock;
 use tracing::warn;
 
 use crate::backend::environment::MettaEnvironment;
-use crate::backend::eval::pattern_match;
+// Disabled: pattern_match no longer needed — match_rules_native handles matching at byte level.
+// use crate::backend::eval::pattern_match;
 use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 // Disabled: MettaValueTrait import no longer needed — MettaValue has inherent inner() method.
 // use crate::backend::models::metta_value_trait::MettaValueTrait;
@@ -219,34 +220,29 @@ impl MorkBridge {
         compiled
     }
 
-    /// Find matching rules using the same logic as the tree-walker
+    /// Find matching rules using native byte-level matching via RuleIndex + extract_data.
     fn find_matching_rules(
         &self,
         expr: &MettaValue,
         env: &MettaEnvironment,
     ) -> Vec<(MettaValue, MettaValue, Bindings)> {
-        // Get candidate rules from environment (indexed lookup with bloom filter)
-        let matching_rules = env.get_matching_rules_for_expr(expr);
+        use crate::backend::eval::bindings_generic::apply_bindings_generic;
 
-        // Collect matching rules with bindings
-        let mut matches: Vec<(MettaValue, MettaValue, Bindings, usize)> = Vec::new();
-        for (lhs, rhs, _multiplicity) in matching_rules {
-            if let Some(bindings) = pattern_match(&lhs, expr) {
-                let specificity = pattern_specificity(&lhs);
-                matches.push((lhs, rhs, bindings, specificity));
-            }
-        }
+        let results = env.match_rules_native(expr, apply_bindings_generic);
 
-        // Find best specificity and filter
-        if let Some(best_spec) = matches.iter().map(|(_, _, _, spec)| *spec).min() {
-            matches
-                .into_iter()
-                .filter(|(_, _, _, spec)| *spec == best_spec)
-                .map(|(lhs, rhs, bindings, _)| (lhs, rhs, bindings))
-                .collect()
-        } else {
-            Vec::new()
-        }
+        results
+            .into_iter()
+            .map(|r| {
+                // Convert GenericBindings<MettaValue> → Bindings (SmartBindings)
+                let mut bindings = Bindings::new();
+                for (name, value) in r.bindings.iter() {
+                    bindings.insert(name.to_string(), value.clone());
+                }
+                // lhs = rhs_template (for CompiledRule.lhs debugging field)
+                // rhs = rhs_template (for get_or_compile_rule caching — original var names → stable hash)
+                (r.rhs_template.clone(), r.rhs_template, bindings)
+            })
+            .collect()
     }
 
     /// Get a compiled rule body from cache, or compile it
@@ -307,9 +303,13 @@ impl MorkBridge {
 
 /// Calculate pattern specificity (lower = more specific)
 ///
+/// **NOTE**: Superseded by `count_newvar_tags()` in `rule_management.rs` which computes
+/// specificity at insertion time from De Bruijn bytes. Retained for reference.
+///
 /// Specificity is determined by:
 /// - Number of variables (more variables = less specific)
 /// - Wildcard presence (wildcards are least specific)
+#[allow(dead_code)]
 fn pattern_specificity(pattern: &MettaValue) -> usize {
     match pattern.inner() {
         MettaValueInner::Atom(name) if *name == "_" => 1000, // Wildcard - least specific

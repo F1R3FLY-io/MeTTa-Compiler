@@ -1,7 +1,7 @@
 //! Rule management operations for Environment.
 //!
 //! Provides methods for adding, indexing, and querying rules.
-//! Rules are stored as (= lhs rhs) in MORK PathMap as MORK bytes.
+//! Rules are stored as (= lhs rhs) in MORK PathMap as De Bruijn-encoded MORK bytes.
 //!
 //! # Multiplicity Tracking
 //!
@@ -10,39 +10,46 @@
 //!
 //! # Rule Discovery
 //!
-//! Rules are discovered via **trie prefix navigation**: the cached rule prefix
-//! `[Arity(3)] + "=" symbol bytes` navigates directly to rule entries, and an
-//! optional head+arity extension further narrows to rules matching a specific LHS head.
+//! Rules are discovered via a two-level index:
 //!
-//! LHS and RHS are deserialized independently from their contiguous byte ranges,
-//! bypassing the `"="` atom, outer SExpr wrapper, and `extract_rule_parts()`.
-//! Multiplicity is read in-place from the zipper's `val()`.
+//! 1. **Bloom filter** — O(1) rejection for non-matching head/arity combinations
+//! 2. **RuleIndex** — HashMap-backed `(head, arity) → Vec<RuleEntry>` for O(1) candidate lookup
+//! 3. **MORK `extract_data()`** — O(n) byte-level structural pattern matching per candidate
+//! 4. **MettaValue binding application** — `apply_bindings_generic()` on cached RHS template
 //!
-//! Bloom filter provides O(1) rejection for non-matching head/arity combinations.
+//! Rules are stored in PathMap with De Bruijn encoding (via `with_mork_query_bytes`).
+//! The RuleIndex caches De Bruijn bytes and metadata at insertion time for zero-deserialization
+//! matching. Only the final matched result is deserialized to MettaValue.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use mork::space::Space;
-use mork_expr::Expr;
-use pathmap::PathMap;
+use mork_expr::{maybe_byte_item, Expr, ExprZipper};
+// Disabled: PathMap no longer directly constructed in this module — add_rules_bulk now
+// delegates to add_rule() for consistent De Bruijn encoding.
+// use pathmap::PathMap;
+use smallvec::SmallVec;
 use tracing::trace;
 
 use super::generic::GenericEnvironment;
 use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
+// Disabled: mork_expr_to_generic_value no longer used directly — deserialization happens via
+// mork_bytes_to_generic_value for individual binding bytes.
+// use super::mork_encoding::mork_expr_to_generic_value;
 use super::multiplicity::{
     decrement_multiplicity, get_multiplicity, increment_multiplicity, set_multiplicity,
     Multiplicity,
 };
 use super::{MettaEnvironment, MettaValue};
-use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
-use crate::backend::mork_convert::with_mork_bytes;
+use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
 
 /// Extract (lhs, rhs) from a deserialized rule value `(= lhs rhs)`.
 ///
 /// Returns `Some((lhs, rhs))` if the value is an s-expression with 3 elements
 /// where the first element is the atom `"="`.
-fn extract_rule_parts<V: MettaValueTrait + Clone>(value: &V) -> Option<(V, V)> {
+pub(crate) fn extract_rule_parts<V: MettaValueTrait + Clone>(value: &V) -> Option<(V, V)> {
     let children = value.as_sexpr()?;
     if children.len() == 3 {
         if let Some(op) = children[0].as_atom() {
@@ -54,7 +61,301 @@ fn extract_rule_parts<V: MettaValueTrait + Clone>(value: &V) -> Option<(V, V)> {
     None
 }
 
+// ============================================================================
+// RuleIndex — In-memory index for O(1) rule lookup + byte-level matching
+// ============================================================================
+
+/// Result of a native rule match via `match_rules_native()`.
+///
+/// Contains the instantiated RHS (bindings applied), the original RHS template
+/// (for bytecode compilation caching), and named bindings (for bytecode VM stack frames).
+#[derive(Debug, Clone)]
+pub struct RuleMatchResult<V: MettaValueTrait + Clone> {
+    /// RHS with bindings applied (for trampoline evaluation)
+    pub instantiated_rhs: V,
+    /// Original RHS template with original variable names (for bytecode compilation caching)
+    pub rhs_template: V,
+    /// Named bindings ($x -> value, for bytecode VM stack frames)
+    pub bindings: GenericBindings<V>,
+    /// How many times this rule was defined (multiplicity)
+    pub multiplicity: u64,
+}
+
+/// A single rule entry in the RuleIndex.
+///
+/// Caches both the original MettaValues (for display, debugging, bytecode VM) and the
+/// De Bruijn-encoded bytes (for MORK `extract_data()` byte-level matching).
+#[derive(Debug, Clone)]
+pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
+    // --- Cached MettaValues (original variable names) ---
+    /// LHS pattern with original variable names (for display, debugging)
+    pub lhs: V,
+    /// RHS template with original variable names (for bytecode compilation/caching)
+    pub rhs: V,
+
+    // --- De Bruijn bytes (for extract_data matching) ---
+    /// LHS with NewVar/VarRef De Bruijn encoding (extracted from PathMap key)
+    pub lhs_debruijn: Vec<u8>,
+    /// De Bruijn bytes for the full rule `(= lhs rhs)` as stored in PathMap.
+    /// Kept for future use with MORK `substitute()` optimization.
+    #[allow(dead_code)]
+    pub rule_debruijn: Vec<u8>,
+
+    // --- Metadata ---
+    /// De Bruijn index → original variable name (e.g., "$x", "$y")
+    /// Only contains variables from LHS (used for building named bindings)
+    pub var_names: Vec<String>,
+    /// Indices of `_` wildcards (skip these in named bindings)
+    pub wildcard_indices: SmallVec<[u8; 4]>,
+    /// Precomputed specificity: count of NewVar tags in LHS De Bruijn bytes
+    /// Lower = more specific (fewer variables)
+    pub specificity: usize,
+    /// How many times this rule was added (synced with PathMap multiplicity)
+    pub multiplicity: u64,
+}
+
+/// Lightweight in-memory index for O(1) rule lookup + MORK byte-level matching.
+///
+/// Populated at `add_rule()` time. Authoritative source for rule queries.
+/// PathMap remains the storage-of-record (for `match_space`, serialization).
+///
+/// ## Indexing Strategy
+///
+/// Rules are indexed by `(head_symbol, arity)` for O(1) lookup. Rules with
+/// non-S-expression LHS (e.g., `(= $x $x)`) are stored in a separate `wildcard`
+/// vec and included in all query results since they can match any expression.
+///
+/// ## Duplicate Detection
+///
+/// When `add_rule()` is called with the same `(lhs, rhs)` (by `PartialEq`),
+/// the existing entry's multiplicity is incremented rather than creating a duplicate.
+#[derive(Debug, Clone)]
+pub(crate) struct RuleIndex<V: MettaValueTrait + Clone> {
+    /// Rules indexed by (head_symbol, arity) for O(1) lookup.
+    by_head_arity: HashMap<(String, usize), Vec<RuleEntry<V>>>,
+
+    /// Rules with non-S-expression LHS (atoms, variables like `$x`).
+    /// Always included in query results since they can match any expression.
+    wildcard: Vec<RuleEntry<V>>,
+}
+
+impl<V: MettaValueTrait + Clone> RuleIndex<V> {
+    /// Create a new empty RuleIndex.
+    pub fn new() -> Self {
+        RuleIndex {
+            by_head_arity: HashMap::new(),
+            wildcard: Vec::new(),
+        }
+    }
+
+    /// Insert a rule entry, or increment multiplicity if a duplicate exists.
+    ///
+    /// Duplicate detection uses `PartialEq` on `(lhs, rhs)` MettaValues.
+    /// If `head` is `Some`, indexes by `(head, arity)`. Otherwise adds to wildcard list.
+    pub fn add_rule(
+        &mut self,
+        head: Option<&str>,
+        arity: usize,
+        entry: RuleEntry<V>,
+    ) {
+        let entries = match head {
+            Some(h) => self.by_head_arity
+                .entry((h.to_string(), arity))
+                .or_insert_with(Vec::new),
+            None => &mut self.wildcard,
+        };
+
+        // Check for duplicate (same LHS + RHS by structural equality)
+        for existing in entries.iter_mut() {
+            if existing.lhs == entry.lhs && existing.rhs == entry.rhs {
+                existing.multiplicity += 1;
+                return;
+            }
+        }
+
+        entries.push(entry);
+    }
+
+    /// Remove a rule by decrementing multiplicity. Returns true if the entry was removed entirely.
+    pub fn remove_rule(&mut self, lhs: &V, rhs: &V) -> bool {
+        // Search in all buckets
+        for entries in self.by_head_arity.values_mut() {
+            if let Some(pos) = entries.iter().position(|e| &e.lhs == lhs && &e.rhs == rhs) {
+                if entries[pos].multiplicity > 1 {
+                    entries[pos].multiplicity -= 1;
+                    return false;
+                } else {
+                    entries.remove(pos);
+                    return true;
+                }
+            }
+        }
+        // Check wildcard
+        if let Some(pos) = self.wildcard.iter().position(|e| &e.lhs == lhs && &e.rhs == rhs) {
+            if self.wildcard[pos].multiplicity > 1 {
+                self.wildcard[pos].multiplicity -= 1;
+                return false;
+            } else {
+                self.wildcard.remove(pos);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get candidate rules for the given (head, arity) pair.
+    ///
+    /// Returns an iterator over head-specific rules chained with wildcard rules.
+    /// Callers should use `extract_data` on each candidate's `lhs_debruijn` bytes.
+    pub fn get_candidates(&self, head: &str, arity: usize) -> impl Iterator<Item = &RuleEntry<V>> {
+        let head_specific = self.by_head_arity
+            .get(&(head.to_string(), arity))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        head_specific.iter().chain(self.wildcard.iter())
+    }
+
+    /// Get all rules (for no-head queries).
+    pub fn get_all_rules(&self) -> impl Iterator<Item = &RuleEntry<V>> {
+        self.by_head_arity.values()
+            .flat_map(|v| v.iter())
+            .chain(self.wildcard.iter())
+    }
+
+    /// Total number of rule entries (not counting multiplicity).
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.by_head_arity.values().map(|v| v.len()).sum::<usize>() + self.wildcard.len()
+    }
+
+    /// Check if the index is empty.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.by_head_arity.is_empty() && self.wildcard.is_empty()
+    }
+
+    /// Clear the index.
+    pub fn clear(&mut self) {
+        self.by_head_arity.clear();
+        self.wildcard.clear();
+    }
+}
+
+/// Validate that ALL tag bytes in a MORK expression are valid (no reserved bytes 0x40-0x7F).
+///
+/// Uses the same traversal logic as `mork_expr_byte_len()`. Returns `Ok(len)` if all
+/// bytes are valid MORK tags, or `Err((offset, byte))` for the first reserved byte found.
+///
+/// This is used as a diagnostic tool to catch byte misalignment issues before they
+/// cause panics in `ExprZipper::new()` or `ExprZipper::tag()` (which call `byte_item()`).
+#[cfg(any(debug_assertions, test))]
+fn validate_mork_bytes(bytes: &[u8]) -> Result<usize, (usize, u8)> {
+    use mork_expr::Tag;
+    let mut offset = 0usize;
+    let mut depth = 1u32;
+
+    while depth > 0 && offset < bytes.len() {
+        let byte = bytes[offset];
+        let tag = match maybe_byte_item(byte) {
+            Ok(t) => t,
+            Err(reserved) => return Err((offset, reserved)),
+        };
+        offset += 1;
+        depth -= 1;
+
+        match tag {
+            Tag::NewVar | Tag::VarRef(_) => {}
+            Tag::SymbolSize(size) => {
+                let end = offset + size as usize;
+                if end > bytes.len() {
+                    // Symbol data extends past the buffer — truncated expression
+                    return Err((offset - 1, byte));
+                }
+                offset = end;
+            }
+            Tag::Arity(arity) => {
+                depth += arity as u32;
+            }
+        }
+    }
+
+    if depth > 0 {
+        // Expression is incomplete — ran out of bytes before all children were consumed
+        return Err((offset, 0xFF));
+    }
+
+    Ok(offset)
+}
+
+/// Count the number of NewVar tags in MORK bytes (used for specificity computation).
+///
+/// Each NewVar tag (0xC0) introduces a new variable binding position.
+/// Fewer NewVar tags = more specific pattern (more concrete structure).
+///
+/// Uses `maybe_byte_item()` to validate the first byte before creating an `ExprZipper`.
+/// Returns 0 if the bytes are empty or start with a reserved byte.
+fn count_newvar_tags(bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
+        return 0;
+    }
+    // Validate first byte is a valid MORK tag before calling ExprZipper::new()
+    // (which uses byte_item() and panics on reserved bytes 0x40-0x7F)
+    if let Err(reserved) = maybe_byte_item(bytes[0]) {
+        tracing::warn!(
+            target: "mettatron::count_newvar_tags",
+            "LHS De Bruijn bytes start with reserved byte 0x{:02x}, skipping",
+            reserved
+        );
+        return 0;
+    }
+    let mut count = 0;
+    let expr = Expr { ptr: bytes.as_ptr().cast_mut() };
+    let mut ez = ExprZipper::new(expr);
+    loop {
+        if ez.tag() == mork_expr::Tag::NewVar {
+            count += 1;
+        }
+        if !ez.next() {
+            break;
+        }
+    }
+    count
+}
+
+/// Build a list of original variable names from the ConversionContext,
+/// identifying wildcard indices (anonymous variables from `_`).
+///
+/// Returns `(var_names, wildcard_indices)` where:
+/// - `var_names[i]` is the full variable name including `$` prefix for De Bruijn index `i`
+/// - `wildcard_indices` contains indices of anonymous wildcard variables
+fn build_var_names_and_wildcards(
+    ctx_var_names: &[String],
+    lhs_var_count: usize,
+) -> (Vec<String>, SmallVec<[u8; 4]>) {
+    let mut var_names = Vec::with_capacity(lhs_var_count);
+    let mut wildcard_indices = SmallVec::new();
+
+    for (i, name) in ctx_var_names.iter().enumerate() {
+        if i >= lhs_var_count {
+            break;
+        }
+        if name.starts_with("__anon") {
+            // Wildcard _ was encoded as __anonN
+            var_names.push("_".to_string());
+            wildcard_indices.push(i as u8);
+        } else {
+            // Regular variable — restore the $ prefix
+            var_names.push(format!("${}", name));
+        }
+    }
+
+    (var_names, wildcard_indices)
+}
+
 /// Build the head+arity MORK byte prefix for targeted rule lookup.
+///
+/// **NOTE**: Superseded by `RuleIndex` for the primary hot path. Retained for
+/// `get_matching_rules_for_expr()` fallback used in tests and `match_space` compatibility.
 ///
 /// Extends the cached rule prefix with `[Arity(arity+1)] + [head symbol MORK bytes]`.
 /// The MORK arity includes the head element, so MeTTa arity (excludes head) needs `+1`.
@@ -133,7 +434,10 @@ where
 {
     /// Add a rule to the environment.
     ///
-    /// The rule is stored as `(= lhs rhs)` in the MORK PathMap.
+    /// The rule is stored as `(= lhs rhs)` in the MORK PathMap using De Bruijn encoding
+    /// (via `with_mork_query_bytes`). The RuleIndex is populated with cached MettaValues,
+    /// De Bruijn bytes, and metadata for O(1) lookup + byte-level matching.
+    ///
     /// Bloom filter is updated for O(1) rejection in match_space().
     ///
     /// # Arguments
@@ -155,12 +459,124 @@ where
         // Create rule s-expression: (= lhs rhs)
         let rule_sexpr = self.factory.sexpr(vec![
             self.factory.atom("="),
-            lhs,
-            rhs,
+            lhs.clone(),
+            rhs.clone(),
         ]);
 
-        // Add to MORK Space (handles MORK bytes conversion and PathMap insertion)
-        self.add_to_space(&rule_sexpr);
+        // Convert to De Bruijn bytes and insert into PathMap + RuleIndex
+        let rule_prefix_len = self.rule_prefix.len();
+        let result = with_mork_query_bytes(
+            &rule_sexpr,
+            &self.shared_mapping,
+            |debruijn_bytes, ctx| {
+                // 1. Insert De Bruijn bytes into PathMap (increment multiplicity)
+                {
+                    let mut btm = self.shared.btm.write();
+                    super::multiplicity::add_atom(&mut btm, debruijn_bytes);
+                }
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+                // 2. Split De Bruijn bytes into LHS and RHS ranges
+                // Layout: [Arity(3)] ["=" symbol bytes] [LHS bytes] [RHS bytes]
+                //         |---------- rule_prefix_len --|
+                if debruijn_bytes.len() <= rule_prefix_len {
+                    return; // Shouldn't happen for valid rules
+                }
+
+                // Validate that rule_prefix matches the start of debruijn_bytes.
+                // This catches interning inconsistencies between with_mork_bytes (used for
+                // prefix computation) and with_mork_query_bytes (used for rule encoding).
+                #[cfg(debug_assertions)]
+                {
+                    let prefix = &self.rule_prefix;
+                    let actual_prefix = &debruijn_bytes[..prefix.len().min(debruijn_bytes.len())];
+                    assert_eq!(
+                        actual_prefix, &prefix[..],
+                        "rule_prefix mismatch: debruijn_bytes prefix doesn't match pre-computed rule_prefix.\n\
+                         Expected: {:02x?}\n\
+                         Actual:   {:02x?}\n\
+                         Full debruijn_bytes (first 32): {:02x?}",
+                        prefix,
+                        actual_prefix,
+                        &debruijn_bytes[..debruijn_bytes.len().min(32)]
+                    );
+                }
+
+                let lhs_start = rule_prefix_len;
+                let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
+                let _rhs_start = lhs_start + lhs_byte_len;
+
+                // Validate LHS byte range, first byte, and ALL bytes
+                #[cfg(debug_assertions)]
+                {
+                    if lhs_start + lhs_byte_len > debruijn_bytes.len() {
+                        panic!(
+                            "LHS byte range {}..{} exceeds debruijn_bytes len {}",
+                            lhs_start, lhs_start + lhs_byte_len, debruijn_bytes.len()
+                        );
+                    }
+                    let first_lhs_byte = debruijn_bytes[lhs_start];
+                    if let Err(reserved) = maybe_byte_item(first_lhs_byte) {
+                        panic!(
+                            "LHS starts with reserved byte 0x{:02x} at offset {} in {:02x?}",
+                            reserved, lhs_start, &debruijn_bytes[..debruijn_bytes.len().min(32)]
+                        );
+                    }
+                }
+
+                // Extract LHS De Bruijn bytes with one extra zero byte of padding.
+                // See the comment on expr_bytes_owned in match_rules_native() for why
+                // padding is needed (ExprZipper::gnext reads one byte past the end).
+                let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
+                lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
+                lhs_debruijn.push(0x00); // Padding byte for ExprZipper read-past-end safety
+
+                // Validate ALL bytes in lhs_debruijn are valid MORK (no reserved 0x40-0x7F)
+                #[cfg(debug_assertions)]
+                {
+                    if let Err((off, byte)) = validate_mork_bytes(&lhs_debruijn) {
+                        panic!(
+                            "lhs_debruijn has invalid byte 0x{:02x} at offset {} (len={}).\n\
+                             lhs_debruijn: {:02x?}\n\
+                             full debruijn_bytes (first 64): {:02x?}\n\
+                             rule_prefix_len: {}, lhs_start: {}, lhs_byte_len: {}",
+                            byte, off, lhs_debruijn.len(),
+                            &lhs_debruijn[..lhs_debruijn.len().min(32)],
+                            &debruijn_bytes[..debruijn_bytes.len().min(64)],
+                            rule_prefix_len, lhs_start, lhs_byte_len
+                        );
+                    }
+                }
+
+                // 3. Compute metadata from De Bruijn encoding
+                let specificity = count_newvar_tags(&lhs_debruijn);
+                let lhs_var_count = specificity; // each NewVar in LHS introduces a variable
+                let (var_names, wildcard_indices) =
+                    build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
+
+                // 4. Populate RuleIndex
+                let entry = RuleEntry {
+                    lhs: lhs.clone(),
+                    rhs: rhs.clone(),
+                    lhs_debruijn,
+                    rule_debruijn: debruijn_bytes.to_vec(),
+                    var_names,
+                    wildcard_indices,
+                    specificity,
+                    multiplicity: 1,
+                };
+                self.shared.rule_index.write().add_rule(
+                    head_owned.as_deref(),
+                    arity,
+                    entry,
+                );
+            },
+        );
+
+        // Fallback for expressions that can't be MORK-encoded (arity >= 64)
+        if result.is_err() {
+            self.add_to_space(&rule_sexpr);
+        }
 
         // Update bloom filter with (head, arity) for O(1) match_space() rejection
         if let Some(ref head) = head_owned {
@@ -174,23 +590,220 @@ where
         self.modified.store(true, Ordering::Release);
     }
 
+    /// Match rules natively using MORK byte-level `extract_data()` for pattern matching.
+    ///
+    /// This replaces the old pipeline of:
+    /// 1. `get_matching_rules_for_expr()` → trie traversal + LHS/RHS deserialization
+    /// 2. `pattern_match_generic()` → MettaValue-level structural comparison
+    /// 3. `apply_bindings_generic()` → MettaValue-level binding substitution
+    ///
+    /// New pipeline:
+    /// 1. **Bloom filter** — O(1) rejection by (head, arity)
+    /// 2. **RuleIndex lookup** — O(1) HashMap lookup for `(head, arity) → Vec<RuleEntry>`
+    /// 3. **Serialize expr ONCE** — `with_mork_bytes(expr)` → expr_bytes
+    /// 4. **`extract_data()`** — O(n) byte-level pattern matching per candidate (no deserialization)
+    /// 5. **Specificity filter** — Keep only best (lowest) specificity matches
+    /// 6. **Deserialize bindings** — Only for successful matches
+    /// 7. **`apply_bindings_generic()`** — Apply bindings to cached RHS MettaValue
+    ///
+    /// ## Performance
+    ///
+    /// Eliminates LHS deserialization per candidate (~27% of old wall time),
+    /// trie traversal page faults (~23%), and MettaValue-level pattern matching (~15%).
+    pub fn match_rules_native(
+        &self,
+        expr: &V,
+        apply_bindings: impl Fn(&V, &GenericBindings<V>, &F) -> V,
+    ) -> Vec<RuleMatchResult<V>> {
+        let head = expr.get_head_symbol().unwrap_or("");
+        let arity = expr.get_arity();
+
+        // Bloom filter O(1) rejection
+        if !head.is_empty() {
+            if !self
+                .shared
+                .head_arity_bloom
+                .read()
+                .may_contain(head.as_bytes(), arity as u8)
+            {
+                return Vec::new();
+            }
+        }
+
+        // Serialize the expression to MORK bytes ONCE (literal encoding — concrete data)
+        //
+        // IMPORTANT: One extra zero byte is appended as padding. MORK's ExprZipper::gnext()
+        // reads one byte past the last element of any S-expression to check if the next
+        // sibling is an Arity tag. When expressions are embedded in PathMap memory, this
+        // read is harmless (it reads a byte from the parent structure). But for standalone
+        // Vec<u8> buffers, this reads past the allocation — causing UB and panics on
+        // reserved bytes (0x40-0x7F) under valgrind. A trailing 0x00 is Arity(0), which
+        // is valid and harmless (just pushes an empty breadcrumb that gets popped immediately).
+        let expr_bytes_owned: Vec<u8> = match with_mork_bytes(expr, &self.shared_mapping, |bytes| {
+            let mut padded = Vec::with_capacity(bytes.len() + 1);
+            padded.extend_from_slice(bytes);
+            padded.push(0x00); // Padding byte for ExprZipper read-past-end safety
+            padded
+        }) {
+            Ok(bytes) => bytes,
+            Err(_) => return Vec::new(), // Can't serialize = no matches possible
+        };
+
+        // Validate expr_bytes_owned contains valid MORK bytes (no reserved 0x40-0x7F)
+        #[cfg(debug_assertions)]
+        {
+            // Validate excluding the padding byte
+            if let Err((off, byte)) = validate_mork_bytes(&expr_bytes_owned[..expr_bytes_owned.len() - 1]) {
+                panic!(
+                    "expr_bytes_owned has invalid byte 0x{:02x} at offset {} (len={}).\n\
+                     expr_bytes: {:02x?}\n\
+                     expr: {:?}",
+                    byte, off, expr_bytes_owned.len() - 1,
+                    &expr_bytes_owned[..expr_bytes_owned.len().min(64)],
+                    expr
+                );
+            }
+        }
+
+        // Get candidates from RuleIndex (read lock — multiple concurrent readers OK)
+        let rule_index = self.shared.rule_index.read();
+        let candidates: Vec<&RuleEntry<V>> = if !head.is_empty() {
+            rule_index.get_candidates(head, arity).collect()
+        } else {
+            rule_index.get_all_rules().collect()
+        };
+
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // Phase 1: Byte-level pattern matching via extract_data
+        // Collect (candidate_index, bindings_exprs, specificity) for successful matches
+        struct MatchHit {
+            candidate_idx: usize,
+            /// Raw MORK bytes for each captured binding (one Vec<u8> per NewVar in LHS)
+            binding_bytes: Vec<Vec<u8>>,
+            specificity: usize,
+        }
+
+        let mut hits: Vec<MatchHit> = Vec::new();
+
+        for (idx, entry) in candidates.iter().enumerate() {
+            // Validate lhs_debruijn starts with a valid MORK tag before creating Expr/ExprZipper.
+            // ExprZipper::new() calls byte_item() which panics on reserved bytes (0x40-0x7F).
+            if entry.lhs_debruijn.is_empty() {
+                continue;
+            }
+            if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
+                tracing::warn!(
+                    target: "mettatron::match_rules_native",
+                    "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
+                     head={}, arity={}, lhs_bytes={:02x?}",
+                    reserved,
+                    entry.lhs_debruijn.len(),
+                    head,
+                    arity,
+                    &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
+                );
+                continue;
+            }
+
+            // Create Expr and ExprZipper for the LHS De Bruijn pattern (template)
+            let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
+
+            // Create ExprZipper for the input expression (data)
+            let mut input_zipper = ExprZipper::new(
+                Expr { ptr: expr_bytes_owned.as_ptr().cast_mut() }
+            );
+
+            // extract_data: template.extract_data(input) → Vec<Expr> or failure
+            match lhs_expr.extract_data(&mut input_zipper) {
+                Ok(binding_exprs) => {
+                    // Capture binding bytes while the Expr pointers are still valid
+                    // (they point into expr_bytes_owned which is alive for this scope)
+                    let binding_bytes: Vec<Vec<u8>> = binding_exprs.iter().map(|expr| {
+                        // SAFETY: expr.ptr points into expr_bytes_owned (stack-local Vec)
+                        // span() returns a *const [u8] covering the expression
+                        let span = unsafe { &*expr.span() };
+                        span.to_vec()
+                    }).collect();
+
+                    hits.push(MatchHit {
+                        candidate_idx: idx,
+                        binding_bytes,
+                        specificity: entry.specificity,
+                    });
+                }
+                Err(_) => continue, // No match — skip this candidate
+            }
+        }
+
+        if hits.is_empty() {
+            return Vec::new();
+        }
+
+        // Phase 2: Specificity filtering — keep only best (lowest = most specific)
+        let best_specificity = hits.iter().map(|h| h.specificity).min().expect("hits is non-empty");
+        hits.retain(|h| h.specificity == best_specificity);
+
+        // Phase 3: Deserialize bindings and build results
+        let space = self.create_space();
+        let mut results: Vec<RuleMatchResult<V>> = Vec::with_capacity(hits.len());
+
+        for hit in &hits {
+            let entry = candidates[hit.candidate_idx];
+
+            // Deserialize each binding's MORK bytes → MettaValue
+            let mut bindings = GenericBindings::new();
+            for (i, binding_bytes) in hit.binding_bytes.iter().enumerate() {
+                // Skip wildcard bindings (anonymous variables from `_`)
+                if entry.wildcard_indices.contains(&(i as u8)) {
+                    continue;
+                }
+                // Skip if we've exhausted named variables (shouldn't happen but defensive)
+                if i >= entry.var_names.len() {
+                    break;
+                }
+                match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                    binding_bytes,
+                    &space,
+                    &self.factory,
+                ) {
+                    Ok(value) => {
+                        bindings.insert(entry.var_names[i].clone(), value);
+                    }
+                    Err(_) => continue, // Skip this binding on deserialization failure
+                }
+            }
+
+            // Apply bindings to the cached RHS template
+            let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);
+
+            // Expand by multiplicity
+            let multiplicity = entry.multiplicity.max(1);
+            for _ in 0..multiplicity {
+                results.push(RuleMatchResult {
+                    instantiated_rhs: instantiated_rhs.clone(),
+                    rhs_template: entry.rhs.clone(),
+                    bindings: bindings.clone(),
+                    multiplicity,
+                });
+            }
+        }
+
+        results
+    }
+
     /// Get matching rules for an expression from PathMap via trie prefix navigation.
+    ///
+    /// **NOTE**: Superseded by `match_rules_native()` for the primary hot path.
+    /// Retained for `match_space` compatibility and fallback scenarios where
+    /// De Bruijn-encoded rules in PathMap need to be iterated directly.
     ///
     /// Returns `(lhs, rhs, multiplicity)` tuples for all rules whose LHS
     /// head symbol and arity match the given expression. The caller is
     /// responsible for performing full pattern matching on the returned
     /// candidates.
-    ///
-    /// # Performance
-    ///
-    /// Uses two-level trie prefix navigation instead of full PathMap iteration:
-    ///
-    /// 1. **Bloom filter** — O(1) rejection for non-matching head/arity combinations
-    /// 2. **Rule prefix** — `[Arity(3)] + "=" bytes` navigates past all non-rule entries
-    /// 3. **Head+arity prefix** — Further narrows to rules with matching LHS head and arity
-    /// 4. **Split deserialization** — LHS and RHS deserialized independently from byte ranges,
-    ///    never constructing the intermediate `(= LHS RHS)` value
-    /// 5. **In-place multiplicity** — Read directly from zipper `val()`, no separate lookup
     pub fn get_matching_rules_for_expr(&self, expr: &V) -> Vec<(V, V, u64)> {
         let head = expr.get_head_symbol().unwrap_or("");
         let arity = expr.get_arity();
@@ -245,6 +858,9 @@ where
 
     /// Collect rules from a trie subtree rooted at `prefix`.
     ///
+    /// **NOTE**: Superseded by `RuleIndex + extract_data()` for the primary hot path.
+    /// Retained for `get_matching_rules_for_expr()` fallback used in tests.
+    ///
     /// Navigates the trie to `prefix`, then for each entry:
     /// 1. Splits the MORK path bytes into LHS and RHS ranges using `mork_expr_byte_len()`
     /// 2. Deserializes LHS and RHS independently — never constructs `(= LHS RHS)`
@@ -276,30 +892,20 @@ where
             if path.len() <= rule_prefix_len {
                 continue; // Path too short to contain LHS+RHS
             }
-            let lhs_start = rule_prefix_len;
-            let lhs_byte_len = mork_expr_byte_len(&path[lhs_start..]);
-            let rhs_start = lhs_start + lhs_byte_len;
-
-            if rhs_start >= path.len() || lhs_byte_len == 0 {
-                continue; // Malformed: no RHS bytes
-            }
-
-            // Deserialize LHS and RHS independently — no intermediate (= LHS RHS)
-            let lhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                &path[lhs_start..rhs_start],
+            // De Bruijn encoding: NewVar is in LHS, VarRef in RHS references LHS vars.
+            // Must deserialize the FULL rule (= lhs rhs) as a single unit to share
+            // the variable context, then extract lhs and rhs from the result.
+            let full_rule = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                path,
                 space,
                 &self.factory,
             ) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let rhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                &path[rhs_start..],
-                space,
-                &self.factory,
-            ) {
-                Ok(v) => v,
-                Err(_) => continue,
+            let (lhs, rhs) = match extract_rule_parts(&full_rule) {
+                Some(parts) => parts,
+                None => continue, // Not a valid rule — skip
             };
 
             rules.push((lhs, rhs, multiplicity));
@@ -307,6 +913,9 @@ where
     }
 
     /// Collect wildcard rules (LHS is atom/variable, not S-expression).
+    ///
+    /// **NOTE**: Superseded by `RuleIndex.wildcard` vec for the primary hot path.
+    /// Retained for `get_matching_rules_for_expr()` fallback used in tests.
     ///
     /// Wildcard rules like `(= $x $x)` have a non-S-expression LHS. Their LHS byte
     /// starts with `SymbolSize` (0xC1-0xFF), `NewVar` (0xC0), or `VarRef` (0x80-0xBF),
@@ -345,23 +954,21 @@ where
                 continue;
             }
 
-            // Atom/variable LHS — potential wildcard rule. Split and deserialize.
+            // Atom/variable LHS — potential wildcard rule.
+            // De Bruijn encoding: deserialize full rule as single unit for shared var context.
             let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1).max(1);
-            let lhs_start = rule_prefix_len;
-            let lhs_byte_len = mork_expr_byte_len(&path[lhs_start..]);
-            let rhs_start = lhs_start + lhs_byte_len;
 
-            if rhs_start >= path.len() || lhs_byte_len == 0 {
-                continue;
-            }
-
-            let lhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                &path[lhs_start..rhs_start],
+            let full_rule = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                path,
                 space,
                 &self.factory,
             ) {
                 Ok(v) => v,
                 Err(_) => continue,
+            };
+            let (lhs, rhs) = match extract_rule_parts(&full_rule) {
+                Some(parts) => parts,
+                None => continue,
             };
 
             // Filter by head+arity: variable LHS (no head) matches everything,
@@ -372,15 +979,6 @@ where
             {
                 continue;
             }
-
-            let rhs = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                &path[rhs_start..],
-                space,
-                &self.factory,
-            ) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
 
             rules.push((lhs, rhs, multiplicity));
         }
@@ -456,7 +1054,10 @@ impl MettaEnvironment {
         rules
     }
 
-    /// Bulk add rules using PathMap::join() for batch efficiency.
+    /// Bulk add rules using De Bruijn encoding + RuleIndex population.
+    ///
+    /// Each rule is serialized with `with_mork_query_bytes` (De Bruijn) and inserted
+    /// individually into PathMap + RuleIndex. This is consistent with `add_rule()`.
     ///
     /// # Arguments
     /// * `rules` - Vec of (lhs, rhs) pairs
@@ -468,45 +1069,18 @@ impl MettaEnvironment {
 
         self.make_owned();
 
-        let mut rule_trie: PathMap<Multiplicity> = PathMap::new();
-
-        for (lhs, rhs) in &rules {
-            let rule_sexpr = MettaValue::SExpr(vec![
-                MettaValue::Atom("=".to_string()),
-                lhs.clone(),
-                rhs.clone(),
-            ]);
-
-            with_mork_bytes(&rule_sexpr, &self.shared_mapping, |mork_bytes| {
-                rule_trie.insert(mork_bytes, Multiplicity::new(1));
-            })
-            .map_err(|e| format!("MORK conversion failed for rule {:?}: {}", rule_sexpr, e))?;
-
-            // Update bloom filter
-            if let Some(head) = lhs.get_head_symbol() {
-                let arity = lhs.get_arity() as u8;
-                self.shared.fuzzy_matcher.write().insert(head);
-                self.shared
-                    .head_arity_bloom
-                    .write()
-                    .insert(head.as_bytes(), arity);
-            }
-
-            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+        // Delegate to add_rule() for each — ensures consistent De Bruijn encoding + RuleIndex
+        for (lhs, rhs) in rules {
+            self.add_rule(lhs, rhs);
         }
 
-        // Single PathMap union (minimal critical section)
-        {
-            let mut btm = self.shared.btm.write();
-            *btm = btm.join(&rule_trie);
-        }
         self.modified.store(true, Ordering::Release);
         Ok(())
     }
 
     /// Get the number of times a rule has been defined (multiplicity).
     ///
-    /// Uses PathMap-based multiplicity lookup.
+    /// Uses De Bruijn encoding to match the PathMap entry (rules are stored with De Bruijn).
     pub fn get_rule_count(&self, lhs: &MettaValue, rhs: &MettaValue) -> usize {
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
@@ -514,7 +1088,8 @@ impl MettaEnvironment {
             rhs.clone(),
         ]);
 
-        match with_mork_bytes(&rule_sexpr, &self.shared_mapping, |mork_bytes| {
+        let sm = self.shared_mapping.clone();
+        match with_mork_query_bytes(&rule_sexpr, &sm, |mork_bytes, _ctx| {
             let btm = self.shared.btm.read();
             let count = get_multiplicity(&btm, mork_bytes);
             if count == 0 { 1 } else { count as usize }
@@ -557,30 +1132,90 @@ impl MettaEnvironment {
         self.modified.store(true, Ordering::Release);
     }
 
-    /// Rebuild bloom filter and fuzzy matcher from PathMap.
+    /// Rebuild bloom filter, fuzzy matcher, and RuleIndex from PathMap.
     ///
     /// This is needed after deserializing an Environment from PathMap Par,
-    /// since the serialization only preserves the PathMap, not the bloom filter.
+    /// since the serialization only preserves the PathMap, not the bloom filter
+    /// or RuleIndex.
+    ///
+    /// ## De Bruijn Encoding
+    ///
+    /// PathMap stores De Bruijn-encoded bytes for rules. When deserialized, variables
+    /// get epoch-suffixed names (`$a%42` instead of original `$x`). These are
+    /// re-encoded to De Bruijn bytes (structurally identical) when rebuilding the RuleIndex.
     pub fn rebuild_bloom_filter(&mut self) {
-        trace!(target: "mettatron::environment::rebuild_bloom_filter", "Rebuilding bloom filter and fuzzy matcher from PathMap");
+        trace!(target: "mettatron::environment::rebuild_bloom_filter", "Rebuilding bloom filter, fuzzy matcher, and RuleIndex from PathMap");
         self.make_owned();
 
-        let space = self.create_space();
+        // Clear the existing RuleIndex before rebuilding
+        self.shared.rule_index.write().clear();
 
-        for (path_bytes, _) in space.btm.iter() {
+        let space = self.create_space();
+        let rule_prefix_len = self.rule_prefix.len();
+
+        for (path_bytes, multiplicity_val) in space.btm.iter() {
             let expr = Expr {
                 ptr: path_bytes.as_ptr().cast_mut(),
             };
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
-                if let Some((lhs, _rhs)) = extract_rule_parts(&value) {
-                    if let Some(head) = lhs.get_head_symbol() {
-                        let arity = lhs.get_arity();
+                if let Some((lhs, rhs)) = extract_rule_parts(&value) {
+                    // Update bloom filter + fuzzy matcher
+                    let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());
+                    let arity = lhs.get_arity();
+                    if let Some(ref head) = head_owned {
                         self.shared.fuzzy_matcher.write().insert(head);
                         self.shared
                             .head_arity_bloom
                             .write()
                             .insert(head.as_bytes(), arity as u8);
                     }
+
+                    // Rebuild RuleIndex entry from De Bruijn bytes
+                    let multiplicity = multiplicity_val.count().max(1);
+
+                    // Re-serialize the rule to get De Bruijn bytes + ConversionContext
+                    let rule_sexpr = MettaValue::SExpr(vec![
+                        MettaValue::Atom("=".to_string()),
+                        lhs.clone(),
+                        rhs.clone(),
+                    ]);
+
+                    let sm = self.shared_mapping.clone();
+                    let _ = with_mork_query_bytes(&rule_sexpr, &sm, |debruijn_bytes, ctx| {
+                        // Split De Bruijn bytes to get LHS range
+                        if debruijn_bytes.len() <= rule_prefix_len {
+                            return;
+                        }
+                        let lhs_start = rule_prefix_len;
+                        let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
+                        // Pad with 0x00 for ExprZipper read-past-end safety
+                        let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
+                        lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
+                        lhs_debruijn.push(0x00);
+
+                        let specificity = count_newvar_tags(&lhs_debruijn);
+                        let lhs_var_count = specificity;
+                        let (var_names, wildcard_indices) =
+                            build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
+
+                        let entry = RuleEntry {
+                            lhs: lhs.clone(),
+                            rhs: rhs.clone(),
+                            lhs_debruijn,
+                            rule_debruijn: debruijn_bytes.to_vec(),
+                            var_names,
+                            wildcard_indices,
+                            specificity,
+                            multiplicity,
+                        };
+
+                        // Set correct multiplicity (don't let add_rule deduplicate)
+                        self.shared.rule_index.write().add_rule(
+                            head_owned.as_deref(),
+                            arity,
+                            entry,
+                        );
+                    });
                 }
             }
         }
@@ -589,6 +1224,9 @@ impl MettaEnvironment {
     }
 
     /// Increment the multiplicity count for a rule.
+    ///
+    /// Uses De Bruijn encoding to match the PathMap entry (rules are stored with De Bruijn).
+    /// Also syncs the RuleIndex multiplicity.
     ///
     /// # Arguments
     /// * `rule_sexpr` - The rule as a MettaValue s-expression `(= lhs rhs)`
@@ -599,7 +1237,8 @@ impl MettaEnvironment {
         trace!(target: "mettatron::environment::increment_rule_multiplicity", ?rule_sexpr);
         self.make_owned();
 
-        match with_mork_bytes(rule_sexpr, &self.shared_mapping, |mork_bytes| {
+        let sm = self.shared_mapping.clone();
+        match with_mork_query_bytes(rule_sexpr, &sm, |mork_bytes, _ctx| {
             let mut btm = self.shared.btm.write();
             let new_count = increment_multiplicity(&mut btm, mork_bytes);
             drop(btm);
@@ -608,7 +1247,25 @@ impl MettaEnvironment {
             self.modified.store(true, Ordering::Release);
             new_count as usize
         }) {
-            Ok(count) => count,
+            Ok(count) => {
+                // Sync RuleIndex: increment the matching entry's multiplicity
+                if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
+                    // RuleIndex.add_rule increments multiplicity for duplicates
+                    // We need a simpler increment — just find and bump
+                    let mut idx = self.shared.rule_index.write();
+                    for entries in idx.by_head_arity.values_mut() {
+                        if let Some(entry) = entries.iter_mut().find(|e| e.lhs == lhs && e.rhs == rhs) {
+                            entry.multiplicity += 1;
+                            drop(idx);
+                            return count;
+                        }
+                    }
+                    if let Some(entry) = idx.wildcard.iter_mut().find(|e| e.lhs == lhs && e.rhs == rhs) {
+                        entry.multiplicity += 1;
+                    }
+                }
+                count
+            }
             Err(_) => {
                 self.modified.store(true, Ordering::Release);
                 1
@@ -617,6 +1274,9 @@ impl MettaEnvironment {
     }
 
     /// Decrement the multiplicity count for a rule.
+    ///
+    /// Uses De Bruijn encoding to match the PathMap entry (rules are stored with De Bruijn).
+    /// Also syncs the RuleIndex multiplicity.
     ///
     /// # Arguments
     /// * `rule_sexpr` - The rule as a MettaValue s-expression `(= lhs rhs)`
@@ -627,7 +1287,8 @@ impl MettaEnvironment {
         trace!(target: "mettatron::environment::decrement_rule_multiplicity", ?rule_sexpr);
         self.make_owned();
 
-        match with_mork_bytes(rule_sexpr, &self.shared_mapping, |mork_bytes| {
+        let sm = self.shared_mapping.clone();
+        match with_mork_query_bytes(rule_sexpr, &sm, |mork_bytes, _ctx| {
             let old_count = {
                 let btm = self.shared.btm.read();
                 get_multiplicity(&btm, mork_bytes)
@@ -646,7 +1307,13 @@ impl MettaEnvironment {
             self.modified.store(true, Ordering::Release);
             new_count as usize
         }) {
-            Ok(count) => count,
+            Ok(count) => {
+                // Sync RuleIndex: decrement (or remove if multiplicity reaches 0)
+                if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
+                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
+                }
+                count
+            }
             Err(_) => {
                 self.modified.store(true, Ordering::Release);
                 0
@@ -720,13 +1387,26 @@ impl MettaEnvironment {
 
     /// Get multiplicity for ANY atom.
     pub fn get_atom_multiplicity(&self, value: &MettaValue) -> usize {
-        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
-            let btm = self.shared.btm.read();
-            let count = get_multiplicity(&btm, mork_bytes);
-            if count == 0 { 1 } else { count as usize }
-        }) {
-            Ok(count) => count,
-            Err(_) => 1,
+        // Rules are stored with De Bruijn encoding, so we must look them up the same way.
+        if extract_rule_parts(value).is_some() {
+            let sm = self.shared_mapping.clone();
+            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+                let btm = self.shared.btm.read();
+                let count = get_multiplicity(&btm, mork_bytes);
+                if count == 0 { 1 } else { count as usize }
+            }) {
+                Ok(count) => count,
+                Err(_) => 1,
+            }
+        } else {
+            match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+                let btm = self.shared.btm.read();
+                let count = get_multiplicity(&btm, mork_bytes);
+                if count == 0 { 1 } else { count as usize }
+            }) {
+                Ok(count) => count,
+                Err(_) => 1,
+            }
         }
     }
 

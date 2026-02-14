@@ -313,6 +313,7 @@ debug = 1            # Line tables only (smaller than debug = true)
 inherits = "release"
 debug = 2            # Full debug info for GDB (level 2 = maximum)
 strip = false        # Keep symbols for debugging
+debug-assertions = true  # TEMP: Enable for MORK crash diagnosis
 
 # Debian package metadata
 [package.metadata.deb]

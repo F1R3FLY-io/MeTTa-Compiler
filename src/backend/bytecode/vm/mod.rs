@@ -55,7 +55,7 @@ pub use types::{
 // ============================================================================
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 use super::chunk::GenericBytecodeChunk;
 
 /// Generic bytecode virtual machine that works with any value type.
@@ -2581,7 +2581,7 @@ where
     }
 
     fn op_dispatch_rules(&mut self) -> VmResult<()> {
-        use crate::backend::eval::bindings_generic::{apply_bindings_generic, pattern_match_generic};
+        use crate::backend::eval::bindings_generic::apply_bindings_generic;
         trace!(target: "mettatron::vm::rules", ip = self.ip, "dispatch_rules (generic)");
 
         // Pop the call expression from the stack
@@ -2615,58 +2615,42 @@ where
             }
         };
 
-        // Look up matching rules for the expression
-        let candidate_rules = env.get_matching_rules_for_expr(&expr);
-
-        if candidate_rules.is_empty() {
-            // No rules match - return expression unchanged
-            self.push(expr);
-            return Ok(());
-        }
-
-        // Try to pattern match each rule against the expression
-        let mut matches: Vec<(V, GenericBindings<V>)> = Vec::new();
-        for (lhs, rhs, _multiplicity) in &candidate_rules {
-            if let Some(bindings) = pattern_match_generic(lhs, &expr) {
-                // Found a match - apply bindings to the rule body
-                let instantiated_body = apply_bindings_generic(rhs, &bindings, &self.factory);
-                matches.push((instantiated_body, bindings));
-            }
-        }
+        // Use native byte-level matching via RuleIndex + extract_data
+        let matches = env.match_rules_native(&expr, apply_bindings_generic);
 
         if matches.is_empty() {
-            // Pattern matching failed for all rules - return expression unchanged
+            // No rules match - return expression unchanged
             self.push(expr);
             return Ok(());
         }
 
         if matches.len() == 1 {
             // Single match - push the instantiated body for further evaluation
-            let (body, bindings) = matches.into_iter().next().expect("matches has 1 element");
+            let result = matches.into_iter().next().expect("matches has 1 element");
 
             // Set up bindings in the current binding frame
             if let Some(frame) = self.bindings_stack.last_mut() {
-                for (name, value) in bindings.iter() {
+                for (name, value) in result.bindings.iter() {
                     frame.set(name.to_string(), value.clone());
                 }
             }
 
             // Push the instantiated body - caller will continue evaluation
-            self.push(body);
+            self.push(result.instantiated_rhs);
             return Ok(());
         }
 
         // Multiple matches - create choice point for nondeterminism
         // First match executes now, others become alternatives
         let mut alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = Vec::with_capacity(matches.len() - 1);
-        let mut first_match: Option<(V, GenericBindings<V>)> = None;
+        let mut first_match = None;
 
-        for (body, bindings) in matches {
+        for result in matches {
             if first_match.is_none() {
-                first_match = Some((body, bindings));
+                first_match = Some(result);
             } else {
                 // Store as alternative value
-                alternatives.push(GenericAlternative::Value(body));
+                alternatives.push(GenericAlternative::Value(result.instantiated_rhs));
             }
         }
 
@@ -2681,16 +2665,16 @@ where
         });
 
         // Execute first match
-        if let Some((body, bindings)) = first_match {
+        if let Some(result) = first_match {
             // Set up bindings in the current binding frame
             if let Some(frame) = self.bindings_stack.last_mut() {
-                for (name, value) in bindings.iter() {
+                for (name, value) in result.bindings.iter() {
                     frame.set(name.to_string(), value.clone());
                 }
             }
 
             // Push the instantiated body
-            self.push(body);
+            self.push(result.instantiated_rhs);
         }
 
         Ok(())

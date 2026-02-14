@@ -246,6 +246,10 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// O(1) total atom count (sum of all multiplicities)
     pub(crate) total_atoms: AtomicUsize,
 
+    /// In-memory rule index for O(1) lookup + MORK byte-level matching.
+    /// Populated at `add_rule()` time. Authoritative for rule queries.
+    /// PathMap remains the storage-of-record (for match_space, serialization).
+    pub(crate) rule_index: RwLock<super::rule_management::RuleIndex<V>>,
 }
 
 /// Generic environment parameterized over value type and factory.
@@ -356,6 +360,7 @@ where
             scope_tracker: RwLock::new(ScopeTracker::new()),
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)),
             total_atoms: AtomicUsize::new(0),
+            rule_index: RwLock::new(super::rule_management::RuleIndex::new()),
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
@@ -445,6 +450,7 @@ where
             scope_tracker: RwLock::new(self.shared.scope_tracker.read().clone()),
             head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().clone()),
             total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
+            rule_index: RwLock::new(self.shared.rule_index.read().clone()),
         });
 
         // Register new shared state as GC root provider
@@ -496,6 +502,7 @@ where
             scope_tracker: RwLock::new(self.shared.scope_tracker.read().clone()),
             head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().clone()),
             total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
+            rule_index: RwLock::new(self.shared.rule_index.read().clone()),
         });
 
         // Register forked shared state as GC root provider
@@ -702,6 +709,16 @@ where
             scope_tracker: RwLock::new(other.shared.scope_tracker.read().clone()), // Use other's scope
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
             total_atoms: AtomicUsize::new(merged_total_atoms),
+            // Merge rule indices from both environments
+            rule_index: {
+                let mut merged = self.shared.rule_index.read().clone();
+                for entry in other.shared.rule_index.read().get_all_rules() {
+                    let head = entry.lhs.get_head_symbol().map(|s| s.to_string());
+                    let arity = entry.lhs.get_arity();
+                    merged.add_rule(head.as_deref(), arity, entry.clone());
+                }
+                RwLock::new(merged)
+            },
         });
 
         // Register merged shared state as GC root provider
@@ -974,6 +991,18 @@ where
             scope_tracker: RwLock::new(last_env.shared.scope_tracker.read().clone()),
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
             total_atoms: AtomicUsize::new(merged_total_atoms),
+            // Merge rule indices from all environments
+            rule_index: {
+                let mut merged = self.shared.rule_index.read().clone();
+                for other_env in others {
+                    for entry in other_env.shared.rule_index.read().get_all_rules() {
+                        let head = entry.lhs.get_head_symbol().map(|s| s.to_string());
+                        let arity = entry.lhs.get_arity();
+                        merged.add_rule(head.as_deref(), arity, entry.clone());
+                    }
+                }
+                RwLock::new(merged)
+            },
         });
 
         // Register batch-merged shared state as GC root provider
@@ -1240,13 +1269,52 @@ where
     ///
     /// Uses MeTTa HE semantics: each `add_to_space` call increments the atom's multiplicity.
     pub fn add_to_space(&mut self, value: &V) {
-        use crate::backend::mork_convert::with_mork_bytes;
+        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::add_atom;
+        use super::rule_management::extract_rule_parts;
 
         self.make_owned();
 
-        // Direct V → MORK bytes conversion via zero-copy callback
+        // Check if this is a rule (= lhs rhs) — rules must use De Bruijn encoding
+        // to be consistent with add_rule() which stores in RuleIndex + PathMap with De Bruijn.
+        if let Some((_lhs, _rhs)) = extract_rule_parts(value) {
+            let sm = self.shared_mapping.clone();
+            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+                let mut btm = self.shared.btm.write();
+                add_atom(&mut btm, mork_bytes);
+                drop(btm);
+
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
+                }
+            }) {
+                Ok(()) => {}
+                Err(_) => {
+                    // Fallback for large expressions (arity >= 64)
+                    let key = value_to_varint_key_generic(value);
+
+                    {
+                        let mut btm = self.shared.btm.write();
+                        add_atom(&mut btm, &key);
+                    }
+
+                    {
+                        let mut guard = self.shared.large_expr_pathmap.write();
+                        let fallback = guard.get_or_insert_with(PathMap::new);
+                        fallback.insert(&key, value.clone());
+                    }
+
+                    self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            return;
+        }
+
+        // Non-rule: use literal encoding (existing path)
         match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
             let mut btm = self.shared.btm.write();
             add_atom(&mut btm, mork_bytes);
@@ -1294,13 +1362,67 @@ where
     ///
     /// Decrements the atom's multiplicity. If multiplicity reaches 0, the atom is removed.
     pub fn remove_from_space(&mut self, value: &V) {
-        use crate::backend::mork_convert::with_mork_bytes;
+        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::{get_multiplicity, remove_atom};
+        use super::rule_management::extract_rule_parts;
 
         self.make_owned();
 
-        // Direct V → MORK bytes conversion via zero-copy callback
+        // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
+        if let Some((lhs, rhs)) = extract_rule_parts(value) {
+            // Rule removal: use De Bruijn encoding to match PathMap entry
+            let sm = self.shared_mapping.clone();
+            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+                let mut btm = self.shared.btm.write();
+
+                let current_count = get_multiplicity(&btm, mork_bytes);
+                if current_count == 0 {
+                    if !btm.contains(mork_bytes) {
+                        return;
+                    }
+                    btm.remove(mork_bytes);
+                    drop(btm);
+                    self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared.head_arity_bloom.write().note_deletion();
+                    return;
+                }
+
+                let new_count = remove_atom(&mut btm, mork_bytes);
+
+                if new_count == 0 {
+                    self.shared.head_arity_bloom.write().note_deletion();
+                }
+
+                drop(btm);
+                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            }) {
+                Ok(()) => {
+                    // Sync RuleIndex: decrement or remove the rule entry
+                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
+                }
+                Err(_) => {
+                    // Fallback for large expressions (arity >= 64)
+                    let key = value_to_varint_key_generic(value);
+
+                    {
+                        let mut btm = self.shared.btm.write();
+                        remove_atom(&mut btm, &key);
+                    }
+
+                    let mut guard = self.shared.large_expr_pathmap.write();
+                    if let Some(ref mut fallback) = *guard {
+                        if fallback.contains(&key) {
+                            fallback.remove(&key);
+                            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // Non-rule: use literal encoding (existing path)
         match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
             let mut btm = self.shared.btm.write();
 
@@ -1391,11 +1513,51 @@ where
     /// - In loops where calling `add_to_space()` would trigger repeated CoW copies
     /// - In arena mode evaluation where state must persist across cloned environments
     pub fn add_to_space_shared(&self, value: &V) {
-        use crate::backend::mork_convert::with_mork_bytes;
+        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::add_atom;
+        use super::rule_management::extract_rule_parts;
 
-        // Direct V → MORK bytes conversion via zero-copy callback
+        // Check if this is a rule (= lhs rhs) — rules must use De Bruijn encoding
+        // to be consistent with add_rule() which stores in RuleIndex + PathMap with De Bruijn.
+        if let Some((_lhs, _rhs)) = extract_rule_parts(value) {
+            let sm = self.shared_mapping.clone();
+            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+                let mut btm = self.shared.btm.write();
+                add_atom(&mut btm, mork_bytes);
+                drop(btm);
+
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
+                }
+            }) {
+                Ok(()) => {}
+                Err(_) => {
+                    // Fallback for large expressions (arity >= 64)
+                    let key = value_to_varint_key_generic(value);
+
+                    {
+                        let mut btm = self.shared.btm.write();
+                        add_atom(&mut btm, &key);
+                    }
+
+                    {
+                        let mut guard = self.shared.large_expr_pathmap.write();
+                        let fallback = guard.get_or_insert_with(PathMap::new);
+                        fallback.insert(&key, value.clone());
+                    }
+
+                    self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            self.mark_modified();
+            return;
+        }
+
+        // Non-rule: use literal encoding (existing path)
         match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
             let mut btm = self.shared.btm.write();
             add_atom(&mut btm, mork_bytes);
@@ -1445,11 +1607,65 @@ where
     /// Uses `RwLock::write()` for PathMap access and atomic operations for counters.
     /// Safe to call from multiple clones of the same environment.
     pub fn remove_from_space_shared(&self, value: &V) {
-        use crate::backend::mork_convert::with_mork_bytes;
+        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::{get_multiplicity, remove_atom};
+        use super::rule_management::extract_rule_parts;
 
-        // Direct V → MORK bytes conversion via zero-copy callback
+        // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
+        if let Some((lhs, rhs)) = extract_rule_parts(value) {
+            let sm = self.shared_mapping.clone();
+            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+                let mut btm = self.shared.btm.write();
+
+                let current_count = get_multiplicity(&btm, mork_bytes);
+                if current_count == 0 {
+                    if !btm.contains(mork_bytes) {
+                        return;
+                    }
+                    btm.remove(mork_bytes);
+                    drop(btm);
+                    self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared.head_arity_bloom.write().note_deletion();
+                    self.mark_modified();
+                    return;
+                }
+
+                let new_count = remove_atom(&mut btm, mork_bytes);
+
+                if new_count == 0 {
+                    self.shared.head_arity_bloom.write().note_deletion();
+                }
+
+                drop(btm);
+                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            }) {
+                Ok(()) => {
+                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
+                }
+                Err(_) => {
+                    // Fallback for large expressions (arity >= 64)
+                    let key = value_to_varint_key_generic(value);
+
+                    {
+                        let mut btm = self.shared.btm.write();
+                        remove_atom(&mut btm, &key);
+                    }
+
+                    let mut guard = self.shared.large_expr_pathmap.write();
+                    if let Some(ref mut fallback) = *guard {
+                        if fallback.contains(&key) {
+                            fallback.remove(&key);
+                            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            self.mark_modified();
+            return;
+        }
+
+        // Non-rule: use literal encoding (existing path)
         match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
             let mut btm = self.shared.btm.write();
 

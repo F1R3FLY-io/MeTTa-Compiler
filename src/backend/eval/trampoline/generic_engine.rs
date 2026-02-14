@@ -425,43 +425,14 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Copy + Clone,
 {
-    // Get matching rules from the environment (zero-conversion for arena).
-    // Returns (lhs, rhs, multiplicity) tuples filtered by head symbol and arity.
-    let mut sorted_rules = env.get_matching_rules_for_expr(expr);
-
-    // Sort rules by specificity (more specific first)
-    sorted_rules.sort_by_key(|(lhs, _, _)| pattern_specificity_generic(lhs));
-
-    // Collect ALL matching rules, tracking LHS specificity
-    let mut matches: Vec<(V, GenericBindings<V>, usize, u64)> = Vec::new();
-    for (lhs, rhs, multiplicity) in &sorted_rules {
-        if let Some(bindings) = pattern_match_generic(lhs, expr) {
-            let lhs_specificity = pattern_specificity_generic(lhs);
-            matches.push((rhs.clone(), bindings, lhs_specificity, *multiplicity));
-        }
-    }
-
-    // Find the best (lowest) specificity
-    if let Some(best_spec) = matches.iter().map(|(_, _, spec, _)| *spec).min() {
-        // Filter to only matches with the best specificity
-        let best_matches: Vec<_> = matches
-            .into_iter()
-            .filter(|(_, _, spec, _)| *spec == best_spec)
-            .collect();
-
-        // Duplicate results based on rule multiplicity
-        let mut final_matches = Vec::new();
-        for (rhs, bindings, _, multiplicity) in best_matches {
-            let count = multiplicity.max(1);
-            for _ in 0..count {
-                final_matches.push((rhs.clone(), bindings.clone()));
-            }
-        }
-
-        final_matches
-    } else {
-        Vec::new()
-    }
+    // Use native byte-level matching via RuleIndex + extract_data.
+    // This replaces the old pipeline of:
+    //   get_matching_rules_for_expr → pattern_match_generic → apply_bindings_generic
+    let results = env.match_rules_native(expr, apply_bindings_generic);
+    results
+        .into_iter()
+        .map(|r| (r.instantiated_rhs, r.bindings))
+        .collect()
 }
 
 

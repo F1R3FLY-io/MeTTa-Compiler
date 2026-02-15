@@ -7,6 +7,7 @@
 //! - get_arity - Get the number of elements
 //! - get_element - Get element at a specific index
 
+use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_UNIT};
 use crate::backend::models::{MettaValue, MettaValueInner};
 
@@ -76,6 +77,11 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
                 }
             }
         }
+        // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
+        MettaValueInner::Quoted(_) => {
+            let quote_atom = MettaValue::Atom("quote".to_string());
+            metta_to_jit(&quote_atom).to_bits()
+        }
         _ => TAG_UNIT,
     }
 }
@@ -124,6 +130,12 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
             };
             let expr = MettaValue::SExpr(tail);
             let ptr = expr.inner_ptr();
+            JitValue::from_inner_ptr(ptr).to_bits()
+        }
+        // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
+        MettaValueInner::Quoted(inner) => {
+            let tail = MettaValue::SExpr(vec![*inner]);
+            let ptr = tail.inner_ptr();
             JitValue::from_inner_ptr(ptr).to_bits()
         }
         _ => {

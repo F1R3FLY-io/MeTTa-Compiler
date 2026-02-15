@@ -1008,6 +1008,9 @@ where
                             got: "other",
                         });
                     }
+                } else if a.is_quoted() {
+                    // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
+                    self.push(self.make_atom("quote"));
                 } else {
                     return Err(VmError::TypeError {
                         expected: "non-empty S-expression",
@@ -1027,6 +1030,9 @@ where
                             got: "other",
                         });
                     }
+                } else if let Some(inner) = a.as_quoted() {
+                    // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
+                    self.push(self.make_sexpr(vec![inner]));
                 } else {
                     return Err(VmError::TypeError {
                         expected: "non-empty S-expression",
@@ -1118,6 +1124,10 @@ where
             Opcode::UnionAtom => self.op_union_atom()?,
             Opcode::IntersectionAtom => self.op_intersection_atom()?,
             Opcode::SubtractionAtom => self.op_subtraction_atom()?,
+
+            // === Quote/Unquote ===
+            Opcode::EvalQuote => self.op_eval_quote()?,
+            Opcode::EvalUnquote => self.op_eval_unquote()?,
 
             // === Debug ===
             Opcode::Breakpoint => self.op_breakpoint()?,
@@ -1328,9 +1338,25 @@ where
 
     fn op_make_quote(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let quote_atom = self.make_atom("quote");
-        let quoted = self.make_sexpr(vec![quote_atom, value]);
+        let quoted = self.factory.quote(value);
         self.push(quoted);
+        Ok(())
+    }
+
+    fn op_eval_quote(&mut self) -> VmResult<()> {
+        let value = self.pop()?;
+        let quoted = self.factory.quote(value);
+        self.push(quoted);
+        Ok(())
+    }
+
+    fn op_eval_unquote(&mut self) -> VmResult<()> {
+        let val = self.pop()?;
+        if let Some(inner) = val.as_quoted() {
+            self.push(inner);
+        } else {
+            self.push(val);
+        }
         Ok(())
     }
 
@@ -1745,7 +1771,10 @@ where
 
     fn op_get_metatype(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let metatype = if value.as_sexpr().is_some() {
+        // Quoted is transparent to get-metatype: returns "Expression"
+        let metatype = if value.is_quoted() {
+            "Expression"
+        } else if value.as_sexpr().is_some() {
             "Expression"
         } else if value.is_variable() {
             "Variable"

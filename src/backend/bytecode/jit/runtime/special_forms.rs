@@ -284,21 +284,11 @@ pub unsafe extern "C" fn jit_runtime_eval_unquote(
     let expr_val = JitValue::from_raw(expr);
     let metta = expr_val.to_metta();
 
-    // If it's a quote, unwrap it; otherwise return as-is
+    // If it's Quoted(inner), unwrap it; otherwise return as-is
     match metta.inner() {
-        MettaValueInner::SExpr(elems) if !elems.is_empty() => {
-            if let MettaValueInner::Atom(s) = elems[0].inner() {
-                if *s == "quote" && elems.len() == 2 {
-                    // Return the quoted content
-                    return metta_to_jit(&elems[1]).to_bits();
-                }
-            }
-        }
-        _ => {}
+        MettaValueInner::Quoted(inner) => metta_to_jit(inner).to_bits(),
+        _ => expr,
     }
-
-    // Not a quote, return as-is
-    expr
 }
 
 /// Evaluate an eval expression (force evaluation)

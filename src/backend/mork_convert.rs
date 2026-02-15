@@ -309,6 +309,14 @@ fn write_metta_value_inner(
             write_metta_value_inner(t.inner(), pdp, ctx, ez, scratch)?;
         }
 
+        MettaValueInner::Quoted(inner) => {
+            // Write as (quote inner) for MORK compatibility
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"quote", pdp, ez)?;
+            write_metta_value_inner(inner.inner(), pdp, ctx, ez, scratch)?;
+        }
+
         MettaValueInner::Conjunction(goals) => {
             // MORK arity is limited to 6 bits (0-63)
             // +1 for the comma symbol
@@ -480,6 +488,14 @@ fn write_metta_value_debruijn_inner(
 
         MettaValueInner::Type(t) => {
             write_metta_value_debruijn_inner(t.inner(), pdp, ctx, ez, scratch)?;
+        }
+
+        MettaValueInner::Quoted(inner) => {
+            // Write as (quote inner) for MORK compatibility
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"quote", pdp, ez)?;
+            write_metta_value_debruijn_inner(inner.inner(), pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Conjunction(goals) => {

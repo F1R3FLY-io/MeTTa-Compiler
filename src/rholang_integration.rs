@@ -248,6 +248,9 @@ fn value_to_json_string(value: &MettaValue) -> String {
                 escape_json(&handle.name)
             )
         }
+        MettaValueInner::Quoted(inner) => {
+            format!(r#"{{"type":"quoted","value":{}}}"#, value_to_json_string(inner))
+        }
         MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
     }
 }

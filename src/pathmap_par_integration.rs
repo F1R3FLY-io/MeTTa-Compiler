@@ -93,6 +93,19 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValueInner::Quoted(inner) => {
+            // Represent quoted as tagged tuples: ("quote", <inner_value>)
+            let tag_par = create_string_par("quote".to_string());
+            let value_par = metta_value_to_par(inner);
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![tag_par, value_par],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
         MettaValueInner::Conjunction(goals) => {
             // Represent conjunctions as tagged tuples: ("conjunction", goal1, goal2, ...)
             let mut ps = vec![create_string_par("conjunction".to_string())];

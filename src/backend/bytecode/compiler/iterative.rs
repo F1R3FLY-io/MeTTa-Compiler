@@ -521,6 +521,16 @@ impl Compiler {
                 let idx = self.builder.add_constant(MettaValue::Empty());
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
+
+            // ================================================================
+            // Quoted expression — compile inner value then wrap with MakeQuote
+            // ================================================================
+            MettaValueInner::Quoted(inner) => {
+                work_stack.push(CompileWork::CompileQuoted {
+                    expr: *inner,
+                    cont_id,
+                });
+            }
         }
         Ok(())
     }
@@ -1211,6 +1221,16 @@ impl Compiler {
                 self.check_arity("eval", args.len(), 1)?;
                 work_stack.push(CompileWork::CompileUnaryOp {
                     op: UnaryOp::EvalEval,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "unquote" => {
+                self.check_arity("unquote", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::EvalUnquote,
                     arg: args[0].clone(),
                     folded: None,
                     cont_id,

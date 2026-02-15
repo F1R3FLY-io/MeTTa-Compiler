@@ -45,6 +45,7 @@ impl MettaValueTestExt for MettaValue {
             }
             MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
             MettaValueInner::State(id) => format!("(State {})", id),
+            MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_display_string()),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
         }
@@ -67,6 +68,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Conjunction(_) => self.to_display_string() == s,
             MettaValueInner::Space(_) => self.to_display_string() == s,
             MettaValueInner::State(_) => self.to_display_string() == s,
+            MettaValueInner::Quoted(_) => self.to_display_string() == s,
             MettaValueInner::Memo(_) => self.to_display_string() == s,
             MettaValueInner::Empty => s == "Empty",
         }

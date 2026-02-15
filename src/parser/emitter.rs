@@ -83,6 +83,14 @@ where
 
     #[inline]
     fn emit_sexpr(&mut self, items: Vec<V>, _span: Span) -> V {
+        // Detect (quote X) and produce Quoted(X)
+        if items.len() == 2 {
+            if let Some(name) = items[0].as_atom() {
+                if name == "quote" {
+                    return self.factory.quote(items.into_iter().nth(1).expect("items has 2 elements"));
+                }
+            }
+        }
         self.factory.sexpr(items)
     }
 
@@ -93,7 +101,11 @@ where
 
     #[inline]
     fn emit_prefix(&mut self, op: &str, _op_span: Span, arg: V, _full_span: Span) -> V {
-        self.factory.sexpr(vec![self.factory.atom(op), arg])
+        if op == "quote" {
+            self.factory.quote(arg)
+        } else {
+            self.factory.sexpr(vec![self.factory.atom(op), arg])
+        }
     }
 }
 

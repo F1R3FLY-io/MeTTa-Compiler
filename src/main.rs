@@ -174,6 +174,7 @@ fn format_result(value: &MettaValue) -> String {
         MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
         MettaValueInner::State(id) => format!("(State {})", id),
         MettaValueInner::Unit => "()".to_string(),
+        MettaValueInner::Quoted(inner) => format!("(quote {})", format_result(inner)),
         MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
         MettaValueInner::Empty => "Empty".to_string(),
     }

@@ -135,7 +135,7 @@ impl<'src> MettaParser<'src> {
                 match b {
                     b'!' => self.parse_prefix(emitter, "!"),
                     b'?' => self.parse_prefix(emitter, "?"),
-                    b'\'' => self.parse_prefix(emitter, "'"),
+                    b'\'' => self.parse_prefix(emitter, "quote"),
                     _ => self.parse_atom_or_number(emitter),
                 }
             }
@@ -570,7 +570,6 @@ mod tests {
             MettaExpr::List(items, _) => {
                 MettaExpr::List(items.iter().map(strip_spans).collect(), None)
             }
-            MettaExpr::Quoted(e, _) => MettaExpr::Quoted(Box::new(strip_spans(e)), None),
         }
     }
 
@@ -742,7 +741,7 @@ mod tests {
             parse("'quoted"),
             vec![MettaExpr::List(
                 vec![
-                    MettaExpr::Atom("'".to_string(), None),
+                    MettaExpr::Atom("quote".to_string(), None),
                     MettaExpr::Atom("quoted".to_string(), None),
                 ],
                 None
@@ -1257,7 +1256,6 @@ mod tests {
                 MettaExpr::List(items, _) => {
                     MettaExpr::List(items.iter().map(strip_spans).collect(), None)
                 }
-                MettaExpr::Quoted(e, _) => MettaExpr::Quoted(Box::new(strip_spans(e)), None),
             }
         }
 

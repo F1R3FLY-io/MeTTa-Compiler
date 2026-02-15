@@ -102,8 +102,6 @@ pub enum MettaExpr {
     Float(f64, Option<Span>),
     /// List/expression (including special forms like type annotations and rules)
     List(Vec<MettaExpr>, Option<Span>),
-    /// Quoted expression (prevents evaluation)
-    Quoted(Box<MettaExpr>, Option<Span>),
 }
 
 /// Type alias for backward compatibility
@@ -121,7 +119,6 @@ impl MettaExpr {
             MettaExpr::Integer(_, span) => *span,
             MettaExpr::Float(_, span) => *span,
             MettaExpr::List(_, span) => *span,
-            MettaExpr::Quoted(_, span) => *span,
         }
     }
 
@@ -133,7 +130,6 @@ impl MettaExpr {
             MettaExpr::Integer(i, _) => MettaExpr::Integer(i, Some(new_span)),
             MettaExpr::Float(f, _) => MettaExpr::Float(f, Some(new_span)),
             MettaExpr::List(items, _) => MettaExpr::List(items, Some(new_span)),
-            MettaExpr::Quoted(expr, _) => MettaExpr::Quoted(expr, Some(new_span)),
         }
     }
 
@@ -157,10 +153,6 @@ impl MettaExpr {
     pub fn list(items: Vec<MettaExpr>) -> Self {
         MettaExpr::List(items, None)
     }
-
-    pub fn quoted(expr: MettaExpr) -> Self {
-        MettaExpr::Quoted(Box::new(expr), None)
-    }
 }
 
 impl fmt::Display for MettaExpr {
@@ -180,7 +172,6 @@ impl fmt::Display for MettaExpr {
                 }
                 write!(f, ")")
             }
-            MettaExpr::Quoted(expr, _) => write!(f, "'{}", expr),
         }
     }
 }

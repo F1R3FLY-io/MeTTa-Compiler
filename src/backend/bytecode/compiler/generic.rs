@@ -419,6 +419,12 @@ where
                 self.builder.emit(Opcode::EvalEval);
                 Ok(Some(()))
             }
+            "unquote" => {
+                self.check_arity("unquote", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::EvalUnquote);
+                Ok(Some(()))
+            }
 
             // Force evaluation
             "!" => {

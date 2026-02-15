@@ -114,6 +114,13 @@ where
         return GenericEvalStep::Done((vec![value], env));
     }
 
+    // Quoted values are self-evaluating — they preserve the quote wrapper.
+    // This matches HE behavior: !(quote X) → (quote X).
+    // Unwrapping happens only in the (eval ...) and (unquote ...) special forms.
+    if value.is_quoted() {
+        return GenericEvalStep::Done((vec![value], env));
+    }
+
     // Fallback - return value unchanged
     GenericEvalStep::Done((vec![value], env))
 }

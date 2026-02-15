@@ -2652,7 +2652,7 @@ impl SlabAllocator {
                         worklist.push(details_ptr);
                     }
                 }
-                MettaValueInner::Type(inner) => {
+                MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                     let inner_ptr = inner.inner_ptr();
                     if surviving.insert(inner_ptr as *const u8) {
                         worklist.push(inner_ptr);
@@ -2805,7 +2805,7 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
                     worklist.push(details_ptr);
                 }
             }
-            MettaValueInner::Type(inner) => {
+            MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                 let inner_ptr = inner.inner_ptr();
                 if snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
                     worklist.push(inner_ptr);
@@ -2936,7 +2936,7 @@ pub fn mark_from_roots(
                     worklist.push(details_ptr);
                 }
             }
-            MettaValueInner::Type(inner) => {
+            MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                 let inner_ptr = inner.inner_ptr();
                 if alloc.mark_value(inner_ptr as *const u8) {
                     worklist.push(inner_ptr);
@@ -3176,6 +3176,11 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     }
 
     #[inline]
+    fn quote(&self, inner: MettaValue) -> MettaValue {
+        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Quoted(inner)))
+    }
+
+    #[inline]
     fn empty(&self) -> MettaValue {
         MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Empty))
     }
@@ -3299,6 +3304,10 @@ fn deserialize_slab_value(
             Ok((factory.conjunction(goals), offset))
         }
         UNIT => Ok((factory.unit(), 1)),
+        QUOTED => {
+            let (inner, consumed) = deserialize_slab_value(factory, rest)?;
+            Ok((factory.quote(inner), 1 + consumed))
+        }
         EMPTY => Ok((factory.empty(), 1)),
         SPACE => {
             if rest.len() < 8 {

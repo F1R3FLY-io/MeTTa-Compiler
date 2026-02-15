@@ -415,9 +415,8 @@ where
 
     let inner = jit_to_value_generic::<V, F>(jit_val, factory);
 
-    // Create (quote value)
-    let quote_atom = factory.atom("quote");
-    let quoted = factory.sexpr(vec![quote_atom, inner]);
+    // Create Quoted(value) variant
+    let quoted = factory.quote(inner);
 
     value_to_jit_generic(&quoted)
 }

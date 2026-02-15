@@ -297,6 +297,8 @@ where
                     MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
                     MettaValueInner::Unit => TYPE_NAME_UNIT,
                     MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
+                    // Quoted is transparent to get-metatype — it appears as "Expression"
+                    MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
                 }
             }
         }
@@ -355,6 +357,8 @@ unsafe fn get_type_name(val: u64) -> &'static str {
                 MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
                 MettaValueInner::Unit => TYPE_NAME_UNIT,
                 MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
+                // Quoted is transparent to get-metatype — it appears as "Expression"
+                MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
             }
         }
         _ => TYPE_NAME_UNKNOWN,

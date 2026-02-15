@@ -59,20 +59,23 @@ where
                         .collect();
                     Ok(factory.conjunction(goals?))
                 } else {
-                    // Regular S-expression
-                    let values: Result<Vec<V>, String> = items
-                        .iter()
-                        .map(|e| expr_to_value_generic(e, factory))
-                        .collect();
-                    Ok(factory.sexpr(values?))
+                    // Check for (quote expr) → Quoted(expr) variant
+                    let is_quote = items.len() == 2
+                        && matches!(&items[0], MettaExpr::Atom(s, _) if s == "quote");
+
+                    if is_quote {
+                        let inner = expr_to_value_generic(&items[1], factory)?;
+                        Ok(factory.quote(inner))
+                    } else {
+                        // Regular S-expression
+                        let values: Result<Vec<V>, String> = items
+                            .iter()
+                            .map(|e| expr_to_value_generic(e, factory))
+                            .collect();
+                        Ok(factory.sexpr(values?))
+                    }
                 }
             }
-        }
-        MettaExpr::Quoted(expr, _span) => {
-            // For quoted expressions, wrap in a quote operator
-            let inner = expr_to_value_generic(expr.as_ref(), factory)?;
-            // Create (quote inner) as SExpr
-            Ok(factory.sexpr(vec![factory.atom("quote"), inner]))
         }
     }
 }
@@ -467,13 +470,11 @@ mod tests {
         let state = compile(src).unwrap();
 
         assert_eq!(state.source().len(), 1);
-        // Tree-Sitter parser treats 'quoted as a prefixed expression: (' quoted)
+        // Parser treats 'quoted as a prefixed expression: (quote quoted)
+        // compile.rs detects (quote X) and produces Quoted(X)
         assert_eq!(
             {let s = state.source(); s[0]},
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("'".to_string()),
-                MettaValue::Atom("quoted".to_string())
-            ])
+            MettaValue::Quoted(MettaValue::Atom("quoted".to_string()))
         );
     }
 

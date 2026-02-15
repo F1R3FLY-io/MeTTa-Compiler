@@ -61,7 +61,8 @@ pub(crate) fn substitute_variable(
         // Compound types need iterative processing
         MettaValueInner::SExpr(_)
         | MettaValueInner::Conjunction(_)
-        | MettaValueInner::Error(_, _) => {}
+        | MettaValueInner::Error(_, _)
+        | MettaValueInner::Quoted(_) => {}
     }
 
     // Iterative implementation using explicit work stack

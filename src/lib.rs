@@ -447,12 +447,23 @@ mod tests {
 
     #[test]
     fn test_quote() {
+        // (quote X) is self-evaluating — it preserves the Quoted wrapper.
+        // This matches HE behavior: !(quote (+ 1 2)) → (quote (+ 1 2))
         let input = "(quote (+ 1 2))";
         let state = compile(input).expect("compile failed");
         let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0].inner(), MettaValueInner::SExpr(_)));
+        assert!(
+            matches!(results[0].inner(), MettaValueInner::Quoted(_)),
+            "Expected Quoted variant, got: {:?}", results[0]
+        );
+        // The inner value should be the unevaluated S-expression (+ 1 2)
+        let inner = results[0].as_quoted().expect("Expected Quoted");
+        assert!(
+            matches!(inner.inner(), MettaValueInner::SExpr(_)),
+            "Expected inner SExpr, got: {:?}", inner
+        );
     }
 
     #[test]

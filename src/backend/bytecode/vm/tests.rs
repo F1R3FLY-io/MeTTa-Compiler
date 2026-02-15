@@ -322,11 +322,10 @@ fn test_vm_make_quote() {
     let results = vm.run().expect("VM should succeed");
 
     match results[0].inner() {
-        MettaValueInner::SExpr(items) => {
-            assert_eq!(items[0], MettaValue::sym("quote"));
-            assert_eq!(items[1], MettaValue::sym("foo"));
+        MettaValueInner::Quoted(inner) => {
+            assert_eq!(*inner, MettaValue::sym("foo"));
         }
-        _ => panic!("Expected quoted expression"),
+        _ => panic!("Expected Quoted expression, got {:?}", results[0]),
     }
 }
 

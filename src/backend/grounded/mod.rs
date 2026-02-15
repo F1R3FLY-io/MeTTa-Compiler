@@ -127,6 +127,7 @@ pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValueInner::Conjunction(_) => "Conjunction",
         MettaValueInner::Space(_) => "Space",
         MettaValueInner::State(_) => "State",
+        MettaValueInner::Quoted(_) => "Quoted expression",
         MettaValueInner::Memo(_) => "Memo",
         MettaValueInner::Empty => "Empty",
     }

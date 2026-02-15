@@ -44,6 +44,11 @@ where
         )];
     }
 
+    // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
+    if expr.is_quoted() {
+        return vec![factory.atom("quote")];
+    }
+
     if expr.is_unit() {
         return vec![factory.error(
             "car-atom expects a non-empty expression as argument",
@@ -87,6 +92,11 @@ where
             "cdr-atom expects a non-empty expression as argument",
             expr.clone(),
         )];
+    }
+
+    // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
+    if let Some(inner) = expr.as_quoted() {
+        return vec![factory.sexpr(vec![inner])];
     }
 
     if expr.is_unit() {

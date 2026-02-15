@@ -373,6 +373,7 @@ pub enum UnaryOp {
 
     // Evaluation
     EvalEval,
+    EvalUnquote,
     EvalCollapse,
     Trace,
 }
@@ -410,6 +411,7 @@ impl UnaryOp {
             UnaryOp::GetState => Opcode::GetState,
             UnaryOp::SpaceGetAtoms => Opcode::SpaceGetAtoms,
             UnaryOp::EvalEval => Opcode::EvalEval,
+            UnaryOp::EvalUnquote => Opcode::EvalUnquote,
             UnaryOp::EvalCollapse => Opcode::EvalCollapse,
             UnaryOp::Trace => Opcode::Trace,
         }
@@ -447,6 +449,7 @@ impl UnaryOp {
             UnaryOp::GetState => "get-state",
             UnaryOp::SpaceGetAtoms => "get-atoms",
             UnaryOp::EvalEval => "eval",
+            UnaryOp::EvalUnquote => "unquote",
             UnaryOp::EvalCollapse => "collapse",
             UnaryOp::Trace => "trace!",
         }

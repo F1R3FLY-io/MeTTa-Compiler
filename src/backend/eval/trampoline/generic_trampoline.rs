@@ -2120,16 +2120,24 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else if eval_results.len() == 1 {
                 // Single result - evaluate it (TCO)
+                // Unwrap Quoted values: (eval (quote X)) → evaluate X.
+                // Quoted is self-evaluating, so without this unwrap we'd loop.
+                let mut value = eval_results.into_iter().next().unwrap();
+                if let Some(inner) = value.as_quoted() {
+                    value = inner;
+                }
                 work_stack.push(GenericWorkItem::Eval {
-                    value: eval_results.into_iter().next().unwrap(),
+                    value,
                     env: result_env,
                     depth,
                     cont_id: parent_cont,
                     is_tail_call: true,
                 });
             } else {
-                // Multiple results - evaluate each
-                let mut results_deque: VecDeque<_> = eval_results.into_iter().collect();
+                // Multiple results - evaluate each (unwrap Quoted values)
+                let mut results_deque: VecDeque<_> = eval_results.into_iter().map(|v| {
+                    if let Some(inner) = v.as_quoted() { inner } else { v }
+                }).collect();
                 let first = results_deque.pop_front().unwrap();
 
                 let eval_cont_id = continuations.len();
@@ -4004,7 +4012,10 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 let first = &atom_results[0];
-                let metatype = if first.as_atom().is_some() {
+                // Quoted is transparent to get-metatype: returns "Expression"
+                let metatype = if first.is_quoted() {
+                    "Expression"
+                } else if first.as_atom().is_some() {
                     "Symbol"
                 } else if first.as_sexpr().is_some() {
                     "Expression"

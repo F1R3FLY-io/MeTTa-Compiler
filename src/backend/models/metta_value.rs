@@ -61,6 +61,9 @@ pub enum MettaValueInner {
     Unit,
     /// A memoization table - reuses existing MemoHandle
     Memo(MemoHandle),
+    /// Quoted expression — prevents evaluation, preserves the quote wrapper.
+    /// Transparent to introspection: car-atom sees "quote", get-metatype sees "Expression".
+    Quoted(MettaValue),
     /// Empty sentinel
     Empty,
 }
@@ -202,6 +205,12 @@ impl MettaValue {
         matches!(self.inner, MettaValueInner::Memo(_))
     }
 
+    /// Check if this is a Quoted variant
+    #[inline]
+    pub fn is_quoted(&self) -> bool {
+        matches!(self.inner, MettaValueInner::Quoted(_))
+    }
+
     /// Check if this is an Empty variant
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -326,6 +335,24 @@ impl MettaValue {
         }
     }
 
+    /// Try to extract the inner value of a Quoted variant (owned copy)
+    #[inline]
+    pub fn as_quoted(&self) -> Option<MettaValue> {
+        match self.inner {
+            MettaValueInner::Quoted(inner) => Some(*inner),
+            _ => None,
+        }
+    }
+
+    /// Try to extract a reference to the inner value of a Quoted variant
+    #[inline]
+    pub fn as_quoted_ref(&self) -> Option<&MettaValue> {
+        match self.inner {
+            MettaValueInner::Quoted(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
     /// Get the type name of this value as a string slice
     pub fn type_name(&self) -> &'static str {
         match self.inner {
@@ -342,6 +369,7 @@ impl MettaValue {
             MettaValueInner::Conjunction(_) => "Conjunction",
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
+            MettaValueInner::Quoted(_) => "Expression",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
         }
@@ -472,10 +500,16 @@ impl MettaValue {
         super::gc_allocator::global_factory().atom(&format!("${}", name))
     }
 
-    /// Create a quoted expression: (quote inner).
+    /// Create a Quoted variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Quoted(inner: Self) -> Self {
+        super::gc_allocator::global_factory().quote(inner)
+    }
+
+    /// Create a quoted expression.
     pub fn quote(inner: Self) -> Self {
-        let f = super::gc_allocator::global_factory();
-        f.sexpr(vec![f.atom("quote"), inner])
+        super::gc_allocator::global_factory().quote(inner)
     }
 
     /// Check if two values point to the same inner allocation (pointer equality).
@@ -536,6 +570,7 @@ impl MettaValue {
             }
             MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
             MettaValueInner::State(id) => format!("(State {})", id),
+            MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_mork_string()),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
         }
@@ -594,6 +629,9 @@ impl MettaValue {
                     escape_json(&handle.name)
                 )
             }
+            MettaValueInner::Quoted(inner) => {
+                format!(r#"{{"type":"quoted","value":{}}}"#, inner.to_json_string())
+            }
             MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
         }
     }
@@ -648,6 +686,7 @@ impl fmt::Display for MettaValue {
             }
             MettaValueInner::Space(handle) => write!(f, "<Space:{}>", handle.name),
             MettaValueInner::State(id) => write!(f, "<State:{}>", id),
+            MettaValueInner::Quoted(inner) => write!(f, "(quote {})", inner),
             MettaValueInner::Memo(handle) => write!(f, "<Memo:{}>", handle.name),
             MettaValueInner::Empty => write!(f, "Empty"),
         }
@@ -676,6 +715,7 @@ impl PartialEq for MettaValueInner {
             (MettaValueInner::Conjunction(a), MettaValueInner::Conjunction(b)) => a == b,
             (MettaValueInner::Space(a), MettaValueInner::Space(b)) => a.id == b.id,
             (MettaValueInner::State(a), MettaValueInner::State(b)) => a == b,
+            (MettaValueInner::Quoted(a), MettaValueInner::Quoted(b)) => a == b,
             (MettaValueInner::Memo(a), MettaValueInner::Memo(b)) => a.id == b.id,
             (MettaValueInner::Empty, MettaValueInner::Empty) => true,
             _ => false,
@@ -775,6 +815,11 @@ impl MettaValueTrait for MettaValue {
     #[inline]
     fn is_memo(&self) -> bool {
         matches!(self.inner, MettaValueInner::Memo(_))
+    }
+
+    #[inline]
+    fn is_quoted(&self) -> bool {
+        matches!(self.inner, MettaValueInner::Quoted(_))
     }
 
     #[inline]
@@ -895,6 +940,22 @@ impl MettaValueTrait for MettaValue {
         }
     }
 
+    #[inline]
+    fn as_quoted(&self) -> Option<Self> {
+        match self.inner {
+            MettaValueInner::Quoted(inner) => Some(*inner),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_quoted_ref(&self) -> Option<&Self> {
+        match self.inner {
+            MettaValueInner::Quoted(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
     fn type_name(&self) -> &'static str {
         match self.inner {
             MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
@@ -910,6 +971,7 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Conjunction(_) => "Conjunction",
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
+            MettaValueInner::Quoted(_) => "Expression",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
         }
@@ -924,6 +986,7 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Atom(_) => "Atom",
             MettaValueInner::Unit => "Unit",
             MettaValueInner::SExpr(_) => "S-expression",
+            MettaValueInner::Quoted(_) => "Quoted expression",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
@@ -1062,6 +1125,15 @@ impl MettaValueTrait for MettaValue {
                         });
                         work_stack.push(ReprWork::Process(t));
                     }
+                    MettaValueInner::Quoted(inner) => {
+                        work_stack.push(ReprWork::Join {
+                            count: 1,
+                            prefix: "(quote ",
+                            suffix: ")",
+                            separator: "",
+                        });
+                        work_stack.push(ReprWork::Process(inner));
+                    }
                     MettaValueInner::SExpr(items) => {
                         if items.is_empty() {
                             result_stack.push("()".to_string());
@@ -1161,6 +1233,15 @@ impl MettaValueTrait for MettaValue {
                         });
                         work_stack.push(ReprWork::Process(t));
                     }
+                    MettaValueInner::Quoted(inner) => {
+                        work_stack.push(ReprWork::Join {
+                            count: 1,
+                            prefix: "(quote ",
+                            suffix: ")",
+                            separator: "",
+                        });
+                        work_stack.push(ReprWork::Process(inner));
+                    }
                     MettaValueInner::SExpr(items) => {
                         if items.is_empty() {
                             result_stack.push("()".to_string());
@@ -1230,6 +1311,7 @@ pub mod serialize_tags {
     pub const SPACE: u8 = 0x0D;
     pub const STATE: u8 = 0x0E;
     pub const MEMO: u8 = 0x0F;
+    pub const QUOTED: u8 = 0x10;
 }
 
 /// Write a varint to buffer
@@ -1298,6 +1380,10 @@ fn hash_value_for_trait<H: std::hash::Hasher>(value: &MettaValue, hasher: &mut H
         for item in items {
             hash_value_for_trait(item, hasher);
         }
+    } else if let Some(inner) = value.as_quoted() {
+        // Hash Quoted as ("quote", inner) so it matches the S-expr representation
+        "quote".hash(hasher);
+        hash_value_for_trait(&inner, hasher);
     }
 }
 
@@ -1370,6 +1456,10 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
         MettaValueInner::State(id) => {
             buf.push(STATE);
             buf.extend_from_slice(&id.to_le_bytes());
+        }
+        MettaValueInner::Quoted(inner) => {
+            buf.push(QUOTED);
+            serialize_value(inner, buf);
         }
         MettaValueInner::Memo(handle) => {
             buf.push(MEMO);

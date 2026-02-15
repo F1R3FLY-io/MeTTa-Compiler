@@ -112,7 +112,7 @@ where
                 };
             }
 
-            // Quote - returns argument unevaluated (NO conversion needed)
+            // Quote - wraps argument in Quoted variant (prevents evaluation)
             "quote" => {
                 if items.len() != 2 {
                     let err = ctx.factory().error(
@@ -123,6 +123,25 @@ where
                         ctx.factory().sexpr(items),
                     );
                     return GenericEvalStep::Done((vec![err], env));
+                }
+                return GenericEvalStep::Done((vec![ctx.factory().quote(items[1].clone())], env));
+            }
+
+            // Unquote - unwraps Quoted variant, returns inner value
+            "unquote" => {
+                if items.len() != 2 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "unquote requires exactly 1 argument, got {}. Usage: (unquote expr)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                // If argument is Quoted(inner), return inner; otherwise return as-is
+                if let Some(inner) = items[1].as_quoted() {
+                    return GenericEvalStep::Done((vec![inner], env));
                 }
                 return GenericEvalStep::Done((vec![items[1].clone()], env));
             }
@@ -1506,7 +1525,10 @@ mod tests {
         match eval_sexpr_step_generic(items, env, 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert_eq!(results.len(), 1);
-                assert_eq!(results[0].as_atom(), Some("foo"));
+                // quote now wraps in Quoted variant
+                assert!(results[0].is_quoted());
+                let inner = results[0].as_quoted().expect("Expected Quoted variant");
+                assert_eq!(inner.as_atom(), Some("foo"));
             }
             _ => panic!("Expected Done"),
         }

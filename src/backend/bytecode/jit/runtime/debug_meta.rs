@@ -87,10 +87,12 @@ pub unsafe extern "C" fn jit_runtime_get_metatype(
     let tag = jit_val.tag();
     let metatype = match tag {
         t if t == TAG_PTR => {
-            // Could be SExpr or other heap type
+            // Could be SExpr, Quoted, or other heap type
             let metta = jit_val.to_metta();
             match metta.inner() {
                 MettaValueInner::SExpr(_) => "Expression",
+                // Quoted is transparent to get-metatype: returns "Expression"
+                MettaValueInner::Quoted(_) => "Expression",
                 MettaValueInner::String(_) => "Grounded",
                 _ => "Expression",
             }

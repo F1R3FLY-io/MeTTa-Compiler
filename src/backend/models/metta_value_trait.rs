@@ -101,6 +101,9 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Check if this is a Memo variant
     fn is_memo(&self) -> bool;
 
+    /// Check if this is a Quoted variant
+    fn is_quoted(&self) -> bool;
+
     /// Check if this is an Empty variant
     fn is_empty(&self) -> bool;
 
@@ -150,6 +153,15 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
 
     /// Try to extract as memo handle
     fn as_memo(&self) -> Option<&MemoHandle>;
+
+    /// Try to extract the inner value of a Quoted variant (owned copy)
+    fn as_quoted(&self) -> Option<Self>;
+
+    /// Try to extract a reference to the inner value of a Quoted variant.
+    /// Returns a reference with the same lifetime as `self`, unlike `as_quoted()`
+    /// which returns an owned copy. Needed for generic functions with lifetime
+    /// constraints (e.g., alpha_equiv with shared HashMap entries).
+    fn as_quoted_ref(&self) -> Option<&Self>;
 
     // =========================================================================
     // Utility methods
@@ -469,11 +481,8 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
         self.atom(&format!("${}", name))
     }
 
-    /// Create a quoted expression: (quote inner)
-    #[inline]
-    fn quote(&self, inner: V) -> V {
-        self.sexpr(vec![self.atom("quote"), inner])
-    }
+    /// Create a quoted expression using the Quoted variant.
+    fn quote(&self, inner: V) -> V;
 
     // =========================================================================
     // Conversion from MettaValue
@@ -585,6 +594,11 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn memo(&self, handle: MemoHandle) -> V {
         (*self).memo(handle)
+    }
+
+    #[inline]
+    fn quote(&self, inner: V) -> V {
+        (*self).quote(inner)
     }
 
     #[inline]

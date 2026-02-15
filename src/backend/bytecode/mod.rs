@@ -330,6 +330,8 @@ pub fn can_compile(expr: &MettaValue) -> bool {
                     "if" => true,
                     // Quote - argument is NOT evaluated, so always OK
                     "quote" => return true, // Early return - don't check args
+                    // Unquote - unwraps Quoted variant
+                    "unquote" => true,
                     // Nondeterminism
                     "superpose" => true,
                     // NOTE: collapse intentionally NOT included - needs EvalCollapse VM impl
@@ -376,6 +378,9 @@ pub fn can_compile(expr: &MettaValue) -> bool {
 
         // Errors can be compiled (they just push the error value)
         MettaValueInner::Error(_, _) => true,
+
+        // Quoted values can be compiled (inner value + MakeQuote)
+        MettaValueInner::Quoted(inner) => can_compile(inner),
 
         // Types that need environment or special runtime support
         MettaValueInner::Space(_)
@@ -464,6 +469,8 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "if" => true,
                     // Quote - argument is NOT evaluated
                     "quote" => return true,
+                    // Unquote - unwraps Quoted variant
+                    "unquote" => true,
                     // Nondeterminism
                     "superpose" => true,
                     // List operations
@@ -506,6 +513,9 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
 
         // Errors can be compiled
         MettaValueInner::Error(_, _) => true,
+
+        // Quoted values can be compiled (inner value + MakeQuote)
+        MettaValueInner::Quoted(inner) => can_compile_with_env(inner),
 
         // Types that need special runtime support (even with environment)
         MettaValueInner::Space(_)

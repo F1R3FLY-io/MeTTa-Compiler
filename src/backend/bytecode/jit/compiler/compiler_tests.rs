@@ -4792,19 +4792,15 @@ fn test_jit_execute_make_quote() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    // Should be (quote 42)
+    // Should be Quoted(42)
     match metta.inner() {
-        MettaValueInner::SExpr(items) => {
-            assert_eq!(items.len(), 2, "Expected (quote value)");
-            match (items[0].inner(), items[1].inner()) {
-                (MettaValueInner::Atom(q), MettaValueInner::Long(v)) => {
-                    assert_eq!(*q, "quote");
-                    assert_eq!(*v, 42);
-                }
-                _ => panic!("Expected (quote 42), got: {:?}", items),
+        MettaValueInner::Quoted(inner) => {
+            match inner.inner() {
+                MettaValueInner::Long(v) => assert_eq!(*v, 42),
+                _ => panic!("Expected Quoted(Long(42)), got: Quoted({:?})", inner),
             }
         }
-        _ => panic!("Expected SExpr, got: {:?}", metta),
+        _ => panic!("Expected Quoted, got: {:?}", metta),
     }
 }
 
@@ -4839,28 +4835,23 @@ fn test_jit_execute_make_quote_nested() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    // Should be (quote (1 2))
+    // Should be Quoted((1 2))
     match metta.inner() {
-        MettaValueInner::SExpr(items) => {
-            assert_eq!(items.len(), 2, "Expected (quote expr)");
-            match items[0].inner() {
-                MettaValueInner::Atom(q) => assert_eq!(*q, "quote"),
-                _ => panic!("Expected quote atom, got: {:?}", items[0]),
-            }
-            match items[1].inner() {
-                MettaValueInner::SExpr(inner) => {
-                    assert_eq!(inner.len(), 2);
-                    match (inner[0].inner(), inner[1].inner()) {
+        MettaValueInner::Quoted(inner) => {
+            match inner.inner() {
+                MettaValueInner::SExpr(elems) => {
+                    assert_eq!(elems.len(), 2);
+                    match (elems[0].inner(), elems[1].inner()) {
                         (MettaValueInner::Long(a), MettaValueInner::Long(b)) => {
                             assert_eq!((*a, *b), (1, 2));
                         }
-                        _ => panic!("Expected (1 2), got: {:?}", inner),
+                        _ => panic!("Expected (1 2), got: {:?}", elems),
                     }
                 }
-                _ => panic!("Expected SExpr inside quote, got: {:?}", items[1]),
+                _ => panic!("Expected Quoted(SExpr), got: Quoted({:?})", inner),
             }
         }
-        _ => panic!("Expected SExpr, got: {:?}", metta),
+        _ => panic!("Expected Quoted, got: {:?}", metta),
     }
 }
 

@@ -208,7 +208,7 @@ impl TreeSitterMettaParser {
         Ok(vec![SExpr::List(items, Some(span))])
     }
 
-    /// Convert prefixed_expression: !expr, ?expr, 'expr
+    /// Convert prefixed_expression: !expr, ?expr
     /// Matches sexpr.rs behavior: convert !(expr) to (! expr)
     fn convert_prefixed_expression(&self, node: Node, source: &str) -> Result<Vec<SExpr>, String> {
         let span = self.node_span(node);
@@ -228,7 +228,7 @@ impl TreeSitterMettaParser {
                     prefix_span = Some(self.node_span(child));
                 }
                 "quote_prefix" => {
-                    prefix = Some("'");
+                    prefix = Some("quote");
                     prefix_span = Some(self.node_span(child));
                 }
                 _ if self.should_process_node(child) => {
@@ -529,7 +529,6 @@ mod tests {
                 let stripped_items = items.iter().map(strip_spans).collect();
                 SExpr::List(stripped_items, None)
             }
-            SExpr::Quoted(expr, _) => SExpr::Quoted(Box::new(strip_spans(expr)), None),
         }
     }
 

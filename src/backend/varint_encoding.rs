@@ -29,6 +29,7 @@ mod tags {
     pub const STATE: u8 = 0x0E;
     pub const MEMO: u8 = 0x0F;
     pub const EMPTY: u8 = 0x10;
+    pub const QUOTED: u8 = 0x11;
 }
 
 /// Encode MettaValue to binary key with varint arity (no 63 limit)
@@ -108,6 +109,10 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
             buf.push(tags::MEMO);
             encode_varint(buf, handle.id);
             encode_string(buf, &handle.name);
+        }
+        MettaValueInner::Quoted(inner) => {
+            buf.push(tags::QUOTED);
+            encode_metta(buf, inner);
         }
         MettaValueInner::Empty => {
             // Empty sentinel - simple tag byte
@@ -246,6 +251,10 @@ pub fn varint_key_to_metta(bytes: &[u8]) -> Option<(MettaValue, usize)> {
                 MettaValue::Atom(format!("memo:{}", name)),
                 offset + consumed2,
             ))
+        }
+        tags::QUOTED => {
+            let (inner, consumed) = varint_key_to_metta(&bytes[offset..])?;
+            Some((MettaValue::Quoted(inner), offset + consumed))
         }
         tags::EMPTY => Some((MettaValue::Empty(), offset)),
         _ => None, // Unknown tag

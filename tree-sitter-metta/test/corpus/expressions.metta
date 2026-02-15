@@ -105,18 +105,20 @@ Prefixed expression with question
           (identifier))))))
 
 ==================
-Prefixed expression with quote
+Prefixed expression with quote (using quote function)
 ==================
 
-'quoted
+(quote x)
 
 ---
 
 (source_file
   (expression
-    (prefixed_expression
-      prefix: (quote_prefix)
-      argument: (expression
+    (list
+      (expression
+        (atom_expression
+          (identifier)))
+      (expression
         (atom_expression
           (identifier))))))
 

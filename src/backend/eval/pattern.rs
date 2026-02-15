@@ -163,6 +163,21 @@ pub(crate) fn pattern_match_impl(
                 true // Continue processing the work stack
             }
 
+            // Quoted: match inner values
+            (MettaValueInner::Quoted(p_inner), MettaValueInner::Quoted(v_inner)) => {
+                work_stack.push((p_inner, v_inner));
+                true
+            }
+
+            // Transparency: SExpr pattern (quote $x) matches Quoted(v)
+            (MettaValueInner::SExpr(p_items), MettaValueInner::Quoted(v_inner))
+                if p_items.len() == 2
+                    && matches!(p_items[0].inner(), MettaValueInner::Atom(s) if *s == "quote") =>
+            {
+                work_stack.push((&p_items[1], v_inner));
+                true
+            }
+
             _ => false,
         };
 

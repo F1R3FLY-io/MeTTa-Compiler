@@ -108,6 +108,9 @@ jobs:
           toolchain: nightly
           target: ${{ matrix.platform.target }}
 
+      - name: Show Rust version
+        run: rustc --version && cargo --version
+
       - name: Build MeTTaTron
         env:
           RUSTFLAGS: ${{ matrix.platform.rustflags }}

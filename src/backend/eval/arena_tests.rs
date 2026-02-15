@@ -137,13 +137,22 @@ mod tests {
     // Quote and Eval
     // =========================================================================
 
-    eval_test!(quote_preserves, "!(quote (+ 1 2))", &["(+ 1 2)"]);
+    // quote is self-evaluating — preserves the (quote ...) wrapper (HE semantics)
+    eval_test!(quote_preserves, "!(quote (+ 1 2))", &["(quote (+ 1 2))"]);
     eval_test!(eval_quoted, "!(eval (quote (+ 1 2)))", &["3"]);
-    eval_test!(quote_nested, "!(quote (+ (+ 1 2) 3))", &["(+ (+ 1 2) 3)"]);
+    eval_test!(quote_nested, "!(quote (+ (+ 1 2) 3))", &["(quote (+ (+ 1 2) 3))"]);
     eval_test!(eval_force_quoted, "!(eval (quote (* 6 7)))", &["42"]);
     eval_test!(eval_on_value, "!(eval 42)", &["42"]);
-    eval_test!(quote_nested_structure, "!(quote ((+ 1 2) (* 3 4)))", &["((+ 1 2) (* 3 4))"]);
+    eval_test!(quote_nested_structure, "!(quote ((+ 1 2) (* 3 4)))", &["(quote ((+ 1 2) (* 3 4)))"]);
     eval_test!(eval_nested_quote, "!(eval (quote (+ 1 (+ 2 3))))", &["6"]);
+
+    // unquote: unwraps Quoted variant without evaluating the inner expression
+    eval_test!(unquote_quoted, "!(unquote (quote (+ 1 2)))", &["(+ 1 2)"]);
+    eval_test!(unquote_non_quoted_identity, "!(unquote 42)", &["42"]);
+    eval_test!(unquote_atom, "!(unquote (quote foo))", &["foo"]);
+
+    // quote + introspection transparency
+    eval_test!(get_metatype_quoted, "!(get-metatype (quote foo))", &["Expression"]);
 
     // =========================================================================
     // Type System

@@ -128,7 +128,7 @@ static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
     // Error handling (special flow)
     "catch", "is-error",
     // Evaluation control
-    "eval", "quote",
+    "eval", "quote", "unquote",
     // Space operations that need special handling
     "collapse", "collapse-bind", "amb", "guard",
     // State operations
@@ -163,7 +163,7 @@ static EAGER_SPECIAL_FORMS: phf::Set<&'static str> = phf_set! {
     // Higher-order list operations (produce list values)
     "map-atom", "filter-atom", "foldl-atom",
     // Evaluation control that produces values
-    "eval",
+    "eval", "unquote",
     // Space operations that produce values
     "collapse", "collapse-bind", "superpose",
     // State operations that produce values
@@ -212,6 +212,7 @@ pub fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValueInner::SExpr(_) => "S-expression",
         MettaValueInner::Error(_, _) => "Error",
         MettaValueInner::Type(_) => "Type",
+        MettaValueInner::Quoted(_) => "Expression",
         MettaValueInner::Conjunction(_) => "Conjunction",
         MettaValueInner::Space(_) => "Space",
         MettaValueInner::State(_) => "State",
@@ -282,6 +283,16 @@ pub fn friendly_value_repr(value: &MettaValue) -> String {
                         separator: "",
                     });
                     work_stack.push(ReprWork::Process(t));
+                }
+                MettaValueInner::Quoted(inner) => {
+                    // Push join marker, then process inner
+                    work_stack.push(ReprWork::Join {
+                        count: 1,
+                        prefix: "(quote ",
+                        suffix: ")",
+                        separator: "",
+                    });
+                    work_stack.push(ReprWork::Process(inner));
                 }
                 MettaValueInner::SExpr(items) => {
                     if items.is_empty() {
@@ -651,6 +662,9 @@ pub fn pattern_specificity(pattern: &MettaValue) -> usize {
             MettaValueInner::Type(t) => {
                 work_stack.push(t);
             }
+            MettaValueInner::Quoted(inner) => {
+                work_stack.push(inner);
+            }
         }
     }
 
@@ -701,6 +715,7 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         | MettaValueInner::Space(_)
         | MettaValueInner::State(_)
         | MettaValueInner::Type(_)
+        | MettaValueInner::Quoted(_)
         | MettaValueInner::Memo(_)
         | MettaValueInner::Empty => return Cow::Borrowed(value),
         // Regular atoms (not variables)
@@ -925,6 +940,12 @@ pub fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
 
             // Type equality
             (MettaValueInner::Type(a), MettaValueInner::Type(b)) => a == b,
+
+            // Quoted equality: recursively compare inner values
+            (MettaValueInner::Quoted(a), MettaValueInner::Quoted(b)) => {
+                work_stack.push((a, b));
+                true // Continue processing work stack
+            }
 
             // Memo equality by identity
             (MettaValueInner::Memo(a), MettaValueInner::Memo(b)) => a.id == b.id,

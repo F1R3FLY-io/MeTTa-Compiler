@@ -160,6 +160,11 @@ fn alpha_equiv_inner<'a, V: MettaValueTrait>(
         return ls == rs;
     }
 
+    // Both quoted? Use as_quoted_ref to get references with lifetime 'a
+    if let (Some(lq), Some(rq)) = (left.as_quoted_ref(), right.as_quoted_ref()) {
+        return alpha_equiv_inner(lq, rq, l2r, r2l);
+    }
+
     // Different variant types: never alpha-equivalent
     false
 }
@@ -375,5 +380,49 @@ mod tests {
         assert!(atoms_are_alpha_equivalent(&a, &b));
         let c = f.error("other", f.atom("$y"));
         assert!(!atoms_are_alpha_equivalent(&a, &c));
+    }
+
+    #[test]
+    fn test_quoted_same_inner() {
+        let f = global_factory();
+        let a = f.quote(f.atom("$x"));
+        let b = f.quote(f.atom("$y"));
+        // Quoted($x) alpha-equiv Quoted($y) — consistent variable rename
+        assert!(atoms_are_alpha_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn test_quoted_different_structure() {
+        let f = global_factory();
+        let a = f.quote(f.atom("foo"));
+        let b = f.quote(f.atom("bar"));
+        assert!(!atoms_are_alpha_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn test_quoted_vs_non_quoted() {
+        let f = global_factory();
+        let a = f.quote(f.atom("foo"));
+        let b = f.atom("foo");
+        // Quoted(foo) is NOT alpha-equiv to foo (different variant)
+        assert!(!atoms_are_alpha_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn test_quoted_shared_variable_mapping() {
+        let f = global_factory();
+        // (foo $x (quote $x)) vs (foo $a (quote $a)) — consistent mapping
+        let a = f.sexpr(vec![f.atom("foo"), f.atom("$x"), f.quote(f.atom("$x"))]);
+        let b = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.quote(f.atom("$a"))]);
+        assert!(atoms_are_alpha_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn test_quoted_inconsistent_variable_mapping() {
+        let f = global_factory();
+        // (foo $x (quote $x)) vs (foo $a (quote $b)) — $x maps to both $a and $b
+        let a = f.sexpr(vec![f.atom("foo"), f.atom("$x"), f.quote(f.atom("$x"))]);
+        let b = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.quote(f.atom("$b"))]);
+        assert!(!atoms_are_alpha_equivalent(&a, &b));
     }
 }

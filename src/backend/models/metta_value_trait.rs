@@ -21,7 +21,7 @@
 
 use std::fmt::Debug;
 
-use super::{MemoHandle, MettaValueInner, SpaceHandle};
+use super::{MemoHandle, MettaValue, MettaValueInner, SpaceHandle};
 
 /// Core trait for MeTTa values.
 ///
@@ -476,6 +476,25 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
     }
 
     // =========================================================================
+    // Conversion from MettaValue
+    // =========================================================================
+
+    /// Convert from `MettaValue` to `V`.
+    ///
+    /// When `V = MettaValue` (the production path via GcFactory), this is a
+    /// zero-cost identity — no serialization or deserialization occurs.
+    /// For other value types, this falls back to serialize/deserialize.
+    fn from_metta_value(&self, value: MettaValue) -> V {
+        // Default implementation: serialize/deserialize round-trip.
+        // Overridden to identity by GcFactory where V = MettaValue.
+        let bytes = value.serialize();
+        match self.deserialize(&bytes) {
+            Ok((v, _)) => v,
+            Err(_) => self.atom("?conversion_error?"),
+        }
+    }
+
+    // =========================================================================
     // Deserialization
     // =========================================================================
 
@@ -571,6 +590,11 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn empty(&self) -> V {
         (*self).empty()
+    }
+
+    #[inline]
+    fn from_metta_value(&self, value: MettaValue) -> V {
+        (*self).from_metta_value(value)
     }
 
     #[inline]

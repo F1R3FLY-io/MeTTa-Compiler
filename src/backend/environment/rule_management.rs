@@ -756,62 +756,62 @@ where
 
         // Get candidates from RuleIndex (read lock — multiple concurrent readers OK)
         let rule_index = self.shared.rule_index.read();
-        let candidates: Vec<&RuleEntry<V>> = if !head.is_empty() {
-            rule_index.get_candidates(head, arity).collect()
-        } else {
-            rule_index.get_all_rules().collect()
-        };
 
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        // Phase 1: Byte-level pattern matching via extract_data
-        // Collect (candidate_index, specificity) for successful matches
-        struct MatchHit {
-            candidate_idx: usize,
+        // Phase 1: Byte-level pattern matching via extract_data.
+        // Store entry references directly in MatchHit, eliminating the intermediate
+        // candidates Vec allocation (which can hold 1000s of entries for large programs).
+        struct MatchHit<'a, V: MettaValueTrait + Clone> {
+            entry: &'a RuleEntry<V>,
             specificity: usize,
         }
 
-        let mut hits: Vec<MatchHit> = Vec::new();
+        let mut hits: Vec<MatchHit<'_, V>> = Vec::new();
 
-        for (idx, entry) in candidates.iter().enumerate() {
-            // Validate lhs_debruijn starts with a valid MORK tag before creating Expr/ExprZipper.
-            // ExprZipper::new() calls byte_item() which panics on reserved bytes (0x40-0x7F).
-            if entry.lhs_debruijn.is_empty() {
-                continue;
-            }
-            if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
-                tracing::warn!(
-                    target: "mettatron::match_rules_native",
-                    "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
-                     head={}, arity={}, lhs_bytes={:02x?}",
-                    reserved,
-                    entry.lhs_debruijn.len(),
-                    head,
-                    arity,
-                    &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
-                );
-                continue;
-            }
-
-            // Create Expr and ExprZipper for the LHS De Bruijn pattern (template)
-            let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
-
-            // Create ExprZipper for the input expression (data)
-            let mut input_zipper = ExprZipper::new(
-                Expr { ptr: expr_bytes_owned.as_ptr().cast_mut() }
-            );
-
-            // extract_data: template.extract_data(input) → Vec<Expr> or failure
-            match lhs_expr.extract_data(&mut input_zipper) {
-                Ok(_) => {
-                    hits.push(MatchHit {
-                        candidate_idx: idx,
-                        specificity: entry.specificity,
-                    });
+        // Inline macro to avoid duplicating the match body for both iterator paths
+        macro_rules! try_match_entry {
+            ($entry:expr) => {
+                let entry = $entry;
+                // Validate lhs_debruijn starts with a valid MORK tag before creating Expr/ExprZipper.
+                // ExprZipper::new() calls byte_item() which panics on reserved bytes (0x40-0x7F).
+                if entry.lhs_debruijn.is_empty() {
+                    continue;
                 }
-                Err(_) => continue, // No match — skip this candidate
+                if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
+                    tracing::warn!(
+                        target: "mettatron::match_rules_native",
+                        "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
+                         head={}, arity={}, lhs_bytes={:02x?}",
+                        reserved,
+                        entry.lhs_debruijn.len(),
+                        head,
+                        arity,
+                        &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
+                    );
+                    continue;
+                }
+
+                // Create Expr and ExprZipper for the LHS De Bruijn pattern (template)
+                let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
+
+                // Create ExprZipper for the input expression (data)
+                let mut input_zipper = ExprZipper::new(
+                    Expr { ptr: expr_bytes_owned.as_ptr().cast_mut() }
+                );
+
+                // extract_data: template.extract_data(input) → Vec<Expr> or failure
+                if lhs_expr.extract_data(&mut input_zipper).is_ok() {
+                    hits.push(MatchHit { entry, specificity: entry.specificity });
+                }
+            };
+        }
+
+        if !head.is_empty() {
+            for entry in rule_index.get_candidates(head, arity) {
+                try_match_entry!(entry);
+            }
+        } else {
+            for entry in rule_index.get_all_rules() {
+                try_match_entry!(entry);
             }
         }
 
@@ -829,7 +829,7 @@ where
         let mut results: Vec<RuleMatchResult<V>> = Vec::with_capacity(hits.len());
 
         for hit in &hits {
-            let entry = candidates[hit.candidate_idx];
+            let entry = hit.entry;
 
             // Extract bindings by walking De Bruijn bytes + original expr in lockstep
             let bindings = extract_bindings_from_expr(

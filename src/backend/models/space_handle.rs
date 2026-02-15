@@ -551,6 +551,9 @@ impl SpaceHandle {
     ///
     /// This is the generic version of `collapse()` that returns values
     /// of any type implementing MettaValueTrait.
+    ///
+    /// When V = MettaValue (production path via GcFactory), `from_metta_value`
+    /// is a zero-cost identity — no serialization/deserialization round-trip.
     pub fn collapse_generic<V, F>(&self, factory: &F) -> Vec<V>
     where
         V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -558,18 +561,15 @@ impl SpaceHandle {
     {
         let heap_atoms = self.collapse();
         heap_atoms
-            .iter()
-            .map(|atom| {
-                let bytes = atom.serialize();
-                match factory.deserialize(&bytes) {
-                    Ok((value, _)) => value,
-                    Err(_) => factory.atom("?deserialization_error?"),
-                }
-            })
+            .into_iter()
+            .map(|atom| factory.from_metta_value(atom))
             .collect()
     }
 
     /// Get atoms as MultiplicityMatch with their actual counts (generic version).
+    ///
+    /// When V = MettaValue (production path via GcFactory), `from_metta_value`
+    /// is a zero-cost identity — no serialization/deserialization round-trip.
     pub fn collapse_with_multiplicity_generic<V, F>(
         &self,
         factory: &F,
@@ -581,16 +581,9 @@ impl SpaceHandle {
         let heap_matches = self.collapse_with_multiplicity();
         heap_matches
             .into_iter()
-            .map(|m| {
-                let bytes = m.value.serialize();
-                let value = match factory.deserialize(&bytes) {
-                    Ok((v, _)) => v,
-                    Err(_) => factory.atom("?deserialization_error?"),
-                };
-                GenericMultiplicityMatch {
-                    value,
-                    count: m.count,
-                }
+            .map(|m| GenericMultiplicityMatch {
+                value: factory.from_metta_value(m.value),
+                count: m.count,
             })
             .collect()
     }

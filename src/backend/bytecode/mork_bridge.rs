@@ -226,9 +226,15 @@ impl MorkBridge {
         expr: &MettaValue,
         env: &MettaEnvironment,
     ) -> Vec<(MettaValue, MettaValue, Bindings)> {
-        use crate::backend::eval::bindings_generic::apply_bindings_generic;
+        use crate::backend::models::{GcFactory, GenericBindings};
 
-        let results = env.match_rules_native(expr, apply_bindings_generic);
+        // Pass a no-op closure instead of apply_bindings_generic because we only use
+        // rhs_template + bindings — the instantiated_rhs field is discarded. This avoids
+        // a redundant recursive S-expression traversal + allocation per matching rule.
+        let results = env.match_rules_native(
+            expr,
+            |v: &MettaValue, _: &GenericBindings<MettaValue>, _: &GcFactory| v.clone(),
+        );
 
         results
             .into_iter()

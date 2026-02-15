@@ -43,8 +43,10 @@ use super::metta_value::{MettaValue, MettaValueInner};
 // Constants
 // ============================================================================
 
-/// Page size for value and data slabs (64 KB).
-const PAGE_SIZE: usize = 64 * 1024;
+/// Page size for value and data slabs (256 KB).
+/// Larger pages reduce mmap syscall overhead (4x fewer pages for the same
+/// total allocation). Trade-off: coarser page release granularity during GC.
+const PAGE_SIZE: usize = 256 * 1024;
 
 /// Power-of-2 size classes for variable-length data.
 /// Minimum 16 bytes to hold the Treiber stack `FreeNode` (u128 = 16 bytes).
@@ -3176,6 +3178,12 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     #[inline]
     fn empty(&self) -> MettaValue {
         MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Empty))
+    }
+
+    /// Zero-cost identity conversion: V = MettaValue, so no serialization needed.
+    #[inline]
+    fn from_metta_value(&self, value: MettaValue) -> MettaValue {
+        value
     }
 
     #[inline]

@@ -432,7 +432,11 @@ where
     // Returns (rhs_template, bindings) — the unapplied RHS template plus named bindings.
     // The caller (trampoline ProcessCombinations) applies bindings via apply_bindings_generic,
     // ensuring a single point of binding application rather than double-applying.
-    let results = env.match_rules_native(expr, apply_bindings_generic);
+    //
+    // We pass a no-op closure instead of apply_bindings_generic because we only use
+    // rhs_template + bindings — the instantiated_rhs field is discarded. This avoids
+    // a redundant recursive S-expression traversal + allocation per matching rule.
+    let results = env.match_rules_native(expr, |v: &V, _: &GenericBindings<V>, _: &F| v.clone());
     results
         .into_iter()
         .map(|r| (r.rhs_template, r.bindings))

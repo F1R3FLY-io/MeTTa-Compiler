@@ -21,6 +21,7 @@
 //! The RuleIndex caches De Bruijn bytes and metadata at insertion time for zero-deserialization
 //! matching. Only the final matched result is deserialized to MettaValue.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
@@ -31,6 +32,12 @@ use mork_expr::{maybe_byte_item, Expr, ExprZipper, Tag};
 // use pathmap::PathMap;
 use smallvec::SmallVec;
 use tracing::trace;
+
+thread_local! {
+    /// Reusable buffer for MORK-serialized expressions in `match_rules_native`.
+    /// Grows as needed but is never freed — amortized zero allocation after warmup.
+    static MATCH_EXPR_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(256));
+}
 
 use super::generic::GenericEnvironment;
 use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
@@ -719,7 +726,8 @@ where
             }
         }
 
-        // Serialize the expression to MORK bytes ONCE (literal encoding — concrete data)
+        // Serialize the expression to MORK bytes ONCE using a thread-local buffer.
+        // The buffer grows as needed but is never freed — amortized zero allocation.
         //
         // IMPORTANT: One extra zero byte is appended as padding. MORK's ExprZipper::gnext()
         // reads one byte past the last element of any S-expression to check if the next
@@ -728,133 +736,150 @@ where
         // Vec<u8> buffers, this reads past the allocation — causing UB and panics on
         // reserved bytes (0x40-0x7F) under valgrind. A trailing 0x00 is Arity(0), which
         // is valid and harmless (just pushes an empty breadcrumb that gets popped immediately).
-        let expr_bytes_owned: Vec<u8> = match with_mork_bytes(expr, &self.shared_mapping, |bytes| {
-            let mut padded = Vec::with_capacity(bytes.len() + 1);
-            padded.extend_from_slice(bytes);
-            padded.push(0x00); // Padding byte for ExprZipper read-past-end safety
-            padded
-        }) {
-            Ok(bytes) => bytes,
-            Err(_) => return Vec::new(), // Can't serialize = no matches possible
-        };
+        //
+        // All three phases (byte matching, specificity filter, binding extraction) are
+        // performed inside the thread-local borrow to avoid copying the buffer out.
+        MATCH_EXPR_BUFFER.with(|buf_cell| {
+            let mut buf = buf_cell.borrow_mut();
+            let serialize_ok = with_mork_bytes(expr, &self.shared_mapping, |bytes| {
+                buf.clear();
+                buf.reserve(bytes.len() + 1);
+                buf.extend_from_slice(bytes);
+                buf.push(0x00); // Padding byte for ExprZipper read-past-end safety
+            });
 
-        // Validate expr_bytes_owned contains valid MORK bytes (no reserved 0x40-0x7F)
-        #[cfg(debug_assertions)]
-        {
-            // Validate excluding the padding byte
-            if let Err((off, byte)) = validate_mork_bytes(&expr_bytes_owned[..expr_bytes_owned.len() - 1]) {
-                panic!(
-                    "expr_bytes_owned has invalid byte 0x{:02x} at offset {} (len={}).\n\
-                     expr_bytes: {:02x?}\n\
-                     expr: {:?}",
-                    byte, off, expr_bytes_owned.len() - 1,
-                    &expr_bytes_owned[..expr_bytes_owned.len().min(64)],
-                    expr
-                );
+            if serialize_ok.is_err() {
+                return Vec::new(); // Can't serialize = no matches possible
             }
-        }
 
-        // Get candidates from RuleIndex (read lock — multiple concurrent readers OK)
-        let rule_index = self.shared.rule_index.read();
-
-        // Phase 1: Byte-level pattern matching via extract_data.
-        // Store entry references directly in MatchHit, eliminating the intermediate
-        // candidates Vec allocation (which can hold 1000s of entries for large programs).
-        struct MatchHit<'a, V: MettaValueTrait + Clone> {
-            entry: &'a RuleEntry<V>,
-            specificity: usize,
-        }
-
-        let mut hits: Vec<MatchHit<'_, V>> = Vec::new();
-
-        // Inline macro to avoid duplicating the match body for both iterator paths
-        macro_rules! try_match_entry {
-            ($entry:expr) => {
-                let entry = $entry;
-                // Validate lhs_debruijn starts with a valid MORK tag before creating Expr/ExprZipper.
-                // ExprZipper::new() calls byte_item() which panics on reserved bytes (0x40-0x7F).
-                if entry.lhs_debruijn.is_empty() {
-                    continue;
-                }
-                if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
-                    tracing::warn!(
-                        target: "mettatron::match_rules_native",
-                        "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
-                         head={}, arity={}, lhs_bytes={:02x?}",
-                        reserved,
-                        entry.lhs_debruijn.len(),
-                        head,
-                        arity,
-                        &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
+            // Validate expr buffer contains valid MORK bytes (no reserved 0x40-0x7F)
+            #[cfg(debug_assertions)]
+            {
+                // Validate excluding the padding byte
+                if let Err((off, byte)) = validate_mork_bytes(&buf[..buf.len() - 1]) {
+                    panic!(
+                        "expr buffer has invalid byte 0x{:02x} at offset {} (len={}).\n\
+                         expr_bytes: {:02x?}\n\
+                         expr: {:?}",
+                        byte, off, buf.len() - 1,
+                        &buf[..buf.len().min(64)],
+                        expr
                     );
-                    continue;
                 }
+            }
 
-                // Create Expr and ExprZipper for the LHS De Bruijn pattern (template)
-                let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
+            // Get candidates from RuleIndex (read lock — multiple concurrent readers OK)
+            let rule_index = self.shared.rule_index.read();
 
-                // Create ExprZipper for the input expression (data)
-                let mut input_zipper = ExprZipper::new(
-                    Expr { ptr: expr_bytes_owned.as_ptr().cast_mut() }
+            // Phase 1: Byte-level pattern matching via extract_data.
+            // Store entry references directly in MatchHit, eliminating the intermediate
+            // candidates Vec allocation (which can hold 1000s of entries for large programs).
+            struct MatchHit<'a, V: MettaValueTrait + Clone> {
+                entry: &'a RuleEntry<V>,
+                specificity: usize,
+            }
+
+            let mut hits: Vec<MatchHit<'_, V>> = Vec::new();
+
+            // Inline macro to avoid duplicating the match body for both iterator paths
+            macro_rules! try_match_entry {
+                ($entry:expr) => {
+                    let entry = $entry;
+                    // Validate lhs_debruijn starts with a valid MORK tag before creating Expr/ExprZipper.
+                    // ExprZipper::new() calls byte_item() which panics on reserved bytes (0x40-0x7F).
+                    if entry.lhs_debruijn.is_empty() {
+                        continue;
+                    }
+                    if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
+                        tracing::warn!(
+                            target: "mettatron::match_rules_native",
+                            "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
+                             head={}, arity={}, lhs_bytes={:02x?}",
+                            reserved,
+                            entry.lhs_debruijn.len(),
+                            head,
+                            arity,
+                            &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
+                        );
+                        continue;
+                    }
+
+                    // Create Expr and ExprZipper for the LHS De Bruijn pattern (template)
+                    let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
+
+                    // Create ExprZipper for the input expression (data)
+                    let mut input_zipper = ExprZipper::new(
+                        Expr { ptr: buf.as_ptr().cast_mut() }
+                    );
+
+                    // extract_data: template.extract_data(input) → Vec<Expr> or failure
+                    if lhs_expr.extract_data(&mut input_zipper).is_ok() {
+                        hits.push(MatchHit { entry, specificity: entry.specificity });
+                    }
+                };
+            }
+
+            if !head.is_empty() {
+                for entry in rule_index.get_candidates(head, arity) {
+                    try_match_entry!(entry);
+                }
+            } else {
+                for entry in rule_index.get_all_rules() {
+                    try_match_entry!(entry);
+                }
+            }
+
+            if hits.is_empty() {
+                return Vec::new();
+            }
+
+            // Phase 2: Specificity filtering — keep only best (lowest = most specific)
+            let best_specificity = hits.iter().map(|h| h.specificity).min().expect("hits is non-empty");
+            hits.retain(|h| h.specificity == best_specificity);
+
+            // Phase 3: Extract bindings from original expression and build results.
+            // Uses parallel tree walk instead of MORK deserialization to preserve
+            // runtime types (SpaceHandle, State, etc.) that can't survive a round trip.
+            let mut results: Vec<RuleMatchResult<V>> = Vec::with_capacity(hits.len());
+
+            for hit in &hits {
+                let entry = hit.entry;
+
+                // Extract bindings by walking De Bruijn bytes + original expr in lockstep
+                let bindings = extract_bindings_from_expr(
+                    &entry.lhs_debruijn,
+                    expr,
+                    &entry.var_names,
+                    &entry.wildcard_indices,
                 );
 
-                // extract_data: template.extract_data(input) → Vec<Expr> or failure
-                if lhs_expr.extract_data(&mut input_zipper).is_ok() {
-                    hits.push(MatchHit { entry, specificity: entry.specificity });
+                // Apply bindings to the cached RHS template
+                let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);
+
+                // Expand by multiplicity — fast path for common case (multiplicity=1)
+                // avoids cloning bindings/instantiated_rhs when a move suffices
+                let multiplicity = entry.multiplicity.max(1);
+                if multiplicity == 1 {
+                    results.push(RuleMatchResult {
+                        instantiated_rhs,
+                        rhs_template: entry.rhs.clone(),
+                        bindings,
+                        multiplicity: 1,
+                    });
+                } else {
+                    for _ in 0..multiplicity {
+                        results.push(RuleMatchResult {
+                            instantiated_rhs: instantiated_rhs.clone(),
+                            rhs_template: entry.rhs.clone(),
+                            bindings: bindings.clone(),
+                            multiplicity,
+                        });
+                    }
                 }
-            };
-        }
-
-        if !head.is_empty() {
-            for entry in rule_index.get_candidates(head, arity) {
-                try_match_entry!(entry);
             }
-        } else {
-            for entry in rule_index.get_all_rules() {
-                try_match_entry!(entry);
-            }
-        }
 
-        if hits.is_empty() {
-            return Vec::new();
-        }
-
-        // Phase 2: Specificity filtering — keep only best (lowest = most specific)
-        let best_specificity = hits.iter().map(|h| h.specificity).min().expect("hits is non-empty");
-        hits.retain(|h| h.specificity == best_specificity);
-
-        // Phase 3: Extract bindings from original expression and build results.
-        // Uses parallel tree walk instead of MORK deserialization to preserve
-        // runtime types (SpaceHandle, State, etc.) that can't survive a round trip.
-        let mut results: Vec<RuleMatchResult<V>> = Vec::with_capacity(hits.len());
-
-        for hit in &hits {
-            let entry = hit.entry;
-
-            // Extract bindings by walking De Bruijn bytes + original expr in lockstep
-            let bindings = extract_bindings_from_expr(
-                &entry.lhs_debruijn,
-                expr,
-                &entry.var_names,
-                &entry.wildcard_indices,
-            );
-
-            // Apply bindings to the cached RHS template
-            let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);
-
-            // Expand by multiplicity
-            let multiplicity = entry.multiplicity.max(1);
-            for _ in 0..multiplicity {
-                results.push(RuleMatchResult {
-                    instantiated_rhs: instantiated_rhs.clone(),
-                    rhs_template: entry.rhs.clone(),
-                    bindings: bindings.clone(),
-                    multiplicity,
-                });
-            }
-        }
-
-        results
+            results
+        })
     }
 
     /// Get matching rules for an expression from PathMap via trie prefix navigation.

@@ -200,16 +200,19 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     // Type-Agnostic Registries and Caches
     // ========================================================================
     /// Module registry (type-agnostic)
-    /// Uses RwLock (ModuleRegistry has internal state)
-    pub(crate) module_registry: RwLock<ModuleRegistry>,
+    /// Arc-wrapped so fork_for_nondeterminism is O(1) (Arc::clone) instead of
+    /// deep-cloning the entire module registry. Writes go through make_owned().
+    pub(crate) module_registry: Arc<RwLock<ModuleRegistry>>,
 
     /// Per-module tokenizer (type-agnostic)
-    /// Uses RwLock (Tokenizer has internal state)
-    pub(crate) tokenizer: RwLock<crate::backend::modules::GenericTokenizer<V>>,
+    /// Arc-wrapped so fork_for_nondeterminism is O(1) (Arc::clone) instead of
+    /// deep-cloning all tokenizer entries. Writes go through make_owned().
+    pub(crate) tokenizer: Arc<RwLock<crate::backend::modules::GenericTokenizer<V>>>,
 
     /// Grounded operations registry (legacy, used by proptests only)
-    /// Uses RwLock (rarely modified after init)
-    pub(crate) grounded_registry: RwLock<GroundedRegistry>,
+    /// Arc-wrapped so fork_for_nondeterminism is O(1) (Arc::clone) instead of
+    /// deep-cloning the registry. Writes go through make_owned().
+    pub(crate) grounded_registry: Arc<RwLock<GroundedRegistry>>,
 
     /// Generic grounded operations registry (type-parameterized, zero-conversion)
     /// Stateless and Clone, no lock needed
@@ -238,12 +241,14 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     pub(crate) fuzzy_matcher: Arc<RwLock<FuzzyMatcher>>,
 
     /// Hierarchical scope tracker for context-aware symbol resolution
-    /// Uses RwLock (ScopeTracker has internal state)
-    pub(crate) scope_tracker: RwLock<ScopeTracker>,
+    /// Arc-wrapped so fork_for_nondeterminism is O(1) (Arc::clone) instead of
+    /// deep-cloning the scope tree. Writes go through make_owned().
+    pub(crate) scope_tracker: Arc<RwLock<ScopeTracker>>,
 
     /// Bloom filter for (head_symbol, arity) pairs - enables O(1) match_space() rejection
-    /// Uses RwLock (HeadArityBloomFilter has internal state)
-    pub(crate) head_arity_bloom: RwLock<HeadArityBloomFilter>,
+    /// Arc-wrapped so fork_for_nondeterminism is O(1) (Arc::clone) instead of
+    /// deep-cloning the bloom filter. Writes go through make_owned().
+    pub(crate) head_arity_bloom: Arc<RwLock<HeadArityBloomFilter>>,
 
     /// O(1) total atom count (sum of all multiplicities)
     pub(crate) total_atoms: AtomicUsize,
@@ -350,10 +355,10 @@ where
             // Type assertions storage
             types: RwLock::new(HashMap::new()),
 
-            // Type-agnostic registries
-            module_registry: RwLock::new(ModuleRegistry::new()),
-            tokenizer: RwLock::new(crate::backend::modules::GenericTokenizer::<V>::new()),
-            grounded_registry: RwLock::new(GroundedRegistry::new()),
+            // Type-agnostic registries (Arc-wrapped for O(1) fork)
+            module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
+            tokenizer: Arc::new(RwLock::new(crate::backend::modules::GenericTokenizer::<V>::new())),
+            grounded_registry: Arc::new(RwLock::new(GroundedRegistry::new())),
             generic_grounded_registry: GenericGroundedRegistry::with_standard_ops(),
             pattern_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).expect("1000 is non-zero"),
@@ -362,8 +367,8 @@ where
             type_index_dirty: AtomicBool::new(true),
             large_expr_pathmap: RwLock::new(None),
             fuzzy_matcher: Arc::new(RwLock::new(FuzzyMatcher::new())),
-            scope_tracker: RwLock::new(ScopeTracker::new()),
-            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)),
+            scope_tracker: Arc::new(RwLock::new(ScopeTracker::new())),
+            head_arity_bloom: Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))),
             total_atoms: AtomicUsize::new(0),
             rule_index: Arc::new(RwLock::new(super::rule_management::RuleIndex::new())),
         });
@@ -439,10 +444,11 @@ where
             // Type assertions - RwLock<HashMap>
             types: RwLock::new(self.shared.types.read().clone()),
 
-            // Type-agnostic registries - parking_lot::RwLock (no .expect())
-            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
-            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
-            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            // Type-agnostic registries — deep-clone into new Arcs so this
+            // owned env has exclusive copies for mutation
+            module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
+            tokenizer: Arc::new(RwLock::new(self.shared.tokenizer.read().clone())),
+            grounded_registry: Arc::new(RwLock::new(self.shared.grounded_registry.read().clone())),
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
             pattern_cache: RwLock::new(self.shared.pattern_cache.read().clone()),
@@ -453,8 +459,8 @@ where
             large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().clone()),
             // Deep-clone into new Arcs so this owned env has exclusive copies
             fuzzy_matcher: Arc::new(RwLock::new(self.shared.fuzzy_matcher.read().clone())),
-            scope_tracker: RwLock::new(self.shared.scope_tracker.read().clone()),
-            head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().clone()),
+            scope_tracker: Arc::new(RwLock::new(self.shared.scope_tracker.read().clone())),
+            head_arity_bloom: Arc::new(RwLock::new(self.shared.head_arity_bloom.read().clone())),
             total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
             // Deep-clone into new Arc so this owned env has an exclusive copy
             rule_index: Arc::new(RwLock::new(self.shared.rule_index.read().clone())),
@@ -490,10 +496,11 @@ where
             // Type assertions - RwLock<HashMap>
             types: RwLock::new(self.shared.types.read().clone()),
 
-            // Type-agnostic registries (parking_lot::RwLock - no .expect())
-            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
-            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
-            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            // O(1) Arc::clone for all read-only registries — forked envs
+            // don't modify these during evaluation, so sharing is safe.
+            module_registry: Arc::clone(&self.shared.module_registry),
+            tokenizer: Arc::clone(&self.shared.tokenizer),
+            grounded_registry: Arc::clone(&self.shared.grounded_registry),
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
             // Clear pattern cache instead of copying
@@ -505,14 +512,11 @@ where
                 self.shared.type_index_dirty.load(Ordering::Acquire),
             ),
             large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().clone()),
-            // O(1) Arc::clone instead of deep-cloning FuzzyMatcher (~4% wall time saved).
-            // Forked envs are read-only for rules/fuzzy during evaluation.
+            // O(1) Arc::clone for all read-only state during evaluation
             fuzzy_matcher: Arc::clone(&self.shared.fuzzy_matcher),
-            scope_tracker: RwLock::new(self.shared.scope_tracker.read().clone()),
-            head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().clone()),
+            scope_tracker: Arc::clone(&self.shared.scope_tracker),
+            head_arity_bloom: Arc::clone(&self.shared.head_arity_bloom),
             total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
-            // O(1) Arc::clone instead of deep-cloning RuleIndex (~2.3% wall time saved).
-            // Forked envs are read-only for rules during evaluation.
             rule_index: Arc::clone(&self.shared.rule_index),
         });
 
@@ -702,9 +706,9 @@ where
             types: RwLock::new(merged_types),
 
             // Share from self (these are typically static after initialization)
-            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
-            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
-            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
+            tokenizer: Arc::new(RwLock::new(self.shared.tokenizer.read().clone())),
+            grounded_registry: Arc::new(RwLock::new(self.shared.grounded_registry.read().clone())),
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
 
@@ -717,8 +721,8 @@ where
             large_expr_pathmap: RwLock::new(None), // TODO: merge these too
 
             fuzzy_matcher: Arc::new(RwLock::new(merged_fuzzy)),
-            scope_tracker: RwLock::new(other.shared.scope_tracker.read().clone()), // Use other's scope
-            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
+            scope_tracker: Arc::new(RwLock::new(other.shared.scope_tracker.read().clone())), // Use other's scope
+            head_arity_bloom: Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
             total_atoms: AtomicUsize::new(merged_total_atoms),
             // Merge rule indices from both environments
             rule_index: {
@@ -984,9 +988,9 @@ where
             types: RwLock::new(merged_types),
 
             // Share from self (typically static after init)
-            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
-            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
-            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
+            tokenizer: Arc::new(RwLock::new(self.shared.tokenizer.read().clone())),
+            grounded_registry: Arc::new(RwLock::new(self.shared.grounded_registry.read().clone())),
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
 
@@ -999,8 +1003,8 @@ where
             large_expr_pathmap: RwLock::new(None), // TODO: merge these too
 
             fuzzy_matcher: Arc::new(RwLock::new(merged_fuzzy)),
-            scope_tracker: RwLock::new(last_env.shared.scope_tracker.read().clone()),
-            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
+            scope_tracker: Arc::new(RwLock::new(last_env.shared.scope_tracker.read().clone())),
+            head_arity_bloom: Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
             total_atoms: AtomicUsize::new(merged_total_atoms),
             // Merge rule indices from all environments
             rule_index: {

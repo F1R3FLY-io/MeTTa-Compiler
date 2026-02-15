@@ -13,6 +13,7 @@ use std::cell::RefCell;
 
 use mork::space::Space;
 use mork_expr::{maybe_byte_item, Expr, Tag};
+use smallvec::SmallVec;
 use tracing::warn;
 
 use super::MettaValue;
@@ -330,9 +331,11 @@ where
     F: MettaValueFactory<V>,
     M: Clone + Default + Send + Sync + Unpin,
 {
-    // Stack-based traversal to avoid recursion limits
+    // Stack-based traversal to avoid recursion limits.
+    // SmallVec<[V; 4]> avoids heap allocation for S-expressions with ≤4 children
+    // (the overwhelmingly common case: head + 1-3 args).
     enum StackFrame<V> {
-        Arity { remaining: u8, items: Vec<V> },
+        Arity { remaining: u8, items: SmallVec<[V; 4]> },
     }
 
     let mut stack: Vec<StackFrame<V>> = Vec::new();
@@ -459,7 +462,7 @@ where
                     } else {
                         stack.push(StackFrame::Arity {
                             remaining: arity,
-                            items: Vec::with_capacity(arity as usize),
+                            items: SmallVec::with_capacity(arity as usize),
                         });
                         continue 'parsing;
                     }
@@ -488,7 +491,10 @@ where
 
                 if should_pop {
                     if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
-                        current_value = Some(factory.sexpr(items));
+                        // into_vec() is still a win: SmallVec ≤4 items avoids the
+                        // initial alloc entirely; into_vec() does one alloc at
+                        // completion vs one alloc at start for the old Vec path.
+                        current_value = Some(factory.sexpr(items.into_vec()));
                         continue 'popping;
                     }
                 } else {

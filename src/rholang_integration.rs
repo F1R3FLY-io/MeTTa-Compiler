@@ -316,8 +316,8 @@ pub fn run_state(
     let mut env = env;
     let mut outputs = Vec::new();
 
-    let source = compiled_state.source();
-    for &expr in source.iter() {
+    let source_exprs: Vec<MettaValue> = compiled_state.source().iter().copied().collect();
+    for &expr in source_exprs.iter() {
         let is_eval_expr = is_eval_expression(&expr);
 
         let guard = crate::backend::models::SessionGuard::enter();

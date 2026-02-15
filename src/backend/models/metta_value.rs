@@ -529,6 +529,62 @@ impl MettaValue {
     // Methods formerly only on heap MettaValue
     // ========================================================================
 
+    /// Convert to canonical MeTTa string representation.
+    /// Produces syntax that can be round-trip parsed by the MeTTa parser.
+    /// Guarantees: parse(to_metta_string(value)) == value
+    pub fn to_metta_string(&self) -> String {
+        match self.inner() {
+            MettaValueInner::Atom(s) => s.to_string(),
+            MettaValueInner::Bool(true) => "True".to_string(),
+            MettaValueInner::Bool(false) => "False".to_string(),
+            MettaValueInner::Long(n) => n.to_string(),
+            MettaValueInner::Float(f) => {
+                let s = f.to_string();
+                // Ensure float representation is unambiguous
+                if s.contains('.') || s.contains('e') || s.contains('E') {
+                    s
+                } else {
+                    format!("{}.0", s)
+                }
+            }
+            MettaValueInner::String(s) => format!("\"{}\"", escape_metta_string(s)),
+            MettaValueInner::SExpr(items) => {
+                let inner = items
+                    .iter()
+                    .map(|v| v.to_metta_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("({})", inner)
+            }
+            MettaValueInner::Unit => "()".to_string(),
+            MettaValueInner::Error(msg, details) => {
+                format!(
+                    "(error \"{}\" {})",
+                    escape_metta_string(msg),
+                    details.to_metta_string()
+                )
+            }
+            MettaValueInner::Type(t) => t.to_metta_string(),
+            MettaValueInner::Conjunction(goals) => {
+                if goals.is_empty() {
+                    "(,)".to_string()
+                } else {
+                    let inner = goals
+                        .iter()
+                        .map(|v| v.to_metta_string())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("(, {})", inner)
+                }
+            }
+            MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_metta_string()),
+            MettaValueInner::Space(h) => format!("(Space {} \"{}\")", h.id, h.name),
+            MettaValueInner::State(id) => format!("(State {})", id),
+            MettaValueInner::Memo(h) => format!("(Memo {} \"{}\")", h.id, h.name),
+            MettaValueInner::Empty => "Empty".to_string(),
+        }
+    }
+
     /// Convert to MORK s-expression string format.
     pub fn to_mork_string(&self) -> String {
         match self.inner() {
@@ -644,6 +700,33 @@ pub fn escape_json(s: &str) -> String {
         .replace('\n', r"\n")
         .replace('\r', r"\r")
         .replace('\t', r"\t")
+}
+
+/// Escape string content for MeTTa string literals.
+/// Reverses the logic in the parser's unescape_string().
+/// Supports: \n, \t, \r, \\, \", \x##, \u{...}
+pub fn escape_metta_string(s: &str) -> String {
+    let mut result = String::new();
+    for ch in s.chars() {
+        match ch {
+            '\n' => result.push_str(r"\n"),
+            '\t' => result.push_str(r"\t"),
+            '\r' => result.push_str(r"\r"),
+            '\\' => result.push_str(r"\\"),
+            '"' => result.push_str(r#"\""#),
+            // ASCII control characters — use hex escape
+            c if c.is_control() && (c as u32) < 256 => {
+                result.push_str(&format!(r"\x{:02x}", c as u8));
+            }
+            // Non-ASCII characters — use unicode escape if needed
+            c if !c.is_ascii() => {
+                result.push_str(&format!(r"\u{{{:x}}}", c as u32));
+            }
+            // Regular printable ASCII — no escaping needed
+            c => result.push(c),
+        }
+    }
+    result
 }
 
 // ============================================================================

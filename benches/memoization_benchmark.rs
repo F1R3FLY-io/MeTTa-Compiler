@@ -113,8 +113,8 @@ fn init_config() {
 fn run_program(src: &str) {
     let state = compile(src).expect("Failed to compile program");
     let env = new_env();
-    let result = run_state(env, &state).expect("Failed to run program");
-    black_box(result);
+    let result_state = run_state(env, &state).expect("Failed to run program");
+    black_box(result_state);
 }
 
 /// Benchmark Fibonacci without memoization

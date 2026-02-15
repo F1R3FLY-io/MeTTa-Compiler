@@ -304,20 +304,24 @@ pub fn state_to_json(state: &MettaState) -> String {
 /// - `env`: Accumulated environment with rules/facts from previous calls
 /// - `compiled_state`: MettaState with pending expressions to evaluate
 ///
-/// Returns:
-/// - Updated environment (merged with new rules/facts)
-/// - Output values (only results from THIS invocation's `!` evaluations)
+/// Returns a `MettaState` containing:
+/// - The updated environment (merged with new rules/facts) in `.environment`
+/// - Output values (only results from THIS invocation's `!` evaluations) in `.output()`
+///
+/// The returned `MettaState` is registered as a GC root provider, so all output
+/// values are protected from garbage collection as long as the caller holds the
+/// returned state. This mirrors the proven-safe pattern from `eval_metta_session_raw()`.
 ///
 /// **Threading**: Synchronous, single-threaded evaluation
 #[instrument(level = "info", skip(env, compiled_state))]
 pub fn run_state(
     env: MettaEnvironment,
     compiled_state: &MettaState,
-) -> Result<(MettaEnvironment, Vec<MettaValue>), String> {
+) -> Result<MettaState, String> {
     info!("Run state");
 
     let mut env = env;
-    let mut outputs = Vec::new();
+    let mut result_state = MettaState::new_empty(); // GC-rooted immediately
 
     let source_exprs: Vec<MettaValue> = compiled_state.source().iter().copied().collect();
     for &expr in source_exprs.iter() {
@@ -328,21 +332,28 @@ pub fn run_state(
         let (results, new_env) = eval(expr, env, compiled_state);
         env = new_env;
 
-        // Consume results WHILE guard alive — values not yet released
+        // Push results to GC-rooted state BEFORE guard drops
         if is_eval_expr {
-            outputs.extend(results);
+            let mut output = result_state.output_mut();
+            for &result in &results {
+                output.push(result);
+            }
         }
 
-        // Drop guard triggers async release_session()
+        // Drop guard triggers async release_session() — safe because
+        // results are now in the GC-rooted MettaState
         drop(guard);
     }
 
+    // Transfer final environment to result state
+    result_state.environment = env;
+
     info!(
-        output_count = outputs.len(),
+        output_count = result_state.output().len(),
         "Run state completed"
     );
 
-    Ok((env, outputs))
+    Ok(result_state)
 }
 
 /// Async version of run_state with parallel evaluation of independent expressions
@@ -350,6 +361,14 @@ pub fn run_state(
 /// This function parallelizes evaluation of consecutive `!` (eval) expressions
 /// while maintaining sequential execution for rule definitions (`=`) to preserve
 /// MeTTa semantics.
+///
+/// Returns a `MettaState` containing:
+/// - The updated environment (merged with new rules/facts) in `.environment`
+/// - Output values (only results from THIS invocation's `!` evaluations) in `.output()`
+///
+/// The returned `MettaState` is registered as a GC root provider, so all output
+/// values are protected from garbage collection as long as the caller holds the
+/// returned state.
 ///
 /// **MeTTa Semantics Preserved:**
 /// - Rule definitions execute sequentially (environment threading)
@@ -363,13 +382,13 @@ pub fn run_state(
 pub async fn run_state_async(
     env: MettaEnvironment,
     compiled_state: &MettaState,
-) -> Result<(MettaEnvironment, Vec<MettaValue>), String> {
+) -> Result<MettaState, String> {
     use crate::backend::models::MettaValueInner;
 
     info!("Run state async");
 
     let mut env = env;
-    let mut outputs = Vec::new();
+    let mut result_state = MettaState::new_empty(); // GC-rooted immediately
 
     // Batch expressions into parallelizable groups
     let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
@@ -391,7 +410,10 @@ pub async fn run_state_async(
             ).await;
             for (_batch_idx, results, should_output) in batch_results {
                 if should_output {
-                    outputs.extend(results);
+                    let mut output = result_state.output_mut();
+                    for &result in &results {
+                        output.push(result);
+                    }
                 }
             }
             current_batch = Vec::new();
@@ -413,17 +435,23 @@ pub async fn run_state_async(
         ).await;
         for (_batch_idx, results, should_output) in batch_results {
             if should_output {
-                outputs.extend(results);
+                let mut output = result_state.output_mut();
+                for &result in &results {
+                    output.push(result);
+                }
             }
         }
     }
 
+    // Transfer final environment to result state
+    result_state.environment = env;
+
     info!(
-        output_count = outputs.len(),
+        output_count = result_state.output().len(),
         "Run state async completed"
     );
 
-    Ok((env, outputs))
+    Ok(result_state)
 }
 
 /// Helper function to evaluate a batch of arena expressions in parallel.
@@ -844,7 +872,8 @@ mod tests {
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
         match outputs[0].inner() {
@@ -865,7 +894,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
         match outputs[0].inner() {
@@ -882,7 +912,8 @@ mod tests {
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
-        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let outputs = result.output();
 
         // Should have output
         assert!(!outputs.is_empty());
@@ -906,7 +937,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let outputs = result.output();
 
         // Should have all outputs
         assert_eq!(outputs.len(), 3);
@@ -938,7 +970,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let outputs = result.output();
 
         // Should have outputs (parallel evaluation of both double calls)
         assert_eq!(outputs.len(), 2);
@@ -955,20 +988,17 @@ mod tests {
     #[test]
     fn test_ground_facts_not_in_output() {
         // Regression test: verify ground facts are NOT added to output
-        let mut env = new_env();
-
         // Add ground facts
         let state1 = compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
-        let (new_env, outputs1) = run_state(env, &state1).expect("run_state failed");
-        env = new_env;
+        let result1 = run_state(new_env(), &state1).expect("run_state failed");
         // Ground facts should NOT produce output
-        assert_eq!(outputs1.len(), 0);
+        assert_eq!(result1.output().len(), 0);
 
         // Verify ground facts are in environment (can be queried)
         let state2 = compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
-        let (_env, outputs2) = run_state(env, &state2).expect("run_state failed");
+        let result2 = run_state(result1.environment.clone(), &state2).expect("run_state failed");
         // Now output should contain query results (2 matches)
-        assert_eq!(outputs2.len(), 2);
+        assert_eq!(result2.output().len(), 2);
     }
 
     #[tokio::test]
@@ -986,7 +1016,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let outputs = result.output();
 
         assert_eq!(outputs.len(), 2);
         match outputs[0].inner() {
@@ -1003,12 +1034,12 @@ mod tests {
     fn test_run_state_accumulated_state() {
         use crate::backend::models::MettaValueInner;
         // Test that rules persist across multiple run_state calls
-        let env = new_env();
         let state1 = compile("(= (double $x) (* $x 2))").expect("compile failed");
-        let (env, _outputs) = run_state(env, &state1).expect("run_state failed");
+        let result1 = run_state(new_env(), &state1).expect("run_state failed");
 
         let state2 = compile("!(double 5)").expect("compile failed");
-        let (_env, outputs) = run_state(env, &state2).expect("run_state failed");
+        let result2 = run_state(result1.environment.clone(), &state2).expect("run_state failed");
+        let outputs = result2.output();
 
         assert!(!outputs.is_empty());
         match outputs[0].inner() {
@@ -1030,7 +1061,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should have outputs for both calls
         assert!(!outputs.is_empty());
@@ -1048,7 +1080,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
     }
@@ -1065,7 +1098,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
         // Factorial of 5 should be 120
@@ -1086,7 +1120,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Facts are added to space (no output), only eval expression produces output
         assert_eq!(outputs.len(), 1);
@@ -1099,7 +1134,6 @@ mod tests {
     #[test]
     fn test_run_state_facts_persist_across_runs() {
         // First run: add facts
-        let env = new_env();
         let state1 = compile(
             r#"
                 (Parent Tom Bob)
@@ -1107,7 +1141,7 @@ mod tests {
                 "#,
         )
         .expect("compile failed");
-        let (env, _outputs) = run_state(env, &state1).expect("run_state failed");
+        let result1 = run_state(new_env(), &state1).expect("run_state failed");
 
         // Second run: use facts via rules
         let state2 = compile(
@@ -1119,7 +1153,8 @@ mod tests {
                 "#,
         )
         .expect("compile failed");
-        let (_env, outputs) = run_state(env, &state2).expect("run_state failed");
+        let result2 = run_state(result1.environment.clone(), &state2).expect("run_state failed");
+        let outputs = result2.output();
 
         // Should be able to query the facts
         assert!(!outputs.is_empty());
@@ -1141,7 +1176,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should find parents of Bob
         assert!(!outputs.is_empty());
@@ -1162,7 +1198,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should find all children of Tom
         assert!(!outputs.is_empty());
@@ -1190,7 +1227,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
     }
@@ -1213,7 +1251,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should find that Tom is an ancestor of Sara
         assert!(!outputs.is_empty());
@@ -1241,7 +1280,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
     }
@@ -1261,14 +1301,15 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should produce multiple results (nondeterministic)
         assert!(!outputs.is_empty());
         // All results should be valid digits
-        for output in &outputs {
+        for output in outputs.iter() {
             if let MettaValueInner::Long(n) = output.inner() {
-                assert!(*n >= 1 && *n <= 3);
+                assert!(n >= &1 && n <= &3);
             }
         }
     }
@@ -1294,7 +1335,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should produce pairs where x != y
         assert!(!outputs.is_empty());
@@ -1329,7 +1371,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should produce valid triples with constraints
         assert!(!outputs.is_empty());
@@ -1355,7 +1398,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
     }
@@ -1376,7 +1420,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should find all children of Tom
         assert!(!outputs.is_empty());
@@ -1399,7 +1444,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
     }
@@ -1420,7 +1466,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Should find both Ann and Pat
         assert!(!outputs.is_empty());
@@ -1443,7 +1490,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
     }
@@ -1452,20 +1500,17 @@ mod tests {
     #[cfg(feature = "async")]
     async fn test_ground_facts_not_in_output_async() {
         // Regression test: verify ground facts are NOT added to output (async version)
-        let mut env = new_env();
-
         // Add ground facts
         let state1 = compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
-        let (new_env, outputs1) = run_state_async(env, &state1).await.expect("run_state_async failed");
-        env = new_env;
+        let result1 = run_state_async(new_env(), &state1).await.expect("run_state_async failed");
         // Ground facts should NOT produce output
-        assert_eq!(outputs1.len(), 0);
+        assert_eq!(result1.output().len(), 0);
 
         // Verify ground facts are in environment (can be queried)
         let state2 = compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
-        let (_env, outputs2) = run_state_async(env, &state2).await.expect("run_state_async failed");
+        let result2 = run_state_async(result1.environment.clone(), &state2).await.expect("run_state_async failed");
         // Now output should contain query results (2 matches)
-        assert_eq!(outputs2.len(), 2);
+        assert_eq!(result2.output().len(), 2);
     }
 
     #[tokio::test]
@@ -1485,7 +1530,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let outputs = result.output();
 
         // Both queries should execute in parallel
         assert!(!outputs.is_empty());
@@ -1503,7 +1549,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         // Facts are added to space but produce no output
         assert_eq!(outputs.len(), 0);
@@ -1524,7 +1571,8 @@ mod tests {
         )
         .expect("compile failed");
 
-        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
+        let result = run_state(env, &state).expect("run_state failed");
+        let outputs = result.output();
 
         assert!(!outputs.is_empty());
     }

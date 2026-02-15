@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mettatron::config::{configure_eval, EvalConfig};
-use mettatron::{compile, run_state, run_state_async, MettaState};
+use mettatron::{compile, new_env, run_state, run_state_async};
 
 const SAMPLES: &[(&str, &str)] = &[
     ("fib", include_str!("../metta_samples/fib.metta")),
@@ -59,18 +59,18 @@ struct BenchResult {
 }
 
 fn evaluate_full_program(source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = MettaState::new_empty();
     let program = compile(source)?;
-    let _result = run_state(state, program)?;
+    let env = new_env();
+    let _result = run_state(env, &program)?;
     Ok(())
 }
 
 async fn evaluate_full_program_async(
     source: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = MettaState::new_empty();
     let program = compile(source)?;
-    let _result = run_state_async(state, program).await?;
+    let env = new_env();
+    let _result = run_state_async(env, &program).await?;
     Ok(())
 }
 

@@ -31,15 +31,15 @@ const BACKWARD_CHAINING_SRC: &str = include_str!("../metta_samples/backward_chai
 fn run_sync(src: &'static str) {
     let state = compile(src).unwrap();
     let env = new_env();
-    let result = run_state(env, &state).unwrap();
-    black_box(result);
+    let result_state = run_state(env, &state).unwrap();
+    black_box(result_state);
 }
 
 async fn run_async(src: &'static str) {
     let state = compile(src).unwrap();
     let env = new_env();
-    let result = run_state_async(env, &state).await.unwrap();
-    black_box(result);
+    let result_state = run_state_async(env, &state).await.unwrap();
+    black_box(result_state);
 }
 
 macro_rules! metta_bench_pair {

@@ -311,8 +311,8 @@ fn main() {
 
         let env = new_env();
         match run_state(env, &compiled_state) {
-            Ok(result) => {
-                black_box(result);
+            Ok(result_state) => {
+                black_box(result_state);
             }
             Err(e) => {
                 eprintln!("WARNING: Iteration {} failed: {}", iteration_count, e);

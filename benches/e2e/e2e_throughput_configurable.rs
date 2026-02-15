@@ -121,9 +121,9 @@ struct ThroughputReport {
 }
 
 fn evaluate_full_program(source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = compile(source)?;
+    let program = compile(source)?;
     let env = new_env();
-    let _result = run_state(env, &state)?;
+    let _result = run_state(env, &program)?;
     Ok(())
 }
 

@@ -64,9 +64,10 @@ async fn demo_default_config() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let (_env, outputs) = run_state_async(env, &state)
+    let result = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
+    let outputs = result.output();
 
     let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
     println!("  Results: {:?}", results);
@@ -93,9 +94,10 @@ async fn demo_cpu_optimized() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let (_env, outputs) = run_state_async(env, &state)
+    let result = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
+    let outputs = result.output();
 
     let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
     println!("  Results: {:?}", results);
@@ -115,9 +117,10 @@ async fn demo_memory_optimized() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let (_env, outputs) = run_state_async(env, &state)
+    let result = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
+    let outputs = result.output();
 
     let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
     println!("  Results: {:?}", results);
@@ -136,11 +139,11 @@ async fn demo_throughput_optimized() {
     }
 
     let state = compile(&src).expect("Failed to compile");
-    let (_env, outputs) = run_state_async(env, &state)
+    let result = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
 
-    println!("  Results count: {} expressions", outputs.len());
+    println!("  Results count: {} expressions", result.output().len());
 }
 
 async fn demo_custom_config() {
@@ -163,9 +166,10 @@ async fn demo_custom_config() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let (_env, outputs) = run_state_async(env, &state)
+    let result = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
+    let outputs = result.output();
 
     let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
     println!("  Results: {:?}", results);

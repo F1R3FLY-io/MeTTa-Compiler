@@ -219,6 +219,14 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
             .collect()
     }
 
+    /// Collect GC values directly into the provided Vec (avoids temporary allocation).
+    pub fn collect_gc_values_into(&self, roots: &mut Vec<V>) {
+        roots.extend(
+            self.tokens.iter()
+                .map(|entry| (entry.constructor)(entry.pattern.pattern_str()))
+        );
+    }
+
     /// Register a token with a simple value using exact string match.
     ///
     /// When `pattern` is encountered, it will be replaced with `value`.

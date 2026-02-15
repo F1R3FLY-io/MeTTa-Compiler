@@ -428,10 +428,14 @@ where
     // Use native byte-level matching via RuleIndex + extract_data.
     // This replaces the old pipeline of:
     //   get_matching_rules_for_expr → pattern_match_generic → apply_bindings_generic
+    //
+    // Returns (rhs_template, bindings) — the unapplied RHS template plus named bindings.
+    // The caller (trampoline ProcessCombinations) applies bindings via apply_bindings_generic,
+    // ensuring a single point of binding application rather than double-applying.
     let results = env.match_rules_native(expr, apply_bindings_generic);
     results
         .into_iter()
-        .map(|r| (r.instantiated_rhs, r.bindings))
+        .map(|r| (r.rhs_template, r.bindings))
         .collect()
 }
 

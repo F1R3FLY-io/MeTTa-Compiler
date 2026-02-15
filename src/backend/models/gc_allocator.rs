@@ -2132,12 +2132,16 @@ where
     V: crate::backend::models::metta_value_trait::MettaValueTrait
         + Clone + Send + Sync + Unpin + 'static,
 {
-    // Skip registration when GC is disabled or the GC thread hasn't been spawned.
-    // This avoids ROOT_REGISTRY write lock contention when many environments are
-    // created in parallel (e.g., test suites with thousands of env creations).
-    if is_gc_disabled() || GLOBAL_GC_THREAD.get().is_none() {
+    // Skip registration when GC is disabled.
+    if is_gc_disabled() {
         return;
     }
+    // NOTE: We intentionally do NOT check GLOBAL_GC_THREAD.get().is_none() here.
+    // The session release thread (session_release_thread_main) calls
+    // collect_all_roots() → trace_surviving_set() independently of the GC thread.
+    // If environments are not registered, the surviving set is empty and ALL
+    // session-allocated values (including RuleEntry.lhs/rhs) are freed, causing
+    // use-after-free when match_rules_native() dereferences freed slab slots.
 
     use std::any::Any;
     // Clone the Arc and try to downcast to the concrete MettaValue type

@@ -1119,6 +1119,20 @@ use crate::backend::models::gc_allocator::RootProvider;
 
 impl RootProvider for GenericEnvironmentShared<MettaValue> {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        // Pre-estimate capacity from all sources to eliminate Vec reallocations.
+        // Read locks under quiescent GC are uncontended (ACTIVE_EVALUATORS == 0).
+        {
+            let estimated =
+                self.named_spaces.read().values().map(|(_, a)| a.len()).sum::<usize>()
+                + self.bindings.read().len()
+                + self.types.read().len()
+                + self.states.read().len()
+                + self.pattern_cache.read().len()
+                + self.rule_index.read().len() * 2 // lhs + rhs per entry
+                + 64; // buffer for tokenizer + large_expr_pathmap
+            roots.reserve(estimated);
+        }
+
         // Named spaces: collect all atoms
         {
             let named_spaces = self.named_spaces.read();
@@ -1151,9 +1165,7 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
         // cached keys, causing use-after-free on next cache lookup (Hash/Eq).
         {
             let cache = self.pattern_cache.read();
-            for (key, _) in cache.iter() {
-                roots.push(*key);
-            }
+            roots.extend(cache.iter().map(|(key, _)| *key));
         }
 
         // Large expression PathMap values: PathMap<MettaValue>
@@ -1162,9 +1174,7 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
         {
             let large_pm = self.large_expr_pathmap.read();
             if let Some(ref pm) = *large_pm {
-                for (_key, val) in pm.iter() {
-                    roots.push(*val);
-                }
+                roots.extend(pm.iter().map(|(_, val)| *val));
             }
         }
 
@@ -1173,10 +1183,18 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
         // and State values (e.g., &sp) that are still looked up via token resolution.
         {
             let tokenizer = self.tokenizer.read();
-            roots.extend(tokenizer.collect_gc_values());
+            tokenizer.collect_gc_values_into(roots);
+        }
+
+        // RuleIndex: cached LHS/RHS MettaValues for rule matching.
+        // Without collecting these, GC frees slab slots still referenced by
+        // RuleEntry.lhs and RuleEntry.rhs, causing use-after-free when
+        // match_rules_native() applies bindings to the RHS template.
+        {
+            let rule_index = self.rule_index.read();
+            roots.extend(rule_index.get_all_rules().flat_map(|e| [e.lhs, e.rhs]));
         }
     }
-
 }
 
 

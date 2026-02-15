@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use mork::space::Space;
-use mork_expr::{maybe_byte_item, Expr, ExprZipper};
+use mork_expr::{maybe_byte_item, Expr, ExprZipper, Tag};
 // Disabled: PathMap no longer directly constructed in this module — add_rules_bulk now
 // delegates to add_rule() for consistent De Bruijn encoding.
 // use pathmap::PathMap;
@@ -312,7 +312,7 @@ fn count_newvar_tags(bytes: &[u8]) -> usize {
     let expr = Expr { ptr: bytes.as_ptr().cast_mut() };
     let mut ez = ExprZipper::new(expr);
     loop {
-        if ez.tag() == mork_expr::Tag::NewVar {
+        if ez.tag() == Tag::NewVar {
             count += 1;
         }
         if !ez.next() {
@@ -350,6 +350,95 @@ fn build_var_names_and_wildcards(
     }
 
     (var_names, wildcard_indices)
+}
+
+/// Extract bindings by walking De Bruijn bytes and the original expression in parallel.
+///
+/// Since `extract_data` already confirmed the structural match, we can skip all
+/// matching logic and just navigate to NewVar positions to capture sub-expressions
+/// from the original value. This preserves runtime types (SpaceHandle, State, etc.)
+/// that can't survive a MORK serialize→deserialize round trip.
+///
+/// O(pattern_size) time — same as extract_data, but operates on MettaValues.
+fn extract_bindings_from_expr<V>(
+    lhs_debruijn: &[u8],
+    expr: &V,
+    var_names: &[String],
+    wildcard_indices: &SmallVec<[u8; 4]>,
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+{
+    let mut bindings = GenericBindings::new();
+    let mut offset = 0usize;
+    let mut newvar_idx = 0u8;
+    let mut expr_stack: Vec<&V> = vec![expr];
+    // Exclude padding byte (0x00) appended for ExprZipper read-past-end safety
+    let end = lhs_debruijn.len().saturating_sub(1);
+
+    while offset < end && !expr_stack.is_empty() {
+        let tag = match maybe_byte_item(lhs_debruijn[offset]) {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+        offset += 1;
+
+        match tag {
+            Tag::NewVar => {
+                let value = match expr_stack.pop() {
+                    Some(v) => v,
+                    None => break,
+                };
+                if !wildcard_indices.contains(&newvar_idx)
+                    && (newvar_idx as usize) < var_names.len()
+                {
+                    bindings.insert(var_names[newvar_idx as usize].clone(), value.clone());
+                }
+                newvar_idx += 1;
+            }
+            Tag::VarRef(_) => {
+                expr_stack.pop(); // Consume without binding
+            }
+            Tag::SymbolSize(size) => {
+                offset += size as usize; // Skip symbol bytes
+                expr_stack.pop(); // Consume the corresponding atom/leaf
+            }
+            Tag::Arity(n) => {
+                if n == 0 {
+                    expr_stack.pop(); // Unit / empty S-expression
+                } else if let Some(parent) = expr_stack.pop() {
+                    // Push children in reverse order so first child is on top
+                    if let Some(items) = parent.as_sexpr() {
+                        for child in items.iter().rev() {
+                            expr_stack.push(child);
+                        }
+                    } else if let Some(goals) = parent.as_conjunction() {
+                        // Conjunction: MORK writes Arity(goals+1) with comma as first child.
+                        // Push goals in reverse, then a placeholder for the comma
+                        // (the comma's SymbolSize tag will pop and discard it).
+                        for goal in goals.iter().rev() {
+                            expr_stack.push(goal);
+                        }
+                        expr_stack.push(parent); // Placeholder consumed by SymbolSize(",")
+                    } else if let Some((_msg, details)) = parent.as_error() {
+                        // Error: MORK writes Arity(3) with "error", "msg", details.
+                        // Push details, then placeholders for msg and "error".
+                        expr_stack.push(details);
+                        expr_stack.push(parent); // Placeholder consumed by SymbolSize("\"msg\"")
+                        expr_stack.push(parent); // Placeholder consumed by SymbolSize("error")
+                    } else {
+                        // Other compound types (Space, State serialized as S-expr in MORK).
+                        // These shouldn't appear as Arity match targets in LHS patterns
+                        // (they're opaque types matched by NewVar), but if they do,
+                        // we can't drill into them — stop extraction.
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    bindings
 }
 
 /// Build the head+arity MORK byte prefix for targeted rule lookup.
@@ -678,11 +767,9 @@ where
         }
 
         // Phase 1: Byte-level pattern matching via extract_data
-        // Collect (candidate_index, bindings_exprs, specificity) for successful matches
+        // Collect (candidate_index, specificity) for successful matches
         struct MatchHit {
             candidate_idx: usize,
-            /// Raw MORK bytes for each captured binding (one Vec<u8> per NewVar in LHS)
-            binding_bytes: Vec<Vec<u8>>,
             specificity: usize,
         }
 
@@ -718,19 +805,9 @@ where
 
             // extract_data: template.extract_data(input) → Vec<Expr> or failure
             match lhs_expr.extract_data(&mut input_zipper) {
-                Ok(binding_exprs) => {
-                    // Capture binding bytes while the Expr pointers are still valid
-                    // (they point into expr_bytes_owned which is alive for this scope)
-                    let binding_bytes: Vec<Vec<u8>> = binding_exprs.iter().map(|expr| {
-                        // SAFETY: expr.ptr points into expr_bytes_owned (stack-local Vec)
-                        // span() returns a *const [u8] covering the expression
-                        let span = unsafe { &*expr.span() };
-                        span.to_vec()
-                    }).collect();
-
+                Ok(_) => {
                     hits.push(MatchHit {
                         candidate_idx: idx,
-                        binding_bytes,
                         specificity: entry.specificity,
                     });
                 }
@@ -746,35 +823,21 @@ where
         let best_specificity = hits.iter().map(|h| h.specificity).min().expect("hits is non-empty");
         hits.retain(|h| h.specificity == best_specificity);
 
-        // Phase 3: Deserialize bindings and build results
-        let space = self.create_space();
+        // Phase 3: Extract bindings from original expression and build results.
+        // Uses parallel tree walk instead of MORK deserialization to preserve
+        // runtime types (SpaceHandle, State, etc.) that can't survive a round trip.
         let mut results: Vec<RuleMatchResult<V>> = Vec::with_capacity(hits.len());
 
         for hit in &hits {
             let entry = candidates[hit.candidate_idx];
 
-            // Deserialize each binding's MORK bytes → MettaValue
-            let mut bindings = GenericBindings::new();
-            for (i, binding_bytes) in hit.binding_bytes.iter().enumerate() {
-                // Skip wildcard bindings (anonymous variables from `_`)
-                if entry.wildcard_indices.contains(&(i as u8)) {
-                    continue;
-                }
-                // Skip if we've exhausted named variables (shouldn't happen but defensive)
-                if i >= entry.var_names.len() {
-                    break;
-                }
-                match mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                    binding_bytes,
-                    &space,
-                    &self.factory,
-                ) {
-                    Ok(value) => {
-                        bindings.insert(entry.var_names[i].clone(), value);
-                    }
-                    Err(_) => continue, // Skip this binding on deserialization failure
-                }
-            }
+            // Extract bindings by walking De Bruijn bytes + original expr in lockstep
+            let bindings = extract_bindings_from_expr(
+                &entry.lhs_debruijn,
+                expr,
+                &entry.var_names,
+                &entry.wildcard_indices,
+            );
 
             // Apply bindings to the cached RHS template
             let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);

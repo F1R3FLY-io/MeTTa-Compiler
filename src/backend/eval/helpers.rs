@@ -118,7 +118,7 @@ static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
     // Higher-order list operations (iterate over elements)
     "map-atom", "filter-atom", "foldl-atom",
     // Control flow (lazy branch evaluation)
-    "if", "case", "switch", "switch-minimal", "switch-internal",
+    "if", "if-equal", "case", "switch", "switch-minimal", "switch-internal",
     // Binding forms (special scoping)
     "let", "let*", "unify",
     // Sequencing/continuation forms
@@ -135,6 +135,15 @@ static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
     "new-state", "get-state", "change-state!",
     // I/O operations
     "println!", "trace!",
+    // Set operations
+    "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+    // Alpha equivalence
+    "=alpha",
+    // Testing/assertion operations
+    "assertEqual", "assertAlphaEqual",
+    "assertEqualMsg", "assertAlphaEqualMsg",
+    "assertEqualToResult", "assertAlphaEqualToResult",
+    "assertEqualToResultMsg", "assertAlphaEqualToResultMsg",
 };
 
 /// Special forms that should be evaluated BEFORE being passed to user-defined rules.
@@ -165,6 +174,10 @@ static EAGER_SPECIAL_FORMS: phf::Set<&'static str> = phf_set! {
     "get-metatype",
     // String operations
     "repr", "format-args",
+    // Set operations (produce list values)
+    "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+    // Alpha equivalence (produces Bool value)
+    "=alpha",
 };
 
 /// Check if an operation needs re-dispatch through eval_sexpr_step after

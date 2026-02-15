@@ -1112,6 +1112,13 @@ where
             Opcode::GetState => self.op_get_state()?,
             Opcode::ChangeState => self.op_change_state()?,
 
+            // === Set Operations & Alpha-Equivalence ===
+            Opcode::EvalIfEqual => self.op_eval_if_equal()?,
+            Opcode::UniqueAtom => self.op_unique_atom()?,
+            Opcode::UnionAtom => self.op_union_atom()?,
+            Opcode::IntersectionAtom => self.op_intersection_atom()?,
+            Opcode::SubtractionAtom => self.op_subtraction_atom()?,
+
             // === Debug ===
             Opcode::Breakpoint => self.op_breakpoint()?,
             Opcode::Trace => self.op_trace()?,
@@ -2137,6 +2144,258 @@ where
             }
         }
         Ok(())
+    }
+
+    // === Set Operations & Alpha-Equivalence ===
+
+    /// if-equal: alpha-equivalence conditional
+    /// Stack: [pred1, pred2, then_val, else_val] -> [result]
+    fn op_eval_if_equal(&mut self) -> VmResult<()> {
+        let else_val = self.pop()?;
+        let then_val = self.pop()?;
+        let pred2 = self.pop()?;
+        let pred1 = self.pop()?;
+
+        // Use alpha-equivalence comparison (matches MeTTa HE semantics)
+        let result = if self.alpha_equiv(&pred1, &pred2) {
+            then_val
+        } else {
+            else_val
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    /// unique-atom: deduplicate list by alpha-equivalence
+    /// Stack: [list] -> [deduped_list]
+    fn op_unique_atom(&mut self) -> VmResult<()> {
+        let list = self.pop()?;
+        let items = list.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+
+        // O(n²) alpha-equivalence dedup (matches MeTTa HE)
+        let mut unique: Vec<V> = Vec::with_capacity(items.len());
+        for item in items {
+            let already_seen = unique.iter().any(|seen| self.alpha_equiv(seen, item));
+            if !already_seen {
+                unique.push(item.clone());
+            }
+        }
+        self.push(self.make_sexpr(unique));
+        Ok(())
+    }
+
+    /// union-atom: concatenate two lists
+    /// Stack: [left, right] -> [combined]
+    fn op_union_atom(&mut self) -> VmResult<()> {
+        let right = self.pop()?;
+        let left = self.pop()?;
+
+        let left_items = left.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let right_items = right.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+
+        let mut combined = Vec::with_capacity(left_items.len() + right_items.len());
+        combined.extend(left_items.iter().cloned());
+        combined.extend(right_items.iter().cloned());
+        self.push(self.make_sexpr(combined));
+        Ok(())
+    }
+
+    /// intersection-atom: multiset intersection
+    /// Stack: [left, right] -> [intersection]
+    fn op_intersection_atom(&mut self) -> VmResult<()> {
+        let right = self.pop()?;
+        let left = self.pop()?;
+
+        let left_items = left.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let right_items = right.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+
+        // Build count map from right list (structural equality)
+        let mut right_remaining: Vec<(V, usize)> = Vec::new();
+        for item in right_items {
+            let mut found = false;
+            for entry in right_remaining.iter_mut() {
+                if entry.0 == *item {
+                    entry.1 += 1;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                right_remaining.push((item.clone(), 1));
+            }
+        }
+
+        // Iterate left, emit if found in right (decrementing count)
+        let mut result = Vec::new();
+        for item in left_items {
+            for entry in right_remaining.iter_mut() {
+                if entry.0 == *item && entry.1 > 0 {
+                    entry.1 -= 1;
+                    result.push(item.clone());
+                    break;
+                }
+            }
+        }
+        self.push(self.make_sexpr(result));
+        Ok(())
+    }
+
+    /// subtraction-atom: multiset subtraction
+    /// Stack: [left, right] -> [difference]
+    fn op_subtraction_atom(&mut self) -> VmResult<()> {
+        let right = self.pop()?;
+        let left = self.pop()?;
+
+        let left_items = left.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let right_items = right.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+
+        // Build count map from right list (structural equality)
+        let mut right_remaining: Vec<(V, usize)> = Vec::new();
+        for item in right_items {
+            let mut found = false;
+            for entry in right_remaining.iter_mut() {
+                if entry.0 == *item {
+                    entry.1 += 1;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                right_remaining.push((item.clone(), 1));
+            }
+        }
+
+        // Iterate left, skip items found in right (decrementing count)
+        let mut result = Vec::new();
+        for item in left_items {
+            let mut subtracted = false;
+            for entry in right_remaining.iter_mut() {
+                if entry.0 == *item && entry.1 > 0 {
+                    entry.1 -= 1;
+                    subtracted = true;
+                    break;
+                }
+            }
+            if !subtracted {
+                result.push(item.clone());
+            }
+        }
+        self.push(self.make_sexpr(result));
+        Ok(())
+    }
+
+    /// Alpha-equivalence check for VM values.
+    /// Two values are alpha-equivalent if they are structurally identical
+    /// except that $-prefixed variables can be consistently renamed.
+    fn alpha_equiv(&self, a: &V, b: &V) -> bool {
+        use std::collections::HashMap;
+        let mut l2r: HashMap<String, String> = HashMap::new();
+        let mut r2l: HashMap<String, String> = HashMap::new();
+        self.alpha_equiv_inner(a, b, &mut l2r, &mut r2l)
+    }
+
+    fn alpha_equiv_inner(
+        &self,
+        a: &V,
+        b: &V,
+        l2r: &mut std::collections::HashMap<String, String>,
+        r2l: &mut std::collections::HashMap<String, String>,
+    ) -> bool {
+        // Fast path: structural equality
+        if a == b {
+            return true;
+        }
+
+        // Check atoms (including variables)
+        if let (Some(sa), Some(sb)) = (a.as_atom(), b.as_atom()) {
+            let a_is_var = sa.starts_with('$');
+            let b_is_var = sb.starts_with('$');
+
+            if a_is_var && b_is_var {
+                // Both variables: check bidirectional mapping
+                match l2r.get(sa) {
+                    Some(mapped) => {
+                        if mapped != sb {
+                            return false;
+                        }
+                    }
+                    None => {
+                        l2r.insert(sa.to_string(), sb.to_string());
+                    }
+                }
+                match r2l.get(sb) {
+                    Some(mapped) => {
+                        if mapped != sa {
+                            return false;
+                        }
+                    }
+                    None => {
+                        r2l.insert(sb.to_string(), sa.to_string());
+                    }
+                }
+                return true;
+            }
+
+            // Non-variable atoms: must be identical
+            return sa == sb;
+        }
+
+        // S-expressions: recursive check
+        if let (Some(items_a), Some(items_b)) = (a.as_sexpr(), b.as_sexpr()) {
+            if items_a.len() != items_b.len() {
+                return false;
+            }
+            return items_a
+                .iter()
+                .zip(items_b.iter())
+                .all(|(ia, ib)| self.alpha_equiv_inner(ia, ib, l2r, r2l));
+        }
+
+        // Booleans
+        if let (Some(ba), Some(bb)) = (a.as_bool(), b.as_bool()) {
+            return ba == bb;
+        }
+
+        // Numbers
+        if let (Some(la), Some(lb)) = (a.as_long(), b.as_long()) {
+            return la == lb;
+        }
+        if let (Some(fa), Some(fb)) = (a.as_float(), b.as_float()) {
+            return fa == fb;
+        }
+
+        // Strings
+        if let (Some(sa), Some(sb)) = (a.as_string(), b.as_string()) {
+            return sa == sb;
+        }
+
+        // Unit
+        if a.is_unit() && b.is_unit() {
+            return true;
+        }
+
+        false
     }
 
     // === Nondeterminism Stubs ===

@@ -142,3 +142,7 @@ pub use higher_order_ops::{
 pub use meta_ops::{compile_bloom_check, compile_get_metatype, MetaOpsHandlerContext};
 
 pub use multi_return::{compile_collect_n, compile_return_multi, MultiReturnHandlerContext};
+
+mod set_ops;
+
+pub use set_ops::{compile_set_op, SetOpsHandlerContext};

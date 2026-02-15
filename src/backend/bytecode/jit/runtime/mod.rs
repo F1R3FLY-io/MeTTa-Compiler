@@ -61,6 +61,7 @@ pub mod sexpr_ops;
 pub mod space_ops;
 pub mod special_forms;
 pub mod stack_ops;
+pub mod set_ops;
 pub mod state_ops;
 pub mod type_ops;
 pub mod type_predicates;
@@ -238,6 +239,12 @@ pub use global_ops::{
 pub use higher_order::{
     jit_runtime_decon_atom, jit_runtime_filter_atom, jit_runtime_foldl_atom, jit_runtime_map_atom,
     jit_runtime_repr,
+};
+
+// Set operations and alpha-equivalence
+pub use set_ops::{
+    jit_runtime_eval_if_equal, jit_runtime_intersection_atom, jit_runtime_subtraction_atom,
+    jit_runtime_union_atom, jit_runtime_unique_atom,
 };
 
 // State operations

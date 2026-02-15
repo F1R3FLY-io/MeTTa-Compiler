@@ -33,7 +33,7 @@ use init::{
     DebugFuncIds, DebugInit, ErrorFuncIds, ErrorHandlingInit, GlobalsFuncIds, GlobalsInit,
     HigherOrderFuncIds, HigherOrderInit, NondetFuncIds, NondetInit, PatternMatchingFuncIds,
     PatternMatchingInit, RulesFuncIds, RulesInit, SExprFuncIds, SExprInit, SpaceFuncIds, SpaceInit,
-    SpecialFormsFuncIds, SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
+    SetOpsFuncIds, SetOpsInit, SpecialFormsFuncIds, SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
 };
 
 /// JIT Compiler for bytecode chunks
@@ -109,6 +109,9 @@ pub struct JitCompiler {
     /// Error handling operations (bailout from JIT to interpreter)
     pub(crate) errors: ErrorFuncIds,
 
+    /// Set operations and alpha-equivalence (unique, union, intersection, subtraction, if-equal)
+    pub(crate) set_ops: SetOpsFuncIds,
+
     // =========================================================================
     // Miscellaneous FuncIds - not yet grouped
     // =========================================================================
@@ -182,6 +185,7 @@ impl JitCompiler {
         let globals = Self::declare_globals_funcs(&mut module)?;
         let debug = Self::declare_debug_funcs(&mut module)?;
         let errors = Self::declare_error_handling_funcs(&mut module)?;
+        let set_ops = Self::declare_set_ops_funcs(&mut module)?;
 
         // Declare miscellaneous functions not in groups
         // load_constant: fn(ctx, index) -> value
@@ -318,6 +322,7 @@ impl JitCompiler {
             globals,
             debug,
             errors,
+            set_ops,
             // Miscellaneous FuncIds
             load_const_func_id,
             push_uri_func_id,
@@ -386,6 +391,7 @@ impl JitCompiler {
         Self::register_globals_symbols(builder);
         Self::register_debug_symbols(builder);
         Self::register_error_handling_symbols(builder);
+        Self::register_set_ops_symbols(builder);
 
         // Register miscellaneous symbols
         builder.symbol(
@@ -1893,6 +1899,25 @@ impl JitCompiler {
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
                 return handlers::compile_eval_apply(&mut special_ctx, codegen, chunk, offset);
+            }
+
+            // =====================================================================
+            // Set Operations & Alpha-Equivalence (delegated to handlers module)
+            // =====================================================================
+            Opcode::EvalIfEqual
+            | Opcode::UniqueAtom
+            | Opcode::UnionAtom
+            | Opcode::IntersectionAtom
+            | Opcode::SubtractionAtom => {
+                let mut ctx = handlers::SetOpsHandlerContext {
+                    module: &mut self.module,
+                    eval_if_equal_func_id: self.set_ops.eval_if_equal_func_id,
+                    unique_atom_func_id: self.set_ops.unique_atom_func_id,
+                    union_atom_func_id: self.set_ops.union_atom_func_id,
+                    intersection_atom_func_id: self.set_ops.intersection_atom_func_id,
+                    subtraction_atom_func_id: self.set_ops.subtraction_atom_func_id,
+                };
+                return handlers::compile_set_op(&mut ctx, codegen, op, offset);
             }
 
             // =====================================================================

@@ -312,16 +312,16 @@ This document provides a comprehensive reference of the implementation status of
 
 ## Set Operations
 
-- [ ] **`unique`** / **`unique-atom`** - Returns unique elements
+- [x] **`unique`** / **`unique-atom`** - Returns unique elements
   - Reference: [stdlib.metta:630-636](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L630-L636), [stdlib.metta:1355-1359](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1355-L1359), [atom.rs:465](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L465)
 
-- [ ] **`union`** / **`union-atom`** - Union of two sets
+- [x] **`union`** / **`union-atom`** - Union of two sets
   - Reference: [stdlib.metta:638-647](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L638-L647), [stdlib.metta:1361-1366](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1361-L1366), [atom.rs:471](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L471)
 
-- [ ] **`intersection`** / **`intersection-atom`** - Intersection of two sets
+- [x] **`intersection`** / **`intersection-atom`** - Intersection of two sets
   - Reference: [stdlib.metta:649-658](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L649-L658), [stdlib.metta:1368-1373](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1368-L1373), [atom.rs:469](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L469)
 
-- [ ] **`subtraction`** / **`subtraction-atom`** - Set subtraction
+- [x] **`subtraction`** / **`subtraction-atom`** - Set subtraction
   - Reference: [stdlib.metta:660-669](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L660-L669), [stdlib.metta:1375-1380](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1375-L1380), [atom.rs:467](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L467)
 
 ## Space Operations

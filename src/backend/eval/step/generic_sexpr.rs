@@ -1333,6 +1333,60 @@ where
                 return GenericEvalStep::Done((results, new_env));
             }
 
+            // if-equal — alpha-equivalence with lazy branches (MeTTa HE compatible)
+            "if-equal" => {
+                if items.len() != 5 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "if-equal requires exactly 4 arguments, got {}. Usage: (if-equal pred1 pred2 then else)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                // Alpha-equivalence comparison (matches MeTTa HE's atoms_are_equivalent)
+                if crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent(
+                    &items[1], &items[2],
+                ) {
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: items[3].clone(),
+                        env,
+                        depth,
+                    };
+                } else {
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: items[4].clone(),
+                        env,
+                        depth,
+                    };
+                }
+            }
+
+            // Set operations — generic multiset semantics
+            "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom" => {
+                return crate::backend::eval::set_ops::eval_set_op_generic(
+                    items, env, ctx,
+                );
+            }
+
+            // Alpha equivalence — (=alpha expr1 expr2) → Bool
+            "=alpha" => {
+                return crate::backend::eval::testing_ops::eval_testing_op_generic(
+                    items, env, ctx,
+                );
+            }
+
+            // Testing/assertion operations — multiset nondeterministic comparison
+            "assertEqual" | "assertAlphaEqual"
+            | "assertEqualMsg" | "assertAlphaEqualMsg"
+            | "assertEqualToResult" | "assertAlphaEqualToResult"
+            | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg" => {
+                return crate::backend::eval::testing_ops::eval_testing_op_generic(
+                    items, env, ctx,
+                );
+            }
+
             _ => {}
         }
     }

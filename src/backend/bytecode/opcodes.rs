@@ -260,6 +260,16 @@ pub enum Opcode {
     EvalLambda = 0xB1,
     /// Apply function to args
     EvalApply = 0xB2,
+    /// If-equal: alpha-equivalence conditional [pred1, pred2, then, else] -> [result]
+    EvalIfEqual = 0xB3,
+    /// Unique-atom: deduplicate list by alpha-equivalence [list] -> [deduped_list]
+    UniqueAtom = 0xB4,
+    /// Union-atom: concatenate two lists [left, right] -> [combined]
+    UnionAtom = 0xB5,
+    /// Intersection-atom: multiset intersection [left, right] -> [intersection]
+    IntersectionAtom = 0xB6,
+    /// Subtraction-atom: multiset subtraction [left, right] -> [difference]
+    SubtractionAtom = 0xB7,
 
     // === Grounded Arithmetic (0xC0-0xCF) ===
     /// Addition: [a, b] -> [a + b]
@@ -515,6 +525,11 @@ impl Opcode {
             | Self::EvalFunction
             | Self::EvalLambda
             | Self::EvalApply
+            | Self::EvalIfEqual
+            | Self::UniqueAtom
+            | Self::UnionAtom
+            | Self::IntersectionAtom
+            | Self::SubtractionAtom
             | Self::MorkLookup
             | Self::MorkMatch
             | Self::MorkInsert
@@ -704,6 +719,11 @@ impl Opcode {
             Self::EvalFunction => "eval_function",
             Self::EvalLambda => "eval_lambda",
             Self::EvalApply => "eval_apply",
+            Self::EvalIfEqual => "eval_if_equal",
+            Self::UniqueAtom => "unique_atom",
+            Self::UnionAtom => "union_atom",
+            Self::IntersectionAtom => "intersection_atom",
+            Self::SubtractionAtom => "subtraction_atom",
             Self::Add => "add",
             Self::Sub => "sub",
             Self::Mul => "mul",
@@ -946,6 +966,11 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xB0] = Some(Opcode::EvalFunction);
     table[0xB1] = Some(Opcode::EvalLambda);
     table[0xB2] = Some(Opcode::EvalApply);
+    table[0xB3] = Some(Opcode::EvalIfEqual);
+    table[0xB4] = Some(Opcode::UniqueAtom);
+    table[0xB5] = Some(Opcode::UnionAtom);
+    table[0xB6] = Some(Opcode::IntersectionAtom);
+    table[0xB7] = Some(Opcode::SubtractionAtom);
 
     // Grounded arithmetic
     table[0xC0] = Some(Opcode::Add);

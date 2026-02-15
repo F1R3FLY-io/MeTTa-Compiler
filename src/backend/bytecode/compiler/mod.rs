@@ -834,6 +834,46 @@ impl Compiler {
                 Ok(Some(()))
             }
 
+            // Set operations
+            "unique-atom" => {
+                self.check_arity("unique-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::UniqueAtom);
+                Ok(Some(()))
+            }
+            "union-atom" => {
+                self.check_arity("union-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::UnionAtom);
+                Ok(Some(()))
+            }
+            "intersection-atom" => {
+                self.check_arity("intersection-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::IntersectionAtom);
+                Ok(Some(()))
+            }
+            "subtraction-atom" => {
+                self.check_arity("subtraction-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::SubtractionAtom);
+                Ok(Some(()))
+            }
+
+            // Alpha-equivalence conditional
+            "if-equal" => {
+                self.check_arity("if-equal", args.len(), 4)?;
+                self.compile(&args[0])?; // pred1
+                self.compile(&args[1])?; // pred2
+                self.compile(&args[2])?; // then branch
+                self.compile(&args[3])?; // else branch
+                self.builder.emit(Opcode::EvalIfEqual);
+                Ok(Some(()))
+            }
+
             // Not a built-in
             _ => Ok(None),
         }

@@ -5,23 +5,25 @@
 
 use std::fmt;
 
-/// Position in source code (line and column, 0-indexed)
+/// Position in source code (line, column, and byte offset)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     /// Line number (0-indexed)
     pub row: usize,
-    /// Column number (0-indexed, in bytes)
+    /// Column number (0-indexed, in characters — not bytes)
     pub column: usize,
+    /// Absolute byte offset in source
+    pub byte_offset: usize,
 }
 
 impl Position {
-    pub fn new(row: usize, column: usize) -> Self {
-        Self { row, column }
+    pub fn new(row: usize, column: usize, byte_offset: usize) -> Self {
+        Self { row, column, byte_offset }
     }
 
     /// Create a zero position (used as default)
     pub fn zero() -> Self {
-        Self { row: 0, column: 0 }
+        Self { row: 0, column: 0, byte_offset: 0 }
     }
 }
 
@@ -31,27 +33,18 @@ impl fmt::Display for Position {
     }
 }
 
-/// Span of source code with absolute position information
+/// Span of source code with start and end positions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     /// Start position (inclusive)
     pub start: Position,
     /// End position (exclusive)
     pub end: Position,
-    /// Start byte offset (absolute position in source)
-    pub start_byte: usize,
-    /// End byte offset (absolute position in source)
-    pub end_byte: usize,
 }
 
 impl Span {
-    pub fn new(start: Position, end: Position, start_byte: usize, end_byte: usize) -> Self {
-        Self {
-            start,
-            end,
-            start_byte,
-            end_byte,
-        }
+    pub fn new(start: Position, end: Position) -> Self {
+        Self { start, end }
     }
 
     /// Create a zero span (used as default)
@@ -59,14 +52,22 @@ impl Span {
         Self {
             start: Position::zero(),
             end: Position::zero(),
-            start_byte: 0,
-            end_byte: 0,
         }
+    }
+
+    /// Start byte offset (convenience accessor)
+    pub fn start_byte(&self) -> usize {
+        self.start.byte_offset
+    }
+
+    /// End byte offset (convenience accessor)
+    pub fn end_byte(&self) -> usize {
+        self.end.byte_offset
     }
 
     /// Length of the span in bytes
     pub fn len(&self) -> usize {
-        self.end_byte.saturating_sub(self.start_byte)
+        self.end.byte_offset.saturating_sub(self.start.byte_offset)
     }
 
     /// Check if span is empty

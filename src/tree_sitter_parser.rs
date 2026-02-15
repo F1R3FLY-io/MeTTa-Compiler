@@ -491,16 +491,19 @@ impl TreeSitterMettaParser {
         Ok(result)
     }
 
-    /// Extract span information from a Tree-Sitter node
+    /// Extract span information from a Tree-Sitter node.
+    ///
+    /// Note: tree-sitter reports byte-based columns via `tree_sitter::Point.column`.
+    /// The custom parser uses character-based columns. This inconsistency is
+    /// acceptable since tree-sitter positions are only used on the `--sexpr`/LSP
+    /// path and are never compared with custom parser positions.
     fn node_span(&self, node: Node) -> Span {
         let start_pos = node.start_position();
         let end_pos = node.end_position();
 
         Span::new(
-            Position::new(start_pos.row, start_pos.column),
-            Position::new(end_pos.row, end_pos.column),
-            node.start_byte(),
-            node.end_byte(),
+            Position::new(start_pos.row, start_pos.column, node.start_byte()),
+            Position::new(end_pos.row, end_pos.column, node.end_byte()),
         )
     }
 }

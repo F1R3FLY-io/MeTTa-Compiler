@@ -11,9 +11,10 @@
 use crate::backend::models::MettaValueInner;
 use crate::backend::models::{MettaState, MettaValue, MettaValueFactory, MettaValueTrait};
 use crate::ir::MettaExpr;
-use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
+use crate::parser::{MettaParser, ValueEmitter};
+use crate::tree_sitter_parser::SyntaxError;
 
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
 // ============================================================================
 // Generic Compilation - Zero-Conversion Support
@@ -106,16 +107,12 @@ where
         "Compiling MeTTa source (generic)"
     );
 
-    // Parse the source into s-expressions using Tree-Sitter
-    let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
-        kind: SyntaxErrorKind::ParserInit(e),
-        line: 0,
-        column: 0,
-        text: String::new(),
-        file_path: None,
-    })?;
-
-    let sexprs = parser.parse(src).map_err(|e| {
+    // Parse directly to values using the custom parser with ValueEmitter.
+    // This eliminates the tree-sitter C FFI, CST allocation, IR intermediate,
+    // and the expr_to_value_generic conversion pass.
+    let mut parser = MettaParser::new(src);
+    let mut emitter = ValueEmitter::new(factory);
+    let values = parser.parse_all(&mut emitter).map_err(|e| {
         error!(
             kind = ?e.kind,
             text = %e,
@@ -123,26 +120,6 @@ where
         );
         debug!(src, %e);
         e
-    })?;
-
-    // Convert all expressions using the generic factory
-    let values: Result<Vec<V>, String> = sexprs
-        .iter()
-        .map(|expr| expr_to_value_generic(expr, factory))
-        .collect();
-
-    let values = values.map_err(|e| {
-        error!(
-            text = %e,
-            "Error during converting MeTTa expressions to generic values"
-        );
-        SyntaxError {
-            kind: SyntaxErrorKind::UnknownNodeKind(e),
-            line: 0,
-            column: 0,
-            text: String::new(),
-            file_path: None,
-        }
     })?;
 
     info!(expr_count = values.len(), "Generic compilation successful");
@@ -210,21 +187,17 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
     );
 
     // Create MettaState (acquires storage arena from pool)
-    let mut state = MettaState::new();
+    let state = MettaState::new();
 
     // Get factory for value allocation
     let factory = state.factory();
 
-    // Parse the source into s-expressions using Tree-Sitter
-    let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
-        kind: SyntaxErrorKind::ParserInit(e),
-        line: 0,
-        column: 0,
-        text: String::new(),
-        file_path: None,
-    })?;
-
-    let sexprs = parser.parse(src).map_err(|e| {
+    // Parse directly to MettaValue using the custom parser with ValueEmitter.
+    // This eliminates the tree-sitter C FFI, CST allocation, IR intermediate,
+    // and the expr_to_value_generic conversion pass.
+    let mut parser = MettaParser::new(src);
+    let mut emitter = ValueEmitter::new(&factory);
+    let values = parser.parse_all(&mut emitter).map_err(|e| {
         error!(
             kind = ?e.kind,
             text = %e,
@@ -234,21 +207,7 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         e
     })?;
 
-    // Convert all expressions using the storage factory
-    for expr in &sexprs {
-        let value = expr_to_value_generic(expr, &factory).map_err(|e| {
-            error!(
-                text = %e,
-                "Error during converting MeTTa expressions to arena values"
-            );
-            SyntaxError {
-                kind: SyntaxErrorKind::UnknownNodeKind(e),
-                line: 0,
-                column: 0,
-                text: String::new(),
-                file_path: None,
-            }
-        })?;
+    for value in values {
         state.source_mut().push(value);
     }
 

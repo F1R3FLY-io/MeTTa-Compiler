@@ -221,6 +221,9 @@ signal-hook = "0.3"
 # portable-atomic - 128-bit atomics for lock-free Treiber stack (CMPXCHG16B / LL-SC)
 portable-atomic = { version = "1", features = ["fallback"] }
 
+# memchr - SIMD-accelerated byte search for fast comment/string scanning in parser
+memchr = "2"
+
 # ouroboros - Safe self-referential structs for ArenaState
 # Enables ArenaValue<'a> to reference the arena it's allocated in within the same struct
 ouroboros = "0.18"
@@ -280,6 +283,10 @@ clap = { version = "4.5", features = ["derive"] }
 proptest = "1.4"
 # System info - RSS monitoring for memory leak stress tests
 sysinfo = "0.33"
+
+[[bench]]
+name = "parser_benchmark"
+harness = false
 
 [[bench]]
 name = "e2e"

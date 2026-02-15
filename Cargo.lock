@@ -2140,6 +2140,7 @@ dependencies = [
  "libc",
  "liblevenshtein",
  "lru",
+ "memchr",
  "models",
  "mork",
  "mork-expr",

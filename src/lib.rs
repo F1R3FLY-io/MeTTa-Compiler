@@ -5,6 +5,7 @@
 pub mod backend;
 pub mod config;
 pub mod ir;
+pub mod parser;
 pub mod pathmap_par_integration;
 pub mod repl;
 pub mod rholang_integration;

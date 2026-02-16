@@ -24,9 +24,6 @@ use crate::backend::models::MettaValue;
 /// A function that constructs a value from a matched token string.
 pub type GenericTokenConstructor<V> = Arc<dyn Fn(&str) -> V + Send + Sync>;
 
-/// Legacy type alias for MettaValue tokenizer.
-pub type TokenConstructor = GenericTokenConstructor<MettaValue>;
-
 /// Token pattern type - exact string or regex.
 #[derive(Clone)]
 pub enum TokenPattern {
@@ -145,15 +142,6 @@ impl<V> GenericTokenEntry<V> {
         })
     }
 
-    /// Create a new token entry with a pre-built pattern.
-    #[allow(dead_code)]
-    pub fn with_pattern(pattern: TokenPattern, constructor: GenericTokenConstructor<V>) -> Self {
-        Self {
-            pattern,
-            constructor,
-        }
-    }
-
     /// Get the pattern string for display.
     pub fn pattern(&self) -> &str {
         self.pattern.pattern_str()
@@ -164,11 +152,6 @@ impl<V> GenericTokenEntry<V> {
         &self.pattern
     }
 
-    /// Construct a value for this token.
-    #[allow(dead_code)]
-    pub fn construct(&self, matched: &str) -> V {
-        (self.constructor)(matched)
-    }
 }
 
 impl<V> std::fmt::Debug for GenericTokenEntry<V> {
@@ -178,9 +161,6 @@ impl<V> std::fmt::Debug for GenericTokenEntry<V> {
             .finish()
     }
 }
-
-/// Legacy type alias.
-pub type TokenEntry = GenericTokenEntry<MettaValue>;
 
 /// Generic per-module tokenizer for dynamic token registration.
 ///

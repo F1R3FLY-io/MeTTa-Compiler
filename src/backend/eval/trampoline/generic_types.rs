@@ -22,14 +22,10 @@ use std::fmt::Debug;
 
 use crate::backend::environment::MettaEnvironment;
 use crate::backend::grounded::GenericGroundedState;
-use crate::backend::models::{GenericBindings, MemoHandle, MettaValue, MettaValueTrait, SpaceHandle};
+use crate::backend::models::{GenericBindings, MemoHandle, MettaValueTrait, SpaceHandle};
 
 // Import generic Cartesian product iterator
 use super::super::processing::GenericCartesianProductIter;
-
-/// Maximum evaluation depth to prevent stack overflow
-#[allow(dead_code)]
-pub const MAX_EVAL_DEPTH: usize = 1000;
 
 /// Generic evaluation result: (results, environment)
 ///
@@ -81,7 +77,6 @@ pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 /// evaluation result is used instead. This is intentional - continuations track
 /// the original environment for debugging/reference.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Final result - return from eval()
     Done,
@@ -96,16 +91,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     },
 
     /// Processing rule match results with generic bindings.
-    ///
-    /// ## Zero-Conversion Design
-    ///
-    /// RHS and bindings are now stored in the generic type V, eliminating
-    /// boundary conversions during rule evaluation:
-    /// - RHS expressions are converted once when retrieved from Environment
-    /// - Bindings store values in their native type (no conversion on insert/get)
     ProcessRuleMatches {
-        /// Remaining (rhs, bindings) pairs to evaluate
-        /// RHS and bindings are in generic type V (converted once at rule retrieval)
         remaining_matches: VecDeque<(V, GenericBindings<V>)>,
         results: Vec<V>,
         env: E,
@@ -114,11 +100,6 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     },
 
     /// Processing TCO grounded operation.
-    ///
-    /// ## Zero-Conversion Design
-    ///
-    /// Uses `GenericGroundedState<V>` to store arguments and evaluated results
-    /// in their native type, eliminating conversions at grounded op boundaries.
     ProcessGroundedOp {
         state: GenericGroundedState<V>,
         env: E,
@@ -127,9 +108,6 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     },
 
     /// Processing lazy Cartesian product combinations (generic version).
-    ///
-    /// Uses `GenericCartesianProductIter<V>` for zero-conversion evaluation.
-    /// Pending rule matches use generic bindings for consistency.
     ProcessCombinations {
         combinations: GenericCartesianProductIter<V>,
         results: Vec<V>,
@@ -573,39 +551,3 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     },
 }
 
-// ============================================================================
-// Type aliases for backward compatibility
-// ============================================================================
-
-/// WorkItem specialized for heap-allocated MettaValue with standard Environment
-#[allow(dead_code)]
-pub type WorkItem = GenericWorkItem<MettaValue, MettaEnvironment>;
-
-/// Continuation specialized for heap-allocated MettaValue with standard Environment
-#[allow(dead_code)]
-pub type Continuation = GenericContinuation<MettaValue, MettaEnvironment>;
-
-/// EvalResult specialized for heap-allocated MettaValue with standard Environment
-#[allow(dead_code)]
-pub type EvalResult = GenericEvalResult<MettaValue, MettaEnvironment>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_heap_work_item_size() {
-        // WorkItem should be reasonably sized
-        let size = std::mem::size_of::<WorkItem>();
-        // The size depends on the largest variant
-        assert!(size < 256, "WorkItem is unexpectedly large: {} bytes", size);
-    }
-
-    #[test]
-    fn test_heap_continuation_size() {
-        // Continuation is larger due to many variants
-        let size = std::mem::size_of::<Continuation>();
-        // Just verify it compiles and has a reasonable size
-        assert!(size < 512, "Continuation is unexpectedly large: {} bytes", size);
-    }
-}

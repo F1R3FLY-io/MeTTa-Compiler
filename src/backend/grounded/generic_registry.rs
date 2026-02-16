@@ -323,8 +323,6 @@ mod tests {
     #[test]
     fn test_execute_step_heap() {
         let registry = GenericGroundedRegistry::with_standard_ops();
-        let _factory = GcFactory::default(); // Keep for reference, execution uses internal factory
-
         // Test addition
         let mut state = GenericGroundedState::new(
             "+".to_string(),

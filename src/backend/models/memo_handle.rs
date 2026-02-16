@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use xxhash_rust::xxh3::{xxh3_64, Xxh3};
+use xxhash_rust::xxh3::xxh3_64;
 
 use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
 use super::{GcFactory, MettaValue};
@@ -65,9 +65,6 @@ struct MemoInner {
 /// A single cache entry (stores serialized bytes)
 #[derive(Debug, Clone)]
 struct MemoEntry {
-    /// The original expression (serialized bytes for debugging/verification)
-    #[allow(dead_code)]
-    expression_bytes: Vec<u8>,
     /// Cached evaluation results (serialized bytes)
     results_bytes: Vec<Vec<u8>>,
 }
@@ -94,26 +91,10 @@ impl MemoHandle {
         }
     }
 
-    /// Compute hash for a MettaValue expression using Hash trait (generic version)
-    #[inline]
-    #[allow(dead_code)]
-    fn hash_expression_generic<V: MettaValueTrait + Hash>(expr: &V) -> u64 {
-        let mut h = Xxh3::new();
-        expr.hash(&mut h);
-        h.finish()
-    }
-
     /// Compute hash from serialized bytes
     #[inline]
     fn hash_bytes(bytes: &[u8]) -> u64 {
         xxh3_64(bytes)
-    }
-
-    /// Compute hash for a MettaValue expression (legacy)
-    #[inline]
-    #[allow(dead_code)]
-    fn hash_expression(expr: &MettaValue) -> u64 {
-        Self::hash_expression_generic(expr)
     }
 
     /// Look up cached results for an expression (generic version using serialization).
@@ -185,15 +166,13 @@ impl MemoHandle {
             }
         }
 
-        // Serialize the expression and results to bytes
-        let expression_bytes = expr.serialize();
+        // Serialize the results to bytes
         let results_bytes: Vec<Vec<u8>> = results.iter().map(|r| r.serialize()).collect();
 
         // Insert new entry
         inner.cache.insert(
             hash,
             MemoEntry {
-                expression_bytes,
                 results_bytes,
             },
         );

@@ -17,6 +17,6 @@ mod grounded;
 pub use generic_sexpr::eval_sexpr_step_generic;
 pub use generic_step::eval_step_generic;
 #[allow(unused_imports)]
-pub use generic_types::{GenericEvalStep, GenericProcessedSExpr, MemoOpType};
+pub use generic_types::{GenericEvalStep, MemoOpType};
 #[allow(unused_imports)]
-pub use grounded::{find_grounded_arg_indices, find_grounded_arg_indices_generic};
+pub use grounded::find_grounded_arg_indices_generic;

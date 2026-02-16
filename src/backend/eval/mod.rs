@@ -4,12 +4,7 @@
 // The eval() entry point handles bytecode/JIT tiering with
 // tree-walker fallback via eval_trampoline().
 
-#[macro_use]
-mod macros;
-
 pub(crate) mod bindings_generic;
-mod builtin;
-mod cartesian;
 mod helpers;
 mod list_ops;
 pub(crate) mod alpha_equiv;
@@ -26,9 +21,6 @@ pub(crate) mod types_generic;
 
 #[cfg(test)]
 mod arena_tests;
-
-// Re-export CartesianProductIter for step module access
-pub(crate) use cartesian::CartesianProductIter;
 
 // Re-export from pattern module
 pub use pattern::pattern_match;

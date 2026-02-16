@@ -299,7 +299,6 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
     large_exprs_bytes.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
 
     let guard = env.get_large_expr_pathmap();
-    let large_expr_count;
     if let Some(ref fallback) = *guard {
         // Reserve space for count
         let count_offset = large_exprs_bytes.len();
@@ -320,20 +319,15 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
 
         // Write actual count
         large_exprs_bytes[count_offset..count_offset + 8].copy_from_slice(&count.to_be_bytes());
-        large_expr_count = count;
     } else {
         // No large expressions - write count = 0
         large_exprs_bytes.extend_from_slice(&0u64.to_be_bytes());
-        large_expr_count = 0;
     }
     drop(guard);
 
     let large_exprs_par = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GByteArray(large_exprs_bytes)),
     }]);
-
-    // Only include large_exprs tuple if there are any
-    let _has_large_exprs = large_expr_count > 0;
 
     // Serialize multiplicities as a byte array for efficiency and consistency
     // Format: [magic: 4 bytes "MTTM"][count: 8 bytes][key1_len: 4 bytes][key1_bytes][value1: 8 bytes]...

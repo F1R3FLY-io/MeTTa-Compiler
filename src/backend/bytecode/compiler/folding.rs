@@ -291,13 +291,3 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
     }
 }
 
-/// Check if a value is a constant boolean
-#[allow(dead_code)]
-pub fn is_const_bool(v: &MettaValue) -> Option<bool> {
-    match v.inner() {
-        MettaValueInner::Bool(b) => Some(*b),
-        MettaValueInner::Atom(name) if *name == "True" => Some(true),
-        MettaValueInner::Atom(name) if *name == "False" => Some(false),
-        _ => None,
-    }
-}

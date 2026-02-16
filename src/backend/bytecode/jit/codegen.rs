@@ -431,30 +431,6 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         self.terminated = true;
     }
 
-    // =========================================================================
-    // Runtime Calls
-    // =========================================================================
-
-    /// Placeholder for runtime power function - DEFERRED TO STAGE 2
-    ///
-    /// Pow operations require runtime calls which need:
-    /// 1. External function declaration in JITModule
-    /// 2. Function import into the current function context
-    /// 3. Proper argument passing and return value handling
-    ///
-    /// For Stage 1, chunks containing Pow are not JIT-compilable and will
-    /// execute on the bytecode VM instead.
-    ///
-    /// Stage 2 implementation should:
-    /// 1. Register jit_runtime_pow in compiler::register_runtime_symbols()
-    /// 2. Pass function references through CodegenContext
-    /// 3. Use builder.ins().call(func_ref, &[base, exp]) to call the runtime
-    #[allow(dead_code)]
-    pub fn call_runtime_pow(&mut self, _base: Value, _exp: Value) -> Value {
-        // Stage 2: This will be replaced with a proper runtime call
-        // For now, return 1 as a placeholder (unreachable in Stage 1)
-        self.const_long(1)
-    }
 }
 
 // =============================================================================

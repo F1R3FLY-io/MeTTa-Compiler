@@ -30,7 +30,7 @@ use tracing::warn;
 use crate::backend::environment::MettaEnvironment;
 // Disabled: pattern_match no longer needed — match_rules_native handles matching at byte level.
 // use crate::backend::eval::pattern_match;
-use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
+use crate::backend::models::{Bindings, MettaValue};
 // Disabled: MettaValueTrait import no longer needed — MettaValue has inherent inner() method.
 // use crate::backend::models::metta_value_trait::MettaValueTrait;
 
@@ -307,29 +307,6 @@ impl MorkBridge {
 //     }
 // }
 
-/// Calculate pattern specificity (lower = more specific)
-///
-/// **NOTE**: Superseded by `count_newvar_tags()` in `rule_management.rs` which computes
-/// specificity at insertion time from De Bruijn bytes. Retained for reference.
-///
-/// Specificity is determined by:
-/// - Number of variables (more variables = less specific)
-/// - Wildcard presence (wildcards are least specific)
-#[allow(dead_code)]
-fn pattern_specificity(pattern: &MettaValue) -> usize {
-    match pattern.inner() {
-        MettaValueInner::Atom(name) if *name == "_" => 1000, // Wildcard - least specific
-        MettaValueInner::Atom(name) if name.starts_with('$') => 100, // Variable
-        MettaValueInner::Atom(_) => 0,                      // Concrete symbol
-        MettaValueInner::SExpr(items) => items.iter().map(pattern_specificity).sum(),
-        MettaValueInner::Long(_)
-        | MettaValueInner::Float(_)
-        | MettaValueInner::Bool(_)
-        | MettaValueInner::String(_) => 0,
-        _ => 50, // Other types
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,28 +411,4 @@ mod tests {
         assert_eq!(stats2.cache_hits, 1);
     }
 
-    #[test]
-    fn test_pattern_specificity() {
-        // Concrete atom - most specific
-        assert_eq!(pattern_specificity(&MettaValue::Atom("foo".to_string())), 0);
-
-        // Variable - less specific
-        assert_eq!(
-            pattern_specificity(&MettaValue::Atom("$x".to_string())),
-            100
-        );
-
-        // Wildcard - least specific
-        assert_eq!(
-            pattern_specificity(&MettaValue::Atom("_".to_string())),
-            1000
-        );
-
-        // S-expression adds up
-        let sexpr = MettaValue::SExpr(vec![
-            MettaValue::Atom("foo".to_string()), // 0
-            MettaValue::Atom("$x".to_string()),  // 100
-        ]);
-        assert_eq!(pattern_specificity(&sexpr), 100);
-    }
 }

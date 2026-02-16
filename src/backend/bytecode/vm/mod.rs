@@ -31,7 +31,6 @@ use crate::backend::models::MettaValue;
 
 // === Submodules ===
 
-mod pattern;
 mod types;
 
 #[cfg(test)]
@@ -42,7 +41,6 @@ mod proptests;
 
 // === Re-exports ===
 
-pub use pattern::{pattern_match_bind, pattern_matches, unify};
 pub use types::{VmConfig, VmError, VmResult};
 // Generic types
 pub use types::{

@@ -3,10 +3,8 @@
 //! Provides methods for adding, removing, and querying facts in MORK Space.
 //! Handles both primary MORK storage and large expression fallback.
 
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
-use mork::space::Space;
 use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
@@ -72,52 +70,6 @@ impl MettaEnvironment {
         self.has_sexpr_fact_linear(sexpr)
     }
 
-    /// UNUSED: This approach doesn't work because query_multi treats variables as pattern variables
-    /// Kept for historical reference - do not use
-    #[allow(dead_code)]
-    fn has_sexpr_fact_optimized(&self, sexpr: &MettaValue) -> Option<bool> {
-        use mork_frontend::bytestring_parser::Parser;
-
-        // Convert MettaValue to MORK pattern for query
-        let mork_str = sexpr.to_mork_string();
-        let mork_bytes = mork_str.as_bytes();
-
-        let space = self.create_space();
-
-        // Parse to MORK Expr (following try_match_all_rules_query_multi pattern)
-        let mut parse_buffer = vec![0u8; 4096];
-        let mut pdp = mork::space::ParDataParser::new(&space.sm);
-        let mut ez = mork_expr::ExprZipper::new(Expr {
-            ptr: parse_buffer.as_mut_ptr(),
-        });
-        let mut context = mork_frontend::bytestring_parser::Context::new(mork_bytes);
-
-        // If parsing fails, return None to trigger fallback
-        if pdp.sexpr(&mut context, &mut ez).is_err() {
-            return None;
-        }
-
-        let pattern_expr = Expr {
-            ptr: parse_buffer.as_ptr().cast_mut(),
-        };
-
-        // Use query_multi for O(k) prefix-based search
-        let mut found = false;
-        mork::space::Space::query_multi(&space.btm, pattern_expr, |_bindings, matched_expr| {
-            // Convert matched expression back to MettaValue
-            if let Ok(stored_value) = Self::mork_expr_to_metta_value(&matched_expr, &space) {
-                // Check structural equivalence (handles De Bruijn variable renaming)
-                if sexpr.structurally_equivalent(&stored_value) {
-                    found = true;
-                    return false; // Stop searching, we found it
-                }
-            }
-            true // Continue searching
-        });
-
-        Some(found)
-    }
-
     /// Fallback linear search for has_sexpr_fact (O(n) iteration)
     fn has_sexpr_fact_linear(&self, sexpr: &MettaValue) -> bool {
         let space = self.create_space();
@@ -143,52 +95,6 @@ impl MettaEnvironment {
         false
     }
 
-    /// Convert MettaValue to MORK bytes with LRU caching
-    /// Checks cache first, only converts if not cached
-    /// NOTE: Only caches ground (variable-free) patterns for deterministic results
-    /// Variable patterns require fresh ConversionContext for correct De Bruijn encoding
-    /// Expected speedup: 3-10x for repeated ground patterns
-    #[allow(dead_code)]
-    pub(crate) fn metta_to_mork_bytes_cached(&self, value: &MettaValue) -> Result<Vec<u8>, String> {
-        use crate::backend::mork_convert::with_mork_bytes;
-
-        // Only cache ground (variable-free) patterns
-        // Variable patterns need fresh ConversionContext for correct De Bruijn indices
-        let is_ground = !Self::contains_variables(value);
-
-        if is_ground {
-            // Check cache first for ground patterns (read-only access)
-            {
-                let mut cache = self
-                    .shared
-                    .pattern_cache
-                    .write()
-                    ;
-                if let Some(bytes) = cache.get(value) {
-                    trace!(target: "mettatron::environment::metta_to_mork_bytes_cached", "Cache hit");
-                    return Ok(bytes.clone());
-                }
-            }
-        }
-
-        // Cache miss or variable pattern - perform conversion via callback (zero-copy from thread-local)
-        let bytes = with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
-            mork_bytes.to_vec()
-        })?;
-
-        if is_ground {
-            // Store ground patterns in cache for future use (write access)
-            let mut cache = self
-                .shared
-                .pattern_cache
-                .write()
-                ;
-            cache.put(value.clone(), bytes.clone());
-        }
-
-        Ok(bytes)
-    }
-
     /// Check if a MettaValue contains variables ($x, &y, 'z, or _)
     /// Space references like &self, &kb, &stack are NOT variables
     pub(crate) fn contains_variables(value: &MettaValue) -> bool {
@@ -204,46 +110,6 @@ impl MettaEnvironment {
             MettaValueInner::Error(_, details) => Self::contains_variables(details),
             MettaValueInner::Type(t) => Self::contains_variables(t),
             _ => false, // Ground types: Bool, Long, Float, String, Unit
-        }
-    }
-
-    /// Extract concrete prefix from a pattern for efficient trie navigation
-    /// Returns (prefix_items, has_variables) where prefix is longest concrete sequence
-    ///
-    /// Examples:
-    /// - (fibonacci 10) → ([fibonacci, 10], false) - fully concrete
-    /// - (fibonacci $n) → ([fibonacci], true) - concrete prefix, variable suffix
-    /// - ($f 10) → ([], true) - no concrete prefix
-    ///
-    /// This enables O(p + k) pattern matching instead of O(n):
-    /// - p = prefix length (typically 1-3 items)
-    /// - k = candidates matching prefix (typically << n)
-    /// - n = total entries in space
-    #[allow(dead_code)]
-    pub(crate) fn extract_pattern_prefix(pattern: &MettaValue) -> (Vec<MettaValue>, bool) {
-        match pattern.inner() {
-            MettaValueInner::SExpr(items) => {
-                let mut prefix = Vec::new();
-                let mut has_variables = false;
-
-                for item in *items {
-                    if Self::contains_variables(item) {
-                        has_variables = true;
-                        break; // Stop at first variable
-                    }
-                    prefix.push(item.clone());
-                }
-
-                (prefix, has_variables)
-            }
-            // Non-s-expression patterns are treated as single-item prefix
-            _ => {
-                if Self::contains_variables(pattern) {
-                    (vec![], true)
-                } else {
-                    (vec![pattern.clone()], false)
-                }
-            }
         }
     }
 

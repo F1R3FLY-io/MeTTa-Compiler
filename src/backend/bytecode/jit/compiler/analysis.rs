@@ -41,7 +41,6 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             Opcode::PushUnit
             | Opcode::PushTrue
             | Opcode::PushFalse
-            | Opcode::PushUnit
             | Opcode::PushLongSmall
             | Opcode::PushLong
             | Opcode::PushConstant
@@ -322,7 +321,6 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             Opcode::PushUnit
             | Opcode::PushTrue
             | Opcode::PushFalse
-            | Opcode::PushUnit
             | Opcode::PushLongSmall
             | Opcode::PushLong      // Stage 2: large integers via runtime call
             | Opcode::PushConstant  // Stage 2: generic constants via runtime call

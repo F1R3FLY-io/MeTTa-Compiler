@@ -151,8 +151,6 @@ pub enum CompileWork {
     /// Compile conjunction (multiple values via Fork)
     CompileConjunction {
         values: VecDeque<MettaValue>,
-        state: ConjunctionState,
-        cont_id: usize,
     },
 
     /// Compile pattern binding (creates locals)
@@ -182,7 +180,6 @@ pub enum CompileWork {
         op: HigherOrderOp,
         list: MettaValue,
         state: HigherOrderState,
-        cont_id: usize,
     },
 
     /// Compile catch expression - error handling
@@ -208,30 +205,18 @@ pub enum CompileWork {
     },
 
     /// Emit an opcode (continuation action)
-    EmitOpcode { opcode: Opcode, cont_id: usize },
+    EmitOpcode { opcode: Opcode },
 
     /// Emit opcode with u8 operand
     EmitOpcodeU8 {
         opcode: Opcode,
         operand: u8,
-        cont_id: usize,
-    },
-
-    /// Emit opcode with u16 operand
-    EmitOpcodeU16 {
-        opcode: Opcode,
-        operand: u16,
-        cont_id: usize,
     },
 
     /// Patch a jump offset
     PatchJump {
         jump_label: JumpLabel,
-        cont_id: usize,
     },
-
-    /// Resume continuation
-    Resume { cont_id: usize },
 }
 
 /// Binary operation types for the compiler
@@ -294,34 +279,6 @@ impl BinaryOp {
             BinaryOp::ConsAtom => Opcode::ConsAtom,
             BinaryOp::SpaceAdd => Opcode::SpaceAdd,
             BinaryOp::SpaceRemove => Opcode::SpaceRemove,
-        }
-    }
-
-    /// Get the operation name for error messages
-    pub fn name(self) -> &'static str {
-        match self {
-            BinaryOp::Add => "+",
-            BinaryOp::Sub => "-",
-            BinaryOp::Mul => "*",
-            BinaryOp::Div => "/",
-            BinaryOp::Mod => "%",
-            BinaryOp::Pow => "pow",
-            BinaryOp::FloorDiv => "floor-div",
-            BinaryOp::Log => "log-math",
-            BinaryOp::Lt => "<",
-            BinaryOp::Le => "<=",
-            BinaryOp::Gt => ">",
-            BinaryOp::Ge => ">=",
-            BinaryOp::Eq => "==",
-            BinaryOp::Ne => "!=",
-            BinaryOp::And => "and",
-            BinaryOp::Or => "or",
-            BinaryOp::Xor => "xor",
-            BinaryOp::IndexAtom => "index-atom",
-            BinaryOp::CheckType => "check-type",
-            BinaryOp::ConsAtom => "cons-atom",
-            BinaryOp::SpaceAdd => "add-atom",
-            BinaryOp::SpaceRemove => "remove-atom",
         }
     }
 }
@@ -416,44 +373,6 @@ impl UnaryOp {
             UnaryOp::Trace => Opcode::Trace,
         }
     }
-
-    /// Get the operation name for error messages
-    pub fn name(self) -> &'static str {
-        match self {
-            UnaryOp::Abs => "abs",
-            UnaryOp::Neg => "neg",
-            UnaryOp::Sqrt => "sqrt-math",
-            UnaryOp::Trunc => "trunc-math",
-            UnaryOp::Ceil => "ceil-math",
-            UnaryOp::Floor => "floor-math",
-            UnaryOp::Round => "round-math",
-            UnaryOp::Sin => "sin-math",
-            UnaryOp::Cos => "cos-math",
-            UnaryOp::Tan => "tan-math",
-            UnaryOp::Asin => "asin-math",
-            UnaryOp::Acos => "acos-math",
-            UnaryOp::Atan => "atan-math",
-            UnaryOp::Not => "not",
-            UnaryOp::IsNan => "isnan-math",
-            UnaryOp::IsInf => "isinf-math",
-            UnaryOp::GetHead => "car-atom",
-            UnaryOp::GetTail => "cdr-atom",
-            UnaryOp::GetArity => "size-atom",
-            UnaryOp::DeconAtom => "decons-atom",
-            UnaryOp::MinAtom => "min-atom",
-            UnaryOp::MaxAtom => "max-atom",
-            UnaryOp::GetType => "get-type",
-            UnaryOp::GetMetaType => "get-metatype",
-            UnaryOp::Repr => "repr",
-            UnaryOp::NewState => "new-state",
-            UnaryOp::GetState => "get-state",
-            UnaryOp::SpaceGetAtoms => "get-atoms",
-            UnaryOp::EvalEval => "eval",
-            UnaryOp::EvalUnquote => "unquote",
-            UnaryOp::EvalCollapse => "collapse",
-            UnaryOp::Trace => "trace!",
-        }
-    }
 }
 
 /// Higher-order operation types
@@ -498,7 +417,6 @@ pub enum LetState {
     BindPattern,
     CompileBody,
     Cleanup,
-    Done,
 }
 
 /// State for let* binding compilation
@@ -506,9 +424,7 @@ pub enum LetState {
 pub enum LetStarState {
     CompileNextBinding,
     BindPattern,
-    CompileBody,
     Cleanup,
-    Done,
 }
 
 /// State for unify compilation
@@ -519,7 +435,6 @@ pub enum UnifyState {
     EmitUnify,
     CompileSuccess,
     CompileFailure,
-    Done,
 }
 
 /// State for case compilation
@@ -527,7 +442,6 @@ pub enum UnifyState {
 pub enum CaseState {
     CompileScrutinee,
     CompilingCase { index: usize },
-    Done,
 }
 
 /// State for chain compilation
@@ -537,21 +451,12 @@ pub enum ChainState {
     BindPattern,
     CompileBody,
     Cleanup,
-    Done,
 }
 
-/// State for superpose compilation
+/// State for superpose compilation (currently single-variant, retained for extensibility)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuperposeState {
     Analyzing,
-    Done,
-}
-
-/// State for conjunction compilation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConjunctionState {
-    Analyzing,
-    Done,
 }
 
 /// State for pattern binding compilation
@@ -559,7 +464,6 @@ pub enum ConjunctionState {
 pub enum PatternBindingState {
     Binding,
     DestructuringElement,
-    Done,
 }
 
 /// State for match compilation
@@ -570,7 +474,6 @@ pub enum MatchState {
     CompileTemplate,
     CompileDefault,
     EmitMatch,
-    Done,
 }
 
 /// State for higher-order operation compilation
@@ -580,7 +483,6 @@ pub enum HigherOrderState {
     /// For foldl: compile init expression before template
     CompileFoldlInit,
     CompileTemplate,
-    Done,
 }
 
 /// State for catch compilation
@@ -602,16 +504,10 @@ pub enum IsErrorState {
 // Scope tracking
 // ============================================================================
 
-/// Information about scope state for cleanup after body evaluation
+/// Marker type indicating that a scope has been opened.
+/// Used as `Option<ScopeInfo>` to track whether `begin_scope()` was called.
 #[derive(Debug, Clone)]
-pub struct ScopeInfo {
-    /// Scope depth when we began
-    pub depth: u16,
-    /// Number of locals when we began this scope
-    pub initial_local_count: u16,
-    /// Local variable names declared in this scope
-    pub locals_declared: Vec<String>,
-}
+pub struct ScopeInfo;
 
 // ============================================================================
 // Continuations
@@ -623,9 +519,6 @@ pub struct ScopeInfo {
 pub enum Continuation {
     /// Final result - compilation complete
     Done,
-
-    /// Parent continuation to resume after current work
-    Parent { cont_id: usize },
 }
 
 impl Default for Continuation {

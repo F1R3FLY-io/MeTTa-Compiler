@@ -103,10 +103,6 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     // --- De Bruijn bytes (for extract_data matching) ---
     /// LHS with NewVar/VarRef De Bruijn encoding (extracted from PathMap key)
     pub lhs_debruijn: Vec<u8>,
-    /// De Bruijn bytes for the full rule `(= lhs rhs)` as stored in PathMap.
-    /// Kept for future use with MORK `substitute()` optimization.
-    #[allow(dead_code)]
-    pub rule_debruijn: Vec<u8>,
 
     // --- Metadata ---
     /// De Bruijn index → original variable name (e.g., "$x", "$y")
@@ -229,16 +225,13 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
             .chain(self.wildcard.iter())
     }
 
-    /// Total number of rule entries (not counting multiplicity).
-    #[allow(dead_code)]
+    /// Get the number of rules in the index.
     pub fn len(&self) -> usize {
-        self.by_head_arity.values().map(|v| v.len()).sum::<usize>() + self.wildcard.len()
-    }
-
-    /// Check if the index is empty.
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.by_head_arity.is_empty() && self.wildcard.is_empty()
+        self.by_head_arity
+            .values()
+            .map(|v| v.len())
+            .sum::<usize>()
+            + self.wildcard.len()
     }
 
     /// Clear the index.
@@ -600,7 +593,6 @@ where
 
                 let lhs_start = rule_prefix_len;
                 let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
-                let _rhs_start = lhs_start + lhs_byte_len;
 
                 // Validate LHS byte range, first byte, and ALL bytes
                 #[cfg(debug_assertions)]
@@ -655,7 +647,6 @@ where
                     lhs: lhs.clone(),
                     rhs: rhs.clone(),
                     lhs_debruijn,
-                    rule_debruijn: debruijn_bytes.to_vec(),
                     var_names,
                     wildcard_indices,
                     specificity,
@@ -1290,7 +1281,6 @@ impl MettaEnvironment {
                             lhs: lhs.clone(),
                             rhs: rhs.clone(),
                             lhs_debruijn,
-                            rule_debruijn: debruijn_bytes.to_vec(),
                             var_names,
                             wildcard_indices,
                             specificity,

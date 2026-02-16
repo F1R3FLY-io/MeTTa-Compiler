@@ -9,7 +9,6 @@
 use crate::backend::bytecode::jit::types::{
     JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_PTR, TAG_UNIT,
 };
-use crate::backend::models::MettaValue;
 use tracing::trace;
 
 // =============================================================================

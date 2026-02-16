@@ -16,7 +16,7 @@
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::Arc;
 
 use super::compiler::JitCompiler;

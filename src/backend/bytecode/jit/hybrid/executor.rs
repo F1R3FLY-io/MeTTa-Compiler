@@ -573,34 +573,6 @@ impl HybridExecutor {
         Ok(results)
     }
 
-    /// Collect results from JIT context
-    #[allow(dead_code)]
-    pub(super) fn collect_jit_results(&self, ctx: &JitContext) -> Vec<MettaValue> {
-        // If there are collected results (from nondeterminism), use those
-        if ctx.results_count > 0 {
-            let mut results = Vec::with_capacity(ctx.results_count);
-            for i in 0..ctx.results_count {
-                let jit_val = unsafe { *ctx.results.add(i) };
-                let metta_val = unsafe { jit_val.to_metta() };
-                results.push(metta_val);
-            }
-            return results;
-        }
-
-        // Otherwise, collect from stack
-        if ctx.sp > 0 {
-            let mut results = Vec::with_capacity(ctx.sp);
-            for i in 0..ctx.sp {
-                let jit_val = unsafe { *ctx.value_stack.add(i) };
-                let metta_val = unsafe { jit_val.to_metta() };
-                results.push(metta_val);
-            }
-            results
-        } else {
-            vec![MettaValue::Unit()]
-        }
-    }
-
     /// Collect results from JIT context, prioritizing the function return value
     ///
     /// This method handles the fact that JIT-compiled functions return the result

@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use super::pattern::{pattern_matches, unify};
 use super::types::VmError;
 use super::BytecodeVM;
 use crate::backend::bytecode::chunk::ChunkBuilder;
@@ -104,41 +103,6 @@ fn test_vm_make_sexpr() {
         }
         _ => panic!("Expected S-expression"),
     }
-}
-
-#[test]
-fn test_pattern_matches() {
-    // Variable matches anything
-    assert!(pattern_matches(
-        &MettaValue::var("x"),
-        &MettaValue::Long(42)
-    ));
-
-    // Atom matches same atom
-    assert!(pattern_matches(
-        &MettaValue::sym("foo"),
-        &MettaValue::sym("foo")
-    ));
-
-    // Atom doesn't match different atom
-    assert!(!pattern_matches(
-        &MettaValue::sym("foo"),
-        &MettaValue::sym("bar")
-    ));
-
-    // S-expression matching
-    assert!(pattern_matches(
-        &MettaValue::SExpr(vec![
-            MettaValue::sym("add"),
-            MettaValue::var("x"),
-            MettaValue::var("y"),
-        ]),
-        &MettaValue::SExpr(vec![
-            MettaValue::sym("add"),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ])
-    ));
 }
 
 // === Stack Operation Tests ===
@@ -1055,72 +1019,6 @@ fn test_vm_has_binding() {
     let results = vm.run().expect("VM should succeed");
 
     assert_eq!(results[0], MettaValue::Bool(true));
-}
-
-// === Wildcard Pattern Tests ===
-
-#[test]
-fn test_pattern_wildcard() {
-    assert!(pattern_matches(
-        &MettaValue::sym("_"),
-        &MettaValue::Long(42)
-    ));
-
-    assert!(pattern_matches(
-        &MettaValue::SExpr(vec![MettaValue::sym("_"), MettaValue::Long(2),]),
-        &MettaValue::SExpr(vec![MettaValue::sym("anything"), MettaValue::Long(2),])
-    ));
-}
-
-#[test]
-fn test_unification_bidirectional() {
-    // Unify var with value
-    let bindings = unify(&MettaValue::var("x"), &MettaValue::Long(42)).expect("Should unify");
-    assert_eq!(bindings.len(), 1);
-    assert_eq!(bindings[0], ("$x".to_string(), MettaValue::Long(42)));
-
-    // Unify value with var (bidirectional)
-    let bindings = unify(&MettaValue::Long(42), &MettaValue::var("x")).expect("Should unify");
-    assert_eq!(bindings.len(), 1);
-    assert_eq!(bindings[0], ("$x".to_string(), MettaValue::Long(42)));
-
-    // Unify two vars
-    let bindings = unify(&MettaValue::var("x"), &MettaValue::var("y")).expect("Should unify");
-    assert_eq!(bindings.len(), 1);
-}
-
-#[test]
-fn test_unification_sexpr() {
-    let bindings = unify(
-        &MettaValue::SExpr(vec![
-            MettaValue::sym("add"),
-            MettaValue::var("x"),
-            MettaValue::var("y"),
-        ]),
-        &MettaValue::SExpr(vec![
-            MettaValue::sym("add"),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]),
-    )
-    .expect("Should unify");
-
-    assert_eq!(bindings.len(), 2);
-    assert!(bindings.contains(&("$x".to_string(), MettaValue::Long(1))));
-    assert!(bindings.contains(&("$y".to_string(), MettaValue::Long(2))));
-}
-
-#[test]
-fn test_unification_failure() {
-    // Different atoms don't unify
-    assert!(unify(&MettaValue::sym("foo"), &MettaValue::sym("bar")).is_none());
-
-    // Different arity S-expressions don't unify
-    assert!(unify(
-        &MettaValue::SExpr(vec![MettaValue::Long(1)]),
-        &MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)])
-    )
-    .is_none());
 }
 
 // === Space Operation Tests ===
@@ -5853,140 +5751,6 @@ fn test_vm_begin_end_nondet() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], MettaValue::Long(42));
-}
-
-// =============================================================================
-// Phase 5A: VM Core Operations - Pattern Matching Tests
-// =============================================================================
-
-/// Test pattern_matches with wildcard.
-#[test]
-fn test_pattern_matches_wildcard() {
-    assert!(pattern_matches(
-        &MettaValue::sym("_"),
-        &MettaValue::Long(42)
-    ));
-    assert!(pattern_matches(
-        &MettaValue::sym("_"),
-        &MettaValue::sym("anything")
-    ));
-    assert!(pattern_matches(
-        &MettaValue::sym("_"),
-        &MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")])
-    ));
-}
-
-/// Test pattern_matches with nested S-expressions.
-#[test]
-fn test_pattern_matches_nested_sexpr() {
-    let pattern = MettaValue::SExpr(vec![
-        MettaValue::sym("outer"),
-        MettaValue::SExpr(vec![
-            MettaValue::sym("inner"),
-            MettaValue::var("x"),
-        ]),
-    ]);
-    let value = MettaValue::SExpr(vec![
-        MettaValue::sym("outer"),
-        MettaValue::SExpr(vec![
-            MettaValue::sym("inner"),
-            MettaValue::Long(42),
-        ]),
-    ]);
-    assert!(pattern_matches(&pattern, &value));
-}
-
-/// Test pattern_matches fails on mismatched structure.
-#[test]
-fn test_pattern_matches_mismatched_structure() {
-    let pattern = MettaValue::SExpr(vec![
-        MettaValue::sym("a"),
-        MettaValue::sym("b"),
-    ]);
-    let value = MettaValue::SExpr(vec![
-        MettaValue::sym("a"),
-        MettaValue::sym("b"),
-        MettaValue::sym("c"),
-    ]);
-    assert!(!pattern_matches(&pattern, &value));
-}
-
-/// Test pattern_matches with Float values.
-#[test]
-fn test_pattern_matches_float() {
-    assert!(pattern_matches(
-        &MettaValue::Float(3.14),
-        &MettaValue::Float(3.14)
-    ));
-    assert!(!pattern_matches(
-        &MettaValue::Float(3.14),
-        &MettaValue::Float(2.71)
-    ));
-}
-
-/// Test pattern_matches with String values.
-#[test]
-fn test_pattern_matches_string() {
-    assert!(pattern_matches(
-        &MettaValue::String("hello".to_string()),
-        &MettaValue::String("hello".to_string())
-    ));
-    assert!(!pattern_matches(
-        &MettaValue::String("hello".to_string()),
-        &MettaValue::String("world".to_string())
-    ));
-}
-
-/// Test pattern_matches with Unit values.
-#[test]
-fn test_pattern_matches_unit() {
-    assert!(pattern_matches(&MettaValue::Unit(), &MettaValue::Unit()));
-    // After Nil/Unit merge, Nil() returns Unit, so Unit matches Nil
-    assert!(pattern_matches(&MettaValue::Unit(), &MettaValue::Unit()));
-}
-
-/// Test unify with both variables.
-#[test]
-fn test_unify_both_variables() {
-    let a = MettaValue::var("x");
-    let b = MettaValue::var("y");
-    let bindings = unify(&a, &b).expect("Should unify");
-    // One variable binds to the other
-    assert_eq!(bindings.len(), 1);
-}
-
-/// Test unify with nested S-expressions.
-#[test]
-fn test_unify_nested_sexpr() {
-    let a = MettaValue::SExpr(vec![
-        MettaValue::sym("f"),
-        MettaValue::var("x"),
-        MettaValue::Long(1),
-    ]);
-    let b = MettaValue::SExpr(vec![
-        MettaValue::sym("f"),
-        MettaValue::Long(42),
-        MettaValue::var("y"),
-    ]);
-    let bindings = unify(&a, &b).expect("Should unify");
-    // x -> 42, y -> 1
-    assert!(bindings.len() >= 2);
-}
-
-/// Test unify fails on incompatible atoms.
-#[test]
-fn test_unify_fails_atoms() {
-    let a = MettaValue::sym("foo");
-    let b = MettaValue::sym("bar");
-    assert!(unify(&a, &b).is_none());
-}
-
-/// Test unify fails on incompatible lengths.
-#[test]
-fn test_unify_fails_length() {
-    let a = MettaValue::SExpr(vec![MettaValue::sym("a")]);
-    let b = MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
-    assert!(unify(&a, &b).is_none());
 }
 
 // =============================================================================

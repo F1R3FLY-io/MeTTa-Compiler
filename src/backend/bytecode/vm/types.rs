@@ -29,7 +29,7 @@ use smallvec::SmallVec;
 use std::sync::Arc;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::models::{Bindings, GenericBindings, MettaValue, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValue, MettaValueTrait};
 
 /// Result of VM execution
 pub type VmResult<T> = Result<T, VmError>;

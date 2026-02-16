@@ -324,77 +324,6 @@ impl Dependency {
     }
 }
 
-/// Version constraint parsing and validation.
-#[allow(dead_code)]
-pub mod version {
-    use semver::{Version, VersionReq};
-
-    /// Parse a version constraint string into a semver requirement.
-    ///
-    /// Supports common constraint formats:
-    /// - `"^1.0"` - Compatible with 1.0 (1.x.x)
-    /// - `"~1.0"` - Approximately 1.0 (1.0.x)
-    /// - `">=1.0.0"` - Greater than or equal to 1.0.0
-    /// - `"=1.0.0"` - Exactly 1.0.0
-    /// - `"1.0"` - Shorthand for ^1.0
-    pub fn parse_constraint(constraint: &str) -> Result<VersionReq, semver::Error> {
-        // If no operator prefix, treat as caret requirement
-        let normalized = if constraint
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_digit())
-            .unwrap_or(false)
-        {
-            format!("^{}", constraint)
-        } else {
-            constraint.to_string()
-        };
-
-        VersionReq::parse(&normalized)
-    }
-
-    /// Check if a version satisfies a constraint.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// assert!(satisfies("^1.0", "1.2.3"));  // true
-    /// assert!(satisfies("~1.0", "1.0.5"));  // true
-    /// assert!(!satisfies("^2.0", "1.5.0")); // false
-    /// ```
-    pub fn satisfies(constraint: &str, version: &str) -> bool {
-        let req = match parse_constraint(constraint) {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
-
-        let ver = match Version::parse(version) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-
-        req.matches(&ver)
-    }
-
-    /// Compare two versions.
-    ///
-    /// Returns:
-    /// - `Some(Ordering::Less)` if v1 < v2
-    /// - `Some(Ordering::Equal)` if v1 == v2
-    /// - `Some(Ordering::Greater)` if v1 > v2
-    /// - `None` if either version is invalid
-    pub fn compare(v1: &str, v2: &str) -> Option<std::cmp::Ordering> {
-        let ver1 = Version::parse(v1).ok()?;
-        let ver2 = Version::parse(v2).ok()?;
-        Some(ver1.cmp(&ver2))
-    }
-
-    /// Check if a version string is valid semver.
-    pub fn is_valid(version: &str) -> bool {
-        Version::parse(version).is_ok()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,56 +420,6 @@ mod tests {
         assert_eq!(ver.major, 1);
         assert_eq!(ver.minor, 2);
         assert_eq!(ver.patch, 3);
-    }
-
-    #[test]
-    fn test_version_constraint_parsing() {
-        use super::version::*;
-
-        // Caret constraint
-        assert!(satisfies("^1.0", "1.0.0"));
-        assert!(satisfies("^1.0", "1.5.3"));
-        assert!(!satisfies("^1.0", "2.0.0"));
-
-        // Tilde constraint
-        assert!(satisfies("~1.0", "1.0.0"));
-        assert!(satisfies("~1.0", "1.0.5"));
-        assert!(!satisfies("~1.0", "1.1.0"));
-
-        // Exact constraint
-        assert!(satisfies("=1.0.0", "1.0.0"));
-        assert!(!satisfies("=1.0.0", "1.0.1"));
-
-        // Greater than or equal
-        assert!(satisfies(">=1.0.0", "1.0.0"));
-        assert!(satisfies(">=1.0.0", "2.0.0"));
-        assert!(!satisfies(">=1.0.0", "0.9.0"));
-
-        // Bare version (treated as caret)
-        assert!(satisfies("1.0", "1.5.0"));
-        assert!(!satisfies("1.0", "2.0.0"));
-    }
-
-    #[test]
-    fn test_version_comparison() {
-        use super::version::*;
-        use std::cmp::Ordering;
-
-        assert_eq!(compare("1.0.0", "1.0.0"), Some(Ordering::Equal));
-        assert_eq!(compare("1.0.0", "2.0.0"), Some(Ordering::Less));
-        assert_eq!(compare("2.0.0", "1.0.0"), Some(Ordering::Greater));
-        assert_eq!(compare("1.0.0", "1.0.1"), Some(Ordering::Less));
-    }
-
-    #[test]
-    fn test_version_validation() {
-        use super::version::*;
-
-        assert!(is_valid("1.0.0"));
-        assert!(is_valid("0.1.0-alpha"));
-        assert!(is_valid("1.0.0+build.123"));
-        assert!(!is_valid("not-a-version"));
-        assert!(!is_valid("1.0")); // semver requires 3 components
     }
 
     #[test]
@@ -724,67 +603,6 @@ mod tests {
         );
         assert_eq!(pkg.package.keywords, vec!["metta", "test"]);
         assert_eq!(pkg.package.categories, vec!["utilities"]);
-    }
-
-    #[test]
-    fn test_version_prerelease() {
-        use super::version::*;
-
-        assert!(is_valid("1.0.0-alpha"));
-        assert!(is_valid("1.0.0-beta.1"));
-        assert!(is_valid("1.0.0-rc.1"));
-
-        // Prerelease versions should be less than release
-        assert_eq!(
-            compare("1.0.0-alpha", "1.0.0"),
-            Some(std::cmp::Ordering::Less)
-        );
-    }
-
-    #[test]
-    fn test_version_build_metadata() {
-        use super::version::*;
-
-        assert!(is_valid("1.0.0+build.123"));
-        assert!(is_valid("1.0.0+20230101"));
-
-        // Build metadata affects ordering in semver crate (lexicographically)
-        // Both versions without metadata should be equal
-        assert_eq!(compare("1.0.0", "1.0.0"), Some(std::cmp::Ordering::Equal));
-    }
-
-    #[test]
-    fn test_version_invalid_versions() {
-        use super::version::*;
-
-        assert!(!is_valid(""));
-        assert!(!is_valid("v1.0.0")); // no 'v' prefix in semver
-        assert!(!is_valid("1"));
-        assert!(!is_valid("1.0")); // requires 3 components
-        assert!(!is_valid("a.b.c"));
-    }
-
-    #[test]
-    fn test_satisfies_invalid_inputs() {
-        use super::version::*;
-
-        // Invalid constraint
-        assert!(!satisfies("not-valid", "1.0.0"));
-
-        // Invalid version
-        assert!(!satisfies("^1.0", "not-a-version"));
-
-        // Both invalid
-        assert!(!satisfies("invalid", "also-invalid"));
-    }
-
-    #[test]
-    fn test_compare_invalid_versions() {
-        use super::version::*;
-
-        assert!(compare("invalid", "1.0.0").is_none());
-        assert!(compare("1.0.0", "invalid").is_none());
-        assert!(compare("invalid", "also-invalid").is_none());
     }
 
     #[test]

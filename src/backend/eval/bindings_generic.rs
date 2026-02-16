@@ -17,67 +17,6 @@ use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait
 /// Global counter for generating unique variable IDs in `sealed`
 static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Check if a value contains any variables ($x, &y, 'z, or _).
-///
-/// Space references like &self, &kb, &stack are NOT considered variables.
-/// This is used for optimization checks (e.g., bloom filter eligibility).
-pub fn contains_variables_generic<V: MettaValueTrait>(value: &V) -> bool {
-    let mut work_stack: Vec<&V> = Vec::with_capacity(16);
-    work_stack.push(value);
-
-    while let Some(val) = work_stack.pop() {
-        // Check if atom is a variable
-        if let Some(name) = val.as_atom() {
-            // Space references are NOT variables
-            if name == "&" || name == "&self" || name == "&kb" || name == "&stack" {
-                continue;
-            }
-            // Wildcard or variable prefix
-            if name == "_"
-                || name.starts_with('$')
-                || name.starts_with('&')
-                || name.starts_with('\'')
-            {
-                return true;
-            }
-            continue;
-        }
-
-        // Recurse into S-expressions
-        if let Some(items) = val.as_sexpr() {
-            for item in items.iter().rev() {
-                work_stack.push(item);
-            }
-            continue;
-        }
-
-        // Recurse into conjunctions
-        if let Some(goals) = val.as_conjunction() {
-            for goal in goals.iter().rev() {
-                work_stack.push(goal);
-            }
-            continue;
-        }
-
-        // Recurse into errors
-        if let Some((_, details)) = val.as_error() {
-            work_stack.push(details);
-            continue;
-        }
-
-        // Recurse into types
-        if let Some(inner) = val.as_type() {
-            work_stack.push(inner);
-            continue;
-        }
-
-        // Ground types: Bool, Long, Float, String, Unit, Space, State, Memo, Empty
-        // These never contain variables
-    }
-
-    false
-}
-
 /// Collect all variable names from an expression (generic version)
 ///
 /// Variables are atoms starting with '$'.

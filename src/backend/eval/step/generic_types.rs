@@ -10,7 +10,7 @@
 //! - All value fields become generic `V`
 //! - All environment fields become generic `E`
 //! - Default type parameter `E = Environment` for backward compatibility
-//! - `CartesianProductIter` stays concrete (complex iterator with internal state)
+//! - Cartesian product iteration is handled via GenericCartesianProductIter in processing
 //!
 //! ## Type Parameters
 //!
@@ -22,7 +22,6 @@ use crate::backend::grounded::GenericGroundedState;
 use crate::backend::models::{GenericBindings, MettaValueTrait};
 
 use super::super::trampoline::GenericEvalResult;
-use super::super::CartesianProductIter;
 /// Type of memo operation for StartMemoOp
 #[derive(Debug, Clone)]
 pub enum MemoOpType {
@@ -202,17 +201,6 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         atom: V,
         /// Cases to match against (pattern-template pairs)
         cases: V,
-        /// Environment for evaluation
-        env: E,
-        /// Evaluation depth
-        depth: usize,
-    },
-
-    /// Evaluate switch case result - defers template evaluation to trampoline.
-    #[allow(dead_code)]
-    EvalSwitchResult {
-        /// Template expression to evaluate (already instantiated with bindings)
-        template: V,
         /// Environment for evaluation
         env: E,
         /// Evaluation depth
@@ -536,57 +524,4 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     },
 }
 
-/// Generic result of processing collected S-expression results.
-///
-/// Parameterized over the value type V and environment type E, enabling
-/// the same evaluation logic to work with both heap and arena allocation.
-///
-/// # Type Parameters
-///
-/// - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
-/// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum GenericProcessedSExpr<V: MettaValueTrait, E: Clone = MettaEnvironment> {
-    /// Processing complete, return this result
-    Done(GenericEvalResult<V, E>),
-
-    /// Need to evaluate rule matches with generic bindings.
-    ///
-    /// ## Zero-Conversion Design
-    ///
-    /// Matches store generic values, converted once at rule retrieval.
-    EvalRuleMatches {
-        /// Matched rules: (RHS expression, bindings)
-        /// Both RHS and bindings are in generic type V
-        matches: Vec<(V, GenericBindings<V>)>,
-        /// Environment for evaluation
-        env: E,
-        /// Evaluation depth
-        depth: usize,
-        /// Base results to include (evaluated S-expr that didn't match rules)
-        base_results: Vec<V>,
-    },
-
-    /// Need to lazily process Cartesian product combinations
-    /// Note: Uses concrete CartesianProductIter (complex iterator)
-    EvalCombinations {
-        /// Iterator over combinations
-        combinations: CartesianProductIter,
-        /// Environment for evaluation
-        env: E,
-        /// Evaluation depth
-        depth: usize,
-    },
-
-    /// Need to re-dispatch through eval_sexpr_step for special form handling.
-    RedispatchSExpr {
-        /// S-expression items to re-evaluate
-        items: Vec<V>,
-        /// Environment for evaluation
-        env: E,
-        /// Evaluation depth
-        depth: usize,
-    },
-}
 

@@ -449,11 +449,6 @@ impl TreiberStack {
     fn drain(&self) -> u128 {
         self.head.swap(TREIBER_NULL, Ordering::AcqRel)
     }
-
-    /// Check if the stack is empty (approximate, for diagnostics only).
-    fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Relaxed) == TREIBER_NULL
-    }
 }
 
 // ============================================================================
@@ -472,16 +467,11 @@ impl TreiberStack {
 //
 // When ASAN is not active (normal builds), these are compile-time no-ops.
 
-/// Size of the Treiber stack FreeNode header (u128 = 16 bytes).
-/// This region is left unpoisoned when a slot is freed because the
-/// Treiber stack stores its `next` pointer there.
-const FREE_NODE_SIZE: usize = std::mem::size_of::<FreeNode>();
-
 /// Poison a slab slot after freeing it.
 ///
-/// Marks bytes `FREE_NODE_SIZE..slot_size` as inaccessible to ASAN. The first
-/// `FREE_NODE_SIZE` bytes are left unpoisoned because the Treiber stack stores
-/// `FreeNode.next` (a u128 = 16 bytes) at the beginning of the freed slot.
+/// Marks bytes after the FreeNode header as inaccessible to ASAN. The first
+/// `size_of::<FreeNode>()` bytes (16 bytes) are left unpoisoned because the
+/// Treiber stack stores `FreeNode.next` (a u128) at the beginning of the freed slot.
 #[inline(always)]
 #[allow(unused_variables)]
 unsafe fn asan_poison_slab_slot(ptr: *mut u8, slot_size: usize) {
@@ -490,10 +480,11 @@ unsafe fn asan_poison_slab_slot(ptr: *mut u8, slot_size: usize) {
         extern "C" {
             fn __asan_poison_memory_region(addr: *const std::ffi::c_void, size: usize);
         }
-        if slot_size > FREE_NODE_SIZE {
+        let free_node_size = std::mem::size_of::<FreeNode>();
+        if slot_size > free_node_size {
             __asan_poison_memory_region(
-                ptr.add(FREE_NODE_SIZE) as *const std::ffi::c_void,
-                slot_size - FREE_NODE_SIZE,
+                ptr.add(free_node_size) as *const std::ffi::c_void,
+                slot_size - free_node_size,
             );
         }
     }
@@ -824,11 +815,6 @@ impl ValueAllocator {
 
         // Need a new page — acquire write lock (rare)
         self.alloc_new_page_with_ctx(ctx_id)
-    }
-
-    /// Slow path: allocate a new page (used by non-session paths).
-    fn alloc_new_page(&self) -> *mut u8 {
-        self.alloc_new_page_with_ctx(current_context_id())
     }
 
     /// Slow path: allocate a new page with a specific context ID.

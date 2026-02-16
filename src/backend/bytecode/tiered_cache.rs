@@ -403,9 +403,6 @@ pub struct TieredCache {
     /// Threshold for JIT Stage 2 compilation
     pub jit2_threshold: u32,
 
-    // Warm-up period to skip tracking overhead for small workloads
-    /// Threshold for warm-up period - no tracking until this many total evaluations
-    warmup_threshold: u64,
     /// Flag indicating warm-up period is complete (set once, never reverts)
     warmup_complete: AtomicBool,
 
@@ -484,7 +481,6 @@ impl TieredCache {
             bytecode_threshold: BYTECODE_THRESHOLD,
             jit1_threshold: JIT1_THRESHOLD,
             jit2_threshold: JIT2_THRESHOLD,
-            warmup_threshold: DEFAULT_WARMUP_THRESHOLD,
             warmup_complete: AtomicBool::new(false),
             expressions_tracked: AtomicU64::new(0),
             total_executions: AtomicU64::new(0),
@@ -516,7 +512,6 @@ impl TieredCache {
             bytecode_threshold: bytecode,
             jit1_threshold: jit1,
             jit2_threshold: jit2,
-            warmup_threshold: warmup,
             warmup_complete: AtomicBool::new(warmup == 0),
             expressions_tracked: AtomicU64::new(0),
             total_executions: AtomicU64::new(0),

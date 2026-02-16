@@ -716,7 +716,6 @@ impl JitCompiler {
             Opcode::PushUnit
             | Opcode::PushTrue
             | Opcode::PushFalse
-            | Opcode::PushUnit
             | Opcode::PushLongSmall => {
                 return handlers::compile_simple_value_op(codegen, chunk, op, offset);
             }

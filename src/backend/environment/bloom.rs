@@ -63,12 +63,6 @@ impl HeadArityBloomFilter {
         })
     }
 
-    /// Check if the filter needs rebuilding due to accumulated deletions.
-    #[allow(dead_code)]
-    pub fn needs_rebuild(&self) -> bool {
-        self.num_deletions > self.num_insertions / 4
-    }
-
     /// Note that a deletion occurred (for lazy rebuild tracking).
     pub fn note_deletion(&mut self) {
         self.num_deletions += 1;

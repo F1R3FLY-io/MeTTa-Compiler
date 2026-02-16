@@ -1,10 +1,9 @@
 //! Result Processing
 //!
 //! This module handles processing of evaluation results, including
-//! generic collection, combination processing, and no-match handling.
+//! generic collection and combination processing.
 
 pub mod generic;
-pub mod no_match;
 
 #[allow(unused_imports)]
 pub use generic::{

@@ -100,59 +100,6 @@ static VARNAME_BASES: [&str; 64] = [
 static VARNAME_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl super::MettaEnvironment {
-    /// Extract (head_symbol_bytes, arity) from MORK expression bytes in O(1).
-    ///
-    /// This is used for lazy pre-filtering in `match_space()`: if the pattern has a fixed
-    /// head symbol, we can skip MORK expressions with different heads without full conversion.
-    ///
-    /// MORK byte encoding:
-    /// - Arity tag: 0x00-0x3F (bits 6-7 are 00) - value is arity 0-63
-    /// - SymbolSize tag: 0xC1-0xFF (bits 6-7 are 11, excluding 0xC0) - symbol length 1-63
-    /// - NewVar tag: 0xC0 (new variable)
-    /// - VarRef tag: 0x80-0xBF (bits 6-7 are 10) - variable reference 0-63
-    ///
-    /// Returns Some((head_bytes, arity)) if the expression is an S-expr with a symbol head.
-    /// Returns None for atoms, variable heads, or nested S-expr heads.
-    ///
-    /// # Safety
-    /// The `ptr` must point to a valid MORK expression in PathMap memory.
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) unsafe fn mork_head_info(ptr: *const u8) -> Option<(&'static [u8], u8)> {
-        // Read first byte - check if it's an arity tag (S-expression)
-        let first = *ptr;
-        if (first & 0b1100_0000) != 0b0000_0000 {
-            // Not an S-expression (it's a symbol, variable, or other atom)
-            return None;
-        }
-        let arity = first; // Arity tag value 0-63
-
-        // Empty S-expr or head is not accessible
-        if arity == 0 {
-            return None;
-        }
-
-        // Read second byte - check if head is a symbol (SymbolSize tag)
-        let head_byte = *ptr.add(1);
-        // SymbolSize tag: 0xC1-0xFF (bits 6-7 are 11, but not 0xC0 which is NewVar)
-        if head_byte == 0xC0 || (head_byte & 0b1100_0000) != 0b1100_0000 {
-            // Head is NewVar (0xC0), VarRef (0x80-0xBF), or nested S-expr (0x00-0x3F)
-            return None;
-        }
-
-        // Head is a symbol - extract the symbol bytes
-        let symbol_len = (head_byte & 0b0011_1111) as usize;
-        if symbol_len == 0 {
-            return None;
-        }
-
-        // Symbol content starts at offset 2 and has length `symbol_len`
-        let symbol_bytes = std::slice::from_raw_parts(ptr.add(2), symbol_len);
-        // Note: arity tag value is the TOTAL elements including head
-        // But MettaValue::get_arity() returns elements EXCLUDING head, so we subtract 1
-        Some((symbol_bytes, arity.saturating_sub(1)))
-    }
-
     /// Convert a MORK Expr directly to MettaValue without text serialization
     /// This avoids the "reserved byte" panic that occurs in serialize2()
     ///
@@ -175,40 +122,6 @@ impl super::MettaEnvironment {
         use crate::backend::models::global_factory;
         let factory = global_factory();
         super::mork_encoding::mork_expr_to_generic_value(expr, space, &factory)
-    }
-
-    /// Helper function to serialize a MORK Expr to a readable string
-    /// DEPRECATED: This uses serialize2() which panics on reserved bytes.
-    /// Use mork_expr_to_metta_value() instead for production code.
-    #[deprecated(
-        note = "This uses serialize2() which panics on reserved bytes. Use mork_expr_to_metta_value() instead."
-    )]
-    #[allow(dead_code)]
-    #[allow(unused_variables)]
-    pub(crate) fn serialize_mork_expr_old(expr: &Expr, space: &Space) -> String {
-        let mut buffer = Vec::new();
-        expr.serialize2(
-            &mut buffer,
-            |s| {
-                #[cfg(feature = "interning")]
-                {
-                    let symbol =
-                        i64::from_be_bytes(s.try_into().expect("8 bytes expected")).to_be_bytes();
-                    let mstr = space
-                        .sm
-                        .get_bytes(symbol)
-                        .map(|x| unsafe { std::str::from_utf8_unchecked(x) });
-                    unsafe { std::mem::transmute(mstr.unwrap_or("")) }
-                }
-                #[cfg(not(feature = "interning"))]
-                unsafe {
-                    std::mem::transmute(std::str::from_utf8_unchecked(s))
-                }
-            },
-            |i, _intro| Expr::VARNAMES[i as usize],
-        );
-
-        String::from_utf8_lossy(&buffer).to_string()
     }
 
 }

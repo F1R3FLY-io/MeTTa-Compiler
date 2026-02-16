@@ -416,7 +416,6 @@ impl PeepholeOptimizer {
                 Some(Opcode::PushUnit)
                     | Some(Opcode::PushTrue)
                     | Some(Opcode::PushFalse)
-                    | Some(Opcode::PushUnit)
                     | Some(Opcode::PushEmpty)
             );
             if is_simple_push && next_op == Opcode::Pop.to_byte() {

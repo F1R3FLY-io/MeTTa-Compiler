@@ -521,17 +521,6 @@ where
                         }
                     }
 
-                    // Evaluate switch result (TCO)
-                    GenericEvalStep::EvalSwitchResult { template, env, depth } => {
-                        work_stack.push(GenericWorkItem::Eval {
-                            value: template,
-                            env,
-                            depth,
-                            cont_id,
-                            is_tail_call: true,
-                        });
-                    }
-
                     // Evaluate eval
                     GenericEvalStep::EvalEval { arg, env, depth } => {
                         let eval_cont_id = continuations.len();

@@ -78,7 +78,6 @@ impl Compiler {
                     // Push in reverse order (stack is LIFO)
                     work_stack.push(CompileWork::EmitOpcode {
                         opcode: op.opcode(),
-                        cont_id,
                     });
                     work_stack.push(CompileWork::CompileExpr {
                         expr: right,
@@ -110,7 +109,6 @@ impl Compiler {
                     // Compile arg, then emit opcode
                     work_stack.push(CompileWork::EmitOpcode {
                         opcode: op.opcode(),
-                        cont_id,
                     });
                     work_stack.push(CompileWork::CompileExpr {
                         expr: arg,
@@ -300,11 +298,7 @@ impl Compiler {
                 )?;
             }
 
-            CompileWork::CompileConjunction {
-                values,
-                state: _,
-                cont_id: _,
-            } => {
+            CompileWork::CompileConjunction { values } => {
                 self.compile_conjunction_iterative(values, work_stack)?;
             }
 
@@ -342,9 +336,8 @@ impl Compiler {
                 op,
                 list,
                 state,
-                cont_id,
             } => {
-                self.compile_higher_order_iterative(op, list, state, cont_id, work_stack)?;
+                self.compile_higher_order_iterative(op, list, state, work_stack)?;
             }
 
             CompileWork::CompileCatch {
@@ -383,45 +376,18 @@ impl Compiler {
                 )?;
             }
 
-            CompileWork::EmitOpcode { opcode, cont_id: _ } => {
+            CompileWork::EmitOpcode { opcode } => {
                 self.builder.emit(opcode);
             }
 
-            CompileWork::EmitOpcodeU8 {
-                opcode,
-                operand,
-                cont_id: _,
-            } => {
+            CompileWork::EmitOpcodeU8 { opcode, operand } => {
                 self.builder.emit_byte(opcode, operand);
             }
 
-            CompileWork::EmitOpcodeU16 {
-                opcode,
-                operand,
-                cont_id: _,
-            } => {
-                self.builder.emit_u16(opcode, operand);
-            }
-
-            CompileWork::PatchJump {
-                jump_label,
-                cont_id: _,
-            } => {
+            CompileWork::PatchJump { jump_label } => {
                 self.builder.patch_jump(jump_label);
             }
 
-            CompileWork::Resume { cont_id } => {
-                // Resume parent continuation
-                let cont = std::mem::replace(&mut continuations[cont_id], Continuation::Done);
-                match cont {
-                    Continuation::Done => {
-                        // All done
-                    }
-                    Continuation::Parent { cont_id: parent_id } => {
-                        work_stack.push(CompileWork::Resume { cont_id: parent_id });
-                    }
-                }
-            }
         }
 
         Ok(())
@@ -487,8 +453,6 @@ impl Compiler {
             MettaValueInner::Conjunction(values) => {
                 work_stack.push(CompileWork::CompileConjunction {
                     values: (*values).iter().cloned().collect(),
-                    state: super::work_item::ConjunctionState::Analyzing,
-                    cont_id,
                 });
             }
 
@@ -1436,7 +1400,6 @@ impl Compiler {
                     },
                     list: args[0].clone(),
                     state: HigherOrderState::CompileList,
-                    cont_id,
                 });
                 Ok(Some(()))
             }
@@ -1457,7 +1420,6 @@ impl Compiler {
                     },
                     list: args[0].clone(),
                     state: HigherOrderState::CompileList,
-                    cont_id,
                 });
                 Ok(Some(()))
             }
@@ -1488,7 +1450,6 @@ impl Compiler {
                     },
                     list: args[0].clone(),
                     state: HigherOrderState::CompileList,
-                    cont_id,
                 });
                 Ok(Some(()))
             }
@@ -1682,7 +1643,6 @@ impl Compiler {
                 // change-state! needs special handling - compile both args then emit ChangeState
                 work_stack.push(CompileWork::EmitOpcode {
                     opcode: Opcode::ChangeState,
-                    cont_id,
                 });
                 work_stack.push(CompileWork::CompileExpr {
                     expr: args[1].clone(),
@@ -1706,7 +1666,6 @@ impl Compiler {
                 work_stack.push(CompileWork::EmitOpcodeU8 {
                     opcode: Opcode::MakeSExpr,
                     operand: 3,
-                    cont_id,
                 });
                 work_stack.push(CompileWork::CompileQuoted {
                     expr: args[1].clone(),
@@ -1730,11 +1689,9 @@ impl Compiler {
                 work_stack.push(CompileWork::EmitOpcodeU8 {
                     opcode: Opcode::MakeSExpr,
                     operand: 2,
-                    cont_id,
                 });
                 work_stack.push(CompileWork::EmitOpcode {
                     opcode: Opcode::Swap,
-                    cont_id: 0,
                 });
                 work_stack.push(CompileWork::CompileExpr {
                     expr: args[0].clone(),
@@ -1901,11 +1858,7 @@ impl Compiler {
                     pattern,
                     value: value.clone(),
                     body,
-                    scope_info: Some(ScopeInfo {
-                        depth: 0,
-                        initial_local_count: self.context.local_count(),
-                        locals_declared: Vec::new(),
-                    }),
+                    scope_info: Some(ScopeInfo),
                     parent_tail_position,
                     state: LetState::BindPattern,
                     cont_id,
@@ -1964,7 +1917,6 @@ impl Compiler {
                     self.builder.emit(Opcode::Pop);
                 }
             }
-            LetState::Done => {}
         }
         Ok(())
     }
@@ -1991,11 +1943,7 @@ impl Compiler {
                     work_stack.push(CompileWork::CompileLetStar {
                         bindings,
                         body,
-                        scope_info: Some(scope_info.unwrap_or(ScopeInfo {
-                            depth: 0,
-                            initial_local_count: self.context.local_count(),
-                            locals_declared: Vec::new(),
-                        })),
+                        scope_info: Some(scope_info.unwrap_or(ScopeInfo)),
                         parent_tail_position,
                         state: LetStarState::BindPattern,
                         cont_id,
@@ -2044,17 +1992,6 @@ impl Compiler {
                     cont_id,
                 });
             }
-            LetStarState::CompileBody => {
-                // Body compiled, cleanup
-                work_stack.push(CompileWork::CompileLetStar {
-                    bindings,
-                    body,
-                    scope_info,
-                    parent_tail_position,
-                    state: LetStarState::Cleanup,
-                    cont_id,
-                });
-            }
             LetStarState::Cleanup => {
                 // End scope and clean up
                 let pop_count = self.context.end_scope();
@@ -2063,7 +2000,6 @@ impl Compiler {
                     self.builder.emit(Opcode::Pop);
                 }
             }
-            LetStarState::Done => {}
         }
         Ok(())
     }
@@ -2169,7 +2105,6 @@ impl Compiler {
                     self.builder.patch_jump(label);
                 }
             }
-            UnifyState::Done => {}
         }
     }
 
@@ -2225,7 +2160,6 @@ impl Compiler {
                     // Patch next case jump after result
                     work_stack.push(CompileWork::PatchJump {
                         jump_label: next_case,
-                        cont_id: 0,
                     });
                     // Record end jump to patch later (we'll emit it after result)
                     // We need a custom work item to emit the jump and record it
@@ -2246,7 +2180,6 @@ impl Compiler {
                     }
                 }
             }
-            CaseState::Done => {}
         }
         Ok(())
     }
@@ -2270,11 +2203,7 @@ impl Compiler {
                     expr: expr.clone(),
                     var,
                     body,
-                    scope_info: Some(ScopeInfo {
-                        depth: 0,
-                        initial_local_count: self.context.local_count(),
-                        locals_declared: Vec::new(),
-                    }),
+                    scope_info: Some(ScopeInfo),
                     parent_tail_position,
                     state: ChainState::BindPattern,
                     cont_id,
@@ -2327,7 +2256,6 @@ impl Compiler {
                     self.builder.emit(Opcode::Pop);
                 }
             }
-            ChainState::Done => {}
         }
         Ok(())
     }
@@ -2532,7 +2460,6 @@ impl Compiler {
                 if element_index == total_elements - 1 {
                     work_stack.push(CompileWork::EmitOpcode {
                         opcode: Opcode::Pop,
-                        cont_id: 0,
                     });
                 }
 
@@ -2544,7 +2471,6 @@ impl Compiler {
                     cont_id: 0,
                 });
             }
-            PatternBindingState::Done => {}
         }
         Ok(())
     }
@@ -2635,7 +2561,6 @@ impl Compiler {
                 }
                 self.builder.emit(Opcode::EvalMatch);
             }
-            MatchState::Done => {}
         }
         Ok(())
     }
@@ -2645,7 +2570,6 @@ impl Compiler {
         op: HigherOrderOp,
         list: MettaValue,
         state: HigherOrderState,
-        cont_id: usize,
         work_stack: &mut Vec<CompileWork>,
     ) -> CompileResult<()> {
         match state {
@@ -2662,7 +2586,6 @@ impl Compiler {
                     op,
                     list: list.clone(),
                     state: next_state,
-                    cont_id,
                 });
                 work_stack.push(CompileWork::CompileExpr {
                     expr: list,
@@ -2684,7 +2607,6 @@ impl Compiler {
                         op,
                         list,
                         state: HigherOrderState::CompileTemplate,
-                        cont_id,
                     });
                     work_stack.push(CompileWork::CompileExpr {
                         expr: init_expr,
@@ -2721,7 +2643,6 @@ impl Compiler {
                     }
                 }
             }
-            HigherOrderState::Done => {}
         }
         Ok(())
     }

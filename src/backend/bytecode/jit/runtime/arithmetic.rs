@@ -6,9 +6,30 @@
 //! - Trigonometric: sin, cos, tan, asin, acos, atan
 //! - Predicates: isnan, isinf
 
+use std::cell::Cell;
+
 use super::helpers::{box_long, extract_long_signed, metta_to_jit};
 use crate::backend::bytecode::jit::types::JitValue;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{numeric_equal, MettaValue, MettaValueInner};
+
+thread_local! {
+    static JIT_TYPE_ERROR_FLAG: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Signal a type error from within a JIT runtime function.
+/// The HybridExecutor checks this flag after JIT execution completes.
+pub fn signal_jit_type_error() {
+    JIT_TYPE_ERROR_FLAG.with(|f| f.set(true));
+}
+
+/// Check and clear the type error flag. Returns true if a type error occurred.
+pub fn check_and_clear_jit_type_error() -> bool {
+    JIT_TYPE_ERROR_FLAG.with(|f| {
+        let had_error = f.get();
+        f.set(false);
+        had_error
+    })
+}
 
 // =============================================================================
 // Integer Arithmetic Operations
@@ -360,4 +381,307 @@ pub unsafe extern "C" fn jit_runtime_isinf(val: u64) -> u64 {
     };
 
     JitValue::from_bool(is_inf).to_bits()
+}
+
+// =============================================================================
+// Numeric Arithmetic with Type Promotion (Float Support)
+// =============================================================================
+
+/// Numeric addition with type promotion: Long+Long->Long, mixed/Float->Float
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_add(a: u64, b: u64) -> u64 {
+    let a_jv = JitValue::from_raw(a);
+    let b_jv = JitValue::from_raw(b);
+    let a_mv = a_jv.to_metta();
+    let b_mv = b_jv.to_metta();
+
+    match (a_mv.inner(), b_mv.inner()) {
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => box_long(x.wrapping_add(*y)),
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+            metta_to_jit(&MettaValue::Float(x + y)).to_bits()
+        }
+        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+            metta_to_jit(&MettaValue::Float(*x as f64 + y)).to_bits()
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+            metta_to_jit(&MettaValue::Float(x + *y as f64)).to_bits()
+        }
+        _ => {
+            signal_jit_type_error();
+            box_long(0) // Dummy value; result will be discarded after flag check
+        }
+    }
+}
+
+/// Numeric subtraction with type promotion
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_sub(a: u64, b: u64) -> u64 {
+    let a_jv = JitValue::from_raw(a);
+    let b_jv = JitValue::from_raw(b);
+    let a_mv = a_jv.to_metta();
+    let b_mv = b_jv.to_metta();
+
+    match (a_mv.inner(), b_mv.inner()) {
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => box_long(x.wrapping_sub(*y)),
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+            metta_to_jit(&MettaValue::Float(x - y)).to_bits()
+        }
+        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+            metta_to_jit(&MettaValue::Float(*x as f64 - y)).to_bits()
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+            metta_to_jit(&MettaValue::Float(x - *y as f64)).to_bits()
+        }
+        _ => {
+            signal_jit_type_error();
+            box_long(0)
+        }
+    }
+}
+
+/// Numeric multiplication with type promotion
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_mul(a: u64, b: u64) -> u64 {
+    let a_jv = JitValue::from_raw(a);
+    let b_jv = JitValue::from_raw(b);
+    let a_mv = a_jv.to_metta();
+    let b_mv = b_jv.to_metta();
+
+    match (a_mv.inner(), b_mv.inner()) {
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => box_long(x.wrapping_mul(*y)),
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+            metta_to_jit(&MettaValue::Float(x * y)).to_bits()
+        }
+        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+            metta_to_jit(&MettaValue::Float(*x as f64 * y)).to_bits()
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+            metta_to_jit(&MettaValue::Float(x * *y as f64)).to_bits()
+        }
+        _ => {
+            signal_jit_type_error();
+            box_long(0)
+        }
+    }
+}
+
+/// Numeric division with type promotion and zero-check
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_div(a: u64, b: u64) -> u64 {
+    let a_jv = JitValue::from_raw(a);
+    let b_jv = JitValue::from_raw(b);
+    let a_mv = a_jv.to_metta();
+    let b_mv = b_jv.to_metta();
+
+    match (a_mv.inner(), b_mv.inner()) {
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+            if *y == 0 {
+                return super::helpers::make_jit_error("Division by zero");
+            }
+            box_long(x.wrapping_div(*y))
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+            if *y == 0.0 {
+                return super::helpers::make_jit_error("Division by zero");
+            }
+            metta_to_jit(&MettaValue::Float(x / y)).to_bits()
+        }
+        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+            if *y == 0.0 {
+                return super::helpers::make_jit_error("Division by zero");
+            }
+            metta_to_jit(&MettaValue::Float(*x as f64 / y)).to_bits()
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+            if *y == 0 {
+                return super::helpers::make_jit_error("Division by zero");
+            }
+            metta_to_jit(&MettaValue::Float(x / *y as f64)).to_bits()
+        }
+        _ => {
+            signal_jit_type_error();
+            box_long(0)
+        }
+    }
+}
+
+/// Numeric modulo with type promotion and zero-check
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_mod(a: u64, b: u64) -> u64 {
+    let a_jv = JitValue::from_raw(a);
+    let b_jv = JitValue::from_raw(b);
+    let a_mv = a_jv.to_metta();
+    let b_mv = b_jv.to_metta();
+
+    match (a_mv.inner(), b_mv.inner()) {
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+            if *y == 0 {
+                return super::helpers::make_jit_error("Modulo by zero");
+            }
+            match x.checked_rem(*y) {
+                Some(r) => box_long(r),
+                None => super::helpers::make_jit_error("Modulo overflow"),
+            }
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+            if *y == 0.0 {
+                return super::helpers::make_jit_error("Modulo by zero");
+            }
+            metta_to_jit(&MettaValue::Float(x % y)).to_bits()
+        }
+        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+            if *y == 0.0 {
+                return super::helpers::make_jit_error("Modulo by zero");
+            }
+            metta_to_jit(&MettaValue::Float(*x as f64 % y)).to_bits()
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+            if *y == 0 {
+                return super::helpers::make_jit_error("Modulo by zero");
+            }
+            metta_to_jit(&MettaValue::Float(x % *y as f64)).to_bits()
+        }
+        _ => {
+            signal_jit_type_error();
+            box_long(0)
+        }
+    }
+}
+
+/// Numeric negation with type promotion: Long->Long, Float->Float
+///
+/// # Safety
+/// Input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_neg(a: u64) -> u64 {
+    let jv = JitValue::from_raw(a);
+    let mv = jv.to_metta();
+
+    match mv.inner() {
+        MettaValueInner::Long(x) => box_long(-x),
+        MettaValueInner::Float(x) => metta_to_jit(&MettaValue::Float(-x)).to_bits(),
+        _ => {
+            signal_jit_type_error();
+            box_long(0)
+        }
+    }
+}
+
+/// Numeric absolute value with type promotion and i64::MIN overflow check
+///
+/// # Safety
+/// Input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_abs(a: u64) -> u64 {
+    let jv = JitValue::from_raw(a);
+    let mv = jv.to_metta();
+
+    match mv.inner() {
+        MettaValueInner::Long(x) => {
+            if *x == i64::MIN {
+                return super::helpers::make_jit_error("Arithmetic overflow: abs(i64::MIN)");
+            }
+            box_long(x.abs())
+        }
+        MettaValueInner::Float(x) => metta_to_jit(&MettaValue::Float(x.abs())).to_bits(),
+        _ => {
+            signal_jit_type_error();
+            box_long(0)
+        }
+    }
+}
+
+/// Helper for comparison operations with type promotion
+#[inline]
+unsafe fn numeric_cmp(
+    a: u64,
+    b: u64,
+    int_cmp: fn(i64, i64) -> bool,
+    float_cmp: fn(f64, f64) -> bool,
+) -> u64 {
+    let a_jv = JitValue::from_raw(a);
+    let b_jv = JitValue::from_raw(b);
+    let a_mv = a_jv.to_metta();
+    let b_mv = b_jv.to_metta();
+
+    let result = match (a_mv.inner(), b_mv.inner()) {
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => int_cmp(*x, *y),
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => float_cmp(*x, *y),
+        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => float_cmp(*x as f64, *y),
+        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => float_cmp(*x, *y as f64),
+        _ => {
+            signal_jit_type_error();
+            false
+        }
+    };
+
+    JitValue::from_bool(result).to_bits()
+}
+
+/// Numeric less-than with type promotion
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_lt(a: u64, b: u64) -> u64 {
+    numeric_cmp(a, b, |x, y| x < y, |x, y| x < y)
+}
+
+/// Numeric less-than-or-equal with type promotion
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_le(a: u64, b: u64) -> u64 {
+    numeric_cmp(a, b, |x, y| x <= y, |x, y| x <= y)
+}
+
+/// Numeric greater-than with type promotion
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_gt(a: u64, b: u64) -> u64 {
+    numeric_cmp(a, b, |x, y| x > y, |x, y| x > y)
+}
+
+/// Numeric greater-than-or-equal with type promotion
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_ge(a: u64, b: u64) -> u64 {
+    numeric_cmp(a, b, |x, y| x >= y, |x, y| x >= y)
+}
+
+/// Numeric equality with type promotion and epsilon tolerance
+///
+/// Uses `numeric_equal()` for MeTTa HE-compatible semantics:
+/// Long(2) == Float(2.0) -> true.
+///
+/// # Safety
+/// Inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_numeric_eq(a: u64, b: u64) -> u64 {
+    let a_jv = JitValue::from_raw(a);
+    let b_jv = JitValue::from_raw(b);
+    let a_mv = a_jv.to_metta();
+    let b_mv = b_jv.to_metta();
+
+    JitValue::from_bool(numeric_equal(&a_mv, &b_mv)).to_bits()
 }

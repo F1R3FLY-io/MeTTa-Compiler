@@ -36,7 +36,9 @@ use super::opcodes::Opcode;
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::eval::bindings_generic::apply_bindings_generic;
-use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
+use crate::backend::models::{
+    numeric_equal_generic, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
+};
 
 // === Submodules ===
 
@@ -729,16 +731,23 @@ where
             Opcode::Mod => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                match (a.as_long(), b.as_long()) {
-                    (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
-                    (Some(x), Some(y)) => match x.checked_rem(y) {
+                match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+                    (Some(_), _, Some(0), _) => return Err(VmError::DivisionByZero),
+                    (Some(x), _, Some(y), _) => match x.checked_rem(y) {
                         Some(r) => self.push(self.make_long(r)),
                         None => return Err(VmError::ArithmeticOverflow),
                     },
-                    _ => match (a.as_float(), b.as_float()) {
-                        (Some(x), Some(y)) => self.push(self.make_float(x % y)),
-                        _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                    (_, Some(_), _, Some(y)) if y == 0.0 => return Err(VmError::DivisionByZero),
+                    (_, Some(x), _, Some(y)) => self.push(self.make_float(x % y)),
+                    (Some(x), _, _, Some(y)) => {
+                        if y == 0.0 { return Err(VmError::DivisionByZero); }
+                        self.push(self.make_float(x as f64 % y));
                     }
+                    (_, Some(x), Some(y), _) => {
+                        if y == 0 { return Err(VmError::DivisionByZero); }
+                        self.push(self.make_float(x % y as f64));
+                    }
+                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
                 }
             }
             Opcode::Neg => {
@@ -922,18 +931,17 @@ where
             Opcode::Eq => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                // Use PartialEq (value equality), consistent with tree-walker.
-                // structurally_equivalent treats all variables as equal to each
-                // other (for rule dedup), which differs from PartialEq semantics.
+                // MeTTa HE-compatible numeric equality: Long(2) == Float(2.0) -> true.
+                // Uses numeric promotion with epsilon tolerance for float comparison.
                 // StructEq opcode retains structural equivalence for internal use.
-                let equal = a == b;
+                let equal = numeric_equal_generic(&a, &b);
                 self.push(self.make_bool(equal));
             }
             Opcode::Ne => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                // Use PartialEq, consistent with Eq above and tree-walker.
-                let not_equal = a != b;
+                // MeTTa HE-compatible numeric inequality.
+                let not_equal = !numeric_equal_generic(&a, &b);
                 self.push(self.make_bool(not_equal));
             }
             Opcode::StructEq => {

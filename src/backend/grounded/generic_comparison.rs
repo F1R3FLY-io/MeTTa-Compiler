@@ -19,7 +19,7 @@
 use super::generic_state::{find_error_generic, GenericGroundedState, GenericGroundedWork};
 use super::generic_traits::GenericGroundedOperationTCO;
 use super::ExecError;
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{numeric_equal_generic, MettaValueFactory, MettaValueTrait};
 
 /// Generic TCO Less than operation: (< a b)
 pub struct LessOpGeneric;
@@ -188,11 +188,7 @@ where
                             results.push((factory.bool(float_cmp(x, y as f64)), None));
                         }
                         _ => {
-                            return GenericGroundedWork::Error(ExecError::Runtime(format!(
-                                "Cannot compare: type mismatch between {} and {}",
-                                a.friendly_type_name(),
-                                b.friendly_type_name()
-                            )))
+                            return GenericGroundedWork::Error(ExecError::NoReduce)
                         }
                     }
                 }
@@ -253,7 +249,7 @@ where
             let mut results = Vec::new();
             for a in a_results {
                 for b in b_results {
-                    let is_equal = a == b;
+                    let is_equal = numeric_equal_generic(a, b);
                     let result = if return_true_on_equal { is_equal } else { !is_equal };
                     results.push((factory.bool(result), None));
                 }
@@ -332,5 +328,115 @@ mod tests {
     fn test_not_equal_op() {
         assert!(run_comparison(&NotEqualOpGeneric, 1, 2));
         assert!(!run_comparison(&NotEqualOpGeneric, 2, 2));
+    }
+
+    // --- Mixed-type comparison tests ---
+
+    fn run_comparison_values<Op: GenericGroundedOperationTCO<MettaValue>>(
+        op: &Op,
+        a: MettaValue,
+        b: MettaValue,
+    ) -> bool {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new(
+            op.name().to_string(),
+            vec![a.clone(), b.clone()],
+        );
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![a]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![b]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                results[0].0.as_bool().expect("should be bool")
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_equal_long_float() {
+        // EqualOpGeneric: Long(2) vs Float(2.0) should be true (key HE fix)
+        assert!(run_comparison_values(
+            &EqualOpGeneric,
+            MettaValue::Long(2),
+            MettaValue::Float(2.0),
+        ));
+    }
+
+    #[test]
+    fn test_equal_float_long() {
+        // EqualOpGeneric: Float(2.0) vs Long(2) should be true (symmetric)
+        assert!(run_comparison_values(
+            &EqualOpGeneric,
+            MettaValue::Float(2.0),
+            MettaValue::Long(2),
+        ));
+    }
+
+    #[test]
+    fn test_equal_float_float() {
+        // EqualOpGeneric: Float(3.14) vs Float(3.14) should be true
+        assert!(run_comparison_values(
+            &EqualOpGeneric,
+            MettaValue::Float(3.14),
+            MettaValue::Float(3.14),
+        ));
+    }
+
+    #[test]
+    fn test_not_equal_long_float_same() {
+        // NotEqualOpGeneric: Long(2) vs Float(2.0) should be false (they are equal)
+        assert!(!run_comparison_values(
+            &NotEqualOpGeneric,
+            MettaValue::Long(2),
+            MettaValue::Float(2.0),
+        ));
+    }
+
+    #[test]
+    fn test_not_equal_long_float_different() {
+        // NotEqualOpGeneric: Long(2) vs Float(2.5) should be true (they differ)
+        assert!(run_comparison_values(
+            &NotEqualOpGeneric,
+            MettaValue::Long(2),
+            MettaValue::Float(2.5),
+        ));
+    }
+
+    #[test]
+    fn test_less_float_float() {
+        // LessOpGeneric: Float(1.5) vs Float(2.5) should be true
+        assert!(run_comparison_values(
+            &LessOpGeneric,
+            MettaValue::Float(1.5),
+            MettaValue::Float(2.5),
+        ));
+    }
+
+    #[test]
+    fn test_less_long_float() {
+        // LessOpGeneric: Long(1) vs Float(2.5) should be true (mixed type)
+        assert!(run_comparison_values(
+            &LessOpGeneric,
+            MettaValue::Long(1),
+            MettaValue::Float(2.5),
+        ));
+    }
+
+    #[test]
+    fn test_greater_eq_float_long() {
+        // GreaterEqOpGeneric: Float(5.0) vs Long(5) should be true
+        assert!(run_comparison_values(
+            &GreaterEqOpGeneric,
+            MettaValue::Float(5.0),
+            MettaValue::Long(5),
+        ));
     }
 }

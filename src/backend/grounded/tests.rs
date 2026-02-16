@@ -470,25 +470,27 @@ fn test_mod_normal() {
 }
 
 #[test]
-fn test_mod_type_error() {
+fn test_mod_float_long() {
     let mod_op = ModOp;
     let env = MettaEnvironment::default();
 
+    // Float(10.0) % Long(3) → Float(1.0) (MeTTa HE numeric promotion)
     let args = vec![MettaValue::Float(10.0), MettaValue::Long(3)];
-    let result = mod_op.execute_raw(&args, &env, &mock_eval);
-
-    assert!(matches!(result, Err(ExecError::Runtime(_))));
+    let result = mod_op.execute_raw(&args, &env, &mock_eval).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].0, MettaValue::Float(1.0));
 }
 
 #[test]
-fn test_mod_second_arg_type_error() {
+fn test_mod_long_float() {
     let mod_op = ModOp;
     let env = MettaEnvironment::default();
 
+    // Long(10) % Float(3.0) → Float(1.0) (MeTTa HE numeric promotion)
     let args = vec![MettaValue::Long(10), MettaValue::Float(3.0)];
-    let result = mod_op.execute_raw(&args, &env, &mock_eval);
-
-    assert!(matches!(result, Err(ExecError::Runtime(_))));
+    let result = mod_op.execute_raw(&args, &env, &mock_eval).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].0, MettaValue::Float(1.0));
 }
 
 // ==========================================================================
@@ -623,9 +625,9 @@ fn test_equality_different_types() {
     let args = vec![MettaValue::Long(5), MettaValue::Float(5.0)];
     let result = eq.execute_raw(&args, &env, &mock_eval).unwrap();
 
-    // Different types should be unequal (Long vs Float)
+    // Long(5) == Float(5.0) → true (MeTTa HE numeric promotion)
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0].0, MettaValue::Bool(false));
+    assert_eq!(result[0].0, MettaValue::Bool(true));
 }
 
 #[test]

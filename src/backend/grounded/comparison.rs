@@ -218,11 +218,32 @@ fn eval_equality(
     Ok(results)
 }
 
-/// Check if two MettaValues are equal
+/// Check if two MettaValues are equal (MeTTa HE-compatible).
+///
+/// Supports numeric promotion: Long(2) == Float(2.0) → true.
+/// Uses epsilon tolerance for float comparison.
 pub(crate) fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
     match (a.inner(), b.inner()) {
         (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
-        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => (x - y).abs() < f64::EPSILON,
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+            if x.is_nan() || y.is_nan() {
+                return false;
+            }
+            (x - y).abs() < f64::EPSILON
+        }
+        // Mixed Long/Float: promote Long to f64 (MeTTa HE compatibility)
+        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+            if y.is_nan() {
+                return false;
+            }
+            (*x as f64 - y).abs() < f64::EPSILON
+        }
+        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+            if x.is_nan() {
+                return false;
+            }
+            (x - *y as f64).abs() < f64::EPSILON
+        }
         (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
         (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
         (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,

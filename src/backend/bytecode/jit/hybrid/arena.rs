@@ -26,7 +26,8 @@ use std::sync::Arc;
 
 use tracing::{debug, trace};
 
-use crate::backend::bytecode::{MettaEnvironment, GenericBytecodeChunk, VmResult};
+use crate::backend::bytecode::{MettaEnvironment, GenericBytecodeChunk, VmError, VmResult};
+use crate::backend::bytecode::jit::runtime::arithmetic::check_and_clear_jit_type_error;
 use crate::backend::models::{MettaValue, MettaValueInner, GcFactory, MettaValueFactory, SlabAllocator};
 
 use super::super::{
@@ -138,6 +139,12 @@ impl HybridExecutor {
             unsafe { std::mem::transmute(native_ptr) };
 
         let jit_result = native_fn(&mut ctx);
+
+        // Check for type error from JIT runtime functions (thread-local flag)
+        if check_and_clear_jit_type_error() {
+            self.stats.jit_bailouts += 1;
+            return Err(VmError::TypeError { expected: "number", got: "other" });
+        }
 
         // Check for bailout
         if ctx.bailout {
@@ -273,6 +280,12 @@ impl HybridExecutor {
             unsafe { std::mem::transmute(native_ptr) };
 
         let jit_result = native_fn(&mut ctx);
+
+        // Check for type error from JIT runtime functions (thread-local flag)
+        if check_and_clear_jit_type_error() {
+            self.stats.jit_bailouts += 1;
+            return Err(VmError::TypeError { expected: "number", got: "other" });
+        }
 
         // Check for bailout
         if ctx.bailout {

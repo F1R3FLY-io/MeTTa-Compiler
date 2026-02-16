@@ -240,24 +240,33 @@ mod tests {
     }
 
     #[test]
-    fn mul_type_error() {
+    fn mul_type_mismatch_returns_unreduced() {
+        // MeTTa HE semantics: type mismatch returns unreduced expression, not error
         let results = run_eval("!(* True 5)");
-        assert!(!results.is_empty(), "Type error should return a result");
-        assert!(results[0].contains("Error"), "Should return an error");
+        assert!(!results.is_empty(), "Type mismatch should return a result");
+        assert!(!results[0].contains("Error"),
+            "Type mismatch should return unreduced expression, not error. Got: {}", results[0]);
+        assert!(results[0].contains("*"), "Should contain the operator");
     }
 
     #[test]
-    fn sub_type_error() {
+    fn sub_type_mismatch_returns_unreduced() {
+        // MeTTa HE semantics: type mismatch returns unreduced expression, not error
         let results = run_eval("!(- \"hello\" 2)");
-        assert!(!results.is_empty(), "Type error should return a result");
-        assert!(results[0].contains("Error"), "Should return an error");
+        assert!(!results.is_empty(), "Type mismatch should return a result");
+        assert!(!results[0].contains("Error"),
+            "Type mismatch should return unreduced expression, not error. Got: {}", results[0]);
+        assert!(results[0].contains("-"), "Should contain the operator");
     }
 
     #[test]
-    fn div_non_numeric() {
+    fn div_type_mismatch_returns_unreduced() {
+        // MeTTa HE semantics: type mismatch returns unreduced expression, not error
         let results = run_eval("!(/ 10 \"x\")");
-        assert!(!results.is_empty(), "Type error should return a result");
-        assert!(results[0].contains("Error"), "Should return an error");
+        assert!(!results.is_empty(), "Type mismatch should return a result");
+        assert!(!results[0].contains("Error"),
+            "Type mismatch should return unreduced expression, not error. Got: {}", results[0]);
+        assert!(results[0].contains("/"), "Should contain the operator");
     }
 
     #[test]

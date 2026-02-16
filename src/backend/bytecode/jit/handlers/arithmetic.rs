@@ -1,7 +1,13 @@
 //! Arithmetic operation handlers for JIT compilation
 //!
 //! Handles: Add, Sub, Mul, Div, Mod, Neg, Abs, FloorDiv, Pow
+//!
+//! Binary arithmetic ops (Add, Sub, Mul, Div, Mod) use an integer fast-path:
+//! if both operands are TAG_LONG, perform the operation inline with Cranelift IR.
+//! Otherwise, call a runtime FFI function that handles all type combinations
+//! (Long×Long, Float×Float, Long×Float, Float×Long).
 
+use cranelift::codegen::ir::BlockArg;
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -9,167 +15,451 @@ use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitResult, TAG_LONG, TAG_MASK};
 use crate::backend::bytecode::Opcode;
 
 /// Context for arithmetic handlers that need runtime function access
-
 pub struct ArithmeticHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub pow_func_id: FuncId,
+    // Numeric operations with type promotion (float fallback)
+    pub numeric_add_func_id: FuncId,
+    pub numeric_sub_func_id: FuncId,
+    pub numeric_mul_func_id: FuncId,
+    pub numeric_div_func_id: FuncId,
+    pub numeric_mod_func_id: FuncId,
+    pub numeric_neg_func_id: FuncId,
+    pub numeric_abs_func_id: FuncId,
 }
 
-/// Compile simple arithmetic opcodes (no runtime calls needed)
+/// Emit a binary arithmetic operation with integer fast-path and runtime float fallback.
+///
+/// Cranelift IR structure:
+/// ```text
+/// entry:
+///   a_tag = extract_tag(a)
+///   b_tag = extract_tag(b)
+///   both_long = (a_tag == TAG_LONG) & (b_tag == TAG_LONG)
+///   brif both_long → int_path, runtime_path
+///
+/// int_path:
+///   a_val = extract_long(a)
+///   b_val = extract_long(b)
+///   result = <int_op>(a_val, b_val)
+///   boxed = box_long(result)
+///   jump merge_block(boxed)
+///
+/// runtime_path:
+///   rt_result = call <runtime_func>(a, b)
+///   jump merge_block(rt_result)
+///
+/// merge_block(result):
+///   push(result)
+/// ```
+fn emit_binary_arith_with_fallback<'a, 'b>(
+    ctx: &mut ArithmeticHandlerContext<'_>,
+    codegen: &mut CodegenContext<'a, 'b>,
+    runtime_func_id: FuncId,
+    int_op: impl FnOnce(&mut CodegenContext<'a, 'b>, Value, Value) -> Value,
+    offset: usize,
+) -> JitResult<()> {
+    let b = codegen.pop()?;
+    let a = codegen.pop()?;
 
-pub fn compile_simple_arithmetic_op<'a, 'b>(
+    // Extract tags
+    let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
+    let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+
+    let a_tag = codegen.builder.ins().band(a, tag_mask);
+    let b_tag = codegen.builder.ins().band(b, tag_mask);
+
+    let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
+    let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
+    let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
+
+    // Create blocks
+    let int_path = codegen.builder.create_block();
+    let runtime_path = codegen.builder.create_block();
+    let merge_block = codegen.builder.create_block();
+
+    // Add block parameter for the merge block
+    codegen
+        .builder
+        .append_block_param(merge_block, types::I64);
+
+    // Branch: both long → int_path, else → runtime_path
+    codegen
+        .builder
+        .ins()
+        .brif(both_long, int_path, &[], runtime_path, &[]);
+
+    // === Integer fast-path ===
+    codegen.builder.switch_to_block(int_path);
+    let a_val = codegen.extract_long(a);
+    let b_val = codegen.extract_long(b);
+    let int_result = int_op(codegen, a_val, b_val);
+    let boxed = codegen.box_long(int_result);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(boxed)]);
+
+    // === Runtime float fallback ===
+    codegen.builder.switch_to_block(runtime_path);
+    let func_ref = ctx
+        .module
+        .declare_func_in_func(runtime_func_id, codegen.builder.func);
+    let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+    let rt_result = codegen.builder.inst_results(call_inst)[0];
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+    // === Merge ===
+    codegen.builder.switch_to_block(merge_block);
+    // Seal the blocks
+    codegen.builder.seal_block(int_path);
+    codegen.builder.seal_block(runtime_path);
+    codegen.builder.seal_block(merge_block);
+
+    let result = codegen.builder.block_params(merge_block)[0];
+    codegen.push(result)?;
+
+    let _ = offset; // used by guard functions in other paths
+
+    Ok(())
+}
+
+/// Emit a unary arithmetic operation with integer fast-path and runtime float fallback.
+fn emit_unary_arith_with_fallback<'a, 'b>(
+    ctx: &mut ArithmeticHandlerContext<'_>,
+    codegen: &mut CodegenContext<'a, 'b>,
+    runtime_func_id: FuncId,
+    int_op: impl FnOnce(&mut CodegenContext<'a, 'b>, Value) -> Value,
+    _offset: usize,
+) -> JitResult<()> {
+    let a = codegen.pop()?;
+
+    // Extract tag
+    let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
+    let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+    let a_tag = codegen.builder.ins().band(a, tag_mask);
+    let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
+
+    let int_path = codegen.builder.create_block();
+    let runtime_path = codegen.builder.create_block();
+    let merge_block = codegen.builder.create_block();
+    codegen
+        .builder
+        .append_block_param(merge_block, types::I64);
+
+    codegen
+        .builder
+        .ins()
+        .brif(a_is_long, int_path, &[], runtime_path, &[]);
+
+    // === Integer fast-path ===
+    codegen.builder.switch_to_block(int_path);
+    let a_val = codegen.extract_long(a);
+    let int_result = int_op(codegen, a_val);
+    let boxed = codegen.box_long(int_result);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(boxed)]);
+
+    // === Runtime float fallback ===
+    codegen.builder.switch_to_block(runtime_path);
+    let func_ref = ctx
+        .module
+        .declare_func_in_func(runtime_func_id, codegen.builder.func);
+    let call_inst = codegen.builder.ins().call(func_ref, &[a]);
+    let rt_result = codegen.builder.inst_results(call_inst)[0];
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+    // === Merge ===
+    codegen.builder.switch_to_block(merge_block);
+    codegen.builder.seal_block(int_path);
+    codegen.builder.seal_block(runtime_path);
+    codegen.builder.seal_block(merge_block);
+
+    let result = codegen.builder.block_params(merge_block)[0];
+    codegen.push(result)?;
+
+    Ok(())
+}
+
+/// Compile arithmetic opcodes with integer fast-path and runtime float fallback
+pub fn compile_arithmetic_op<'a, 'b>(
+    ctx: &mut ArithmeticHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,
     offset: usize,
 ) -> JitResult<()> {
     match op {
         Opcode::Add => {
-            let b = codegen.pop()?;
-            let a = codegen.pop()?;
-
-            // Type guards
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
-
-            // Extract payloads (lower 48 bits)
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-
-            // Perform addition
-            let result = codegen.builder.ins().iadd(a_val, b_val);
-
-            // Box result as Long
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_add_func_id;
+            emit_binary_arith_with_fallback(
+                ctx,
+                codegen,
+                func_id,
+                |cg, a, b| cg.builder.ins().iadd(a, b),
+                offset,
+            )
         }
 
         Opcode::Sub => {
-            let b = codegen.pop()?;
-            let a = codegen.pop()?;
-
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
-
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            let result = codegen.builder.ins().isub(a_val, b_val);
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_sub_func_id;
+            emit_binary_arith_with_fallback(
+                ctx,
+                codegen,
+                func_id,
+                |cg, a, b| cg.builder.ins().isub(a, b),
+                offset,
+            )
         }
 
         Opcode::Mul => {
-            let b = codegen.pop()?;
-            let a = codegen.pop()?;
-
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
-
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            let result = codegen.builder.ins().imul(a_val, b_val);
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_mul_func_id;
+            emit_binary_arith_with_fallback(
+                ctx,
+                codegen,
+                func_id,
+                |cg, a, b| cg.builder.ins().imul(a, b),
+                offset,
+            )
         }
 
         Opcode::Div => {
+            // Division needs zero-check in int path, runtime handles its own
+            let func_id = ctx.numeric_div_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
+            let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
+            let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
 
+            let a_tag = codegen.builder.ins().band(a, tag_mask);
+            let b_tag = codegen.builder.ins().band(b, tag_mask);
+
+            let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
+            let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
+            let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
+
+            let int_path = codegen.builder.create_block();
+            let runtime_path = codegen.builder.create_block();
+            let merge_block = codegen.builder.create_block();
+            codegen
+                .builder
+                .append_block_param(merge_block, types::I64);
+
+            codegen
+                .builder
+                .ins()
+                .brif(both_long, int_path, &[], runtime_path, &[]);
+
+            // === Integer fast-path with zero-check ===
+            codegen.builder.switch_to_block(int_path);
             let a_val = codegen.extract_long(a);
             let b_val = codegen.extract_long(b);
-
-            // Guard against division by zero
             codegen.guard_nonzero(b_val, offset)?;
+            let int_result = codegen.builder.ins().sdiv(a_val, b_val);
+            let boxed = codegen.box_long(int_result);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-            let result = codegen.builder.ins().sdiv(a_val, b_val);
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            // === Runtime float fallback ===
+            codegen.builder.switch_to_block(runtime_path);
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(func_id, codegen.builder.func);
+            let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+            let rt_result = codegen.builder.inst_results(call_inst)[0];
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+            // === Merge ===
+            codegen.builder.switch_to_block(merge_block);
+            codegen.builder.seal_block(int_path);
+            codegen.builder.seal_block(runtime_path);
+            codegen.builder.seal_block(merge_block);
+
+            let result = codegen.builder.block_params(merge_block)[0];
+            codegen.push(result)?;
+            Ok(())
         }
 
         Opcode::Mod => {
+            // Modulo needs zero-check in int path, runtime handles its own
+            let func_id = ctx.numeric_mod_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
+            let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
+            let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
 
+            let a_tag = codegen.builder.ins().band(a, tag_mask);
+            let b_tag = codegen.builder.ins().band(b, tag_mask);
+
+            let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
+            let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
+            let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
+
+            let int_path = codegen.builder.create_block();
+            let runtime_path = codegen.builder.create_block();
+            let merge_block = codegen.builder.create_block();
+            codegen
+                .builder
+                .append_block_param(merge_block, types::I64);
+
+            codegen
+                .builder
+                .ins()
+                .brif(both_long, int_path, &[], runtime_path, &[]);
+
+            // === Integer fast-path with zero-check ===
+            codegen.builder.switch_to_block(int_path);
             let a_val = codegen.extract_long(a);
             let b_val = codegen.extract_long(b);
-
             codegen.guard_nonzero(b_val, offset)?;
+            let int_result = codegen.builder.ins().srem(a_val, b_val);
+            let boxed = codegen.box_long(int_result);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-            let result = codegen.builder.ins().srem(a_val, b_val);
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            // === Runtime float fallback ===
+            codegen.builder.switch_to_block(runtime_path);
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(func_id, codegen.builder.func);
+            let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+            let rt_result = codegen.builder.inst_results(call_inst)[0];
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+            // === Merge ===
+            codegen.builder.switch_to_block(merge_block);
+            codegen.builder.seal_block(int_path);
+            codegen.builder.seal_block(runtime_path);
+            codegen.builder.seal_block(merge_block);
+
+            let result = codegen.builder.block_params(merge_block)[0];
+            codegen.push(result)?;
+            Ok(())
         }
 
         Opcode::Neg => {
-            let a = codegen.pop()?;
-            codegen.guard_long(a, offset)?;
-
-            let a_val = codegen.extract_long(a);
-            let result = codegen.builder.ins().ineg(a_val);
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_neg_func_id;
+            emit_unary_arith_with_fallback(
+                ctx,
+                codegen,
+                func_id,
+                |cg, a| cg.builder.ins().ineg(a),
+                offset,
+            )
         }
 
         Opcode::Abs => {
-            let a = codegen.pop()?;
-            codegen.guard_long(a, offset)?;
-
-            let a_val = codegen.extract_long(a);
-
-            // Guard against i64::MIN - abs(i64::MIN) overflows
-            codegen.guard_not_i64_min(a_val, offset)?;
-
-            // abs(x) = x < 0 ? -x : x
-            let zero = codegen.builder.ins().iconst(types::I64, 0);
-            let is_neg = codegen
-                .builder
-                .ins()
-                .icmp(IntCC::SignedLessThan, a_val, zero);
-            let negated = codegen.builder.ins().ineg(a_val);
-            let result = codegen.builder.ins().select(is_neg, negated, a_val);
-
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_abs_func_id;
+            emit_unary_arith_with_fallback(
+                ctx,
+                codegen,
+                func_id,
+                |cg, a| {
+                    // abs(x) = x < 0 ? -x : x
+                    let zero = cg.builder.ins().iconst(types::I64, 0);
+                    let is_neg = cg
+                        .builder
+                        .ins()
+                        .icmp(IntCC::SignedLessThan, a, zero);
+                    let negated = cg.builder.ins().ineg(a);
+                    cg.builder.ins().select(is_neg, negated, a)
+                },
+                offset,
+            )
         }
 
         Opcode::FloorDiv => {
-            // For integers, floor division is the same as truncated division
+            // FloorDiv: for integers, same as truncated division
+            // Use numeric_div runtime for float fallback
+            let func_id = ctx.numeric_div_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
+            let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
+            let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
 
+            let a_tag = codegen.builder.ins().band(a, tag_mask);
+            let b_tag = codegen.builder.ins().band(b, tag_mask);
+
+            let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
+            let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
+            let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
+
+            let int_path = codegen.builder.create_block();
+            let runtime_path = codegen.builder.create_block();
+            let merge_block = codegen.builder.create_block();
+            codegen
+                .builder
+                .append_block_param(merge_block, types::I64);
+
+            codegen
+                .builder
+                .ins()
+                .brif(both_long, int_path, &[], runtime_path, &[]);
+
+            codegen.builder.switch_to_block(int_path);
             let a_val = codegen.extract_long(a);
             let b_val = codegen.extract_long(b);
-
             codegen.guard_nonzero(b_val, offset)?;
+            let int_result = codegen.builder.ins().sdiv(a_val, b_val);
+            let boxed = codegen.box_long(int_result);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-            let result = codegen.builder.ins().sdiv(a_val, b_val);
-            let boxed = codegen.box_long(result);
-            codegen.push(boxed)?;
+            codegen.builder.switch_to_block(runtime_path);
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(func_id, codegen.builder.func);
+            let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+            let rt_result = codegen.builder.inst_results(call_inst)[0];
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+            codegen.builder.switch_to_block(merge_block);
+            codegen.builder.seal_block(int_path);
+            codegen.builder.seal_block(runtime_path);
+            codegen.builder.seal_block(merge_block);
+
+            let result = codegen.builder.block_params(merge_block)[0];
+            codegen.push(result)?;
+            Ok(())
         }
 
         _ => unreachable!(
-            "compile_simple_arithmetic_op called with wrong opcode: {:?}",
+            "compile_arithmetic_op called with wrong opcode: {:?}",
             op
         ),
     }
-    Ok(())
 }
 
 /// Compile Pow opcode via runtime call
-
 pub fn compile_pow<'a, 'b>(
     ctx: &mut ArithmeticHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

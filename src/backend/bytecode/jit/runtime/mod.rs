@@ -83,10 +83,15 @@ pub use error_handling::{
 
 // Arithmetic
 pub use arithmetic::{
+    check_and_clear_jit_type_error, signal_jit_type_error,
     jit_runtime_abs, jit_runtime_acos, jit_runtime_asin, jit_runtime_atan, jit_runtime_ceil,
     jit_runtime_cos, jit_runtime_floor_math, jit_runtime_isinf, jit_runtime_isnan, jit_runtime_log,
-    jit_runtime_pow, jit_runtime_round, jit_runtime_signum, jit_runtime_sin, jit_runtime_sqrt,
-    jit_runtime_tan, jit_runtime_trunc,
+    jit_runtime_numeric_abs, jit_runtime_numeric_add, jit_runtime_numeric_div,
+    jit_runtime_numeric_eq, jit_runtime_numeric_ge, jit_runtime_numeric_gt,
+    jit_runtime_numeric_le, jit_runtime_numeric_lt, jit_runtime_numeric_mod,
+    jit_runtime_numeric_mul, jit_runtime_numeric_neg, jit_runtime_numeric_sub, jit_runtime_pow,
+    jit_runtime_round, jit_runtime_signum, jit_runtime_sin, jit_runtime_sqrt, jit_runtime_tan,
+    jit_runtime_trunc,
 };
 
 // Stack operations

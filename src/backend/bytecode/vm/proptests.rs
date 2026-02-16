@@ -4328,7 +4328,6 @@ mod three_tier_tests {
     }
 
     /// Execute a float binary operation via JIT (Tier 2/3)
-    #[allow(dead_code)]
     fn run_jit_float_binary(a: f64, b: f64, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("jit_test");
         let idx_a = builder.add_constant(MettaValue::Float(a));
@@ -4365,6 +4364,35 @@ mod three_tier_tests {
         builder.emit(opcode);
         builder.emit(Opcode::Return);
 
+        let chunk = builder.build_arc();
+        execute_jit_chunk(&chunk)
+    }
+
+    /// Execute a binary operation on arbitrary MettaValue operands via VM
+    fn run_vm_value_binary(a: MettaValue, b: MettaValue, opcode: Opcode) -> Result<MettaValue, String> {
+        let mut builder = ChunkBuilder::new("test");
+        let idx_a = builder.add_constant(a);
+        let idx_b = builder.add_constant(b);
+        builder.emit_u16(Opcode::PushConstant, idx_a);
+        builder.emit_u16(Opcode::PushConstant, idx_b);
+        builder.emit(opcode);
+        builder.emit(Opcode::Return);
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+        vm.run()
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
+            .map_err(|e| format!("{}", e))
+    }
+
+    /// Execute a binary operation on arbitrary MettaValue operands via JIT
+    fn run_jit_value_binary(a: MettaValue, b: MettaValue, opcode: Opcode) -> Result<MettaValue, String> {
+        let mut builder = ChunkBuilder::new("jit_test");
+        let idx_a = builder.add_constant(a);
+        let idx_b = builder.add_constant(b);
+        builder.emit_u16(Opcode::PushConstant, idx_a);
+        builder.emit_u16(Opcode::PushConstant, idx_b);
+        builder.emit(opcode);
+        builder.emit(Opcode::Return);
         let chunk = builder.build_arc();
         execute_jit_chunk(&chunk)
     }
@@ -5474,5 +5502,141 @@ mod three_tier_tests {
         // JIT tier
         let jit = run_jit_binary(10, 0, Opcode::Mod);
         let _ = jit; // May error, doesn't crash
+    }
+
+    // =========================================================================
+    // Phase 8: Mixed-Type Float Semantics (HE-Compliant)
+    // =========================================================================
+
+    #[test]
+    fn test_three_tier_eq_long_float() {
+        // All tiers use numeric promotion: Long(2) == Float(2.0) → true
+        let grounded = run_grounded_binary(&EqualOp, MettaValue::Long(2), MettaValue::Float(2.0));
+        let vm = run_vm_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Eq);
+        let jit = run_jit_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Eq);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Bool(true), "Grounded: Long(2) == Float(2.0)");
+        assert_eq!(vm.unwrap(), MettaValue::Bool(true), "VM: Long(2) == Float(2.0)");
+        if let Ok(jit_val) = jit {
+            assert_eq!(jit_val, MettaValue::Bool(true), "JIT: Long(2) == Float(2.0)");
+        }
+    }
+
+    #[test]
+    fn test_three_tier_ne_long_float_same() {
+        // All tiers use numeric promotion: Long(2) != Float(2.0) → false
+        let grounded = run_grounded_binary(&NotEqualOp, MettaValue::Long(2), MettaValue::Float(2.0));
+        let vm = run_vm_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Ne);
+        let jit = run_jit_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Ne);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Bool(false), "Grounded: Long(2) != Float(2.0)");
+        assert_eq!(vm.unwrap(), MettaValue::Bool(false), "VM: Long(2) != Float(2.0)");
+        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(false), "JIT: Long(2) != Float(2.0)"); }
+    }
+
+    #[test]
+    fn test_three_tier_eq_float_float() {
+        let grounded = run_grounded_binary(&EqualOp, MettaValue::Float(3.14), MettaValue::Float(3.14));
+        let vm = run_vm_float_binary(3.14, 3.14, Opcode::Eq);
+        let jit = run_jit_float_binary(3.14, 3.14, Opcode::Eq);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
+        assert_eq!(vm.unwrap(), MettaValue::Bool(true));
+        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+    }
+
+    #[test]
+    fn test_three_tier_ne_float_float_different() {
+        let grounded = run_grounded_binary(&NotEqualOp, MettaValue::Float(1.0), MettaValue::Float(2.0));
+        let vm = run_vm_float_binary(1.0, 2.0, Opcode::Ne);
+        let jit = run_jit_float_binary(1.0, 2.0, Opcode::Ne);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
+        assert_eq!(vm.unwrap(), MettaValue::Bool(true));
+        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+    }
+
+    #[test]
+    fn test_three_tier_lt_long_float() {
+        let grounded = run_grounded_binary(&LessOp, MettaValue::Long(1), MettaValue::Float(2.5));
+        let vm = run_vm_value_binary(MettaValue::Long(1), MettaValue::Float(2.5), Opcode::Lt);
+        let jit = run_jit_value_binary(MettaValue::Long(1), MettaValue::Float(2.5), Opcode::Lt);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
+        assert_eq!(vm.unwrap(), MettaValue::Bool(true));
+        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+    }
+
+    #[test]
+    fn test_three_tier_ge_float_long() {
+        let grounded = run_grounded_binary(&GreaterEqOp, MettaValue::Float(5.0), MettaValue::Long(5));
+        let vm = run_vm_value_binary(MettaValue::Float(5.0), MettaValue::Long(5), Opcode::Ge);
+        let jit = run_jit_value_binary(MettaValue::Float(5.0), MettaValue::Long(5), Opcode::Ge);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
+        assert_eq!(vm.unwrap(), MettaValue::Bool(true));
+        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+    }
+
+    #[test]
+    fn test_three_tier_mod_long_float() {
+        // All tiers: (% 85 43.5) → Float(41.5) via numeric promotion
+        let grounded = run_grounded_binary(&ModOp, MettaValue::Long(85), MettaValue::Float(43.5));
+        let vm = run_vm_value_binary(MettaValue::Long(85), MettaValue::Float(43.5), Opcode::Mod);
+        let jit = run_jit_value_binary(MettaValue::Long(85), MettaValue::Float(43.5), Opcode::Mod);
+
+        let g_f = grounded.expect("Grounded mod failed").as_float().expect("Expected Float");
+        assert!((g_f - 41.5).abs() < 1e-10, "Grounded: (% 85 43.5) = {}, expected ~41.5", g_f);
+
+        let vm_f = vm.expect("VM mod failed").as_float().expect("Expected Float");
+        assert!((vm_f - 41.5).abs() < 1e-10, "VM: (% 85 43.5) = {}, expected ~41.5", vm_f);
+
+        if let Ok(jit_val) = jit {
+            let jit_f = jit_val.as_float().expect("Expected Float");
+            assert!((jit_f - 41.5).abs() < 1e-10, "JIT: (% 85 43.5) = {}, expected ~41.5", jit_f);
+        }
+    }
+
+    #[test]
+    fn test_three_tier_mod_float_float() {
+        // All tiers: (% 10.5 3.0) → Float(1.5)
+        let grounded = run_grounded_binary(&ModOp, MettaValue::Float(10.5), MettaValue::Float(3.0));
+        let vm = run_vm_float_binary(10.5, 3.0, Opcode::Mod);
+        let jit = run_jit_float_binary(10.5, 3.0, Opcode::Mod);
+
+        let g_f = grounded.expect("Grounded mod failed").as_float().expect("Expected Float");
+        assert!((g_f - 1.5).abs() < 1e-10, "Grounded: (% 10.5 3.0) = {}, expected ~1.5", g_f);
+
+        let vm_f = vm.expect("VM mod failed").as_float().expect("Expected Float");
+        assert!((vm_f - 1.5).abs() < 1e-10, "VM: (% 10.5 3.0) = {}, expected ~1.5", vm_f);
+
+        if let Ok(jit_val) = jit {
+            let jit_f = jit_val.as_float().expect("Expected Float");
+            assert!((jit_f - 1.5).abs() < 1e-10, "JIT: (% 10.5 3.0) = {}, expected ~1.5", jit_f);
+        }
+    }
+
+    #[test]
+    fn test_three_tier_add_long_float() {
+        // Long(3) + Float(2.5) -> Float(5.5)
+        let grounded = run_grounded_binary(&AddOp, MettaValue::Long(3), MettaValue::Float(2.5));
+        let vm = run_vm_value_binary(MettaValue::Long(3), MettaValue::Float(2.5), Opcode::Add);
+        let jit = run_jit_value_binary(MettaValue::Long(3), MettaValue::Float(2.5), Opcode::Add);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Float(5.5));
+        assert_eq!(vm.unwrap(), MettaValue::Float(5.5));
+        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Float(5.5)); }
+    }
+
+    #[test]
+    fn test_three_tier_mul_float_long() {
+        // Float(2.5) * Long(4) -> Float(10.0)
+        let grounded = run_grounded_binary(&MulOp, MettaValue::Float(2.5), MettaValue::Long(4));
+        let vm = run_vm_value_binary(MettaValue::Float(2.5), MettaValue::Long(4), Opcode::Mul);
+        let jit = run_jit_value_binary(MettaValue::Float(2.5), MettaValue::Long(4), Opcode::Mul);
+
+        assert_eq!(grounded.unwrap(), MettaValue::Float(10.0));
+        assert_eq!(vm.unwrap(), MettaValue::Float(10.0));
+        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Float(10.0)); }
     }
 }

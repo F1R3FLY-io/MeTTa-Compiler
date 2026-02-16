@@ -937,13 +937,31 @@ impl JitCompiler {
             | Opcode::Neg
             | Opcode::Abs
             | Opcode::FloorDiv => {
-                return handlers::compile_simple_arithmetic_op(codegen, op, offset);
+                let mut ctx = handlers::ArithmeticHandlerContext {
+                    module: &mut self.module,
+                    pow_func_id: self.arithmetic.pow_func_id,
+                    numeric_add_func_id: self.arithmetic.numeric_add_func_id,
+                    numeric_sub_func_id: self.arithmetic.numeric_sub_func_id,
+                    numeric_mul_func_id: self.arithmetic.numeric_mul_func_id,
+                    numeric_div_func_id: self.arithmetic.numeric_div_func_id,
+                    numeric_mod_func_id: self.arithmetic.numeric_mod_func_id,
+                    numeric_neg_func_id: self.arithmetic.numeric_neg_func_id,
+                    numeric_abs_func_id: self.arithmetic.numeric_abs_func_id,
+                };
+                return handlers::compile_arithmetic_op(&mut ctx, codegen, op, offset);
             }
 
             Opcode::Pow => {
                 let mut ctx = handlers::ArithmeticHandlerContext {
                     module: &mut self.module,
                     pow_func_id: self.arithmetic.pow_func_id,
+                    numeric_add_func_id: self.arithmetic.numeric_add_func_id,
+                    numeric_sub_func_id: self.arithmetic.numeric_sub_func_id,
+                    numeric_mul_func_id: self.arithmetic.numeric_mul_func_id,
+                    numeric_div_func_id: self.arithmetic.numeric_div_func_id,
+                    numeric_mod_func_id: self.arithmetic.numeric_mod_func_id,
+                    numeric_neg_func_id: self.arithmetic.numeric_neg_func_id,
+                    numeric_abs_func_id: self.arithmetic.numeric_abs_func_id,
                 };
                 return handlers::compile_pow(&mut ctx, codegen);
             }
@@ -1013,9 +1031,27 @@ impl JitCompiler {
             | Opcode::Gt
             | Opcode::Ge
             | Opcode::Eq
-            | Opcode::Ne
-            | Opcode::StructEq => {
-                return handlers::compile_comparison_op(codegen, op, offset);
+            | Opcode::Ne => {
+                let mut ctx = handlers::ComparisonHandlerContext {
+                    module: &mut self.module,
+                    numeric_lt_func_id: self.arithmetic.numeric_lt_func_id,
+                    numeric_le_func_id: self.arithmetic.numeric_le_func_id,
+                    numeric_gt_func_id: self.arithmetic.numeric_gt_func_id,
+                    numeric_ge_func_id: self.arithmetic.numeric_ge_func_id,
+                    numeric_eq_func_id: self.arithmetic.numeric_eq_func_id,
+                };
+                return handlers::compile_comparison_op(&mut ctx, codegen, op);
+            }
+            Opcode::StructEq => {
+                let mut ctx = handlers::ComparisonHandlerContext {
+                    module: &mut self.module,
+                    numeric_lt_func_id: self.arithmetic.numeric_lt_func_id,
+                    numeric_le_func_id: self.arithmetic.numeric_le_func_id,
+                    numeric_gt_func_id: self.arithmetic.numeric_gt_func_id,
+                    numeric_ge_func_id: self.arithmetic.numeric_ge_func_id,
+                    numeric_eq_func_id: self.arithmetic.numeric_eq_func_id,
+                };
+                return handlers::compile_comparison_op(&mut ctx, codegen, op);
             }
 
             // =====================================================================

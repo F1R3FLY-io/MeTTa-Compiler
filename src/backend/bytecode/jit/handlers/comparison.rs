@@ -2,15 +2,32 @@
 //!
 //! Boolean ops: And, Or, Not, Xor
 //! Comparison ops: Lt, Le, Gt, Ge, Eq, Ne, StructEq
+//!
+//! Ordered comparisons (Lt, Le, Gt, Ge) use integer fast-path + runtime fallback.
+//! Equality (Eq) uses raw-bit identity check + runtime fallback for cross-type equality.
 
+use cranelift::codegen::ir::BlockArg;
 use cranelift::prelude::*;
 
+use cranelift_jit::JITModule;
+
+use cranelift_module::{FuncId, Module};
+
 use crate::backend::bytecode::jit::codegen::CodegenContext;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitResult, TAG_LONG, TAG_MASK};
 use crate::backend::bytecode::Opcode;
 
-/// Compile boolean operation opcodes
+/// Context for comparison handlers that need runtime function access
+pub struct ComparisonHandlerContext<'m> {
+    pub module: &'m mut JITModule,
+    pub numeric_lt_func_id: FuncId,
+    pub numeric_le_func_id: FuncId,
+    pub numeric_gt_func_id: FuncId,
+    pub numeric_ge_func_id: FuncId,
+    pub numeric_eq_func_id: FuncId,
+}
 
+/// Compile boolean operation opcodes (no runtime calls needed)
 pub fn compile_boolean_op<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,
@@ -75,114 +92,213 @@ pub fn compile_boolean_op<'a, 'b>(
     Ok(())
 }
 
-/// Compile comparison operation opcodes
+/// Emit an ordered comparison with integer fast-path and runtime float fallback.
+fn emit_comparison_with_fallback<'a, 'b>(
+    ctx: &mut ComparisonHandlerContext<'_>,
+    codegen: &mut CodegenContext<'a, 'b>,
+    runtime_func_id: FuncId,
+    int_cc: IntCC,
+) -> JitResult<()> {
+    let b = codegen.pop()?;
+    let a = codegen.pop()?;
 
+    let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
+    let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+
+    let a_tag = codegen.builder.ins().band(a, tag_mask);
+    let b_tag = codegen.builder.ins().band(b, tag_mask);
+
+    let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
+    let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
+    let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
+
+    let int_path = codegen.builder.create_block();
+    let runtime_path = codegen.builder.create_block();
+    let merge_block = codegen.builder.create_block();
+    codegen
+        .builder
+        .append_block_param(merge_block, types::I64);
+
+    codegen
+        .builder
+        .ins()
+        .brif(both_long, int_path, &[], runtime_path, &[]);
+
+    // === Integer fast-path ===
+    codegen.builder.switch_to_block(int_path);
+    let a_val = codegen.extract_long(a);
+    let b_val = codegen.extract_long(b);
+    let cmp = codegen.builder.ins().icmp(int_cc, a_val, b_val);
+    let result = codegen.builder.ins().uextend(types::I64, cmp);
+    let boxed = codegen.box_bool(result);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(boxed)]);
+
+    // === Runtime float fallback ===
+    codegen.builder.switch_to_block(runtime_path);
+    let func_ref = ctx
+        .module
+        .declare_func_in_func(runtime_func_id, codegen.builder.func);
+    let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+    let rt_result = codegen.builder.inst_results(call_inst)[0];
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+    // === Merge ===
+    codegen.builder.switch_to_block(merge_block);
+    codegen.builder.seal_block(int_path);
+    codegen.builder.seal_block(runtime_path);
+    codegen.builder.seal_block(merge_block);
+
+    let result = codegen.builder.block_params(merge_block)[0];
+    codegen.push(result)?;
+
+    Ok(())
+}
+
+/// Compile comparison operation opcodes with integer fast-path and runtime float fallback
 pub fn compile_comparison_op<'a, 'b>(
+    ctx: &mut ComparisonHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,
-    offset: usize,
 ) -> JitResult<()> {
     match op {
         Opcode::Lt => {
-            let b = codegen.pop()?;
-            let a = codegen.pop()?;
-
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
-
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            let cmp = codegen
-                .builder
-                .ins()
-                .icmp(IntCC::SignedLessThan, a_val, b_val);
-
-            // Convert i8 comparison result to i64
-            let result = codegen.builder.ins().uextend(types::I64, cmp);
-            let boxed = codegen.box_bool(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_lt_func_id;
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedLessThan)
         }
 
         Opcode::Le => {
-            let b = codegen.pop()?;
-            let a = codegen.pop()?;
-
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
-
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            let cmp = codegen
-                .builder
-                .ins()
-                .icmp(IntCC::SignedLessThanOrEqual, a_val, b_val);
-            let result = codegen.builder.ins().uextend(types::I64, cmp);
-            let boxed = codegen.box_bool(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_le_func_id;
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedLessThanOrEqual)
         }
 
         Opcode::Gt => {
-            let b = codegen.pop()?;
-            let a = codegen.pop()?;
-
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
-
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            let cmp = codegen
-                .builder
-                .ins()
-                .icmp(IntCC::SignedGreaterThan, a_val, b_val);
-            let result = codegen.builder.ins().uextend(types::I64, cmp);
-            let boxed = codegen.box_bool(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_gt_func_id;
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedGreaterThan)
         }
 
         Opcode::Ge => {
-            let b = codegen.pop()?;
-            let a = codegen.pop()?;
-
-            codegen.guard_long(a, offset)?;
-            codegen.guard_long(b, offset)?;
-
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            let cmp = codegen
-                .builder
-                .ins()
-                .icmp(IntCC::SignedGreaterThanOrEqual, a_val, b_val);
-            let result = codegen.builder.ins().uextend(types::I64, cmp);
-            let boxed = codegen.box_bool(result);
-            codegen.push(boxed)?;
+            let func_id = ctx.numeric_ge_func_id;
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedGreaterThanOrEqual)
         }
 
         Opcode::Eq => {
+            // Equality uses bit-level identity check as fast-path, then
+            // runtime numeric_eq for cross-type comparison (e.g., Long(2) == Float(2.0))
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            // For equality, we can compare the raw bits
-            // (same tag + same payload = equal)
-            let cmp = codegen.builder.ins().icmp(IntCC::Equal, a, b);
-            let result = codegen.builder.ins().uextend(types::I64, cmp);
-            let boxed = codegen.box_bool(result);
-            codegen.push(boxed)?;
+            // Fast path: identical NaN-boxed bits → definitely equal
+            let raw_eq = codegen.builder.ins().icmp(IntCC::Equal, a, b);
+
+            let fast_true = codegen.builder.create_block();
+            let slow_check = codegen.builder.create_block();
+            let merge_block = codegen.builder.create_block();
+            codegen
+                .builder
+                .append_block_param(merge_block, types::I64);
+
+            codegen
+                .builder
+                .ins()
+                .brif(raw_eq, fast_true, &[], slow_check, &[]);
+
+            // === Fast true ===
+            codegen.builder.switch_to_block(fast_true);
+            let true_val = codegen.builder.ins().iconst(types::I64, 1);
+            let boxed_true = codegen.box_bool(true_val);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(boxed_true)]);
+
+            // === Slow check (runtime numeric_eq) ===
+            codegen.builder.switch_to_block(slow_check);
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.numeric_eq_func_id, codegen.builder.func);
+            let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+            let rt_result = codegen.builder.inst_results(call_inst)[0];
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+            // === Merge ===
+            codegen.builder.switch_to_block(merge_block);
+            codegen.builder.seal_block(fast_true);
+            codegen.builder.seal_block(slow_check);
+            codegen.builder.seal_block(merge_block);
+
+            let result = codegen.builder.block_params(merge_block)[0];
+            codegen.push(result)?;
+            Ok(())
         }
 
         Opcode::Ne => {
+            // Ne: bit-level identity check → definitely not-equal is false.
+            // Otherwise call runtime numeric_eq and negate.
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            let cmp = codegen.builder.ins().icmp(IntCC::NotEqual, a, b);
-            let result = codegen.builder.ins().uextend(types::I64, cmp);
-            let boxed = codegen.box_bool(result);
-            codegen.push(boxed)?;
+            let raw_eq = codegen.builder.ins().icmp(IntCC::Equal, a, b);
+
+            let fast_false = codegen.builder.create_block();
+            let slow_check = codegen.builder.create_block();
+            let merge_block = codegen.builder.create_block();
+            codegen
+                .builder
+                .append_block_param(merge_block, types::I64);
+
+            codegen
+                .builder
+                .ins()
+                .brif(raw_eq, fast_false, &[], slow_check, &[]);
+
+            // === Fast false (same bits → equal → != is false) ===
+            codegen.builder.switch_to_block(fast_false);
+            let false_val = codegen.builder.ins().iconst(types::I64, 0);
+            let boxed_false = codegen.box_bool(false_val);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(boxed_false)]);
+
+            // === Slow check ===
+            codegen.builder.switch_to_block(slow_check);
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.numeric_eq_func_id, codegen.builder.func);
+            let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+            let eq_result = codegen.builder.inst_results(call_inst)[0];
+            // Negate: extract bool, xor with 1, rebox
+            let eq_bool = codegen.extract_bool(eq_result);
+            let one = codegen.builder.ins().iconst(types::I64, 1);
+            let neq_bool = codegen.builder.ins().bxor(eq_bool, one);
+            let boxed_neq = codegen.box_bool(neq_bool);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(boxed_neq)]);
+
+            // === Merge ===
+            codegen.builder.switch_to_block(merge_block);
+            codegen.builder.seal_block(fast_false);
+            codegen.builder.seal_block(slow_check);
+            codegen.builder.seal_block(merge_block);
+
+            let result = codegen.builder.block_params(merge_block)[0];
+            codegen.push(result)?;
+            Ok(())
         }
 
         Opcode::StructEq => {
             // Structural equality: compare NaN-boxed values directly
-            // For primitive types (Long, Bool, Nil, Unit), bit comparison is correct
-            // For heap types, this compares references (deep comparison would need runtime)
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
@@ -190,9 +306,9 @@ pub fn compile_comparison_op<'a, 'b>(
             let result = codegen.builder.ins().uextend(types::I64, cmp);
             let boxed = codegen.box_bool(result);
             codegen.push(boxed)?;
+            Ok(())
         }
 
         _ => unreachable!("compile_comparison_op called with wrong opcode: {:?}", op),
     }
-    Ok(())
 }

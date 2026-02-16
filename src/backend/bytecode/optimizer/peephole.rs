@@ -218,11 +218,14 @@ impl PeepholeOptimizer {
         // First pass: identify all patches
         let mut patches: Vec<PeepholeAction> = Vec::new();
         let mut offset = 0;
+        let mut prev_opcode: Option<Opcode> = None;
 
         while offset < code.len() {
-            let action = self.scan_pattern(code, offset);
+            let action = self.scan_pattern(code, offset, prev_opcode);
             match action {
                 PeepholeAction::Keep => {
+                    // Track the opcode at this position for the next iteration
+                    prev_opcode = Opcode::from_byte(code[offset]);
                     // Advance by instruction size
                     let size = instruction_size(code, offset);
                     offset += size;
@@ -231,6 +234,8 @@ impl PeepholeOptimizer {
                 | PeepholeAction::ReplaceWithOpcode { start: _, end, .. }
                 | PeepholeAction::ReplaceWithBytes { start: _, end, .. } => {
                     patches.push(action);
+                    // Conservative: unknown what's on the stack after a patch
+                    prev_opcode = None;
                     // Skip past the matched pattern
                     offset = end;
                 }
@@ -338,8 +343,17 @@ impl PeepholeOptimizer {
         (result, true)
     }
 
-    /// Scan for an optimization pattern at the given offset
-    fn scan_pattern(&mut self, code: &[u8], offset: usize) -> PeepholeAction {
+    /// Scan for an optimization pattern at the given offset.
+    ///
+    /// `prev_opcode` is the opcode of the instruction immediately before `offset`,
+    /// used to guard arithmetic identity/absorber optimizations that assume the
+    /// preceding stack value is numeric.
+    fn scan_pattern(
+        &mut self,
+        code: &[u8],
+        offset: usize,
+        prev_opcode: Option<Opcode>,
+    ) -> PeepholeAction {
         let remaining = code.len() - offset;
         if remaining == 0 {
             return PeepholeAction::Keep;
@@ -518,8 +532,19 @@ impl PeepholeOptimizer {
                 };
             }
 
+            // Arithmetic identity/absorber optimizations.
+            //
+            // GUARDED: These patterns assume the value on the stack below the
+            // PushLongSmall constant is numeric. If the preceding instruction is
+            // NOT a known numeric producer, we skip the optimization to preserve
+            // type error semantics (MeTTa HE returns the expression unreduced
+            // rather than silently dropping the op). This mirrors the same
+            // reasoning that led to disabling boolean identity/annihilator
+            // optimizations (see optimizer/tests.rs:721-724).
+
             // PushLongSmall 0; Add → remove all (x + 0 = x)
-            if op == Opcode::PushLongSmall.to_byte()
+            if is_numeric_producer(prev_opcode)
+                && op == Opcode::PushLongSmall.to_byte()
                 && code[offset + 1] == 0
                 && op2 == Opcode::Add.to_byte()
             {
@@ -531,7 +556,8 @@ impl PeepholeOptimizer {
             }
 
             // PushLongSmall 0; Sub → remove all (x - 0 = x)
-            if op == Opcode::PushLongSmall.to_byte()
+            if is_numeric_producer(prev_opcode)
+                && op == Opcode::PushLongSmall.to_byte()
                 && code[offset + 1] == 0
                 && op2 == Opcode::Sub.to_byte()
             {
@@ -543,7 +569,8 @@ impl PeepholeOptimizer {
             }
 
             // PushLongSmall 1; Mul → remove all (x * 1 = x)
-            if op == Opcode::PushLongSmall.to_byte()
+            if is_numeric_producer(prev_opcode)
+                && op == Opcode::PushLongSmall.to_byte()
                 && code[offset + 1] == 1
                 && op2 == Opcode::Mul.to_byte()
             {
@@ -555,7 +582,8 @@ impl PeepholeOptimizer {
             }
 
             // PushLongSmall 1; Div → remove all (x / 1 = x)
-            if op == Opcode::PushLongSmall.to_byte()
+            if is_numeric_producer(prev_opcode)
+                && op == Opcode::PushLongSmall.to_byte()
                 && code[offset + 1] == 1
                 && op2 == Opcode::Div.to_byte()
             {
@@ -568,7 +596,8 @@ impl PeepholeOptimizer {
 
             // Mul by 0: x * 0 = 0
             // PushLongSmall 0; Mul → Pop; PushLongSmall 0
-            if op == Opcode::PushLongSmall.to_byte()
+            if is_numeric_producer(prev_opcode)
+                && op == Opcode::PushLongSmall.to_byte()
                 && code[offset + 1] == 0
                 && op2 == Opcode::Mul.to_byte()
             {
@@ -582,7 +611,8 @@ impl PeepholeOptimizer {
 
             // Pow by 0: x ^ 0 = 1
             // PushLongSmall 0; Pow → Pop; PushLongSmall 1
-            if op == Opcode::PushLongSmall.to_byte()
+            if is_numeric_producer(prev_opcode)
+                && op == Opcode::PushLongSmall.to_byte()
                 && code[offset + 1] == 0
                 && op2 == Opcode::Pow.to_byte()
             {
@@ -596,7 +626,8 @@ impl PeepholeOptimizer {
 
             // Pow by 1 (identity): x ^ 1 = x
             // PushLongSmall 1; Pow → remove all
-            if op == Opcode::PushLongSmall.to_byte()
+            if is_numeric_producer(prev_opcode)
+                && op == Opcode::PushLongSmall.to_byte()
                 && code[offset + 1] == 1
                 && op2 == Opcode::Pow.to_byte()
             {
@@ -802,6 +833,32 @@ impl PeepholeOptimizer {
         }
         best
     }
+}
+
+/// Check if an opcode is known to always produce a numeric (Long) value.
+///
+/// Used to guard arithmetic identity/absorber optimizations that assume
+/// the preceding stack value is numeric. Without this guard, patterns like
+/// `PushLongSmall 0; Add` would incorrectly eliminate the Add when the
+/// preceding value is non-numeric (e.g., an Atom), hiding type errors.
+///
+/// This is the same issue that led to disabling boolean identity/annihilator
+/// optimizations (see optimizer/tests.rs:721-724).
+fn is_numeric_producer(opcode: Option<Opcode>) -> bool {
+    matches!(
+        opcode,
+        Some(Opcode::PushLongSmall)
+            | Some(Opcode::PushLong)
+            | Some(Opcode::Add)
+            | Some(Opcode::Sub)
+            | Some(Opcode::Mul)
+            | Some(Opcode::Div)
+            | Some(Opcode::Mod)
+            | Some(Opcode::Neg)
+            | Some(Opcode::Abs)
+            | Some(Opcode::Pow)
+            | Some(Opcode::FloorDiv)
+    )
 }
 
 /// Optimize bytecode using the peephole optimizer

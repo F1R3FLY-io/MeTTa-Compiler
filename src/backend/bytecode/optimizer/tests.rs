@@ -1699,6 +1699,175 @@ mod tests {
         build_cmp_not_if_code(Opcode::Ge, Opcode::Lt);
     }
 
+    // ========================================================================
+    // Arithmetic Identity/Absorber Guard Tests (Type Safety)
+    // ========================================================================
+    // These tests verify that the 7 arithmetic identity/absorber optimizations
+    // do NOT fire when the preceding instruction is a non-numeric producer
+    // (e.g., PushAtom). This prevents hiding type errors in MeTTa's
+    // dynamically typed system — same reasoning as for boolean identity
+    // optimizations (see test_bool_identity_and_true above).
+
+    #[test]
+    fn test_add_zero_guarded_non_numeric() {
+        // PushAtom; PushLongSmall 0; Add — PushAtom is NOT numeric, guard blocks
+        let code = make_code(&[
+            Opcode::PushAtom.to_byte(), 0, 1, // PushAtom (3 bytes, non-numeric)
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Add.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.identity_ops_removed, 0,
+            "Add-zero identity should NOT fire with non-numeric predecessor");
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_sub_zero_guarded_non_numeric() {
+        // PushAtom; PushLongSmall 0; Sub — guard blocks
+        let code = make_code(&[
+            Opcode::PushAtom.to_byte(), 0, 1,
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Sub.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.identity_ops_removed, 0,
+            "Sub-zero identity should NOT fire with non-numeric predecessor");
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_mul_one_guarded_non_numeric() {
+        // PushAtom; PushLongSmall 1; Mul — guard blocks
+        let code = make_code(&[
+            Opcode::PushAtom.to_byte(), 0, 1,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::Mul.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.identity_ops_removed, 0,
+            "Mul-one identity should NOT fire with non-numeric predecessor");
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_div_one_guarded_non_numeric() {
+        // PushAtom; PushLongSmall 1; Div — guard blocks
+        let code = make_code(&[
+            Opcode::PushAtom.to_byte(), 0, 1,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::Div.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.identity_ops_removed, 0,
+            "Div-one identity should NOT fire with non-numeric predecessor");
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_mul_zero_guarded_non_numeric() {
+        // PushAtom; PushLongSmall 0; Mul — absorber guard blocks
+        let code = make_code(&[
+            Opcode::PushAtom.to_byte(), 0, 1,
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Mul.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.mul_zero_folded, 0,
+            "Mul-zero absorber should NOT fire with non-numeric predecessor");
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_pow_zero_guarded_non_numeric() {
+        // PushAtom; PushLongSmall 0; Pow — absorber guard blocks
+        let code = make_code(&[
+            Opcode::PushAtom.to_byte(), 0, 1,
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Pow.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.pow_folded, 0,
+            "Pow-zero absorber should NOT fire with non-numeric predecessor");
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_pow_one_guarded_non_numeric() {
+        // PushAtom; PushLongSmall 1; Pow — identity guard blocks
+        let code = make_code(&[
+            Opcode::PushAtom.to_byte(), 0, 1,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::Pow.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.pow_folded, 0,
+            "Pow-one identity should NOT fire with non-numeric predecessor");
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_add_zero_fires_with_numeric_predecessor() {
+        // PushLongSmall 5; PushLongSmall 0; Add — PushLongSmall IS numeric, guard passes
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 5,
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Add.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code);
+        assert_eq!(stats.identity_ops_removed, 1,
+            "Add-zero identity SHOULD fire with numeric predecessor");
+        assert_eq!(optimized, vec![
+            Opcode::PushLongSmall.to_byte(), 5,
+            Opcode::Return.to_byte(),
+        ]);
+    }
+
+    #[test]
+    fn test_identity_guard_with_arithmetic_predecessor() {
+        // Add; PushLongSmall 0; Sub — Add IS a numeric producer, guard passes
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 3,
+            Opcode::PushLongSmall.to_byte(), 4,
+            Opcode::Add.to_byte(),
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Sub.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code);
+        assert_eq!(stats.identity_ops_removed, 1,
+            "Sub-zero identity SHOULD fire with arithmetic predecessor");
+        assert_eq!(optimized, vec![
+            Opcode::PushLongSmall.to_byte(), 3,
+            Opcode::PushLongSmall.to_byte(), 4,
+            Opcode::Add.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+    }
+
+    #[test]
+    fn test_identity_guard_with_load_local_predecessor() {
+        // LoadLocal; PushLongSmall 0; Add — LoadLocal is NOT numeric, guard blocks
+        let code = make_code(&[
+            Opcode::LoadLocal.to_byte(), 0,
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Add.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+        let (optimized, stats) = optimize_bytecode(code.clone());
+        assert_eq!(stats.identity_ops_removed, 0,
+            "Add-zero identity should NOT fire with LoadLocal predecessor");
+        assert_eq!(optimized, code);
+    }
+
     /// Test that two consecutive Eq;Not → Ne folds produce correct results.
     /// Verifies cumulative offset tracking doesn't corrupt later jump targets.
     #[test]

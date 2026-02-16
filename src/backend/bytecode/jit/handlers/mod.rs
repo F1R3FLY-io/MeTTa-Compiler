@@ -57,9 +57,9 @@ pub use stack::compile_stack_op;
 
 pub use values::{compile_runtime_value_op, compile_simple_value_op, ValueHandlerContext};
 
-pub use arithmetic::{compile_pow, compile_simple_arithmetic_op, ArithmeticHandlerContext};
+pub use arithmetic::{compile_arithmetic_op, compile_pow, ArithmeticHandlerContext};
 
-pub use comparison::{compile_boolean_op, compile_comparison_op};
+pub use comparison::{compile_boolean_op, compile_comparison_op, ComparisonHandlerContext};
 
 pub use locals::compile_local_op;
 

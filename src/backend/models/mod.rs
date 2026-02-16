@@ -9,7 +9,7 @@ pub mod metta_value;
 pub mod metta_value_trait;
 pub mod space_handle;
 
-pub use metta_value::{MettaValue, MettaValueInner};
+pub use metta_value::{numeric_equal, numeric_equal_generic, numeric_not_equal, MettaValue, MettaValueInner};
 pub use gc_allocator::{
     active_evaluator_count, apply_backpressure_tier1, apply_backpressure_tier2,
     backpressure_level, collect_all_roots, current_context_id, disable_gc,

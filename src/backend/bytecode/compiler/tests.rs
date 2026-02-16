@@ -1821,6 +1821,114 @@ fn test_fold_pow_long_float() {
     assert!(!disasm.contains("\npow\n"), "mixed pow should fold: {}", disasm);
 }
 
+#[test]
+fn test_fold_eq_long_float_same() {
+    // (== 2 2.0) should fold to True
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("==".to_string()),
+        MettaValue::Long(2),
+        MettaValue::Float(2.0),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("push_true"), "mixed == (same value) should fold to true: {}", disasm);
+}
+
+#[test]
+fn test_fold_eq_long_float_different() {
+    // (== 2 2.5) should fold to False
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("==".to_string()),
+        MettaValue::Long(2),
+        MettaValue::Float(2.5),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("push_false"), "mixed == (different value) should fold to false: {}", disasm);
+}
+
+#[test]
+fn test_fold_ne_long_float_same() {
+    // (!= 2 2.0) should fold to False
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("!=".to_string()),
+        MettaValue::Long(2),
+        MettaValue::Float(2.0),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("push_false"), "mixed != (same value) should fold to false: {}", disasm);
+}
+
+#[test]
+fn test_fold_ne_long_float_different() {
+    // (!= 2 3.0) should fold to True
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("!=".to_string()),
+        MettaValue::Long(2),
+        MettaValue::Float(3.0),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("push_true"), "mixed != (different value) should fold to true: {}", disasm);
+}
+
+#[test]
+fn test_fold_eq_float_float() {
+    // (== 3.14 3.14) should fold to True
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("==".to_string()),
+        MettaValue::Float(3.14),
+        MettaValue::Float(3.14),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("push_true"), "float == float (same value) should fold to true: {}", disasm);
+}
+
+#[test]
+fn test_fold_mod_long_float() {
+    // (% 85 43.5) should fold to Float(41.5) approximately
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("%".to_string()),
+        MettaValue::Long(85),
+        MettaValue::Float(43.5),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // Long % Float -> Float, should fold
+    assert!(!disasm.contains("\nmod\n"), "mixed mod (long % float) should fold: {}", disasm);
+}
+
+#[test]
+fn test_fold_mod_float_long() {
+    // (% 85.5 43) should fold to Float(42.5) approximately
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("%".to_string()),
+        MettaValue::Float(85.5),
+        MettaValue::Long(43),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // Float % Long -> Float, should fold
+    assert!(!disasm.contains("\nmod\n"), "mixed mod (float % long) should fold: {}", disasm);
+}
+
+#[test]
+#[allow(clippy::approx_constant)]
+fn test_fold_mod_float_float() {
+    // (% 10.5 3.0) should fold to Float(1.5) approximately
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("%".to_string()),
+        MettaValue::Float(10.5),
+        MettaValue::Float(3.0),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // Float % Float -> Float, should fold
+    assert!(!disasm.contains("\nmod\n"), "float mod (float % float) should fold: {}", disasm);
+}
+
 // --- Unary Operations ---
 
 #[test]

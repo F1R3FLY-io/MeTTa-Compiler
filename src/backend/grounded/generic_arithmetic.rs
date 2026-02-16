@@ -98,11 +98,7 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for AddOpGeneric
                                 results.push((factory.float(x + y as f64), None));
                             }
                             _ => {
-                                return GenericGroundedWork::Error(ExecError::Runtime(format!(
-                                    "Cannot perform '+': expected Number (integer), got {} and {}",
-                                    a.friendly_type_name(),
-                                    b.friendly_type_name()
-                                )))
+                                return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
                     }
@@ -184,11 +180,7 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for SubOpGeneric
                                 results.push((factory.float(x - y as f64), None));
                             }
                             _ => {
-                                return GenericGroundedWork::Error(ExecError::Runtime(format!(
-                                    "Cannot perform '-': expected Number (integer), got {} and {}",
-                                    a.friendly_type_name(),
-                                    b.friendly_type_name()
-                                )))
+                                return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
                     }
@@ -270,11 +262,7 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for MulOpGeneric
                                 results.push((factory.float(x * y as f64), None));
                             }
                             _ => {
-                                return GenericGroundedWork::Error(ExecError::Runtime(format!(
-                                    "Cannot perform '*': expected Number (integer), got {} and {}",
-                                    a.friendly_type_name(),
-                                    b.friendly_type_name()
-                                )))
+                                return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
                     }
@@ -369,11 +357,7 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for DivOpGeneric
                                 results.push((factory.float(x / y as f64), None));
                             }
                             _ => {
-                                return GenericGroundedWork::Error(ExecError::Runtime(format!(
-                                    "Cannot perform '/': expected Number (integer), got {} and {}",
-                                    a.friendly_type_name(),
-                                    b.friendly_type_name()
-                                )))
+                                return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
                     }
@@ -434,8 +418,9 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for ModOpGeneric
                 let mut results = Vec::new();
                 for a in a_results {
                     for b in b_results {
-                        match (a.as_long(), b.as_long()) {
-                            (Some(x), Some(y)) => {
+                        match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+                            (Some(x), _, Some(y), _) => {
+                                // Long % Long
                                 if y == 0 {
                                     return GenericGroundedWork::Error(ExecError::Arithmetic(
                                         "Modulo by zero".to_string(),
@@ -450,12 +435,35 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for ModOpGeneric
                                     }
                                 }
                             }
+                            (_, Some(x), _, Some(y)) => {
+                                // Float % Float
+                                if y == 0.0 {
+                                    return GenericGroundedWork::Error(ExecError::Arithmetic(
+                                        "Modulo by zero".to_string(),
+                                    ));
+                                }
+                                results.push((factory.float(x % y), None));
+                            }
+                            (Some(x), _, _, Some(y)) => {
+                                // Long % Float
+                                if y == 0.0 {
+                                    return GenericGroundedWork::Error(ExecError::Arithmetic(
+                                        "Modulo by zero".to_string(),
+                                    ));
+                                }
+                                results.push((factory.float(x as f64 % y), None));
+                            }
+                            (_, Some(x), Some(y), _) => {
+                                // Float % Long
+                                if y == 0 {
+                                    return GenericGroundedWork::Error(ExecError::Arithmetic(
+                                        "Modulo by zero".to_string(),
+                                    ));
+                                }
+                                results.push((factory.float(x % y as f64), None));
+                            }
                             _ => {
-                                return GenericGroundedWork::Error(ExecError::Runtime(format!(
-                                    "Cannot perform '%': expected Number (integer), got {} and {}",
-                                    a.friendly_type_name(),
-                                    b.friendly_type_name()
-                                )))
+                                return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
                     }
@@ -651,5 +659,119 @@ mod tests {
             }
             _ => panic!("Expected Done"),
         }
+    }
+
+    // --- Mixed-type modulo tests ---
+
+    #[test]
+    fn test_mod_float_float() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new(
+            "%".to_string(),
+            vec![MettaValue::Float(10.5), MettaValue::Float(3.0)],
+        );
+
+        let op = ModOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(10.5)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Float(3.0)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(1.5)); // 10.5 % 3.0 = 1.5
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_mod_long_float() {
+        // Key HE example: Long(85) % Float(43.5) = Float(41.5)
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new(
+            "%".to_string(),
+            vec![MettaValue::Long(85), MettaValue::Float(43.5)],
+        );
+
+        let op = ModOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Long(85)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Float(43.5)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                // 85.0 % 43.5 = 85.0 - 1*43.5 = 41.5
+                assert_eq!(results[0].0.as_float(), Some(41.5));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_mod_float_long() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new(
+            "%".to_string(),
+            vec![MettaValue::Float(85.5), MettaValue::Long(43)],
+        );
+
+        let op = ModOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(85.5)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Long(43)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                // 85.5 % 43.0 = 85.5 - 1*43.0 = 42.5
+                assert_eq!(results[0].0.as_float(), Some(42.5));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_mod_float_by_zero() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new(
+            "%".to_string(),
+            vec![MettaValue::Float(10.5), MettaValue::Float(0.0)],
+        );
+
+        let op = ModOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(10.5)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Float(0.0)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        assert!(
+            matches!(work, GenericGroundedWork::Error(ExecError::Arithmetic(_))),
+            "Float modulo by zero should produce an Arithmetic error"
+        );
     }
 }

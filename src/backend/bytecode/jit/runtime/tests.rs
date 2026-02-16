@@ -14,10 +14,15 @@ mod tests {
         jit_runtime_exit_cut_scope, jit_runtime_guard,
     };
     use super::super::arithmetic::{
+        check_and_clear_jit_type_error, signal_jit_type_error,
         jit_runtime_abs, jit_runtime_acos, jit_runtime_asin, jit_runtime_atan, jit_runtime_ceil,
         jit_runtime_cos, jit_runtime_floor_math, jit_runtime_isinf, jit_runtime_isnan,
-        jit_runtime_log, jit_runtime_pow, jit_runtime_round, jit_runtime_signum, jit_runtime_sin,
-        jit_runtime_sqrt, jit_runtime_tan, jit_runtime_trunc,
+        jit_runtime_log, jit_runtime_numeric_abs, jit_runtime_numeric_add, jit_runtime_numeric_div,
+        jit_runtime_numeric_eq, jit_runtime_numeric_ge, jit_runtime_numeric_gt,
+        jit_runtime_numeric_le, jit_runtime_numeric_lt, jit_runtime_numeric_mod,
+        jit_runtime_numeric_mul, jit_runtime_numeric_neg, jit_runtime_numeric_sub,
+        jit_runtime_pow, jit_runtime_round, jit_runtime_signum, jit_runtime_sin, jit_runtime_sqrt,
+        jit_runtime_tan, jit_runtime_trunc,
     };
     use super::super::bindings::{
         jit_runtime_clear_bindings, jit_runtime_fork_bindings, jit_runtime_free_saved_bindings,
@@ -5347,5 +5352,400 @@ mod tests {
         let large_neg = box_long(-0x7FFF_FFFF_FFFF); // Large 48-bit negative
         let result = unsafe { jit_runtime_signum(large_neg) };
         assert_eq!(extract_long_signed(result), -1);
+    }
+
+    // ==========================================================================
+    // Numeric Runtime FFI Tests (Float Type Promotion)
+    // ==========================================================================
+
+    /// Helper: extract a Float from a NaN-boxed result, panicking if not Float.
+    fn extract_float(raw: u64) -> f64 {
+        let jv = JitValue::from_raw(raw);
+        let mv = unsafe { jv.to_metta() };
+        match mv.inner() {
+            MettaValueInner::Float(f) => *f,
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    /// Helper: extract a Bool from a NaN-boxed result, panicking if not Bool.
+    fn extract_bool(raw: u64) -> bool {
+        let jv = JitValue::from_raw(raw);
+        let mv = unsafe { jv.to_metta() };
+        match mv.inner() {
+            MettaValueInner::Bool(b) => *b,
+            other => panic!("Expected Bool, got {:?}", other),
+        }
+    }
+
+    /// Helper: assert that a NaN-boxed result is a TAG_PTR (heap-allocated error).
+    fn assert_is_error(raw: u64) {
+        assert_eq!(
+            raw & TAG_MASK,
+            TAG_PTR,
+            "Expected TAG_PTR (error), got tag {:#018x}",
+            raw & TAG_MASK
+        );
+    }
+
+    // --- Arithmetic: add ---
+
+    #[test]
+    fn test_numeric_add_long_long() {
+        let a = box_long(3);
+        let b = box_long(5);
+        let result = unsafe { jit_runtime_numeric_add(a, b) };
+        assert_eq!(extract_long_signed(result), 8);
+    }
+
+    #[test]
+    fn test_numeric_add_long_float() {
+        let a = box_long(3);
+        let b = metta_to_jit(&MettaValue::Float(2.5)).to_bits();
+        let result = unsafe { jit_runtime_numeric_add(a, b) };
+        let f = extract_float(result);
+        assert!((f - 5.5).abs() < f64::EPSILON, "Expected 5.5, got {}", f);
+    }
+
+    #[test]
+    fn test_numeric_add_float_float() {
+        let a = metta_to_jit(&MettaValue::Float(1.5)).to_bits();
+        let b = metta_to_jit(&MettaValue::Float(2.5)).to_bits();
+        let result = unsafe { jit_runtime_numeric_add(a, b) };
+        let f = extract_float(result);
+        assert!((f - 4.0).abs() < f64::EPSILON, "Expected 4.0, got {}", f);
+    }
+
+    // --- Arithmetic: sub ---
+
+    #[test]
+    fn test_numeric_sub_long_float() {
+        let a = box_long(10);
+        let b = metta_to_jit(&MettaValue::Float(2.5)).to_bits();
+        let result = unsafe { jit_runtime_numeric_sub(a, b) };
+        let f = extract_float(result);
+        assert!((f - 7.5).abs() < f64::EPSILON, "Expected 7.5, got {}", f);
+    }
+
+    // --- Arithmetic: mul ---
+
+    #[test]
+    fn test_numeric_mul_float_long() {
+        let a = metta_to_jit(&MettaValue::Float(2.5)).to_bits();
+        let b = box_long(4);
+        let result = unsafe { jit_runtime_numeric_mul(a, b) };
+        let f = extract_float(result);
+        assert!(
+            (f - 10.0).abs() < f64::EPSILON,
+            "Expected 10.0, got {}",
+            f
+        );
+    }
+
+    // --- Arithmetic: div ---
+
+    #[test]
+    fn test_numeric_div_long_float() {
+        let a = box_long(7);
+        let b = metta_to_jit(&MettaValue::Float(2.0)).to_bits();
+        let result = unsafe { jit_runtime_numeric_div(a, b) };
+        let f = extract_float(result);
+        assert!((f - 3.5).abs() < f64::EPSILON, "Expected 3.5, got {}", f);
+    }
+
+    #[test]
+    fn test_numeric_div_by_zero() {
+        let a = box_long(10);
+        let b = box_long(0);
+        let result = unsafe { jit_runtime_numeric_div(a, b) };
+        assert_is_error(result);
+    }
+
+    // --- Arithmetic: mod ---
+
+    #[test]
+    fn test_numeric_mod_long_float() {
+        // 85 % 43.5 = 85.0 - 1.0 * 43.5 = 41.5
+        let a = box_long(85);
+        let b = metta_to_jit(&MettaValue::Float(43.5)).to_bits();
+        let result = unsafe { jit_runtime_numeric_mod(a, b) };
+        let f = extract_float(result);
+        assert!(
+            (f - 41.5).abs() < 1e-10,
+            "Expected approximately 41.5, got {}",
+            f
+        );
+    }
+
+    #[test]
+    fn test_numeric_mod_float_long() {
+        // 85.5 % 43 = 85.5 - 1.0 * 43.0 = 42.5
+        let a = metta_to_jit(&MettaValue::Float(85.5)).to_bits();
+        let b = box_long(43);
+        let result = unsafe { jit_runtime_numeric_mod(a, b) };
+        let f = extract_float(result);
+        assert!(
+            (f - 42.5).abs() < 1e-10,
+            "Expected approximately 42.5, got {}",
+            f
+        );
+    }
+
+    #[test]
+    fn test_numeric_mod_by_zero() {
+        let a = box_long(10);
+        let b = box_long(0);
+        let result = unsafe { jit_runtime_numeric_mod(a, b) };
+        assert_is_error(result);
+    }
+
+    // --- Unary: neg ---
+
+    #[test]
+    fn test_numeric_neg_long() {
+        let a = box_long(5);
+        let result = unsafe { jit_runtime_numeric_neg(a) };
+        assert_eq!(extract_long_signed(result), -5);
+    }
+
+    #[test]
+    fn test_numeric_neg_float() {
+        let a = metta_to_jit(&MettaValue::Float(3.14)).to_bits();
+        let result = unsafe { jit_runtime_numeric_neg(a) };
+        let f = extract_float(result);
+        assert!(
+            (f - (-3.14)).abs() < f64::EPSILON,
+            "Expected -3.14, got {}",
+            f
+        );
+    }
+
+    // --- Unary: abs ---
+
+    #[test]
+    fn test_numeric_abs_negative_long() {
+        let a = box_long(-7);
+        let result = unsafe { jit_runtime_numeric_abs(a) };
+        assert_eq!(extract_long_signed(result), 7);
+    }
+
+    #[test]
+    fn test_numeric_abs_float() {
+        let a = metta_to_jit(&MettaValue::Float(-2.5)).to_bits();
+        let result = unsafe { jit_runtime_numeric_abs(a) };
+        let f = extract_float(result);
+        assert!((f - 2.5).abs() < f64::EPSILON, "Expected 2.5, got {}", f);
+    }
+
+    // --- Comparison: lt ---
+
+    #[test]
+    fn test_numeric_lt_long_float() {
+        // Long(1) < Float(2.5) -> true
+        let a = box_long(1);
+        let b = metta_to_jit(&MettaValue::Float(2.5)).to_bits();
+        let result = unsafe { jit_runtime_numeric_lt(a, b) };
+        assert!(extract_bool(result), "Expected Long(1) < Float(2.5) = true");
+    }
+
+    #[test]
+    fn test_numeric_lt_float_long() {
+        // Float(3.0) < Long(2) -> false
+        let a = metta_to_jit(&MettaValue::Float(3.0)).to_bits();
+        let b = box_long(2);
+        let result = unsafe { jit_runtime_numeric_lt(a, b) };
+        assert!(
+            !extract_bool(result),
+            "Expected Float(3.0) < Long(2) = false"
+        );
+    }
+
+    // --- Comparison: le ---
+
+    #[test]
+    fn test_numeric_le_equal_mixed() {
+        // Long(2) <= Float(2.0) -> true
+        let a = box_long(2);
+        let b = metta_to_jit(&MettaValue::Float(2.0)).to_bits();
+        let result = unsafe { jit_runtime_numeric_le(a, b) };
+        assert!(
+            extract_bool(result),
+            "Expected Long(2) <= Float(2.0) = true"
+        );
+    }
+
+    // --- Comparison: gt ---
+
+    #[test]
+    fn test_numeric_gt_float_float() {
+        // Float(3.0) > Float(2.0) -> true
+        let a = metta_to_jit(&MettaValue::Float(3.0)).to_bits();
+        let b = metta_to_jit(&MettaValue::Float(2.0)).to_bits();
+        let result = unsafe { jit_runtime_numeric_gt(a, b) };
+        assert!(
+            extract_bool(result),
+            "Expected Float(3.0) > Float(2.0) = true"
+        );
+    }
+
+    // --- Comparison: ge ---
+
+    #[test]
+    fn test_numeric_ge_equal_mixed() {
+        // Float(5.0) >= Long(5) -> true
+        let a = metta_to_jit(&MettaValue::Float(5.0)).to_bits();
+        let b = box_long(5);
+        let result = unsafe { jit_runtime_numeric_ge(a, b) };
+        assert!(
+            extract_bool(result),
+            "Expected Float(5.0) >= Long(5) = true"
+        );
+    }
+
+    // --- Equality ---
+
+    #[test]
+    fn test_numeric_eq_long_float() {
+        // Long(2) == Float(2.0) -> true (KEY FIX: cross-type numeric equality)
+        let a = box_long(2);
+        let b = metta_to_jit(&MettaValue::Float(2.0)).to_bits();
+        let result = unsafe { jit_runtime_numeric_eq(a, b) };
+        assert!(
+            extract_bool(result),
+            "Expected Long(2) == Float(2.0) = true"
+        );
+    }
+
+    #[test]
+    fn test_numeric_eq_different() {
+        // Long(2) == Float(2.5) -> false
+        let a = box_long(2);
+        let b = metta_to_jit(&MettaValue::Float(2.5)).to_bits();
+        let result = unsafe { jit_runtime_numeric_eq(a, b) };
+        assert!(
+            !extract_bool(result),
+            "Expected Long(2) == Float(2.5) = false"
+        );
+    }
+
+    #[test]
+    fn test_numeric_eq_nan() {
+        // Float(NAN) == Float(NAN) -> false (IEEE 754)
+        let a = metta_to_jit(&MettaValue::Float(f64::NAN)).to_bits();
+        let b = metta_to_jit(&MettaValue::Float(f64::NAN)).to_bits();
+        let result = unsafe { jit_runtime_numeric_eq(a, b) };
+        assert!(
+            !extract_bool(result),
+            "Expected Float(NAN) == Float(NAN) = false per IEEE 754"
+        );
+    }
+
+    // =========================================================================
+    // JIT Type Error Flag Tests
+    // =========================================================================
+
+    #[test]
+    fn test_type_error_flag_initially_clear() {
+        // Flag should be clear by default
+        assert!(!check_and_clear_jit_type_error());
+    }
+
+    #[test]
+    fn test_type_error_flag_signal_and_clear() {
+        signal_jit_type_error();
+        assert!(check_and_clear_jit_type_error(), "Flag should be set after signal");
+        assert!(!check_and_clear_jit_type_error(), "Flag should be cleared after check");
+    }
+
+    #[test]
+    fn test_numeric_add_type_error_sets_flag() {
+        // Clear any stale flag state
+        let _ = check_and_clear_jit_type_error();
+
+        // Atom + Long should trigger type error flag
+        let a = metta_to_jit(&MettaValue::sym("A")).to_bits();
+        let b = box_long(0);
+        unsafe { jit_runtime_numeric_add(a, b) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_add with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_sub_type_error_sets_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = box_long(0);
+        let b = metta_to_jit(&MettaValue::sym("B")).to_bits();
+        unsafe { jit_runtime_numeric_sub(a, b) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_sub with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_mul_type_error_sets_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = metta_to_jit(&MettaValue::sym("X")).to_bits();
+        let b = box_long(5);
+        unsafe { jit_runtime_numeric_mul(a, b) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_mul with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_div_type_error_sets_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = metta_to_jit(&MettaValue::sym("Y")).to_bits();
+        let b = box_long(1);
+        unsafe { jit_runtime_numeric_div(a, b) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_div with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_mod_type_error_sets_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = box_long(10);
+        let b = metta_to_jit(&MettaValue::sym("Z")).to_bits();
+        unsafe { jit_runtime_numeric_mod(a, b) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_mod with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_neg_type_error_sets_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = metta_to_jit(&MettaValue::sym("N")).to_bits();
+        unsafe { jit_runtime_numeric_neg(a) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_neg with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_abs_type_error_sets_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = metta_to_jit(&MettaValue::sym("M")).to_bits();
+        unsafe { jit_runtime_numeric_abs(a) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_abs with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_lt_type_error_sets_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = metta_to_jit(&MettaValue::sym("A")).to_bits();
+        let b = box_long(0);
+        unsafe { jit_runtime_numeric_lt(a, b) };
+        assert!(check_and_clear_jit_type_error(),
+            "numeric_lt with Atom should set type error flag");
+    }
+
+    #[test]
+    fn test_numeric_add_valid_does_not_set_flag() {
+        let _ = check_and_clear_jit_type_error();
+        let a = box_long(1);
+        let b = box_long(2);
+        let result = unsafe { jit_runtime_numeric_add(a, b) };
+        assert!(!check_and_clear_jit_type_error(),
+            "numeric_add with valid Long operands should NOT set type error flag");
+        assert_eq!(extract_long_signed(result), 3);
     }
 }

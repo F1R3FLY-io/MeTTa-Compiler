@@ -367,14 +367,29 @@ impl GroundedOperation for ModOp {
                             }
                         }
                     }
+                    (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+                        if *y == 0.0 {
+                            return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
+                        }
+                        results.push((MettaValue::Float(x % y), None));
+                    }
+                    (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                        if *y == 0.0 {
+                            return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
+                        }
+                        results.push((MettaValue::Float(*x as f64 % y), None));
+                    }
+                    (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                        if *y == 0 {
+                            return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
+                        }
+                        results.push((MettaValue::Float(x % *y as f64), None));
+                    }
                     _ => {
                         return Err(ExecError::Runtime(format!(
-                            "Cannot perform '%': expected Number (integer), got {}",
-                            friendly_type_name(if !matches!(a.inner(), MettaValueInner::Long(_)) {
-                                a
-                            } else {
-                                b
-                            })
+                            "Cannot perform '%': expected Number, got {} and {}",
+                            friendly_type_name(a),
+                            friendly_type_name(b)
                         )))
                     }
                 }

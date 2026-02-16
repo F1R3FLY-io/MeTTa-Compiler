@@ -206,16 +206,33 @@ where
                                     });
                                 }
                                 GenericGroundedWork::Error(e) => {
-                                    let error_value = match e {
-                                        ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
-                                        ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                                        ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
-                                        ExecError::NoReduce => ctx.factory().error("NoReduce", ctx.factory().atom("EvalError")),
-                                    };
-                                    work_stack.push(GenericWorkItem::Resume {
-                                        cont_id,
-                                        result: (vec![error_value], env),
-                                    });
+                                    match e {
+                                        ExecError::NoReduce => {
+                                            // MeTTa HE semantics: return the original expression unreduced
+                                            let mut expr_parts = Vec::with_capacity(1 + state.args.len());
+                                            expr_parts.push(ctx.factory().atom(&state.op_name));
+                                            for arg in state.args.iter() {
+                                                expr_parts.push(arg.clone());
+                                            }
+                                            let unreduced = ctx.factory().sexpr(expr_parts);
+                                            work_stack.push(GenericWorkItem::Resume {
+                                                cont_id,
+                                                result: (vec![unreduced], env),
+                                            });
+                                        }
+                                        _ => {
+                                            let error_value = match e {
+                                                ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
+                                                ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
+                                                ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
+                                                ExecError::NoReduce => unreachable!(),
+                                            };
+                                            work_stack.push(GenericWorkItem::Resume {
+                                                cont_id,
+                                                result: (vec![error_value], env),
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         } else {
@@ -1326,16 +1343,33 @@ fn process_continuation_generic<C: EvalContext>(
                         });
                     }
                     GenericGroundedWork::Error(e) => {
-                        let error_value = match e {
-                            ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
-                            ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                            ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
-                            ExecError::NoReduce => ctx.factory().error("NoReduce", ctx.factory().atom("EvalError")),
-                        };
-                        work_stack.push(GenericWorkItem::Resume {
-                            cont_id: parent_cont,
-                            result: (vec![error_value], result_env),
-                        });
+                        match e {
+                            ExecError::NoReduce => {
+                                // MeTTa HE semantics: return the original expression unreduced
+                                let mut expr_parts = Vec::with_capacity(1 + state.args.len());
+                                expr_parts.push(ctx.factory().atom(&state.op_name));
+                                for arg in state.args.iter() {
+                                    expr_parts.push(arg.clone());
+                                }
+                                let unreduced = ctx.factory().sexpr(expr_parts);
+                                work_stack.push(GenericWorkItem::Resume {
+                                    cont_id: parent_cont,
+                                    result: (vec![unreduced], result_env),
+                                });
+                            }
+                            _ => {
+                                let error_value = match e {
+                                    ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
+                                    ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
+                                    ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
+                                    ExecError::NoReduce => unreachable!(),
+                                };
+                                work_stack.push(GenericWorkItem::Resume {
+                                    cont_id: parent_cont,
+                                    result: (vec![error_value], result_env),
+                                });
+                            }
+                        }
                     }
                 }
             } else {

@@ -814,6 +814,57 @@ impl PartialEq for MettaValueInner {
 impl Eq for MettaValue {}
 impl Eq for MettaValueInner {}
 
+/// MeTTa HE-compatible numeric equality with type promotion.
+///
+/// Long(2) == Float(2.0) -> true. Promotes Long->f64 when comparing
+/// mixed numeric types, using epsilon tolerance for float comparison.
+/// Non-numeric types fall back to structural PartialEq.
+pub fn numeric_equal(a: &MettaValue, b: &MettaValue) -> bool {
+    match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+        // Long == Long: exact integer comparison
+        (Some(x), _, Some(y), _) => x == y,
+        // Float == Float: epsilon tolerance
+        (_, Some(x), _, Some(y)) => float_equal(x, y),
+        // Long == Float: promote Long to f64
+        (Some(x), _, _, Some(y)) => float_equal(x as f64, y),
+        // Float == Long: promote Long to f64
+        (_, Some(x), Some(y), _) => float_equal(x, y as f64),
+        // Non-numeric: structural PartialEq
+        _ => a == b,
+    }
+}
+
+/// MeTTa HE-compatible numeric inequality.
+pub fn numeric_not_equal(a: &MettaValue, b: &MettaValue) -> bool {
+    !numeric_equal(a, b)
+}
+
+/// Generic numeric equality for use with MettaValueTrait.
+pub fn numeric_equal_generic<V: MettaValueTrait + PartialEq>(a: &V, b: &V) -> bool {
+    match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+        (Some(x), _, Some(y), _) => x == y,
+        (_, Some(x), _, Some(y)) => float_equal(x, y),
+        (Some(x), _, _, Some(y)) => float_equal(x as f64, y),
+        (_, Some(x), Some(y), _) => float_equal(x, y as f64),
+        _ => a == b,
+    }
+}
+
+/// IEEE 754-aware float comparison with epsilon tolerance.
+///
+/// Special cases:
+/// - NaN != NaN (IEEE 754 semantics)
+/// - 0.0 == -0.0 (IEEE 754 semantics)
+/// - For non-NaN values, uses f64::EPSILON tolerance
+#[inline]
+fn float_equal(x: f64, y: f64) -> bool {
+    // NaN != NaN per IEEE 754
+    if x.is_nan() || y.is_nan() {
+        return false;
+    }
+    (x - y).abs() < f64::EPSILON
+}
+
 impl std::hash::Hash for MettaValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Delegate to the MettaValueTrait::hash_value() method which provides
@@ -2499,5 +2550,122 @@ mod tests {
         let v_copy = v; // Copy, same pointer
         // Both should be equal via pointer comparison fast path
         assert_eq!(v, v_copy);
+    }
+
+    // ========================================================================
+    // Numeric Equality Tests (numeric_equal, numeric_not_equal,
+    //                         numeric_equal_generic, float_equal)
+    // ========================================================================
+
+    #[test]
+    fn test_numeric_equal_long_long() {
+        let a = MettaValue::Long(2);
+        let b = MettaValue::Long(2);
+        let c = MettaValue::Long(3);
+        assert!(numeric_equal(&a, &b), "Long(2) == Long(2) should be true");
+        assert!(!numeric_equal(&a, &c), "Long(2) == Long(3) should be false");
+    }
+
+    #[test]
+    fn test_numeric_equal_float_float() {
+        let a = MettaValue::Float(2.0);
+        let b = MettaValue::Float(2.0);
+        let c = MettaValue::Float(3.0);
+        assert!(numeric_equal(&a, &b), "Float(2.0) == Float(2.0) should be true");
+        assert!(!numeric_equal(&a, &c), "Float(2.0) == Float(3.0) should be false");
+    }
+
+    #[test]
+    fn test_numeric_equal_long_float() {
+        // This is the key MeTTa HE fix: cross-type numeric equality
+        let a = MettaValue::Long(2);
+        let b = MettaValue::Float(2.0);
+        let c = MettaValue::Float(2.5);
+        assert!(numeric_equal(&a, &b), "Long(2) == Float(2.0) should be true (MeTTa HE cross-type fix)");
+        assert!(!numeric_equal(&a, &c), "Long(2) == Float(2.5) should be false");
+    }
+
+    #[test]
+    fn test_numeric_equal_float_long() {
+        // Symmetric case: Float on left, Long on right
+        let a = MettaValue::Float(2.0);
+        let b = MettaValue::Long(2);
+        let c = MettaValue::Long(3);
+        assert!(numeric_equal(&a, &b), "Float(2.0) == Long(2) should be true (symmetric)");
+        assert!(!numeric_equal(&MettaValue::Float(2.5), &MettaValue::Long(2)),
+            "Float(2.5) == Long(2) should be false");
+        assert!(!numeric_equal(&a, &c), "Float(2.0) == Long(3) should be false");
+    }
+
+    #[test]
+    fn test_numeric_equal_non_numeric_structural() {
+        // Non-numeric types fall through to structural PartialEq
+        let foo1 = MettaValue::Atom("foo");
+        let foo2 = MettaValue::Atom("foo");
+        let bar = MettaValue::Atom("bar");
+        let t1 = MettaValue::Bool(true);
+        let t2 = MettaValue::Bool(true);
+
+        assert!(numeric_equal(&foo1, &foo2), "Atom(\"foo\") == Atom(\"foo\") should be true (structural)");
+        assert!(!numeric_equal(&foo1, &bar), "Atom(\"foo\") == Atom(\"bar\") should be false (structural)");
+        assert!(numeric_equal(&t1, &t2), "Bool(true) == Bool(true) should be true (structural)");
+    }
+
+    #[test]
+    fn test_numeric_equal_cross_type_non_numeric() {
+        // Cross-type comparisons between non-numeric types and numeric types
+        let foo = MettaValue::Atom("foo");
+        let one_long = MettaValue::Long(1);
+        let t = MettaValue::Bool(true);
+
+        assert!(!numeric_equal(&foo, &one_long), "Atom(\"foo\") == Long(1) should be false");
+        assert!(!numeric_equal(&t, &one_long), "Bool(true) == Long(1) should be false");
+    }
+
+    #[test]
+    fn test_numeric_not_equal_basic() {
+        let a = MettaValue::Long(2);
+        let b = MettaValue::Float(2.0);
+        let c = MettaValue::Long(3);
+
+        assert!(!numeric_not_equal(&a, &b),
+            "numeric_not_equal(Long(2), Float(2.0)) should be false (they are equal)");
+        assert!(numeric_not_equal(&a, &c),
+            "numeric_not_equal(Long(2), Long(3)) should be true (they are not equal)");
+    }
+
+    #[test]
+    fn test_numeric_equal_ieee754_nan() {
+        // IEEE 754: NaN != NaN
+        let nan1 = MettaValue::Float(f64::NAN);
+        let nan2 = MettaValue::Float(f64::NAN);
+        assert!(!numeric_equal(&nan1, &nan2),
+            "Float(NaN) == Float(NaN) should be false per IEEE 754");
+    }
+
+    #[test]
+    fn test_numeric_equal_ieee754_zero() {
+        // IEEE 754: +0.0 == -0.0
+        let pos_zero = MettaValue::Float(0.0);
+        let neg_zero = MettaValue::Float(-0.0);
+        let long_zero = MettaValue::Long(0);
+
+        assert!(numeric_equal(&pos_zero, &neg_zero),
+            "Float(0.0) == Float(-0.0) should be true per IEEE 754");
+        assert!(numeric_equal(&long_zero, &pos_zero),
+            "Long(0) == Float(0.0) should be true");
+    }
+
+    #[test]
+    fn test_numeric_equal_generic_works() {
+        // Test the generic version with MettaValue (same trait bound)
+        let a = MettaValue::Long(2);
+        let b = MettaValue::Float(2.0);
+        let c = MettaValue::Long(3);
+
+        assert!(numeric_equal_generic(&a, &b),
+            "numeric_equal_generic: Long(2) == Float(2.0) should be true");
+        assert!(!numeric_equal_generic(&a, &c),
+            "numeric_equal_generic: Long(2) == Long(3) should be false");
     }
 }

@@ -155,7 +155,7 @@ fn invalid_arithmetic_programs() -> impl Strategy<Value = String> {
                 (number, symbol)
             };
 
-            format!("!(({} {} {}))", op, lhs, rhs)
+            format!("!({} {} {})", op, lhs, rhs)
         })
 }
 
@@ -170,10 +170,10 @@ fn invalid_arithmetic_arity_programs() -> impl Strategy<Value = String> {
             literal.clone(),
             literal.clone(),
         )
-            .prop_map(|(op, a, b, c)| format!("!(({} {} {} {}))", op, a, b, c)),
+            .prop_map(|(op, a, b, c)| format!("!({} {} {} {})", op, a, b, c)),
         // Examples: (+ + 3 3), (- * 5 8), ...
         (any::<ArithOp>(), any::<ArithOp>(), literal.clone(), literal)
-            .prop_map(|(outer, inner, a, b)| format!("!(({} {} {} {}))", outer, inner, a, b)),
+            .prop_map(|(outer, inner, a, b)| format!("!({} {} {} {})", outer, inner, a, b)),
     ]
 }
 
@@ -225,7 +225,7 @@ fn invalid_strict_comparison_programs() -> impl Strategy<Value = String> {
             };
 
             let condition = op.to_condition_source(&lhs, &rhs);
-            format!("!((if {} (+ 3 2) B))", condition)
+            format!("!(if {} (+ 3 2) B)", condition)
         })
 }
 
@@ -251,15 +251,16 @@ proptest! {
         let outputs = result.output();
         prop_assert_eq!(outputs.len(), 1);
 
-        if let Some((message, detail)) = outputs[0].as_error() {
-            prop_assert!(message.contains("Cannot perform"),
-                "expected 'Cannot perform' in error message, got: {}", message);
-            prop_assert!(message.contains("Atom"),
-                "expected 'Atom' in error message, got: {}", message);
-            prop_assert_eq!(detail, MettaValue::Atom("TypeError"));
-        } else {
-            prop_assert!(false, "expected Error(TypeError), got {:?}", outputs[0]);
-        }
+        // MeTTa HE semantics: type mismatch produces unreduced expression, not error
+        // The output should be an SExpr containing the unreduced (op arg1 arg2)
+        let sexpr = outputs[0].as_sexpr();
+        prop_assert!(sexpr.is_some(), "Expected unreduced expression, got {:?}", outputs[0]);
+        let sexpr = sexpr.expect("checked above");
+        // The unreduced expression should be (op arg1 arg2)
+        prop_assert_eq!(sexpr.len(), 3, "Expected unreduced 3-element expression, got {:?}", outputs[0]);
+        // Head should be the arithmetic operator atom
+        prop_assert!(sexpr[0].as_atom().is_some(),
+            "Expected operator atom, got {:?}", sexpr[0]);
     }
 
     #[test]
@@ -272,15 +273,12 @@ proptest! {
         let outputs = result.output();
         prop_assert_eq!(outputs.len(), 1);
 
-        if let Some((message, detail)) = outputs[0].as_error() {
-            prop_assert!(message.contains("Cannot compare"),
-                "expected 'Cannot compare' in error message, got: {}", message);
-            prop_assert!(message.contains("Atom"),
-                "expected 'Atom' in error message, got: {}", message);
-            prop_assert_eq!(detail, MettaValue::Atom("TypeError"));
-        } else {
-            prop_assert!(false, "expected Error(TypeError), got {:?}", outputs[0]);
-        }
+        // MeTTa HE semantics: comparison type mismatch produces unreduced expression.
+        // The `if` form receives an unreduced comparison as its condition
+        // (e.g., (< A 0)), which is not a boolean, so the overall expression
+        // remains unreduced rather than producing an Error.
+        prop_assert!(outputs[0].as_error().is_none(),
+            "Expected non-error (unreduced expression), got error: {:?}", outputs[0]);
     }
 
     #[test]
@@ -312,4 +310,102 @@ proptest! {
         prop_assert_eq!(outputs.len(), 1);
         prop_assert_eq!(outputs[0], case.expected);
     }
+}
+
+// =============================================================================
+// Non-proptest: end-to-end type error → unreduced expression tests
+// =============================================================================
+
+/// Verify that each arithmetic op with non-numeric args returns the unreduced expression.
+/// Tests both symbol-on-lhs and symbol-on-rhs.
+#[test]
+fn test_type_error_returns_unreduced_all_ops() {
+    for op in ["+", "-", "*", "/", "%"] {
+        // Symbol on LHS: !(op A 0)
+        let src = format!("!({} A 0)", op);
+        let compiled = compile(&src).expect(&format!("compile failed for {}", src));
+        let result = run_state(new_env(), &compiled).expect(&format!("eval failed for {}", src));
+        // Clone outputs immediately to release MutexGuard — holding it across
+        // compile() calls deadlocks with the GC root registry (ROOT_REGISTRY
+        // write lock vs output Mutex).
+        let outputs: Vec<MettaValue> = result.output().to_vec();
+        assert_eq!(outputs.len(), 1, "op={} lhs: expected 1 output, got {}", op, outputs.len());
+        let sexpr = outputs[0].as_sexpr().expect(&format!(
+            "op={} lhs: expected unreduced SExpr, got {:?}", op, outputs[0]
+        ));
+        assert_eq!(sexpr.len(), 3, "op={} lhs: expected 3-element unreduced expr, got {:?}", op, sexpr);
+        assert_eq!(sexpr[0].as_atom(), Some(op), "op={} lhs: head should be operator", op);
+
+        // Symbol on RHS: !(op 0 A)
+        let src = format!("!({} 0 A)", op);
+        let compiled = compile(&src).expect(&format!("compile failed for {}", src));
+        let result = run_state(new_env(), &compiled).expect(&format!("eval failed for {}", src));
+        let outputs: Vec<MettaValue> = result.output().to_vec();
+        assert_eq!(outputs.len(), 1, "op={} rhs: expected 1 output, got {}", op, outputs.len());
+        let sexpr = outputs[0].as_sexpr().expect(&format!(
+            "op={} rhs: expected unreduced SExpr, got {:?}", op, outputs[0]
+        ));
+        assert_eq!(sexpr.len(), 3, "op={} rhs: expected 3-element unreduced expr, got {:?}", op, sexpr);
+        assert_eq!(sexpr[0].as_atom(), Some(op), "op={} rhs: head should be operator", op);
+    }
+}
+
+/// Verify that comparison ops with non-numeric args return unreduced expressions.
+#[test]
+fn test_comparison_type_error_returns_unreduced() {
+    for op in ["<", "<=", ">", ">="] {
+        let src = format!("!({} A 0)", op);
+        let compiled = compile(&src).expect(&format!("compile failed for {}", src));
+        let result = run_state(new_env(), &compiled).expect(&format!("eval failed for {}", src));
+        let outputs: Vec<MettaValue> = result.output().to_vec();
+        assert_eq!(outputs.len(), 1, "op={}: expected 1 output, got {}", op, outputs.len());
+        let sexpr = outputs[0].as_sexpr().expect(&format!(
+            "op={}: expected unreduced SExpr, got {:?}", op, outputs[0]
+        ));
+        assert_eq!(sexpr.len(), 3, "op={}: expected 3-element unreduced expr, got {:?}", op, sexpr);
+        assert_eq!(sexpr[0].as_atom(), Some(op), "op={}: head should be operator", op);
+    }
+}
+
+/// Verify that genuine errors (division by zero, overflow) still produce Error values.
+#[test]
+fn test_genuine_errors_still_error() {
+    // Division by zero
+    let compiled = compile("!(/ 1 0)").expect("compile");
+    let result = run_state(new_env(), &compiled).expect("eval");
+    let outputs: Vec<MettaValue> = result.output().to_vec();
+    assert_eq!(outputs.len(), 1);
+    assert!(outputs[0].as_error().is_some(),
+        "Division by zero should produce Error, got {:?}", outputs[0]);
+
+    // Modulo by zero
+    let compiled = compile("!(% 1 0)").expect("compile");
+    let result = run_state(new_env(), &compiled).expect("eval");
+    let outputs: Vec<MettaValue> = result.output().to_vec();
+    assert_eq!(outputs.len(), 1);
+    assert!(outputs[0].as_error().is_some(),
+        "Modulo by zero should produce Error, got {:?}", outputs[0]);
+}
+
+/// Verify that equality/inequality with mixed types still returns False/True (not unreduced).
+#[test]
+fn test_equality_mixed_types_not_unreduced() {
+    // == with Atom vs Long should return False (not unreduced)
+    let compiled = compile("!(== A 0)").expect("compile");
+    let result = run_state(new_env(), &compiled).expect("eval");
+    let outputs: Vec<MettaValue> = result.output().to_vec();
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bool(), Some(false),
+        "== with mixed types should return False, got {:?}", outputs[0]);
+
+    // != with Atom vs Long should return True
+    // Note: We use (not (== ...)) instead of (!= ...) because the custom
+    // parser treats `!` as a prefix operator, so `!(!= A 0)` parses as
+    // `!(! (= A 0))` rather than the intended `!(!= A 0)`.
+    let compiled = compile("!(not (== A 0))").expect("compile");
+    let result = run_state(new_env(), &compiled).expect("eval");
+    let outputs: Vec<MettaValue> = result.output().to_vec();
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bool(), Some(true),
+        "!= with mixed types should return True, got {:?}", outputs[0]);
 }

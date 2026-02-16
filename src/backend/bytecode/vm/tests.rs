@@ -7087,3 +7087,191 @@ fn test_vm_eq_same_variable() {
     let results = vm.run().expect("VM should succeed");
     assert_eq!(results[0], MettaValue::Bool(true));
 }
+
+// =========================================================================
+// Mixed-type equality, inequality, modulo, and StructEq regression tests
+// =========================================================================
+
+/// Long(2) == Float(2.0) should be true (numeric promotion via `numeric_equal_generic`).
+#[test]
+fn test_vm_eq_long_float_same_value() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 2); // Long(2)
+    let idx = builder.add_constant(MettaValue::Float(2.0));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(2.0)
+    builder.emit(Opcode::Eq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+}
+
+/// Float(2.0) == Long(2) should be true (operand order reversed).
+#[test]
+fn test_vm_eq_float_long_same_value() {
+    let mut builder = ChunkBuilder::new("test");
+    let idx = builder.add_constant(MettaValue::Float(2.0));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(2.0)
+    builder.emit_byte(Opcode::PushLongSmall, 2); // Long(2)
+    builder.emit(Opcode::Eq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+}
+
+/// Long(2) == Float(2.5) should be false (different numeric values).
+#[test]
+fn test_vm_eq_long_float_different_value() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 2); // Long(2)
+    let idx = builder.add_constant(MettaValue::Float(2.5));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(2.5)
+    builder.emit(Opcode::Eq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(false));
+}
+
+/// Float(3.14) == Float(3.14) should be true (same float values).
+#[test]
+fn test_vm_eq_float_float_same() {
+    let mut builder = ChunkBuilder::new("test");
+    let idx_a = builder.add_constant(MettaValue::Float(3.14));
+    let idx_b = builder.add_constant(MettaValue::Float(3.14));
+    builder.emit_u16(Opcode::PushConstant, idx_a);
+    builder.emit_u16(Opcode::PushConstant, idx_b);
+    builder.emit(Opcode::Eq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+}
+
+/// Long(2) != Float(2.0) should be false (same numeric value after promotion).
+#[test]
+fn test_vm_ne_long_float_same_value() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 2); // Long(2)
+    let idx = builder.add_constant(MettaValue::Float(2.0));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(2.0)
+    builder.emit(Opcode::Ne);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(false));
+}
+
+/// Long(2) != Float(2.5) should be true (different numeric values).
+#[test]
+fn test_vm_ne_long_float_different_value() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 2); // Long(2)
+    let idx = builder.add_constant(MettaValue::Float(2.5));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(2.5)
+    builder.emit(Opcode::Ne);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+}
+
+/// Long(85) % Float(43.5) should be Float(41.5) (the key HE example).
+/// The VM promotes Long(85) to 85.0 then computes 85.0 % 43.5 = 41.5.
+#[test]
+fn test_vm_mod_long_float() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 85); // Long(85)
+    let idx = builder.add_constant(MettaValue::Float(43.5));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(43.5)
+    builder.emit(Opcode::Mod);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Float(41.5));
+}
+
+/// Float(85.5) % Long(43) should be Float(85.5 % 43.0) = Float(42.5).
+/// The VM promotes Long(43) to 43.0 then computes 85.5 % 43.0 = 42.5.
+#[test]
+fn test_vm_mod_float_long() {
+    let mut builder = ChunkBuilder::new("test");
+    let idx = builder.add_constant(MettaValue::Float(85.5));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(85.5)
+    builder.emit_byte(Opcode::PushLongSmall, 43); // Long(43)
+    builder.emit(Opcode::Mod);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Float(42.5));
+}
+
+/// Float(10.5) % Float(3.0) should be Float(1.5).
+#[test]
+fn test_vm_mod_float_float() {
+    let mut builder = ChunkBuilder::new("test");
+    let idx_a = builder.add_constant(MettaValue::Float(10.5));
+    let idx_b = builder.add_constant(MettaValue::Float(3.0));
+    builder.emit_u16(Opcode::PushConstant, idx_a);
+    builder.emit_u16(Opcode::PushConstant, idx_b);
+    builder.emit(Opcode::Mod);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Float(1.5));
+}
+
+/// Float(10.5) % Float(0.0) should produce a DivisionByZero error.
+#[test]
+fn test_vm_mod_float_by_zero() {
+    let mut builder = ChunkBuilder::new("test");
+    let idx_a = builder.add_constant(MettaValue::Float(10.5));
+    let idx_b = builder.add_constant(MettaValue::Float(0.0));
+    builder.emit_u16(Opcode::PushConstant, idx_a);
+    builder.emit_u16(Opcode::PushConstant, idx_b);
+    builder.emit(Opcode::Mod);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let result = vm.run();
+    assert!(matches!(result, Err(VmError::DivisionByZero)));
+}
+
+/// StructEq should NOT perform numeric promotion: Long(2) and Float(2.0) are
+/// structurally different types, so StructEq must return false.
+/// This is a regression test to ensure StructEq stays distinct from Eq.
+#[test]
+fn test_vm_struct_eq_long_float_not_equal() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 2); // Long(2)
+    let idx = builder.add_constant(MettaValue::Float(2.0));
+    builder.emit_u16(Opcode::PushConstant, idx); // Float(2.0)
+    builder.emit(Opcode::StructEq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    // StructEq: Long(2) is NOT structurally equivalent to Float(2.0)
+    assert_eq!(results[0], MettaValue::Bool(false));
+}

@@ -263,9 +263,13 @@ impl PeepholeOptimizer {
                             let removed_bytes = end - start;
                             current_delta -= removed_bytes as isize;
                             self.stats.bytes_removed += removed_bytes;
-                            // Fill offset_map for removed bytes
-                            for i in start..end {
-                                offset_map[i] = current_delta + (i - start) as isize;
+                            // offset_map[start] was already set correctly at line 252.
+                            // Removed bytes (start+1..end) collapse to the same new
+                            // position as start (the next instruction after removal).
+                            let collapse_target =
+                                start as isize + offset_map[start];
+                            for i in (start + 1)..end {
+                                offset_map[i] = collapse_target - i as isize;
                             }
                             src_offset = end;
                             patch_idx += 1;
@@ -278,9 +282,13 @@ impl PeepholeOptimizer {
                             let removed_bytes = (end - start) - 1; // We added 1 byte
                             current_delta -= removed_bytes as isize;
                             self.stats.bytes_removed += removed_bytes;
-                            // Fill offset_map for replaced bytes
-                            for i in start..end {
-                                offset_map[i] = current_delta + (i - start) as isize;
+                            // offset_map[start] was already set correctly at line 252.
+                            // Removed bytes (start+1..end) collapse to the replacement
+                            // instruction's new position.
+                            let collapse_target =
+                                start as isize + offset_map[start];
+                            for i in (start + 1)..end {
+                                offset_map[i] = collapse_target - i as isize;
                             }
                             src_offset = end;
                             patch_idx += 1;
@@ -301,9 +309,13 @@ impl PeepholeOptimizer {
                                 current_delta -= removed_bytes as isize;
                                 self.stats.bytes_removed += removed_bytes;
                             }
-                            // Fill offset_map for replaced bytes
-                            for i in start..end {
-                                offset_map[i] = current_delta + (i - start) as isize;
+                            // offset_map[start] was already set correctly at line 252.
+                            // Removed bytes (start+1..end) collapse to the replacement
+                            // start's new position.
+                            let collapse_target =
+                                start as isize + offset_map[start];
+                            for i in (start + 1)..end {
+                                offset_map[i] = collapse_target - i as isize;
                             }
                             src_offset = end;
                             patch_idx += 1;
@@ -769,21 +781,27 @@ impl PeepholeOptimizer {
         }
     }
 
-    /// Reverse lookup: given a new offset, find the original offset
+    /// Reverse lookup: given a new offset, find the original offset.
+    ///
+    /// When multiple old positions map to the same new position (e.g., a removed
+    /// byte and the next real instruction both collapse to the same new address),
+    /// we return the LAST match. The last match corresponds to the real instruction
+    /// that was preserved, while earlier matches are removed/replaced bytes whose
+    /// offsets collapsed to the same new position.
     fn reverse_offset(
         &self,
         new_offset: usize,
         offset_map: &[isize],
         original_len: usize,
     ) -> usize {
+        let mut best = new_offset; // fallback: assume no change
         for old_pos in 0..=original_len {
             let delta = offset_map.get(old_pos).copied().unwrap_or(0);
             if (old_pos as isize + delta) as usize == new_offset {
-                return old_pos;
+                best = old_pos; // keep scanning — last match wins
             }
         }
-        // Fallback: assume no change
-        new_offset
+        best
     }
 }
 

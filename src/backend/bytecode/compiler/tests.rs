@@ -2226,3 +2226,65 @@ fn test_fold_float_comparison_epsilon() {
     let disasm = chunk.disassemble();
     assert!(disasm.contains("push_true"), "float == should fold to true: {}", disasm);
 }
+
+// ========================================================================
+// Tests for compile_if with not-equal pattern (peephole Eq;Not → Ne)
+// ========================================================================
+
+#[test]
+fn test_compile_if_not_eq_emits_jump_if_false() {
+    // (if (not (== $x $y)) 1 2) — variable condition prevents constant folding
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("if".to_string()),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("not".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("==".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Atom("$y".to_string()),
+            ]),
+        ]),
+        MettaValue::Long(1),
+        MettaValue::Long(2),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // Should contain eq and not (or peephole-folded ne) and jump_if_false
+    assert!(
+        disasm.contains("jump_if_false"),
+        "Expected jump_if_false in compiled if with not-eq condition: {}",
+        disasm
+    );
+}
+
+#[test]
+fn test_compile_if_with_not_eq_literal_condition() {
+    // (if (not (== 0 1)) 42 99) — both sides are literals
+    // not(== 0 1) = not(false) = true → constant fold to just push 42
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("if".to_string()),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("not".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("==".to_string()),
+                MettaValue::Long(0),
+                MettaValue::Long(1),
+            ]),
+        ]),
+        MettaValue::Long(42),
+        MettaValue::Long(99),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // Constant folding should eliminate the branch entirely
+    assert!(
+        disasm.contains("push_long_small 42"),
+        "Expected constant fold to 42: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("push_long_small 99"),
+        "Else branch 99 should be eliminated by constant folding: {}",
+        disasm
+    );
+}

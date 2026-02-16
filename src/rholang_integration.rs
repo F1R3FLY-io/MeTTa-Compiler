@@ -1828,4 +1828,150 @@ mod tests {
             msg
         );
     }
+
+    // ==========================================================================
+    // Sub-expression diagnostic tests for the proptest failing case.
+    // Each tests a sub-expression from the failing input to pinpoint root cause.
+    // ==========================================================================
+
+    /// Helper to compile and run a MeTTa expression, returning the first output.
+    fn eval_first(src: &str) -> MettaValue {
+        let compiled = compile(src).expect("compile failed");
+        let result = run_state(new_env(), &compiled).expect("run_state failed");
+        let outputs = result.output();
+        assert!(
+            !outputs.is_empty(),
+            "Expected at least one output for: {}",
+            src
+        );
+        outputs[0]
+    }
+
+    #[test]
+    fn test_subexpr_subtraction() {
+        assert_eq!(eval_first("!(- 0 1)"), MettaValue::Long(-1));
+    }
+
+    #[test]
+    fn test_subexpr_eq_with_subtraction() {
+        assert_eq!(eval_first("!(== 0 (- 0 1))"), MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_subexpr_not_eq() {
+        assert_eq!(eval_first("!(not (== 0 (- 0 1)))"), MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_subexpr_if_not_eq_then_sub() {
+        // (not (== 0 (- 0 1))) = True → then branch (- 0 128) = -128
+        assert_eq!(
+            eval_first("!(if (not (== 0 (- 0 1))) (- 0 128) 128)"),
+            MettaValue::Long(-128)
+        );
+    }
+
+    #[test]
+    fn test_subexpr_inner_if_not_eq_01() {
+        // (not (== 0 1)) = True → then branch 1
+        assert_eq!(
+            eval_first("!(if (not (== 0 1)) 1 0)"),
+            MettaValue::Long(1)
+        );
+    }
+
+    #[test]
+    fn test_subexpr_gt_with_nested_if() {
+        assert_eq!(
+            eval_first("!(> 0 (if (not (== 0 1)) 1 0))"),
+            MettaValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn test_subexpr_eq_with_nested_if() {
+        assert_eq!(
+            eval_first("!(== 0 (if (not (== 0 1)) 1 0))"),
+            MettaValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn test_subexpr_or_false_false() {
+        assert_eq!(
+            eval_first("!(or (> 0 1) (== 0 1))"),
+            MettaValue::Bool(false)
+        );
+    }
+
+    /// The full failing expression from the proptest regression.
+    /// Uses !((expr)) — double parens — matching proptest format.
+    /// Oracle: outer or=False → else → inner if (not (== 0 -1))=True → (- 0 128) = -128
+    #[test]
+    fn test_proptest_regression_full_expression() {
+        let src = "!((if (or (> 0 (if (not (== 0 1)) 1 0)) (== 0 (if (not (== 0 1)) 1 0))) 0 (if (not (== 0 (- 0 1))) (- 0 128) 128)))";
+        assert_eq!(
+            eval_first(src),
+            MettaValue::SExpr(vec![MettaValue::Long(-128)])
+        );
+    }
+
+    // ==========================================================================
+    // Nested if + boolean combination tests
+    // ==========================================================================
+
+    #[test]
+    fn test_nested_if_and_lt_gt() {
+        // (and (< 3 5) (> 10 7)) = True → 1
+        assert_eq!(
+            eval_first("!(if (and (< 3 5) (> 10 7)) 1 0)"),
+            MettaValue::Long(1)
+        );
+    }
+
+    #[test]
+    fn test_nested_if_or_gt_lt() {
+        // (or (> 3 5) (< 10 7)) = or(False, False) = False → 0
+        assert_eq!(
+            eval_first("!(if (or (> 3 5) (< 10 7)) 1 0)"),
+            MettaValue::Long(0)
+        );
+    }
+
+    #[test]
+    fn test_nested_if_not_eq() {
+        // (not (== 0 1)) = True → 42
+        assert_eq!(
+            eval_first("!(if (not (== 0 1)) 42 99)"),
+            MettaValue::Long(42)
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_if_in_or_args() {
+        // X = (if (not (== 0 1)) 1 0) = 1
+        // (or (> 0 1) (== 0 1)) = or(False, False) = False → else branch = 99
+        assert_eq!(
+            eval_first("!(if (or (> 0 (if (not (== 0 1)) 1 0)) (== 0 (if (not (== 0 1)) 1 0))) 0 99)"),
+            MettaValue::Long(99)
+        );
+    }
+
+    #[test]
+    fn test_if_with_arithmetic_branches() {
+        // (< 5 10) = True → (+ 3 4) = 7
+        assert_eq!(
+            eval_first("!(if (< 5 10) (+ 3 4) (- 3 4))"),
+            MettaValue::Long(7)
+        );
+    }
+
+    #[test]
+    fn test_if_with_arithmetic_branches_else() {
+        // (> 5 10) = False → (- 3 4) = -1
+        assert_eq!(
+            eval_first("!(if (> 5 10) (+ 3 4) (- 3 4))"),
+            MettaValue::Long(-1)
+        );
+    }
 }

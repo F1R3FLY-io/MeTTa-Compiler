@@ -633,7 +633,10 @@ where
             Opcode::JumpIfFalse => {
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(false) {
+                // Both Bool(false) and Unit are falsy, aligning with
+                // tree-walker (generic_trampoline.rs:1891) and JIT
+                // (special_forms.rs:60) where Unit is also falsy.
+                if cond.as_bool() == Some(false) || cond.is_unit() {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -665,7 +668,8 @@ where
             Opcode::JumpIfFalseShort => {
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(false) {
+                // Both Bool(false) and Unit are falsy (consistent with JumpIfFalse).
+                if cond.as_bool() == Some(false) || cond.is_unit() {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -919,13 +923,18 @@ where
             Opcode::Eq => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                let equal = a.structurally_equivalent(&b);
+                // Use PartialEq (value equality), consistent with tree-walker.
+                // structurally_equivalent treats all variables as equal to each
+                // other (for rule dedup), which differs from PartialEq semantics.
+                // StructEq opcode retains structural equivalence for internal use.
+                let equal = a == b;
                 self.push(self.make_bool(equal));
             }
             Opcode::Ne => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                let not_equal = !a.structurally_equivalent(&b);
+                // Use PartialEq, consistent with Eq above and tree-walker.
+                let not_equal = a != b;
                 self.push(self.make_bool(not_equal));
             }
             Opcode::StructEq => {

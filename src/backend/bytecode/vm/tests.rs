@@ -7088,3 +7088,250 @@ fn test_vm_pow_negative_exponent_5a() {
     let err = result.unwrap_err();
     assert!(matches!(err, VmError::TypeError { expected: "number (Long or Float)", .. }));
 }
+
+// =============================================================================
+// Truthiness semantics tests (Bug #2 fix validation)
+// =============================================================================
+
+/// Test that Bool(true) takes the then-branch in JumpIfFalse.
+#[test]
+fn test_vm_jump_if_false_bool_true() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit(Opcode::PushTrue);
+    let else_label = builder.emit_jump(Opcode::JumpIfFalse);
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    let end_label = builder.emit_jump(Opcode::Jump);
+    builder.patch_jump(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 2); // else
+    builder.patch_jump(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Long(1)); // then branch
+}
+
+/// Test that Bool(false) takes the else-branch in JumpIfFalse.
+#[test]
+fn test_vm_jump_if_false_bool_false() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit(Opcode::PushFalse);
+    let else_label = builder.emit_jump(Opcode::JumpIfFalse);
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    let end_label = builder.emit_jump(Opcode::Jump);
+    builder.patch_jump(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 2); // else
+    builder.patch_jump(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Long(2)); // else branch
+}
+
+/// Test that Unit takes the else-branch in JumpIfFalse (Unit is falsy).
+/// This validates the Bug #2 fix: Unit should be treated as falsy, consistent
+/// with tree-walker and JIT behavior.
+#[test]
+fn test_vm_jump_if_false_unit_is_falsy() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit(Opcode::PushUnit);
+    let else_label = builder.emit_jump(Opcode::JumpIfFalse);
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    let end_label = builder.emit_jump(Opcode::Jump);
+    builder.patch_jump(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 2); // else
+    builder.patch_jump(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Long(2)); // else branch (Unit is falsy)
+}
+
+/// Test that Long(0) takes the then-branch (truthy — only Bool(false) and Unit are falsy).
+#[test]
+fn test_vm_jump_if_false_long_zero_is_truthy() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 0);
+    let else_label = builder.emit_jump(Opcode::JumpIfFalse);
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    let end_label = builder.emit_jump(Opcode::Jump);
+    builder.patch_jump(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 2); // else
+    builder.patch_jump(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Long(1)); // then branch (Long is truthy)
+}
+
+/// Test that Long(42) takes the then-branch (truthy).
+#[test]
+fn test_vm_jump_if_false_long_nonzero_is_truthy() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 42);
+    let else_label = builder.emit_jump(Opcode::JumpIfFalse);
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    let end_label = builder.emit_jump(Opcode::Jump);
+    builder.patch_jump(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 2); // else
+    builder.patch_jump(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Long(1)); // then branch
+}
+
+/// Test that an Atom value takes the then-branch (truthy).
+#[test]
+fn test_vm_jump_if_false_atom_is_truthy() {
+    let mut builder = ChunkBuilder::new("test");
+    let idx = builder.add_constant(MettaValue::Atom("hello"));
+    builder.emit_u16(Opcode::PushConstant, idx);
+    let else_label = builder.emit_jump(Opcode::JumpIfFalse);
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    let end_label = builder.emit_jump(Opcode::Jump);
+    builder.patch_jump(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 2); // else
+    builder.patch_jump(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Long(1)); // then branch
+}
+
+/// Test JumpIfFalseShort with Unit (falsy).
+#[test]
+fn test_vm_jump_if_false_short_unit_is_falsy() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit(Opcode::PushUnit);
+    let else_label = builder.emit_jump_short(Opcode::JumpIfFalseShort);
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    let end_label = builder.emit_jump_short(Opcode::JumpShort);
+    builder.patch_jump_short(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 2); // else
+    builder.patch_jump_short(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Long(2)); // else branch (Unit is falsy)
+}
+
+// =============================================================================
+// Ne opcode tests (were previously missing)
+// =============================================================================
+
+/// Test Ne opcode with equal values.
+#[test]
+fn test_vm_ne_equal_values() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 5);
+    builder.emit_byte(Opcode::PushLongSmall, 5);
+    builder.emit(Opcode::Ne);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(false));
+}
+
+/// Test Ne opcode with unequal values.
+#[test]
+fn test_vm_ne_unequal_values() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit_byte(Opcode::PushLongSmall, 5);
+    builder.emit_byte(Opcode::PushLongSmall, 10);
+    builder.emit(Opcode::Ne);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+}
+
+/// Test Ne opcode with Bool values.
+#[test]
+fn test_vm_ne_bool_values() {
+    let mut builder = ChunkBuilder::new("test");
+    builder.emit(Opcode::PushTrue);
+    builder.emit(Opcode::PushFalse);
+    builder.emit(Opcode::Ne);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+}
+
+// =============================================================================
+// Eq vs StructEq semantics tests (Bug #3 fix validation)
+// =============================================================================
+
+/// Test that Eq uses PartialEq (value equality), not structural equivalence.
+/// Two different variables should NOT be equal under Eq.
+#[test]
+fn test_vm_eq_variables_not_equal() {
+    let mut builder = ChunkBuilder::new("test");
+    // Variables are atoms starting with '$'
+    let x_idx = builder.add_constant(MettaValue::Atom("$x"));
+    let y_idx = builder.add_constant(MettaValue::Atom("$y"));
+    builder.emit_u16(Opcode::PushConstant, x_idx);
+    builder.emit_u16(Opcode::PushConstant, y_idx);
+    builder.emit(Opcode::Eq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    // PartialEq: $x != $y (different names)
+    assert_eq!(results[0], MettaValue::Bool(false));
+}
+
+/// Test that StructEq treats all variables as equivalent (for rule dedup).
+#[test]
+fn test_vm_struct_eq_variables_equal() {
+    let mut builder = ChunkBuilder::new("test");
+    let x_idx = builder.add_constant(MettaValue::Atom("$x"));
+    let y_idx = builder.add_constant(MettaValue::Atom("$y"));
+    builder.emit_u16(Opcode::PushConstant, x_idx);
+    builder.emit_u16(Opcode::PushConstant, y_idx);
+    builder.emit(Opcode::StructEq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    // structurally_equivalent: $x == $y (all variables are equivalent)
+    assert_eq!(results[0], MettaValue::Bool(true));
+}
+
+/// Test that Eq with same variable returns true.
+#[test]
+fn test_vm_eq_same_variable() {
+    let mut builder = ChunkBuilder::new("test");
+    let x_idx = builder.add_constant(MettaValue::Atom("$x"));
+    builder.emit_u16(Opcode::PushConstant, x_idx);
+    builder.emit(Opcode::Dup);
+    builder.emit(Opcode::Eq);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+}

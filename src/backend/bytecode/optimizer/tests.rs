@@ -1591,4 +1591,170 @@ mod tests {
         // Should preserve large constant indices
         assert_eq!(optimized.len(), code.len());
     }
+
+    // =========================================================================
+    // Peephole comparison folding + jump target correctness tests (Bug #1 fix)
+    // =========================================================================
+
+    /// Helper: builds code for `push A; push B; CmpOp; Not; JumpIfFalse +offset; then_val; Jump; else_val; Return`
+    /// and verifies the peephole folds CmpOp;Not and the resulting jump targets are correct.
+    fn build_cmp_not_if_code(cmp_op: Opcode, expected_folded: Opcode) -> (Vec<u8>, Vec<u8>) {
+        // Layout (all positions relative):
+        //   0: PushLongSmall A      (2 bytes)
+        //   2: PushLongSmall B      (2 bytes)
+        //   4: CmpOp                (1 byte)
+        //   5: Not                  (1 byte)
+        //   6: JumpIfFalse offset   (3 bytes, i16 BE)
+        //   9: PushLongSmall 1      (2 bytes, then-branch)
+        //  11: Jump offset2         (3 bytes)
+        //  14: PushLongSmall 2      (2 bytes, else-branch)
+        //  16: Return               (1 byte)
+        //
+        // JumpIfFalse jumps to 14 (else): offset = 14 - 9 = 5
+        // Jump jumps to 16 (return): offset = 16 - 14 = 2
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 0,    // 0-1: push 0
+            Opcode::PushLongSmall.to_byte(), 1,    // 2-3: push 1
+            cmp_op.to_byte(),                      // 4: comparison
+            Opcode::Not.to_byte(),                 // 5: negate
+            Opcode::JumpIfFalse.to_byte(), 0, 5,   // 6-8: JumpIfFalse +5 → pos 14
+            Opcode::PushLongSmall.to_byte(), 1,    // 9-10: then branch
+            Opcode::Jump.to_byte(), 0, 2,          // 11-13: Jump +2 → pos 16
+            Opcode::PushLongSmall.to_byte(), 2,    // 14-15: else branch
+            Opcode::Return.to_byte(),              // 16
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Verify the fold happened
+        assert!(stats.comparison_folded >= 1,
+            "Expected comparison folding for {:?};Not → {:?}", cmp_op, expected_folded);
+
+        // After folding: CmpOp;Not (2 bytes) → FoldedOp (1 byte), 1 byte removed
+        // New layout:
+        //   0: PushLongSmall A      (2 bytes)
+        //   2: PushLongSmall B      (2 bytes)
+        //   4: FoldedOp             (1 byte)
+        //   5: JumpIfFalse offset   (3 bytes)
+        //   8: PushLongSmall 1      (2 bytes, then-branch)
+        //  10: Jump offset2         (3 bytes)
+        //  13: PushLongSmall 2      (2 bytes, else-branch)
+        //  15: Return               (1 byte)
+        //
+        // Expected JumpIfFalse offset = 13 - 8 = 5
+        // Expected Jump offset = 15 - 13 = 2
+
+        // Verify the folded opcode is present
+        assert_eq!(optimized[4], expected_folded.to_byte(),
+            "Expected folded opcode {:?} at pos 4", expected_folded);
+
+        // Verify JumpIfFalse target is correct (should jump to else-branch)
+        assert_eq!(optimized[5], Opcode::JumpIfFalse.to_byte(),
+            "Expected JumpIfFalse at pos 5");
+        let jif_offset = i16::from_be_bytes([optimized[6], optimized[7]]);
+        // JumpIfFalse at pos 5, operand at 6-7, next instruction at 8
+        // Should jump to pos 13 (else branch): offset = 13 - 8 = 5
+        assert_eq!(jif_offset, 5,
+            "JumpIfFalse offset should be 5 (jump from 8 to 13), got {}", jif_offset);
+
+        // Verify Jump target is correct (should jump to Return)
+        assert_eq!(optimized[10], Opcode::Jump.to_byte(),
+            "Expected Jump at pos 10");
+        let jump_offset = i16::from_be_bytes([optimized[11], optimized[12]]);
+        // Jump at pos 10, operand at 11-12, next instruction at 13
+        // Should jump to pos 15 (Return): offset = 15 - 13 = 2
+        assert_eq!(jump_offset, 2,
+            "Jump offset should be 2 (jump from 13 to 15), got {}", jump_offset);
+
+        (optimized, make_code(&[]))
+    }
+
+    #[test]
+    fn test_peephole_eq_not_to_ne_jump_target() {
+        build_cmp_not_if_code(Opcode::Eq, Opcode::Ne);
+    }
+
+    #[test]
+    fn test_peephole_ne_not_to_eq_jump_target() {
+        build_cmp_not_if_code(Opcode::Ne, Opcode::Eq);
+    }
+
+    #[test]
+    fn test_peephole_lt_not_to_ge_jump_target() {
+        build_cmp_not_if_code(Opcode::Lt, Opcode::Ge);
+    }
+
+    #[test]
+    fn test_peephole_le_not_to_gt_jump_target() {
+        build_cmp_not_if_code(Opcode::Le, Opcode::Gt);
+    }
+
+    #[test]
+    fn test_peephole_gt_not_to_le_jump_target() {
+        build_cmp_not_if_code(Opcode::Gt, Opcode::Le);
+    }
+
+    #[test]
+    fn test_peephole_ge_not_to_lt_jump_target() {
+        build_cmp_not_if_code(Opcode::Ge, Opcode::Lt);
+    }
+
+    /// Test that two consecutive Eq;Not → Ne folds produce correct results.
+    /// Verifies cumulative offset tracking doesn't corrupt later jump targets.
+    #[test]
+    fn test_peephole_multiple_cmp_folds_cumulative() {
+        // Two if-else blocks back to back. Each has Eq;Not that should fold to Ne.
+        // The Add instruction between blocks prevents push-pop optimization.
+        //
+        // Block 1: push 0; push 1; Eq; Not; JumpIfFalse→else1; push 10; Jump→end1; push 20;
+        // Between: Add (combine results)
+        // Block 2: push 0; push 1; Eq; Not; JumpIfFalse→else2; push 30; Jump→end2; push 40; Return
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 0,     // 0-1
+            Opcode::PushLongSmall.to_byte(), 1,     // 2-3
+            Opcode::Eq.to_byte(),                   // 4
+            Opcode::Not.to_byte(),                  // 5
+            Opcode::JumpIfFalse.to_byte(), 0, 5,    // 6-8: → 14
+            Opcode::PushLongSmall.to_byte(), 10,    // 9-10
+            Opcode::Jump.to_byte(), 0, 2,           // 11-13: → 16
+            Opcode::PushLongSmall.to_byte(), 20,    // 14-15
+            // end1 = 16
+            Opcode::PushLongSmall.to_byte(), 0,     // 16-17
+            Opcode::PushLongSmall.to_byte(), 1,     // 18-19
+            Opcode::Eq.to_byte(),                   // 20
+            Opcode::Not.to_byte(),                  // 21
+            Opcode::JumpIfFalse.to_byte(), 0, 5,    // 22-24: → 30
+            Opcode::PushLongSmall.to_byte(), 30,    // 25-26
+            Opcode::Jump.to_byte(), 0, 2,           // 27-29: → 32
+            Opcode::PushLongSmall.to_byte(), 40,    // 30-31
+            Opcode::Return.to_byte(),               // 32
+        ]);
+
+        let original_len = code.len(); // 33 bytes
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Both comparison folds should happen
+        assert!(stats.comparison_folded >= 2,
+            "Expected at least 2 comparison folds, got {}", stats.comparison_folded);
+
+        // Code should shrink by at least 2 bytes (one per fold)
+        assert!(optimized.len() <= original_len - 2,
+            "Expected at most {} bytes, got {}", original_len - 2, optimized.len());
+
+        // Both Ne opcodes should be present
+        let ne_count = optimized.iter()
+            .filter(|&&b| b == Opcode::Ne.to_byte())
+            .count();
+        assert_eq!(ne_count, 2, "Expected 2 Ne opcodes, found {}", ne_count);
+
+        // Verify no Eq or Not opcodes remain
+        let eq_count = optimized.iter()
+            .filter(|&&b| b == Opcode::Eq.to_byte())
+            .count();
+        let not_count = optimized.iter()
+            .filter(|&&b| b == Opcode::Not.to_byte())
+            .count();
+        assert_eq!(eq_count, 0, "Expected 0 Eq opcodes after folding, found {}", eq_count);
+        assert_eq!(not_count, 0, "Expected 0 Not opcodes after folding, found {}", not_count);
+    }
 }

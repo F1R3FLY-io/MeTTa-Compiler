@@ -6437,3 +6437,133 @@ fn test_jit_swap_single_value_is_noop() {
     let result = JitValue::from_raw(result_bits as u64);
     assert_eq!(result.as_long(), 99, "Should return 99 unchanged");
 }
+
+// =============================================================================
+// JIT if/branching tests for Unit truthiness and nested conditions
+// =============================================================================
+
+/// Test JIT: if Unit then 42 else 99 → should take else (Unit is falsy in JIT).
+#[test]
+fn test_jit_execute_if_unit_takes_else() {
+    let mut compiler = JitCompiler::new().expect("Failed to create compiler");
+
+    // Layout:
+    // 0: PushUnit (1 byte)
+    // 1-3: JumpIfFalse +5 (3 bytes) → target 9 (else)
+    // 4-5: PushLongSmall 42 (then)
+    // 6-8: Jump +2 → target 11 (Return)
+    // 9-10: PushLongSmall 99 (else)
+    // 11: Return
+    let mut builder = ChunkBuilder::new("jit_if_unit");
+    builder.emit(Opcode::PushUnit);
+    builder.emit_u16(Opcode::JumpIfFalse, 5);
+    builder.emit_byte(Opcode::PushLongSmall, 42);
+    builder.emit_u16(Opcode::Jump, 2);
+    builder.emit_byte(Opcode::PushLongSmall, 99);
+    builder.emit(Opcode::Return);
+    let chunk = builder.build();
+
+    assert!(JitCompiler::can_compile_stage1(&chunk));
+
+    let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
+    let result = exec_jit(code_ptr, chunk.constants());
+
+    assert!(result.is_long(), "Expected Long result");
+    assert_eq!(result.as_long(), 99, "Unit is falsy — should take else branch");
+}
+
+/// Test JIT: nested if with comparison in condition.
+/// if (10 < 20) then (if (5 > 3) then 1 else 2) else 3
+/// → 10 < 20 = true → inner if → 5 > 3 = true → 1
+#[test]
+fn test_jit_execute_nested_if() {
+    let mut compiler = JitCompiler::new().expect("Failed to create compiler");
+
+    // Outer if:
+    //  0-1: PushLongSmall 10
+    //  2-3: PushLongSmall 20
+    //  4: Lt → true
+    //  5-7: JumpIfFalse +14 → target 22 (outer else)
+    //
+    // Inner if (then branch of outer):
+    //  8-9: PushLongSmall 5
+    //  10-11: PushLongSmall 3
+    //  12: Gt → true
+    //  13-15: JumpIfFalse +5 → target 21... wait
+    //
+    // Let me compute more carefully.
+
+    let mut builder = ChunkBuilder::new("jit_nested_if");
+
+    // Outer condition
+    builder.emit_byte(Opcode::PushLongSmall, 10);   // 0-1
+    builder.emit_byte(Opcode::PushLongSmall, 20);   // 2-3
+    builder.emit(Opcode::Lt);                        // 4
+
+    let outer_else = builder.emit_jump(Opcode::JumpIfFalse); // 5-7
+
+    // Outer then = inner if
+    builder.emit_byte(Opcode::PushLongSmall, 5);    // 8-9
+    builder.emit_byte(Opcode::PushLongSmall, 3);    // 10-11
+    builder.emit(Opcode::Gt);                        // 12
+
+    let inner_else = builder.emit_jump(Opcode::JumpIfFalse); // 13-15
+
+    // Inner then
+    builder.emit_byte(Opcode::PushLongSmall, 1);    // 16-17
+    let inner_end = builder.emit_jump(Opcode::Jump); // 18-20
+
+    // Inner else
+    builder.patch_jump(inner_else);
+    builder.emit_byte(Opcode::PushLongSmall, 2);    // 21-22
+
+    builder.patch_jump(inner_end);
+    let outer_end = builder.emit_jump(Opcode::Jump); // 23-25
+
+    // Outer else
+    builder.patch_jump(outer_else);
+    builder.emit_byte(Opcode::PushLongSmall, 3);    // 26-27
+
+    builder.patch_jump(outer_end);
+    builder.emit(Opcode::Return);                    // 28
+
+    let chunk = builder.build();
+    assert!(JitCompiler::can_compile_stage1(&chunk));
+
+    let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
+    let result = exec_jit(code_ptr, chunk.constants());
+
+    assert!(result.is_long(), "Expected Long result");
+    assert_eq!(result.as_long(), 1, "10<20=true, 5>3=true → inner then = 1");
+}
+
+/// Test JIT: if expression where condition is a comparison that uses Ne opcode.
+/// if (0 != 1) then 42 else 99 → True → 42
+#[test]
+fn test_jit_execute_ne_condition() {
+    let mut compiler = JitCompiler::new().expect("Failed to create compiler");
+
+    let mut builder = ChunkBuilder::new("jit_ne_cond");
+    builder.emit_byte(Opcode::PushLongSmall, 0);
+    builder.emit_byte(Opcode::PushLongSmall, 1);
+    builder.emit(Opcode::Ne);
+
+    let else_label = builder.emit_jump(Opcode::JumpIfFalse);
+    builder.emit_byte(Opcode::PushLongSmall, 42);
+    let end_label = builder.emit_jump(Opcode::Jump);
+
+    builder.patch_jump(else_label);
+    builder.emit_byte(Opcode::PushLongSmall, 99);
+
+    builder.patch_jump(end_label);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build();
+    assert!(JitCompiler::can_compile_stage1(&chunk));
+
+    let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
+    let result = exec_jit(code_ptr, chunk.constants());
+
+    assert!(result.is_long(), "Expected Long result");
+    assert_eq!(result.as_long(), 42, "0 != 1 is true → then branch");
+}

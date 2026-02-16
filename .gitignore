@@ -19,3 +19,5 @@ vgcore.*
 massif.*
 heaptrack.*
 tla/states/*
+
+tests/proptest/eval/arithmetics/mod.proptest-regressions

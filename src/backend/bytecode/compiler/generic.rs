@@ -762,7 +762,9 @@ where
         self.compile(&args[0])?;
         self.in_tail_position = saved_tail;
 
-        // Jump to else if false
+        // Jump to else if falsy (Bool(false) or Unit).
+        // JumpIfFalse treats both as falsy, aligning bytecode VM with
+        // tree-walker and JIT where Unit is also falsy.
         let else_jump = self.builder.emit_jump(Opcode::JumpIfFalse);
 
         // Compile then branch (in tail position if we're in tail position)

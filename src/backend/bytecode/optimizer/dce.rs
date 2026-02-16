@@ -431,7 +431,12 @@ impl DeadCodeEliminator {
         }
     }
 
-    /// Reverse lookup for DCE offset map
+    /// Reverse lookup for DCE offset map.
+    ///
+    /// Returns the FIRST matching old position. In DCE, dead regions are always
+    /// at higher old_pos values than the live instructions that map to the same
+    /// new position (because DCE removes unreachable blocks, which follow the
+    /// live entry block). So first-match gives the live instruction's position.
     fn reverse_offset_dce(
         &self,
         new_offset: usize,

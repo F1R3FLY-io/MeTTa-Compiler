@@ -292,11 +292,12 @@ Each TLA+ invariant maps to a safety property in the implementation:
 | `BumpPtrValid` | `bump_alloc()` CAS ensures sequential slot assignment |
 | `FreeSetValid` | `free_list.push(ptr)` only called on dead slots after epoch filtering |
 
-## SlabGC_Quiescent.tla — Multi-Thread Quiescent-State Protocol
+## SlabGC_Quiescent.tla — Multi-Thread Quiescent-State Protocol + Session-Based GC
 
 This model generalizes the single-thread reactive model to multi-threaded
 evaluation with lock-free coordination, quiescent-state GC triggering,
-cron-based memory pressure monitoring, and graduated backpressure.
+cron-based memory pressure monitoring, graduated backpressure, and
+**session-based GC** for targeted bulk release of per-eval session values.
 
 ### State Space
 
@@ -305,7 +306,10 @@ cron-based memory pressure monitoring, and graduated backpressure.
 | Per-thread | `threadPhase`, `threadExprs`, `stackRoots` | Thread lifecycle and stack roots |
 | Coordination | `activeEvaluators`, `gcInProgressFlag`, `gcRequested` | Lock-free EvalGuard protocol |
 | Allocator | `slotState`, `bumpPtr`, `freeSet`, `registeredRoots`, `epoch`, `slotEpoch` | Shared allocator state |
-| Pressure | `allocsSinceLastPoll`, `gcThreshold`, `backpressureLevel` | Cron monitor and backpressure |
+| Session | `slotContextId`, `threadContextId`, `nextContextId` | Per-slot/thread session context IDs |
+| Session GC | `sessionReleaseQueue`, `sessionBatch`, `sessionGcPhase`, `sessionSurviving` | Background session release thread |
+| Pressure | `allocsSinceLastPoll`, `gcThreshold`, `backpressureLevel`, `gcReachableAdvanced` | Cron monitor, backpressure, GC heartbeat |
+| Pages | `releasedPages` | Released (munmap'd) pages |
 | Snapshot | `hasGcRequest`, `snap*` (5 vars) | GC snapshot channel |
 | Response | `hasGcResponse`, `resp*` (3 vars) | GC response channel |
 | GC thread | `gcPhase`, `gcMarked` | Mark-sweep state |
@@ -314,21 +318,59 @@ cron-based memory pressure monitoring, and graduated backpressure.
 
 | Action | Models |
 |--------|--------|
-| `EvalGuardEnter_{Increment,Proceed,BackOff}` | Lock-free `EvalGuard::enter()` with retry |
-| `EvalGuardDrop` | Guard drop with stack→registered root transfer |
-| `TryQuiescentGc_{AcquireFlag,SnapshotOK,Abort}` | 3-step quiescent GC with double-check |
-| `CronMonitorPoll` | Memory pressure + backpressure computation |
-| `ProcessGcResponse` | Epoch-filtered dead slot freeing + adaptive threshold |
+| `EvalGuardEnter_{Increment,Proceed,BackOff}` | Lock-free `EvalGuard::enter()` with retry; `Proceed` assigns session context ID |
+| `EvalGuardDrop` | Guard drop with stack→registered root transfer; enqueues session for async release |
+| `TryQuiescentGc_{AcquireFlag,SnapshotOK,Abort}` | 3-step quiescent GC with double-check; mutual exclusion with session GC |
+| `SessionGc_{WaitQuiescent,AcquireFlag,AcquireFail}` | Session GC condvar wait, CAS acquire, retry |
+| `SessionGc_{TraceAndRelease,DoubleCheckFail}` | Root trace at quiescent point, abort if eval sneaks in |
+| `SessionGc_FreeSession` | Free non-surviving session values, promote survivors to persistent |
+| `CronMonitorPoll` | Memory pressure + backpressure computation, gated on GC reachability heartbeat |
+| `ProcessGcResponse` | Epoch-filtered dead slot freeing + adaptive threshold + backpressure recomputation |
 | `ContinueEval` | Tier 2 backpressure guard on re-entry |
 
-### Safety Invariants (16 total)
+### Session-Based GC Model
+
+Each top-level eval creates a session with a unique, monotonically increasing
+context ID (1..MaxContextIds). All allocations during that eval are tagged with
+the session's context ID. On eval completion (`EvalGuardDrop`), the context ID
+is enqueued for async release.
+
+The session release thread follows this lifecycle:
+
+```
+idle → WaitQuiescent (freeze batch) → AcquireFlag (CAS) → TraceAndRelease (double-check + roots) → FreeSession (per-session free) → idle
+```
+
+**Key safety mechanisms:**
+- **Batch freezing**: `sessionBatch` captures `sessionReleaseQueue` at WaitQuiescent time; new sessions added during freeing are deferred to the next cycle
+- **Monotonic IDs**: Context IDs never wrap (matching Rust's `AtomicU64`), preventing aliasing with pending releases
+- **Surviving set promotion**: Values in both `sessionSurviving` and a released session are promoted to persistent (ctx=0) rather than freed
+- **Sentinel epoch**: Freed session slots get epoch `MaxEpoch + 1` to prevent false-positive epoch filtering by future quiescent GC
+- **Mutual exclusion**: `GC_IN_PROGRESS` flag shared between quiescent GC and session GC via CAS
+
+#### TLA+ → Rust Mapping
+
+| TLA+ Variable/Action | Rust Implementation |
+|-----------------------|--------------------|
+| `slotContextId` | `SlabPage::context_ids[slot_idx]` |
+| `threadContextId` | `NEXT_CONTEXT_ID.fetch_add(1)` in `SessionGuard::new()` |
+| `sessionReleaseQueue` | `mpsc::Receiver<u32>` in `session_release_thread_main()` |
+| `sessionBatch` | `vec![first_id] + try_recv()` drain at top of loop |
+| `sessionGcPhase` | Control flow states in `session_release_thread_main()` |
+| `sessionSurviving` | `trace_surviving_set()` result |
+| `gcReachableAdvanced` | `GC_REACHABLE_COUNTER` atomic in `gc_cron.rs` |
+| `SessionGc_AcquireFlag` | `GcInProgressGuard::try_enter()` in session thread |
+| `SessionGc_FreeSession` | `release_session_with_surviving()` |
+| `ComputeBackpressure()` | `compute_backpressure_level()` in `gc_cron.rs` |
+
+### Safety Invariants (22 total)
 
 | Invariant | What It Verifies |
 |-----------|------------------|
 | `TypeOK` | All variables within bounds |
 | `NoLiveValueFreed` | No root (registered OR stack) is in "freed" state |
-| `SnapshotCapturesAllRoots` | Stack roots empty when GC snapshot is built |
-| `GcFlagConsistent` | `GC_IN_PROGRESS` → no thread in "eval" |
+| `SnapshotCapturesAllRoots` | Stack roots empty when quiescent GC snapshot is built |
+| `GcFlagConsistent` | `GC_IN_PROGRESS` (quiescent) → no thread in "eval" |
 | `ActiveCountCorrect` | Atomic counter matches actual entering+eval threads |
 | `RegisteredRootsAreAllocated` | All registered roots have "alloc" state |
 | `StackRootsAreAllocated` | All stack roots have "alloc" state |
@@ -337,33 +379,18 @@ cron-based memory pressure monitoring, and graduated backpressure.
 | `MemoryBounded` | Bump pointer within bounds |
 | `AtMostOneGcAcquire` | At most one thread in GC acquire phase |
 | `StackRootsOnlyDuringEval` | Stack roots empty outside "eval" phase |
-| `GcThresholdPositive` | Threshold ≥ minimum |
-| `BackpressureLevelBounded` | Level ∈ 0..3 |
+| `GcThresholdPositive` | Threshold >= minimum |
+| `BackpressureLevelBounded` | Level in 0..3 |
 | `GcSweepIsComplete` | **Reclamation**: sweep finds ALL dead values at snapshot time |
 | `NoLiveValueInDeadSet` | **Reclamation**: no snapshot root appears in dead set |
+| `NoStaleFreeSetEntries` | Free set entries are not on released pages |
+| `NoLiveOnReleasedPage` | No allocated value on a released page |
+| `CurrentPageNotReleased` | The current allocation page is not released |
+| `ReleasedPagesAreEmpty` | All slots on released pages are freed |
+| `ContextIdConsistency` | Allocated slots have valid context IDs |
+| `SessionGcExcludesQuiescentGc` | Mutual exclusion between GC paths on `GC_IN_PROGRESS` |
 
-#### Reclamation Completeness (GcSweepIsComplete)
-
-This invariant verifies that when GC produces a response, `respDeadSet`
-equals **exactly** the set of committed, allocated, non-root, non-free-set
-values at snapshot time:
-
-```tla+
-GcSweepIsComplete ==
-    hasGcResponse =>
-        respDeadSet = {s \in Slots :
-            /\ s < snapBumpPtr
-            /\ snapSlotState[s] = "alloc"
-            /\ s \notin snapRoots
-            /\ s \notin snapFreeSet}
-```
-
-This directly verifies that values dropped from MettaState (via
-`DropRegisteredRoot`) and values discarded by worker threads (via
-`DropStackRoot` / `EvalGuardDrop`) are identified for collection. No
-allocated value can "escape" the sweep — the dead set is exactly complete.
-
-### Liveness Properties (4 total)
+### Liveness Properties (7 total)
 
 | Property | What It Verifies |
 |----------|------------------|
@@ -371,41 +398,32 @@ allocated value can "escape" the sweep — the dead set is exactly complete.
 | `GcEventuallyTriggered` | GC requests are eventually consumed |
 | `BackpressureEventuallyRelaxes` | Backpressure cannot permanently stall threads |
 | `AllDeadValuesEventuallyFreed` | **Reclamation**: dead values eventually freed |
-
-#### Reclamation Liveness (AllDeadValuesEventuallyFreed)
-
-```tla+
-AllDeadValuesEventuallyFreed ==
-    \A s \in Slots :
-        (slotState[s] = "alloc" /\ s \notin AllLiveRoots) ~>
-            (slotState[s] = "freed" \/ \A t \in Threads : threadPhase[t] = "done")
-```
-
-This says: whenever a value becomes dead (allocated but not in any root),
-it is eventually freed by GC or the system terminates. Combined with
-`GcSweepIsComplete` (GC finds ALL dead values when it runs), this gives
-end-to-end reclamation: no permanent memory leak during operation.
+| `EmptyPagesEventuallyReleased` | Empty pages are eventually released (munmap'd) |
+| `SessionValuesEventuallyFreed` | Non-root session values eventually freed or system terminates |
+| `SessionQueueEventuallyDrained` | Pending session releases eventually processed |
 
 ### Verification Results
 
-TLC explores the full state space with `NumEvalThreads=2, MaxSlots=4,
-MaxRoots=2, MaxExprs=2`:
+#### Safety (22 invariants)
 
-- **Safety**: ~2.4 billion states generated, ~441 million distinct states,
-  all 16 invariants hold. Completed in ~30 minutes on 36 cores.
-- **Liveness**: 7 temporal property branches checked on full state graph,
-  all 4 properties hold under strong fairness.
+- **Small** (MaxSlots=3, MaxContextIds=2): 8.8M distinct states, 46 seconds, all hold
+- **Standard** (MaxSlots=4, MaxContextIds=2): 73.5M distinct states, 11 min, all hold
+
+#### Liveness (7 properties)
+
+- **Minimal** (MaxSlots=2, MaxRoots=1, MaxContextIds=2): Pending verification
 
 ## Model Checking Configuration
 
 The TLC model checker uses small constant bounds for exhaustive exploration:
 
 ```
-MaxSlots = 6      — total slots across all pages
-MaxRoots = 3      — max simultaneous root values
-MaxExprs = 3      — max expressions to evaluate
-SlotsPerPage = 3  — for SlabGC_Pages.tla
-MaxPages = 2      — for SlabGC_Pages.tla
+MaxSlots = 6         — total slots across all pages
+MaxRoots = 3         — max simultaneous root values
+MaxExprs = 3         — max expressions to evaluate
+SlotsPerPage = 3     — for SlabGC_Pages.tla
+MaxPages = 2         — for SlabGC_Pages.tla
+MaxContextIds = 2-4  — for SlabGC_Quiescent.tla (session-based GC)
 ```
 
 These bounds are small enough for exhaustive state space exploration (tens of millions of states) while large enough to exercise all interesting interleavings. The key insight is that concurrency bugs depend on the **number of interleaving points**, not on the absolute number of values — if a bug exists with 6 slots, it exists with 6,000 slots too.
@@ -414,5 +432,6 @@ The model checking wrappers are:
 - `tla/MC_SlabGC.tla` — configures TLC for `SlabGC.tla`
 - `tla/MC_SlabGC_Reactive.tla` — configures TLC for `SlabGC_Reactive.tla`
 - `tla/MC_SlabGC_Quiescent.tla` — configures TLC for `SlabGC_Quiescent.tla`
-  - `tla/SlabGC_Quiescent.cfg` — safety invariant checking (16 invariants)
-  - `tla/SlabGC_Quiescent_deadlock.cfg` — liveness + deadlock checking (4 properties)
+  - `tla/SlabGC_Quiescent.cfg` — safety invariant checking (22 invariants)
+  - `tla/SlabGC_Quiescent_small.cfg` — fast feedback safety checking
+  - `tla/SlabGC_Quiescent_deadlock.cfg` — liveness + deadlock checking (7 properties)

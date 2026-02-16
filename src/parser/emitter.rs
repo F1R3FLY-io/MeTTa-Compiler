@@ -57,54 +57,66 @@ where
     type Output = V;
 
     #[inline]
-    fn emit_atom(&mut self, text: &str, _span: Span) -> V {
-        self.factory.atom(text)
+    fn emit_atom(&mut self, text: &str, span: Span) -> V {
+        let value = self.factory.atom(text);
+        self.factory.spanned(value, span)
     }
 
     #[inline]
-    fn emit_bool(&mut self, value: bool, _span: Span) -> V {
-        self.factory.bool(value)
+    fn emit_bool(&mut self, value: bool, span: Span) -> V {
+        let v = self.factory.bool(value);
+        self.factory.spanned(v, span)
     }
 
     #[inline]
-    fn emit_string(&mut self, text: &str, _span: Span) -> V {
-        self.factory.string(text)
+    fn emit_string(&mut self, text: &str, span: Span) -> V {
+        let value = self.factory.string(text);
+        self.factory.spanned(value, span)
     }
 
     #[inline]
-    fn emit_integer(&mut self, value: i64, _span: Span) -> V {
-        self.factory.long(value)
+    fn emit_integer(&mut self, value: i64, span: Span) -> V {
+        let v = self.factory.long(value);
+        self.factory.spanned(v, span)
     }
 
     #[inline]
-    fn emit_float(&mut self, value: f64, _span: Span) -> V {
-        self.factory.float(value)
+    fn emit_float(&mut self, value: f64, span: Span) -> V {
+        let v = self.factory.float(value);
+        self.factory.spanned(v, span)
     }
 
     #[inline]
-    fn emit_sexpr(&mut self, items: Vec<V>, _span: Span) -> V {
+    fn emit_sexpr(&mut self, items: Vec<V>, span: Span) -> V {
         // Detect (quote X) and produce Quoted(X)
         if items.len() == 2 {
             if let Some(name) = items[0].as_atom() {
                 if name == "quote" {
-                    return self.factory.quote(items.into_iter().nth(1).expect("items has 2 elements"));
+                    let value = self.factory.quote(items.into_iter().nth(1).expect("items has 2 elements"));
+                    return self.factory.spanned(value, span);
                 }
             }
         }
-        self.factory.sexpr(items)
+        let value = self.factory.sexpr(items);
+        self.factory.spanned(value, span)
     }
 
     #[inline]
-    fn emit_conjunction(&mut self, items: Vec<V>, _span: Span) -> V {
-        self.factory.conjunction(items)
+    fn emit_conjunction(&mut self, items: Vec<V>, span: Span) -> V {
+        let value = self.factory.conjunction(items);
+        self.factory.spanned(value, span)
     }
 
     #[inline]
-    fn emit_prefix(&mut self, op: &str, _op_span: Span, arg: V, _full_span: Span) -> V {
+    fn emit_prefix(&mut self, op: &str, op_span: Span, arg: V, full_span: Span) -> V {
         if op == "quote" {
-            self.factory.quote(arg)
+            let value = self.factory.quote(arg);
+            self.factory.spanned(value, full_span)
         } else {
-            self.factory.sexpr(vec![self.factory.atom(op), arg])
+            let op_atom = self.factory.atom(op);
+            let op_spanned = self.factory.spanned(op_atom, op_span);
+            let value = self.factory.sexpr(vec![op_spanned, arg]);
+            self.factory.spanned(value, full_span)
         }
     }
 }

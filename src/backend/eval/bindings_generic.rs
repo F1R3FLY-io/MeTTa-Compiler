@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 /// Global counter for generating unique variable IDs in `sealed`
 static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -61,17 +61,11 @@ where
     }
 
     // Ground types pass through unchanged
-    if expr.is_bool()
-        || expr.is_long()
-        || expr.is_float()
-        || expr.is_string()
-        || expr.is_unit()
-        || expr.is_space()
-        || expr.is_state()
-        || expr.is_type()
-        || expr.is_memo()
-        || expr.is_empty()
-        || expr.is_error()
+    if matches!(expr.inner_raw(),
+        MettaValueInner::Bool(_) | MettaValueInner::Long(_) | MettaValueInner::Float(_)
+        | MettaValueInner::String(_) | MettaValueInner::Unit | MettaValueInner::Space(_)
+        | MettaValueInner::State(_) | MettaValueInner::Type(_) | MettaValueInner::Memo(_)
+        | MettaValueInner::Empty | MettaValueInner::Error(..))
     {
         return expr.clone();
     }
@@ -453,6 +447,8 @@ fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
 /// Apply bindings to a template (generic version)
 ///
 /// Replaces variables in template with their bound values.
+/// Preserves Spanned wrappers: if the template has a span, the result
+/// will be wrapped in Spanned with the same span.
 pub fn apply_bindings_generic<V, F>(template: &V, bindings: &GenericBindings<V>, factory: &F) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -463,10 +459,20 @@ where
         return template.clone();
     }
 
+    // Peel Spanned: process inner, re-wrap with same span
+    if let Some(span) = template.span() {
+        let span = *span; // Copy
+        let stripped = template.strip_one_span();
+        let result = apply_bindings_generic(&stripped, bindings, factory);
+        return factory.spanned(result, span);
+    }
+
     apply_bindings_iterative_generic(template, bindings, factory)
 }
 
-/// Iterative implementation of apply_bindings
+/// Iterative implementation of apply_bindings.
+///
+/// Precondition: `template` is not Spanned (caller peels it).
 fn apply_bindings_iterative_generic<V, F>(
     template: &V,
     bindings: &GenericBindings<V>,
@@ -490,6 +496,16 @@ where
     while let Some(work) = work_stack.pop() {
         match work {
             Work::Process(val) => {
+                // Handle Spanned children by peeling span, processing, re-wrapping.
+                // This calls apply_bindings_generic which peels one Spanned layer,
+                // then calls apply_bindings_iterative_generic on the stripped value.
+                // Safe because MettaValue has at most one Spanned layer.
+                if val.is_spanned() {
+                    let result = apply_bindings_generic(val, bindings, factory);
+                    result_stack.push(result);
+                    continue;
+                }
+
                 if let Some(name) = val.as_atom() {
                     if name.starts_with('$') {
                         if let Some(bound) = bindings.get(name) {

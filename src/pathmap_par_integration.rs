@@ -40,7 +40,7 @@ const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arit
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
     trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?value, "MeTTa value");
 
-    let par = match value.inner() {
+    let par = match value.inner {
         MettaValueInner::Atom(s) => {
             // Atoms are plain strings (no quotes)
             create_string_par(s.to_string())
@@ -185,6 +185,8 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        // Spanned: strip span wrapper and convert the inner value transparently
+        MettaValueInner::Spanned(v, _) => metta_value_to_par(v),
     };
 
     trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?par, "Par");

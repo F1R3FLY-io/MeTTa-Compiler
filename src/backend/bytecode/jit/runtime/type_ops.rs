@@ -299,6 +299,29 @@ where
                     MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                     // Quoted is transparent to get-metatype — it appears as "Expression"
                     MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
+                    // Spanned: strip span and inspect inner value
+                    MettaValueInner::Spanned(inner, _) => {
+                        // Recurse through inner — use .inner field (raw access)
+                        match inner.inner {
+                            MettaValueInner::SExpr(_) => TYPE_NAME_EXPRESSION,
+                            MettaValueInner::String(_) => TYPE_NAME_STRING,
+                            MettaValueInner::Type(_) => TYPE_NAME_TYPE,
+                            MettaValueInner::Conjunction(_) => TYPE_NAME_CONJUNCTION,
+                            MettaValueInner::Space(_) => TYPE_NAME_SPACE,
+                            MettaValueInner::State(_) => TYPE_NAME_STATE,
+                            MettaValueInner::Memo(_) => TYPE_NAME_MEMO,
+                            MettaValueInner::Empty => TYPE_NAME_EMPTY,
+                            MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
+                            MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
+                            MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
+                            MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
+                            MettaValueInner::Unit => TYPE_NAME_UNIT,
+                            MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
+                            MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
+                            // Nested Spanned: delegate to the inner MettaValue's type_name()
+                            MettaValueInner::Spanned(v, _) => v.type_name(),
+                        }
+                    }
                 }
             }
         }
@@ -338,11 +361,12 @@ unsafe fn get_type_name(val: u64) -> &'static str {
             }
         }
         TAG_PTR => {
-            let ptr = (val & PAYLOAD_MASK) as *const MettaValue;
+            // TAG_PTR payload is *const MettaValueInner (slab-allocated)
+            let ptr = (val & PAYLOAD_MASK) as *const MettaValueInner;
             if ptr.is_null() {
                 return TYPE_NAME_UNKNOWN;
             }
-            match (*ptr).inner() {
+            match &*ptr {
                 MettaValueInner::SExpr(_) => TYPE_NAME_EXPRESSION,
                 MettaValueInner::String(_) => TYPE_NAME_STRING,
                 MettaValueInner::Type(_) => TYPE_NAME_TYPE,
@@ -359,6 +383,8 @@ unsafe fn get_type_name(val: u64) -> &'static str {
                 MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                 // Quoted is transparent to get-metatype — it appears as "Expression"
                 MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
+                // Spanned: delegate to the inner MettaValue's type_name()
+                MettaValueInner::Spanned(v, _) => v.type_name(),
             }
         }
         _ => TYPE_NAME_UNKNOWN,

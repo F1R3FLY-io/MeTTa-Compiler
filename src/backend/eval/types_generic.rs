@@ -14,7 +14,7 @@
 
 use crate::backend::builtin_signatures::{get_return_type, get_signature, TypeExpr};
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 /// Infer the type of an expression (generic version)
 ///
@@ -25,123 +25,84 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
-    // Ground types have built-in types
-    if expr.is_bool() {
-        return factory.atom("Bool");
-    }
-    if expr.is_long() {
-        return factory.atom("Number");
-    }
-    if expr.is_float() {
-        return factory.atom("Number");
-    }
-    if expr.is_string() {
-        return factory.atom("String");
-    }
-    if expr.is_unit() {
-        return factory.atom("Expression");
-    }
+    match expr.inner_raw() {
+        MettaValueInner::Bool(_) => factory.atom("Bool"),
+        MettaValueInner::Long(_) | MettaValueInner::Float(_) => factory.atom("Number"),
+        MettaValueInner::String(_) => factory.atom("String"),
+        MettaValueInner::Unit => factory.atom("Expression"),
+        MettaValueInner::Type(_) => factory.atom("Type"),
+        MettaValueInner::Error(..) => factory.atom("Error"),
+        MettaValueInner::Space(_) => factory.atom("Space"),
+        MettaValueInner::State(_) => factory.atom("State"),
+        MettaValueInner::Memo(_) => factory.atom("Memo"),
+        MettaValueInner::Empty => factory.atom("Empty"),
+        MettaValueInner::Atom(name) => {
+            // Check if it's a variable (starts with $, &, or ')
+            if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
+                return factory.type_value(factory.atom(name));
+            }
 
-    // Type values have type Type
-    if expr.is_type() {
-        return factory.atom("Type");
-    }
+            // Look up type in environment - get_type returns Option<V> directly
+            if let Some(typ) = env.get_type_generic(name) {
+                return typ;
+            }
 
-    // Errors have Error type
-    if expr.is_error() {
-        return factory.atom("Error");
-    }
-
-    // Space references have Space type
-    if expr.is_space() {
-        return factory.atom("Space");
-    }
-
-    // State references have State type
-    if expr.is_state() {
-        return factory.atom("State");
-    }
-
-    // Memo tables have Memo type
-    if expr.is_memo() {
-        return factory.atom("Memo");
-    }
-
-    // Empty sentinel has Empty type
-    if expr.is_empty() {
-        return factory.atom("Empty");
-    }
-
-    // For atoms, look up in environment or return Undefined
-    if let Some(name) = expr.as_atom() {
-        // Check if it's a variable (starts with $, &, or ')
-        if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
-            // Type variable - return as-is wrapped in Type
-            return factory.type_value(factory.atom(name));
+            factory.atom("Undefined")
         }
+        MettaValueInner::SExpr(_) => {
+            let items = expr.as_sexpr().expect("matched SExpr");
+            if items.is_empty() {
+                return factory.atom("Expression");
+            }
 
-        // Look up type in environment - get_type returns Option<V> directly
-        if let Some(typ) = env.get_type_generic(name) {
-            return typ;
-        }
-
-        return factory.atom("Undefined");
-    }
-
-    // For s-expressions, try to infer from function application
-    if let Some(items) = expr.as_sexpr() {
-        if items.is_empty() {
-            return factory.atom("Expression");
-        }
-
-        // Get the operator/function
-        if let Some(op) = items.first().and_then(|v| v.as_atom()) {
-            // Check the built-in signature registry
-            if let Some(sig) = get_signature(op) {
-                if let Some(ret_type) = get_return_type(&sig.type_sig) {
-                    return type_expr_to_generic(ret_type, factory);
+            // Get the operator/function
+            if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+                // Check the built-in signature registry
+                if let Some(sig) = get_signature(op) {
+                    if let Some(ret_type) = get_return_type(&sig.type_sig) {
+                        return type_expr_to_generic(ret_type, factory);
+                    }
                 }
-            }
 
-            // Special case for arrow type constructor
-            if op == "->" {
-                return factory.atom("Type");
-            }
+                // Special case for arrow type constructor
+                if op == "->" {
+                    return factory.atom("Type");
+                }
 
-            // Look up function type in environment (user-defined types)
-            // get_type returns Option<V> directly
-            if let Some(generic_type) = env.get_type_generic(op) {
-                // Extract return type from arrow type
-                if let Some(type_items) = generic_type.as_sexpr() {
-                    if let Some(arrow) = type_items.first().and_then(|v| v.as_atom()) {
-                        if arrow == "->" && type_items.len() > 1 {
-                            // Return type is last element
-                            if let Some(last) = type_items.last() {
-                                return last.clone();
+                // Look up function type in environment (user-defined types)
+                if let Some(generic_type) = env.get_type_generic(op) {
+                    // Extract return type from arrow type
+                    if let Some(type_items) = generic_type.as_sexpr() {
+                        if let Some(arrow) = type_items.first().and_then(|v| v.as_atom()) {
+                            if arrow == "->" && type_items.len() > 1 {
+                                if let Some(last) = type_items.last() {
+                                    return last.clone();
+                                }
                             }
                         }
                     }
+                    return generic_type;
                 }
-                return generic_type;
             }
-        }
 
-        // Can't infer type
-        return factory.atom("Undefined");
+            factory.atom("Undefined")
+        }
+        MettaValueInner::Conjunction(_) => {
+            let goals = expr.as_conjunction().expect("matched Conjunction");
+            if goals.is_empty() {
+                return factory.atom("Expression");
+            }
+            if let Some(last) = goals.last() {
+                return infer_type_generic(last, factory, env);
+            }
+            factory.atom("Expression")
+        }
+        MettaValueInner::Quoted(_) => factory.atom("Expression"),
+        MettaValueInner::Spanned(..) => {
+            let stripped = expr.strip_one_span();
+            infer_type_generic(&stripped, factory, env)
+        }
     }
-
-    // For conjunctions, type is the type of the last goal
-    if let Some(goals) = expr.as_conjunction() {
-        if goals.is_empty() {
-            return factory.atom("Expression");
-        }
-        if let Some(last) = goals.last() {
-            return infer_type_generic(last, factory, env);
-        }
-    }
-
-    // Default: Undefined
-    factory.atom("Undefined")
 }
 
 /// Convert a TypeExpr from the signature registry to a generic value

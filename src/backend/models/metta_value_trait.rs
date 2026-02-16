@@ -107,6 +107,16 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Check if this is an Empty variant
     fn is_empty(&self) -> bool;
 
+    /// Check if this value has a Spanned wrapper (carries source location)
+    fn is_spanned(&self) -> bool;
+
+    /// Get the outermost source span if this value is Spanned
+    fn span(&self) -> Option<&'static crate::ir::Span>;
+
+    /// Strip one layer of Spanned wrapper, returning the inner value.
+    /// Returns self unchanged if not Spanned.
+    fn strip_one_span(&self) -> Self;
+
     /// Check if this value is a variable (Atom starting with $)
     fn is_variable(&self) -> bool;
 
@@ -183,6 +193,12 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// For (head arg1 arg2 arg3), arity is 3.
     /// For bare atoms, arity is 0.
     fn get_arity(&self) -> usize;
+
+    /// Access the raw inner enum for pattern matching.
+    ///
+    /// Returns a reference to the underlying `MettaValueInner` without
+    /// stripping `Spanned` layers. Callers must handle `Spanned` explicitly.
+    fn inner_raw(&self) -> &MettaValueInner;
 
     /// Get a raw pointer to the slab-allocated inner representation.
     ///
@@ -484,6 +500,12 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
     /// Create a quoted expression using the Quoted variant.
     fn quote(&self, inner: V) -> V;
 
+    /// Create a Spanned variant wrapping a value with a source location.
+    ///
+    /// The span is allocated in the slab and has `'static` lifetime.
+    /// This is used during compilation to attach source positions to values.
+    fn spanned(&self, value: V, span: crate::ir::Span) -> V;
+
     // =========================================================================
     // Conversion from MettaValue
     // =========================================================================
@@ -599,6 +621,11 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn quote(&self, inner: V) -> V {
         (*self).quote(inner)
+    }
+
+    #[inline]
+    fn spanned(&self, value: V, span: crate::ir::Span) -> V {
+        (*self).spanned(value, span)
     }
 
     #[inline]

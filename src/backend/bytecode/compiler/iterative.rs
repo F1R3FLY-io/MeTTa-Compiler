@@ -401,7 +401,7 @@ impl Compiler {
         work_stack: &mut Vec<CompileWork>,
         _continuations: &mut Vec<Continuation>,
     ) -> CompileResult<()> {
-        match expr.inner() {
+        match expr.inner {
             // ================================================================
             // Literals - direct emit, no recursion
             // ================================================================
@@ -494,6 +494,18 @@ impl Compiler {
                     expr: *inner,
                     cont_id,
                 });
+            }
+
+            // ================================================================
+            // Spanned — delegate to wrapped value, preserving position info
+            // ================================================================
+            MettaValueInner::Spanned(v, _) => {
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: *v,
+                    in_tail_position: self.in_tail_position,
+                    cont_id,
+                });
+                return Ok(());
             }
         }
         Ok(())
@@ -2306,7 +2318,7 @@ impl Compiler {
         cont_id: usize,
         work_stack: &mut Vec<CompileWork>,
     ) -> CompileResult<()> {
-        match expr.inner() {
+        match expr.inner {
             MettaValueInner::Atom(name) => {
                 let idx = self.builder.add_constant(MettaValue::Atom(name));
                 if name.starts_with('$') {
@@ -2320,6 +2332,12 @@ impl Compiler {
                 work_stack.push(CompileWork::CompileQuotedSExprElements {
                     items: items.iter().cloned().collect(),
                     total_count: total,
+                    cont_id,
+                });
+            }
+            MettaValueInner::Spanned(v, _) => {
+                work_stack.push(CompileWork::CompileQuoted {
+                    expr: *v,
                     cont_id,
                 });
             }
@@ -2412,7 +2430,7 @@ impl Compiler {
     ) -> CompileResult<()> {
         match state {
             PatternBindingState::Binding => {
-                match pattern.inner() {
+                match pattern.inner {
                     MettaValueInner::Atom(name) if name.starts_with('$') => {
                         let var_name = (*name)[1..].to_string();
                         let slot = self.context.declare_local(var_name)?;
@@ -2443,6 +2461,15 @@ impl Compiler {
                             // Empty pattern - just pop
                             self.builder.emit(Opcode::Pop);
                         }
+                    }
+                    MettaValueInner::Spanned(v, _) => {
+                        work_stack.push(CompileWork::CompilePatternBinding {
+                            pattern: *v,
+                            element_index,
+                            total_elements,
+                            state: PatternBindingState::Binding,
+                            cont_id: 0,
+                        });
                     }
                     _ => {
                         // Non-binding pattern - just pop

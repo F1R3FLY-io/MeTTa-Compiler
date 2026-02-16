@@ -37,7 +37,7 @@ use super::super::processing::{
 use super::super::step::{eval_step_generic, GenericEvalStep};
 
 use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
-use crate::backend::models::{GenericMultiplicityMatch, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{GenericMultiplicityMatch, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 /// Generic trampoline evaluation entry point.
 ///
@@ -1908,12 +1908,18 @@ fn process_continuation_generic<C: EvalContext>(
                 }
 
                 // Check if condition is true
-                let is_true = if let Some(b) = first.as_bool() {
-                    b
-                } else if first.is_unit() {
-                    false
-                } else {
-                    true
+                let is_true = match first.inner_raw() {
+                    MettaValueInner::Bool(b) => *b,
+                    MettaValueInner::Unit => false,
+                    MettaValueInner::Spanned(..) => {
+                        let stripped = first.strip_one_span();
+                        match stripped.inner_raw() {
+                            MettaValueInner::Bool(b) => *b,
+                            MettaValueInner::Unit => false,
+                            _ => true,
+                        }
+                    }
+                    _ => true,
                 };
 
                 // Evaluate the selected branch - TCO
@@ -4035,25 +4041,25 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 let first = &atom_results[0];
-                // Quoted is transparent to get-metatype: returns "Expression"
-                let metatype = if first.is_quoted() {
-                    "Expression"
-                } else if first.as_atom().is_some() {
-                    "Symbol"
-                } else if first.as_sexpr().is_some() {
-                    "Expression"
-                } else if first.is_bool() {
-                    "Grounded"
-                } else if first.is_long() {
-                    "Grounded"
-                } else if first.is_float() {
-                    "Grounded"
-                } else if first.is_string() {
-                    "Grounded"
-                } else if first.is_error() {
-                    "Error"
-                } else {
-                    "Undefined"
+                let metatype = match first.inner_raw() {
+                    MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
+                    MettaValueInner::Atom(_) => "Symbol",
+                    MettaValueInner::Bool(_) | MettaValueInner::Long(_)
+                    | MettaValueInner::Float(_) | MettaValueInner::String(_) => "Grounded",
+                    MettaValueInner::Error(..) => "Error",
+                    MettaValueInner::Spanned(..) => {
+                        let stripped = first.strip_one_span();
+                        // Re-dispatch on the stripped value
+                        match stripped.inner_raw() {
+                            MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
+                            MettaValueInner::Atom(_) => "Symbol",
+                            MettaValueInner::Bool(_) | MettaValueInner::Long(_)
+                            | MettaValueInner::Float(_) | MettaValueInner::String(_) => "Grounded",
+                            MettaValueInner::Error(..) => "Error",
+                            _ => "Undefined",
+                        }
+                    }
+                    _ => "Undefined",
                 };
 
                 work_stack.push(GenericWorkItem::Resume {

@@ -167,7 +167,7 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
     }
 
     // For simple cases without nesting, use fast path
-    match value.inner() {
+    match value.inner {
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
         MettaValueInner::Atom(s)
@@ -196,6 +196,15 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         MettaValueInner::SExpr(_)
         | MettaValueInner::Conjunction(_)
         | MettaValueInner::Error(_, _) => {}
+
+        // Spanned: apply bindings to inner value, re-wrap with same span
+        MettaValueInner::Spanned(v, span) => {
+            let result = apply_bindings(v, bindings);
+            return match result {
+                Cow::Borrowed(_) => Cow::Borrowed(value),
+                Cow::Owned(new_val) => Cow::Owned(MettaValue::Spanned(new_val, **span)),
+            };
+        }
     }
 
     // Iterative implementation using explicit work stack
@@ -213,6 +222,8 @@ enum ApplyBindingsWork<'a> {
     BuildConjunction(usize, &'a MettaValue),
     /// Build an Error from the last result
     BuildError(String, &'a MettaValue),
+    /// Re-wrap the last result in Spanned with the given span
+    BuildSpanned(&'static crate::ir::Span, &'a MettaValue),
 }
 
 /// Iterative implementation of apply_bindings using explicit work stack.
@@ -229,7 +240,7 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
     while let Some(work) = work_stack.pop() {
         match work {
             ApplyBindingsWork::Process(val) => {
-                match val.inner() {
+                match val.inner {
                     // Variable substitution
                     MettaValueInner::Atom(s)
                         if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\''))
@@ -272,6 +283,11 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
                     MettaValueInner::Error(msg, details) => {
                         work_stack.push(ApplyBindingsWork::BuildError(msg.to_string(), val));
                         work_stack.push(ApplyBindingsWork::Process(details));
+                    }
+                    // Spanned: process inner value and re-wrap with same span
+                    MettaValueInner::Spanned(v, span) => {
+                        work_stack.push(ApplyBindingsWork::BuildSpanned(*span, val));
+                        work_stack.push(ApplyBindingsWork::Process(v));
                     }
                     // All other types: no substitution needed
                     _ => {
@@ -316,6 +332,18 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
                     result_stack.push((original.clone(), false));
                 }
             }
+            ApplyBindingsWork::BuildSpanned(span, original) => {
+                // Pop the inner result and re-wrap in Spanned
+                let (inner, modified) = result_stack
+                    .pop()
+                    .expect("BuildSpanned should have inner result on result stack");
+
+                if modified {
+                    result_stack.push((MettaValue::Spanned(inner, *span), true));
+                } else {
+                    result_stack.push((original.clone(), false));
+                }
+            }
         }
     }
 
@@ -336,4 +364,127 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::models::Bindings;
+    use crate::ir::{Position, Span};
 
+    fn test_span(start_byte: usize, end_byte: usize) -> Span {
+        Span::new(
+            Position::new(0, start_byte, start_byte),
+            Position::new(0, end_byte, end_byte),
+        )
+    }
+
+    fn single_binding(name: &str, val: MettaValue) -> Bindings {
+        let mut b = Bindings::new();
+        b.insert(name.to_string(), val);
+        b
+    }
+
+    #[test]
+    fn test_apply_bindings_preserves_span_on_substitution() {
+        // Template: Spanned($x, template_span)
+        // Binding: $x → Long(42)
+        // Result should be: Spanned(Long(42), template_span)
+        let template_span = test_span(5, 7);
+        let template = MettaValue::Spanned(MettaValue::Atom("$x".to_string()), template_span);
+        let bindings = single_binding("$x", MettaValue::Long(42));
+
+        let result = apply_bindings(&template, &bindings);
+        let result = result.into_owned();
+
+        // Result should be Spanned(Long(42), template_span)
+        assert!(result.is_spanned(), "result should be Spanned");
+        assert_eq!(result.span().expect("should have span").start.byte_offset, 5);
+        assert_eq!(result.span().expect("should have span").end.byte_offset, 7);
+        assert!(result.is_long(), "inner should be Long");
+        assert_eq!(result.as_long(), Some(42));
+    }
+
+    #[test]
+    fn test_apply_bindings_preserves_span_on_sexpr() {
+        // Template: Spanned(SExpr([Atom("+"), Atom("$x"), Long(1)]), sexpr_span)
+        // Binding: $x → Long(42)
+        // Result: Spanned(SExpr([Atom("+"), Long(42), Long(1)]), sexpr_span)
+        let sexpr_span = test_span(0, 10);
+        let template = MettaValue::Spanned(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Long(1),
+            ]),
+            sexpr_span,
+        );
+        let bindings = single_binding("$x", MettaValue::Long(42));
+
+        let result = apply_bindings(&template, &bindings);
+        let result = result.into_owned();
+
+        // Outer span should be preserved
+        assert!(result.is_spanned());
+        assert_eq!(result.span().expect("should have span").start.byte_offset, 0);
+        assert_eq!(result.span().expect("should have span").end.byte_offset, 10);
+
+        // Inner should be SExpr with substituted value
+        if let MettaValueInner::SExpr(items) = result.inner() {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[1], MettaValue::Long(42));
+        } else {
+            panic!("Expected SExpr, got {:?}", result.inner());
+        }
+    }
+
+    #[test]
+    fn test_apply_bindings_no_span_loss_on_no_change() {
+        // Template: Spanned(Atom("foo"), span) — no variables, no change
+        // Result: Cow::Borrowed (the original Spanned value)
+        let span = test_span(0, 3);
+        let template = MettaValue::Spanned(MettaValue::Atom("foo".to_string()), span);
+        let bindings = Bindings::new();
+
+        let result = apply_bindings(&template, &bindings);
+        // With empty bindings, should return Borrowed
+        assert!(matches!(result, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_apply_bindings_nested_spanned_children() {
+        // Template: Spanned(SExpr([Spanned(Atom("$x"), s1), Spanned(Long(1), s2)]), outer_span)
+        // Binding: $x → Long(42)
+        // Result: Spanned(SExpr([Long(42), Spanned(Long(1), s2)]), outer_span)
+        // The unchanged child Spanned(Long(1), s2) keeps its span via clone.
+        let outer_span = test_span(0, 10);
+        let s1 = test_span(1, 3);
+        let s2 = test_span(4, 5);
+        let template = MettaValue::Spanned(
+            MettaValue::SExpr(vec![
+                MettaValue::Spanned(MettaValue::Atom("$x".to_string()), s1),
+                MettaValue::Spanned(MettaValue::Long(1), s2),
+            ]),
+            outer_span,
+        );
+        let bindings = single_binding("$x", MettaValue::Long(42));
+
+        let result = apply_bindings(&template, &bindings);
+        let result = result.into_owned();
+
+        // Outer span preserved
+        assert!(result.is_spanned());
+        assert_eq!(result.span().expect("span").start.byte_offset, 0);
+
+        // Inner is SExpr
+        if let MettaValueInner::SExpr(items) = result.inner() {
+            // First item: $x was substituted → Long(42)
+            assert_eq!(items[0].as_long(), Some(42));
+
+            // Second item: unchanged → Spanned(Long(1), s2) preserved
+            assert!(items[1].is_spanned(), "unchanged child should keep span");
+            assert_eq!(items[1].span().expect("s2").start.byte_offset, 4);
+            assert_eq!(items[1].as_long(), Some(1));
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+}

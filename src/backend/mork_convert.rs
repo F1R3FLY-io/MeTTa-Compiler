@@ -287,7 +287,7 @@ fn write_metta_value_inner(
             ez.loc += 1;
 
             for item in *items {
-                write_metta_value_inner(item.inner(), pdp, ctx, ez, scratch)?;
+                write_metta_value_inner(item.inner, pdp, ctx, ez, scratch)?;
             }
         }
 
@@ -301,12 +301,12 @@ fn write_metta_value_inner(
             scratch.extend_from_slice(msg.as_bytes());
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez)?;
-            write_metta_value_inner(details.inner(), pdp, ctx, ez, scratch)?;
+            write_metta_value_inner(details.inner, pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Type(t) => {
             // Types are just atoms/expressions
-            write_metta_value_inner(t.inner(), pdp, ctx, ez, scratch)?;
+            write_metta_value_inner(t.inner, pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Quoted(inner) => {
@@ -314,7 +314,7 @@ fn write_metta_value_inner(
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"quote", pdp, ez)?;
-            write_metta_value_inner(inner.inner(), pdp, ctx, ez, scratch)?;
+            write_metta_value_inner(inner.inner, pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Conjunction(goals) => {
@@ -335,7 +335,7 @@ fn write_metta_value_inner(
 
             // Write each goal
             for goal in *goals {
-                write_metta_value_inner(goal.inner(), pdp, ctx, ez, scratch)?;
+                write_metta_value_inner(goal.inner, pdp, ctx, ez, scratch)?;
             }
         }
 
@@ -377,6 +377,11 @@ fn write_metta_value_inner(
             return Err(
                 "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
             );
+        }
+
+        // Spanned: strip span wrapper and serialize the inner value transparently
+        MettaValueInner::Spanned(v, _) => {
+            write_metta_value_inner(v.inner, pdp, ctx, ez, scratch)?;
         }
     }
 
@@ -470,7 +475,7 @@ fn write_metta_value_debruijn_inner(
             ez.write_arity(items.len() as u8);
             ez.loc += 1;
             for item in *items {
-                write_metta_value_debruijn_inner(item.inner(), pdp, ctx, ez, scratch)?;
+                write_metta_value_debruijn_inner(item.inner, pdp, ctx, ez, scratch)?;
             }
         }
 
@@ -483,11 +488,11 @@ fn write_metta_value_debruijn_inner(
             scratch.extend_from_slice(msg.as_bytes());
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez)?;
-            write_metta_value_debruijn_inner(details.inner(), pdp, ctx, ez, scratch)?;
+            write_metta_value_debruijn_inner(details.inner, pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Type(t) => {
-            write_metta_value_debruijn_inner(t.inner(), pdp, ctx, ez, scratch)?;
+            write_metta_value_debruijn_inner(t.inner, pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Quoted(inner) => {
@@ -495,7 +500,7 @@ fn write_metta_value_debruijn_inner(
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"quote", pdp, ez)?;
-            write_metta_value_debruijn_inner(inner.inner(), pdp, ctx, ez, scratch)?;
+            write_metta_value_debruijn_inner(inner.inner, pdp, ctx, ez, scratch)?;
         }
 
         MettaValueInner::Conjunction(goals) => {
@@ -510,7 +515,7 @@ fn write_metta_value_debruijn_inner(
             ez.loc += 1;
             write_symbol(b",", pdp, ez)?;
             for goal in *goals {
-                write_metta_value_debruijn_inner(goal.inner(), pdp, ctx, ez, scratch)?;
+                write_metta_value_debruijn_inner(goal.inner, pdp, ctx, ez, scratch)?;
             }
         }
 
@@ -548,6 +553,11 @@ fn write_metta_value_debruijn_inner(
             return Err(
                 "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
             );
+        }
+
+        // Spanned: strip span wrapper and serialize the inner value transparently
+        MettaValueInner::Spanned(v, _) => {
+            write_metta_value_debruijn_inner(v.inner, pdp, ctx, ez, scratch)?;
         }
     }
     Ok(())

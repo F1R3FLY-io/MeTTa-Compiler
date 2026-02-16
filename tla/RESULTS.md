@@ -225,6 +225,165 @@ The fixed protocol addresses all three bugs through **ownership separation**:
 
 ---
 
+## Part 3: Session-Based GC — Model Extension and Re-Verification (SlabGC_Quiescent.tla)
+
+### Context
+
+The quiescent-state model (`SlabGC_Quiescent.tla`) was extended to capture
+**session-based GC** — a second GC mechanism that shares the quiescent protocol.
+The Rust implementation uses session context IDs to track which eval session
+allocated each value, enabling targeted bulk release when a `MettaState` is dropped.
+
+### Changes to SlabGC_Quiescent.tla
+
+#### New Variables (8 total)
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `slotContextId` | Slots → 0..MaxContextIds | Per-slot session context ID (0=persistent) |
+| `threadContextId` | Threads → 0..MaxContextIds | Per-thread active session ID |
+| `nextContextId` | 1..(MaxContextIds+1) | Monotonic counter for session IDs |
+| `sessionReleaseQueue` | SUBSET(1..MaxContextIds) | Pending session releases |
+| `sessionBatch` | SUBSET(1..MaxContextIds) | Frozen batch from WaitQuiescent |
+| `sessionGcPhase` | {"idle","waiting","acquired","freeing"} | Session GC thread state |
+| `sessionSurviving` | SUBSET(Slots) | Surviving set from root trace |
+| `gcReachableAdvanced` | BOOLEAN | GC reachability heartbeat for cron gating |
+
+#### New Actions (6 for session GC lifecycle)
+
+| Action | Models |
+|--------|--------|
+| `SessionGc_WaitQuiescent` | Condvar wait + batch capture (channel drain) |
+| `SessionGc_AcquireFlag` | CAS `GC_IN_PROGRESS` false→true |
+| `SessionGc_AcquireFail` | CAS fails (quiescent GC holds flag) → retry |
+| `SessionGc_TraceAndRelease` | Double-check quiescence, trace roots, release flag |
+| `SessionGc_DoubleCheckFail` | Eval snuck in → abort, release flag |
+| `SessionGc_FreeSession` | Free non-surviving values from one session in batch |
+
+#### Modified Actions
+
+| Action | Change |
+|--------|--------|
+| `EvalGuardEnter_Proceed` | Assigns session context ID (monotonic) |
+| `EvalGuardDrop` | Enqueues session ID for async release |
+| `AllocateSlot` | Tags allocated slot with thread's context ID |
+| `TryQuiescentGc_AcquireFlag` | Mutual exclusion with session GC (`sessionGcPhase \notin {"acquired"}`) |
+| `ProcessGcResponse` | Backpressure recomputed (not decremented); GC reachability heartbeat |
+| `CronMonitorPoll` | Backpressure gated on `gcReachableAdvanced` heartbeat |
+
+#### New Safety Invariants (2)
+
+| Invariant | What It Verifies |
+|-----------|------------------|
+| `ContextIdConsistency` | Allocated slots have valid context IDs (0..MaxContextIds) |
+| `SessionGcExcludesQuiescentGc` | Mutual exclusion: no thread in gc_acquire while session GC acquired |
+
+#### New Liveness Properties (2)
+
+| Property | What It Verifies |
+|----------|------------------|
+| `SessionValuesEventuallyFreed` | Non-root session values are eventually freed or system terminates |
+| `SessionQueueEventuallyDrained` | Pending session releases are eventually processed |
+
+### Bug Fixes Found During Verification
+
+**1. Context ID Aliasing (Model Bug)**
+
+The initial model wrapped `nextContextId` at `MaxContextIds`. With small
+constants, this allowed two threads to get the same context ID, causing
+session GC to free values belonging to a different session. Fixed by making
+IDs monotonic (matching Rust's `AtomicU64::fetch_add`).
+
+**2. Stale Surviving Set (Model Bug)**
+
+`SessionGc_FreeSession` could pick sessions added to `sessionReleaseQueue`
+AFTER the surviving set was captured. A new eval could allocate values with
+a new context ID, drop its eval, and session GC would free those values using
+the stale (empty) surviving set. Fixed by adding `sessionBatch` to freeze
+the release queue at `WaitQuiescent` time.
+
+**3. GcFlagConsistent / SnapshotCapturesAllRoots Relaxation**
+
+Session GC can acquire `GC_IN_PROGRESS` while evals are running (the condvar
+check was earlier; an eval can sneak in between condvar wake and the CAS).
+The invariants were relaxed to exclude the session GC "acquired" phase,
+since `SessionGc_DoubleCheckFail` handles this case.
+
+**4. Rust Race: `enter()` → `try_enter()` (Code Fix)**
+
+`maybe_quiescent_gc()` used unconditional `GcInProgressGuard::enter()` which
+could overwrite `GC_IN_PROGRESS` set by session GC. Fixed to CAS-based
+`try_enter()`, matching the TLA+ model's `~gcInProgressFlag` precondition.
+
+### Verification Results
+
+#### Small Model (Complete — 46 seconds)
+
+| Parameter | Value |
+|-----------|-------|
+| MaxSlots | 3 |
+| MaxRoots | 2 |
+| MaxExprs | 1 |
+| MaxContextIds | 2 |
+| SlotsPerPage | 2 |
+| States generated | 41,822,735 |
+| Distinct states | 8,842,098 |
+| Depth | 68 |
+| Time | 46 seconds |
+
+**Result**: **Model checking completed. No error has been found.** All 22 safety invariants hold.
+
+#### Standard Model (Complete — 11 min 13 sec)
+
+| Parameter | Value |
+|-----------|-------|
+| MaxSlots | 4 |
+| MaxRoots | 2 |
+| MaxExprs | 1 |
+| MaxContextIds | 2 |
+| SlotsPerPage | 2 |
+| States generated | 349,532,171 |
+| Distinct states | 73,459,202 |
+| Depth | 77 |
+| Time | 11 min 13 sec |
+
+**Result**: **Model checking completed. No error has been found.** All 22 safety invariants hold.
+
+#### Liveness (Pending)
+
+Constants reduced to `MaxSlots=2, MaxRoots=1, MaxExprs=1, MaxContextIds=2`
+for tractability. Liveness checking is extremely expensive due to cycle
+detection in the state graph. Results pending.
+
+### All Safety Invariants — Session-Based GC Extension
+
+| Invariant | Small (3,2,1) | Standard (4,2,1) |
+|-----------|--------------|------------------|
+| `TypeOK` | HOLDS (complete) | HOLDS (complete) |
+| `NoLiveValueFreed` | HOLDS (complete) | HOLDS (complete) |
+| `SnapshotCapturesAllRoots` | HOLDS (complete) | HOLDS (complete) |
+| `GcFlagConsistent` | HOLDS (complete) | HOLDS (complete) |
+| `ActiveCountCorrect` | HOLDS (complete) | HOLDS (complete) |
+| `RegisteredRootsAreAllocated` | HOLDS (complete) | HOLDS (complete) |
+| `StackRootsAreAllocated` | HOLDS (complete) | HOLDS (complete) |
+| `FreeSetValid` | HOLDS (complete) | HOLDS (complete) |
+| `BumpPtrValid` | HOLDS (complete) | HOLDS (complete) |
+| `MemoryBounded` | HOLDS (complete) | HOLDS (complete) |
+| `AtMostOneGcAcquire` | HOLDS (complete) | HOLDS (complete) |
+| `StackRootsOnlyDuringEval` | HOLDS (complete) | HOLDS (complete) |
+| `GcThresholdPositive` | HOLDS (complete) | HOLDS (complete) |
+| `BackpressureLevelBounded` | HOLDS (complete) | HOLDS (complete) |
+| `GcSweepIsComplete` | HOLDS (complete) | HOLDS (complete) |
+| `NoLiveValueInDeadSet` | HOLDS (complete) | HOLDS (complete) |
+| `NoStaleFreeSetEntries` | HOLDS (complete) | HOLDS (complete) |
+| `NoLiveOnReleasedPage` | HOLDS (complete) | HOLDS (complete) |
+| `CurrentPageNotReleased` | HOLDS (complete) | HOLDS (complete) |
+| `ReleasedPagesAreEmpty` | HOLDS (complete) | HOLDS (complete) |
+| `ContextIdConsistency` | HOLDS (complete) | HOLDS (complete) |
+| `SessionGcExcludesQuiescentGc` | HOLDS (complete) | HOLDS (complete) |
+
+---
+
 ## Files
 
 | File | Purpose |
@@ -242,4 +401,9 @@ The fixed protocol addresses all three bugs through **ownership separation**:
 | `tla/SlabGC_Reactive_medium.cfg` | Fixed spec — medium model (MaxSlots=5, completable) |
 | `tla/SlabGC_Reactive_deadlock.cfg` | Fixed spec — deadlock freedom check |
 | `tla/SlabGC_Reactive_deadlock_small.cfg` | Fixed spec — deadlock freedom (small model) |
+| `tla/SlabGC_Quiescent.tla` | **Multi-thread quiescent + session-based GC** |
+| `tla/MC_SlabGC_Quiescent.tla` | TLC wrapper for quiescent spec |
+| `tla/SlabGC_Quiescent.cfg` | Standard safety invariant checking (22 invariants) |
+| `tla/SlabGC_Quiescent_small.cfg` | Small model for fast iteration |
+| `tla/SlabGC_Quiescent_deadlock.cfg` | Liveness + deadlock checking (7 properties) |
 | `tla/RESULTS.md` | This file |

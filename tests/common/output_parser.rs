@@ -48,6 +48,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_display_string()),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
+            MettaValueInner::Spanned(_, _) => unreachable!("inner() strips Spanned"),
         }
     }
 
@@ -71,6 +72,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Quoted(_) => self.to_display_string() == s,
             MettaValueInner::Memo(_) => self.to_display_string() == s,
             MettaValueInner::Empty => s == "Empty",
+            MettaValueInner::Spanned(_, _) => unreachable!("inner() strips Spanned"),
         }
     }
 }

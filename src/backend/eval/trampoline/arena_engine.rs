@@ -81,6 +81,7 @@ pub fn new_env() -> MettaEnvironment {
 mod tests {
     use super::*;
     use crate::backend::models::MettaValueFactory;
+    use crate::ir::{Position, Span};
 
     #[test]
     fn test_arena_mode_available() {
@@ -138,5 +139,119 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].is_long());
         assert_eq!(results[0].as_long(), Some(3));
+    }
+
+    // ================================================================
+    // Phase 4: End-to-end span threading through trampoline
+    // ================================================================
+
+    #[test]
+    fn test_eval_trampoline_span_preserved_on_ground_type() {
+
+        let state = MettaState::new();
+        let factory = global_factory();
+        let env = new_env();
+
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 2, byte_offset: 2 },
+        };
+        let value = factory.spanned(factory.long(42), span);
+
+        let (results, _) = eval_trampoline(value, env, &state);
+        assert_eq!(results.len(), 1);
+        // Self-evaluating: result carries the original span
+        assert!(results[0].is_spanned());
+        assert_eq!(results[0].as_long(), Some(42));
+        let result_span = results[0].span().expect("should have span");
+        assert_eq!(result_span.start.byte_offset, 0);
+        assert_eq!(result_span.end.byte_offset, 2);
+    }
+
+    #[test]
+    fn test_eval_trampoline_span_on_arithmetic() {
+
+        let state = MettaState::new();
+        let factory = global_factory();
+        let env = new_env();
+
+        // Spanned (+ 1 2) — the outer expression has a span
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 7, byte_offset: 7 },
+        };
+        let sexpr = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ]);
+        let value = factory.spanned(sexpr, span);
+
+        let (results, _) = eval_trampoline(value, env, &state);
+        assert_eq!(results.len(), 1);
+        // The computed result 3 should carry the source expression's span
+        assert_eq!(results[0].as_long(), Some(3));
+        // Note: grounded ops go through trampoline, so the outer span from
+        // eval_step_generic wraps the Done result from the (quote ...) path,
+        // but grounded ops return via StartGroundedOp → Resume continuation.
+        // The span may or may not be present depending on trampoline path.
+        // This tests the current behavior.
+    }
+
+    #[test]
+    fn test_eval_trampoline_span_on_quote() {
+
+        let state = MettaState::new();
+        let factory = global_factory();
+        let env = new_env();
+
+        // Spanned (quote hello) — returns Done directly from eval_sexpr_step
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 13, byte_offset: 13 },
+        };
+        let sexpr = factory.sexpr(vec![
+            factory.atom("quote"),
+            factory.atom("hello"),
+        ]);
+        let value = factory.spanned(sexpr, span);
+
+        let (results, _) = eval_trampoline(value, env, &state);
+        assert_eq!(results.len(), 1);
+        // (quote hello) returns Done → outer span is attached
+        assert!(results[0].is_spanned());
+        assert!(results[0].is_quoted());
+        let result_span = results[0].span().expect("should have span");
+        assert_eq!(result_span.end.byte_offset, 13);
+    }
+
+    #[test]
+    fn test_eval_trampoline_span_on_if_true_branch() {
+
+        let state = MettaState::new();
+        let factory = global_factory();
+        let env = new_env();
+
+        // (if True 42 0) — the then-branch 42 has its own span
+        let then_span = Span {
+            start: Position { row: 0, column: 9, byte_offset: 9 },
+            end: Position { row: 0, column: 11, byte_offset: 11 },
+        };
+        let sexpr = factory.sexpr(vec![
+            factory.atom("if"),
+            factory.bool(true),
+            factory.spanned(factory.long(42), then_span),
+            factory.long(0),
+        ]);
+
+        let (results, _) = eval_trampoline(sexpr, env, &state);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_long(), Some(42));
+        // The then-branch carries its own span (from compilation)
+        // After evaluation, the result preserves the branch's span
+        assert!(results[0].is_spanned());
+        let result_span = results[0].span().expect("should have span");
+        assert_eq!(result_span.start.byte_offset, 9);
+        assert_eq!(result_span.end.byte_offset, 11);
     }
 }

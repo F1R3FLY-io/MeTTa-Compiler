@@ -211,7 +211,7 @@ fn matching_open(close: char) -> char {
 /// Convert MettaValue to a JSON-like string representation
 /// Used for debugging and human-readable output
 fn value_to_json_string(value: &MettaValue) -> String {
-    match value.inner() {
+    match value.inner {
         MettaValueInner::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
         MettaValueInner::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
         MettaValueInner::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
@@ -265,6 +265,7 @@ fn value_to_json_string(value: &MettaValue) -> String {
             format!(r#"{{"type":"quoted","value":{}}}"#, value_to_json_string(inner))
         }
         MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
+        MettaValueInner::Spanned(v, _) => value_to_json_string(v),
     }
 }
 

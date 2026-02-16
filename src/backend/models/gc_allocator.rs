@@ -1097,6 +1097,18 @@ impl SlabAllocator {
         }
     }
 
+    /// Allocate a Span in the slab, returning a `&'static Span`.
+    ///
+    /// The Span (48 bytes on 64-bit) is allocated via `alloc_data` and copied in.
+    pub fn alloc_span(&self, span: crate::ir::Span) -> &'static crate::ir::Span {
+        let size = mem::size_of::<crate::ir::Span>();
+        let ptr = self.alloc_data(size) as *mut crate::ir::Span;
+        unsafe {
+            ptr::write(ptr, span);
+            &*ptr
+        }
+    }
+
     /// Allocate a slice of MettaValues from an iterator.
     pub fn alloc_slice_from_iter(
         &self,
@@ -1963,8 +1975,18 @@ pub fn maybe_quiescent_gc() -> bool {
     }
 
     // Set GC_IN_PROGRESS to prevent new evals from starting.
+    // CAS-based try_enter() ensures mutual exclusion with session GC thread,
+    // matching TLA+ `~gcInProgressFlag` precondition on TryQuiescentGc_AcquireFlag.
     // RAII guard ensures the flag is always cleared, even on panic.
-    let _gc_guard = GcInProgressGuard::enter();
+    let _gc_guard = match GcInProgressGuard::try_enter() {
+        Some(guard) => guard,
+        None => {
+            // Another GC path (session release) holds the flag — back off.
+            // Re-arm GC_REQUESTED so we try again at the next quiescent point.
+            GC_REQUESTED.store(true, Ordering::Release);
+            return false;
+        }
+    };
 
     // Double-check no eval snuck in between our check and the flag set
     if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
@@ -2663,6 +2685,12 @@ impl SlabAllocator {
                         }
                     }
                 }
+                MettaValueInner::Spanned(v, _) => {
+                    let inner_ptr = v.inner_ptr();
+                    if surviving.insert(inner_ptr as *const u8) {
+                        worklist.push(inner_ptr);
+                    }
+                }
                 MettaValueInner::Atom(_)
                 | MettaValueInner::Bool(_)
                 | MettaValueInner::Long(_)
@@ -2819,6 +2847,12 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
                     }
                 }
             }
+            MettaValueInner::Spanned(v, _) => {
+                let inner_ptr = v.inner_ptr();
+                if snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
+                    worklist.push(inner_ptr);
+                }
+            }
             MettaValueInner::Atom(_)
             | MettaValueInner::Bool(_)
             | MettaValueInner::Long(_)
@@ -2947,6 +2981,12 @@ pub fn mark_from_roots(
                     }
                 }
             }
+            MettaValueInner::Spanned(v, _) => {
+                let inner_ptr = v.inner_ptr();
+                if alloc.mark_value(inner_ptr as *const u8) {
+                    worklist.push(inner_ptr);
+                }
+            }
             MettaValueInner::Atom(_)
             | MettaValueInner::Bool(_)
             | MettaValueInner::Long(_)
@@ -3015,6 +3055,7 @@ fn data_size_of(inner: &MettaValueInner) -> usize {
         MettaValueInner::SExpr(children) => children.len() * mem::size_of::<MettaValue>(),
         MettaValueInner::Conjunction(goals) => goals.len() * mem::size_of::<MettaValue>(),
         MettaValueInner::Error(msg, _) => msg.len(),
+        MettaValueInner::Spanned(_, _) => mem::size_of::<crate::ir::Span>(),
         _ => 0,
     }
 }
@@ -3038,6 +3079,10 @@ fn collect_dead_data(inner: &MettaValueInner, dead_data: &mut Vec<(*mut u8, usiz
         }
         MettaValueInner::Error(msg, _) if !msg.is_empty() => {
             dead_data.push((msg.as_ptr() as *mut u8, msg.len()));
+        }
+        MettaValueInner::Spanned(_, span) => {
+            let span_size = mem::size_of::<crate::ir::Span>();
+            dead_data.push((*span as *const crate::ir::Span as *mut u8, span_size));
         }
         _ => {}
     }
@@ -3173,6 +3218,12 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     #[inline]
     fn quote(&self, inner: MettaValue) -> MettaValue {
         MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Quoted(inner)))
+    }
+
+    #[inline]
+    fn spanned(&self, value: MettaValue, span: crate::ir::Span) -> MettaValue {
+        let span = self.alloc.alloc_span(span);
+        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Spanned(value, span)))
     }
 
     #[inline]

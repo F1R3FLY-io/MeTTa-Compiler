@@ -13,7 +13,7 @@
 use tracing::trace;
 
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 use super::generic_sexpr::eval_sexpr_step_generic;
 use super::generic_types::GenericEvalStep;
@@ -56,20 +56,48 @@ where
 {
     trace!(target: "mettatron::backend::eval::eval_step_generic", ?value, depth);
 
+    // Peel outer Spanned layer — will be re-attached to Done results.
+    // Non-Spanned values pass through unchanged (outer_span = None).
+    let outer_span = value.span().copied();
+    let value = value.strip_one_span();
+
+    let step = eval_step_generic_inner(value, env, depth, ctx);
+
+    // Re-wrap Done results with the original expression's span.
+    // Non-Done results (delegations to the trampoline) pass through — inner
+    // expressions carry their own spans from compilation/apply_bindings.
+    match (outer_span, step) {
+        (Some(span), GenericEvalStep::Done((results, env))) => {
+            let wrapped = results
+                .into_iter()
+                .map(|v| ctx.factory().spanned(v, span))
+                .collect();
+            GenericEvalStep::Done((wrapped, env))
+        }
+        (_, step) => step,
+    }
+}
+
+/// Inner evaluation logic — operates on span-stripped values.
+fn eval_step_generic_inner<C: EvalContext>(
+    value: C::Value,
+    env: ContextEnv<C>,
+    depth: usize,
+    ctx: &C,
+) -> GenericEvalStep<C::Value, ContextEnv<C>>
+where
+    C::Value: Clone,
+{
     // Errors propagate immediately
     if value.is_error() {
         return GenericEvalStep::Done((vec![value], env));
     }
 
     // Ground types evaluate to themselves
-    if value.is_bool()
-        || value.is_long()
-        || value.is_float()
-        || value.is_string()
-        || value.is_space()
-        || value.is_state()
-        || value.is_unit()
-        || value.is_memo()
+    if matches!(value.inner_raw(),
+        MettaValueInner::Bool(_) | MettaValueInner::Long(_) | MettaValueInner::Float(_)
+        | MettaValueInner::String(_) | MettaValueInner::Space(_) | MettaValueInner::State(_)
+        | MettaValueInner::Unit | MettaValueInner::Memo(_))
     {
         return GenericEvalStep::Done((vec![value], env));
     }
@@ -247,6 +275,145 @@ mod tests {
                 assert!(results.is_empty());
             }
             _ => panic!("Expected Done with empty results"),
+        }
+    }
+
+    // ================================================================
+    // Phase 4: Span threading tests
+    // ================================================================
+
+    #[test]
+    fn test_eval_step_span_preserved_on_ground_type() {
+        use crate::ir::{Position, Span};
+
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
+        let factory = ctx.factory();
+
+        let span = Span {
+            start: Position { row: 1, column: 5, byte_offset: 5 },
+            end: Position { row: 1, column: 7, byte_offset: 7 },
+        };
+        let value = factory.spanned(factory.long(42), span);
+
+        match eval_step_generic(value, env, 0, &ctx) {
+            GenericEvalStep::Done((results, _)) => {
+                assert_eq!(results.len(), 1);
+                // Result should still have the span
+                assert!(results[0].is_spanned());
+                let result_span = results[0].span().expect("should have span");
+                assert_eq!(result_span.start.row, 1);
+                assert_eq!(result_span.start.column, 5);
+                // Inner value should be Long(42)
+                assert_eq!(results[0].as_long(), Some(42));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_eval_step_span_preserved_on_atom() {
+        use crate::ir::{Position, Span};
+
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
+        let factory = ctx.factory();
+
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 3, byte_offset: 3 },
+        };
+        let value = factory.spanned(factory.atom("foo"), span);
+
+        match eval_step_generic(value, env, 0, &ctx) {
+            GenericEvalStep::Done((results, _)) => {
+                assert_eq!(results.len(), 1);
+                assert!(results[0].is_spanned());
+                assert_eq!(results[0].as_atom(), Some("foo"));
+                let result_span = results[0].span().expect("should have span");
+                assert_eq!(result_span.start.byte_offset, 0);
+                assert_eq!(result_span.end.byte_offset, 3);
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_eval_step_span_on_error_propagation() {
+        use crate::ir::{Position, Span};
+
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
+        let factory = ctx.factory();
+
+        let span = Span {
+            start: Position { row: 2, column: 0, byte_offset: 20 },
+            end: Position { row: 2, column: 10, byte_offset: 30 },
+        };
+        let error = factory.error("test error", factory.atom("TestError"));
+        let spanned_error = factory.spanned(error, span);
+
+        match eval_step_generic(spanned_error, env, 0, &ctx) {
+            GenericEvalStep::Done((results, _)) => {
+                assert_eq!(results.len(), 1);
+                // Error result should be wrapped with the original span
+                assert!(results[0].is_spanned());
+                assert!(results[0].is_error());
+                let result_span = results[0].span().expect("should have span");
+                assert_eq!(result_span.start.row, 2);
+            }
+            _ => panic!("Expected Done with error"),
+        }
+    }
+
+    #[test]
+    fn test_eval_step_no_span_unchanged() {
+        // Values without spans should not gain spans through evaluation
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
+        let factory = ctx.factory();
+
+        let value = factory.long(99);
+        match eval_step_generic(value, env, 0, &ctx) {
+            GenericEvalStep::Done((results, _)) => {
+                assert_eq!(results.len(), 1);
+                assert!(!results[0].is_spanned());
+                assert_eq!(results[0].as_long(), Some(99));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_eval_step_span_on_sexpr_done_result() {
+        use crate::ir::{Position, Span};
+
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
+        let factory = ctx.factory();
+
+        // (quote foo) should return Done with Quoted(foo)
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 11, byte_offset: 11 },
+        };
+        let sexpr = factory.sexpr(vec![
+            factory.atom("quote"),
+            factory.atom("foo"),
+        ]);
+        let spanned_sexpr = factory.spanned(sexpr, span);
+
+        match eval_step_generic(spanned_sexpr, env, 0, &ctx) {
+            GenericEvalStep::Done((results, _)) => {
+                assert_eq!(results.len(), 1);
+                // The result should carry the outer expression's span
+                assert!(results[0].is_spanned());
+                let result_span = results[0].span().expect("should have span");
+                assert_eq!(result_span.end.byte_offset, 11);
+                // Inner value should be Quoted("foo")
+                assert!(results[0].is_quoted());
+            }
+            _ => panic!("Expected Done"),
         }
     }
 }

@@ -107,14 +107,12 @@ impl std::error::Error for ExecError {}
 /// Check if any result is an error and return it if so
 /// Used for error propagation through grounded operations
 pub(crate) fn find_error(results: &[MettaValue]) -> Option<&MettaValue> {
-    results
-        .iter()
-        .find(|v| matches!(v.inner(), MettaValueInner::Error(_, _)))
+    results.iter().find(|v| v.is_error())
 }
 
 /// Helper function to get a friendly type name for error messages
 pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
-    match value.inner() {
+    match value.inner {
         MettaValueInner::Long(_) => "Number (integer)",
         MettaValueInner::Float(_) => "Number (float)",
         MettaValueInner::Bool(_) => "Bool",
@@ -130,6 +128,7 @@ pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValueInner::Quoted(_) => "Quoted expression",
         MettaValueInner::Memo(_) => "Memo",
         MettaValueInner::Empty => "Empty",
+        MettaValueInner::Spanned(v, _) => friendly_type_name(v),
     }
 }
 

@@ -12,6 +12,11 @@
  *     exercising allocation, GC, and free-list reuse paths
  *   - The epoch variable and per-slot epoch maps contribute significantly
  *     to state space; keeping MaxSlots small is critical
+ *   - MaxContextIds=1 captures the essential session GC interleaving:
+ *     persistent (ctx=0) vs one session (ctx=1). This is sufficient to
+ *     verify mutual exclusion with quiescent GC, surviving set promotion,
+ *     and session value freeing. Higher values increase state space
+ *     exponentially (slotContextId adds MaxContextIds^MaxSlots states).
  *
  * Constants are assigned in the .cfg file.
  *)

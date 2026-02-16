@@ -3,7 +3,7 @@
 //! This module provides utility functions for list operations including
 //! generic variable substitution and variable format suggestions.
 
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 /// Suggest variable format when user provides a plain atom instead of `$var`
 /// Returns a suggestion string if the atom looks like it should be a variable
@@ -80,16 +80,11 @@ where
     }
 
     // Check other leaf types - these don't contain variables
-    if expr.is_bool()
-        || expr.is_long()
-        || expr.is_float()
-        || expr.is_string()
-        || expr.is_unit()
-        || expr.is_space()
-        || expr.is_state()
-        || expr.is_type()
-        || expr.is_memo()
-        || expr.is_empty()
+    if matches!(expr.inner_raw(),
+        MettaValueInner::Bool(_) | MettaValueInner::Long(_) | MettaValueInner::Float(_)
+        | MettaValueInner::String(_) | MettaValueInner::Unit | MettaValueInner::Space(_)
+        | MettaValueInner::State(_) | MettaValueInner::Type(_) | MettaValueInner::Memo(_)
+        | MettaValueInner::Empty)
     {
         return expr.clone();
     }

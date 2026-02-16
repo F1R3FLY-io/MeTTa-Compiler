@@ -89,7 +89,7 @@ pub use sequential_mode::{enter_eval, exit_eval, is_sequential_mode};
 
 use dashmap::DashMap;
 
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[cfg(feature = "hybrid-p2-priority-scheduler")]
 use crate::backend::priority_scheduler::{global_priority_eval_pool, priority_levels, TaskTypeId};
@@ -971,64 +971,57 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
     const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
     const UNIT_HASH: u64 = 0x756e6974_68617368; // "unit_hash" as bytes
 
-    // Fast path for primitives
-    if expr.is_unit() {
-        return UNIT_HASH;
-    }
-    if let Some(b) = expr.as_bool() {
-        return if b {
+    // Fast path for primitives, slow path for complex types
+    match expr.inner {
+        MettaValueInner::Unit => UNIT_HASH,
+        MettaValueInner::Bool(b) => if *b {
             BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
         } else {
             BOOL_SEED
-        };
+        },
+        MettaValueInner::Long(n) => {
+            let x = (*n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            x ^ (x >> 32)
+        }
+        MettaValueInner::Float(f) => {
+            let bits = f.to_bits();
+            let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
+            x ^ (x >> 32)
+        }
+        MettaValueInner::Spanned(inner, _span) => hash_value(inner),
+        _ => {
+            let mut hasher = Xxh3::new();
+            hash_value_recursive(expr, &mut hasher);
+            hasher.finish()
+        }
     }
-    if let Some(n) = expr.as_long() {
-        let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
-        return x ^ (x >> 32);
-    }
-    if let Some(f) = expr.as_float() {
-        let bits = f.to_bits();
-        let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
-        return x ^ (x >> 32);
-    }
-
-    // Slow path for complex types - use xxHash3
-    let mut hasher = Xxh3::new();
-    hash_value_recursive(expr, &mut hasher);
-    hasher.finish()
 }
 
 /// Recursively hash an MettaValue for complex types.
 fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H) {
-    // Hash type discriminant first
-    let type_tag: u8 = if expr.is_unit() { 0 }
-        else if expr.is_bool() { 2 }
-        else if expr.is_long() { 3 }
-        else if expr.is_float() { 4 }
-        else if expr.is_string() { 5 }
-        else if expr.is_atom() { 6 }
-        else if expr.is_sexpr() { 7 }
-        else if expr.is_error() { 8 }
-        else if expr.is_empty() { 9 }
-        else { 10 }; // Other types
-    type_tag.hash(hasher);
-
-    // Hash content based on type
-    if let Some(b) = expr.as_bool() {
-        b.hash(hasher);
-    } else if let Some(n) = expr.as_long() {
-        n.hash(hasher);
-    } else if let Some(f) = expr.as_float() {
-        f.to_bits().hash(hasher);
-    } else if let Some(s) = expr.as_string() {
-        s.hash(hasher);
-    } else if let Some(s) = expr.as_atom() {
-        s.hash(hasher);
-    } else if let Some(items) = expr.as_sexpr() {
-        items.len().hash(hasher);
-        for item in items {
-            hash_value_recursive(item, hasher);
+    match expr.inner {
+        MettaValueInner::Unit => 0u8.hash(hasher),
+        MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
+        MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
+        MettaValueInner::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
+        MettaValueInner::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
+        MettaValueInner::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
+        MettaValueInner::SExpr(items) => {
+            7u8.hash(hasher);
+            items.len().hash(hasher);
+            for item in items.iter() {
+                hash_value_recursive(item, hasher);
+            }
         }
+        MettaValueInner::Error(..) => 8u8.hash(hasher),
+        MettaValueInner::Empty => 9u8.hash(hasher),
+        MettaValueInner::Quoted(inner) => {
+            10u8.hash(hasher);
+            "quote".hash(hasher);
+            hash_value_recursive(inner, hasher);
+        }
+        MettaValueInner::Spanned(inner, _span) => hash_value_recursive(inner, hasher),
+        _ => 10u8.hash(hasher), // Type, Conjunction, Space, State, Memo
     }
 }
 

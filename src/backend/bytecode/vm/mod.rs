@@ -37,7 +37,8 @@ use super::opcodes::Opcode;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::eval::bindings_generic::apply_bindings_generic;
 use crate::backend::models::{
-    numeric_equal_generic, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
+    numeric_equal_generic, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
+    SpaceHandle,
 };
 
 // === Submodules ===
@@ -637,28 +638,28 @@ where
                 // Both Bool(false) and Unit are falsy, aligning with
                 // tree-walker (generic_trampoline.rs:1891) and JIT
                 // (special_forms.rs:60) where Unit is also falsy.
-                if cond.as_bool() == Some(false) || cond.is_unit() {
+                if matches!(cond.inner_raw(), MettaValueInner::Bool(false) | MettaValueInner::Unit) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
             Opcode::JumpIfTrue => {
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(true) {
+                if matches!(cond.inner_raw(), MettaValueInner::Bool(true)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
             Opcode::JumpIfUnit => {
                 let offset = self.read_i16()?;
                 let value = self.pop()?;
-                if value.is_unit() {
+                if matches!(value.inner_raw(), MettaValueInner::Unit) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
             Opcode::JumpIfError => {
                 let offset = self.read_i16()?;
                 let value = self.peek()?;
-                if value.is_error() {
+                if matches!(value.inner_raw(), MettaValueInner::Error(..)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -670,14 +671,14 @@ where
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
                 // Both Bool(false) and Unit are falsy (consistent with JumpIfFalse).
-                if cond.as_bool() == Some(false) || cond.is_unit() {
+                if matches!(cond.inner_raw(), MettaValueInner::Bool(false) | MettaValueInner::Unit) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
             Opcode::JumpIfTrueShort => {
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(true) {
+                if matches!(cond.inner_raw(), MettaValueInner::Bool(true)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -858,42 +859,34 @@ where
             }
             Opcode::Trunc => {
                 let a = self.pop()?;
-                if let Some(x) = a.as_float() {
-                    self.push(self.make_long(x.trunc() as i64));
-                } else if a.as_long().is_some() {
-                    self.push(a);
-                } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                match a.inner_raw() {
+                    MettaValueInner::Float(x) => self.push(self.make_long(x.trunc() as i64)),
+                    MettaValueInner::Long(_) => self.push(a),
+                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
                 }
             }
             Opcode::Ceil => {
                 let a = self.pop()?;
-                if let Some(x) = a.as_float() {
-                    self.push(self.make_long(x.ceil() as i64));
-                } else if a.as_long().is_some() {
-                    self.push(a);
-                } else {
-                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
+                match a.inner_raw() {
+                    MettaValueInner::Float(x) => self.push(self.make_long(x.ceil() as i64)),
+                    MettaValueInner::Long(_) => self.push(a),
+                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
             Opcode::FloorMath => {
                 let a = self.pop()?;
-                if let Some(x) = a.as_float() {
-                    self.push(self.make_long(x.floor() as i64));
-                } else if a.as_long().is_some() {
-                    self.push(a);
-                } else {
-                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
+                match a.inner_raw() {
+                    MettaValueInner::Float(x) => self.push(self.make_long(x.floor() as i64)),
+                    MettaValueInner::Long(_) => self.push(a),
+                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
             Opcode::Round => {
                 let a = self.pop()?;
-                if let Some(x) = a.as_float() {
-                    self.push(self.make_long(x.round() as i64));
-                } else if a.as_long().is_some() {
-                    self.push(a);
-                } else {
-                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
+                match a.inner_raw() {
+                    MettaValueInner::Float(x) => self.push(self.make_long(x.round() as i64)),
+                    MettaValueInner::Long(_) => self.push(a),
+                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
             Opcode::Sin => self.op_unary_float(f64::sin)?,
@@ -904,22 +897,18 @@ where
             Opcode::Atan => self.op_unary_float(f64::atan)?,
             Opcode::IsNan => {
                 let a = self.pop()?;
-                if let Some(x) = a.as_float() {
-                    self.push(self.make_bool(x.is_nan()));
-                } else if a.as_long().is_some() {
-                    self.push(self.make_bool(false)); // integers are never NaN
-                } else {
-                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
+                match a.inner_raw() {
+                    MettaValueInner::Float(x) => self.push(self.make_bool(x.is_nan())),
+                    MettaValueInner::Long(_) => self.push(self.make_bool(false)),
+                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
             Opcode::IsInf => {
                 let a = self.pop()?;
-                if let Some(x) = a.as_float() {
-                    self.push(self.make_bool(x.is_infinite()));
-                } else if a.as_long().is_some() {
-                    self.push(self.make_bool(false)); // integers are never infinite
-                } else {
-                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
+                match a.inner_raw() {
+                    MettaValueInner::Float(x) => self.push(self.make_bool(x.is_infinite())),
+                    MettaValueInner::Long(_) => self.push(self.make_bool(false)),
+                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
 
@@ -1786,30 +1775,7 @@ where
 
     fn op_get_metatype(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        // Quoted is transparent to get-metatype: returns "Expression"
-        let metatype = if value.is_quoted() {
-            "Expression"
-        } else if value.as_sexpr().is_some() {
-            "Expression"
-        } else if value.is_variable() {
-            "Variable"
-        } else if value.as_atom().is_some() {
-            "Symbol"
-        } else if value.as_bool().is_some() {
-            "Bool"
-        } else if value.as_long().is_some() || value.as_float().is_some() {
-            "Number"
-        } else if value.as_string().is_some() {
-            "String"
-        } else if value.is_unit() {
-            "Unit"
-        } else if value.is_error() {
-            "Error"
-        } else if value.as_state().is_some() {
-            "State"
-        } else {
-            "Grounded"
-        };
+        let metatype = metatype_of(value.inner_raw());
         self.push(self.make_atom(metatype));
         Ok(())
     }
@@ -3180,35 +3146,24 @@ where
 
     /// Check if pattern matches value using trait methods.
     fn pattern_matches_generic(&self, pattern: &V, value: &V) -> bool {
-        // Variable matches anything
-        if pattern.is_variable() {
-            return true;
-        }
-
-        // Wildcard matches anything
-        if pattern.as_atom() == Some("_") {
-            return true;
-        }
-
-        // Check structural equality for non-expressions
-        if pattern.as_sexpr().is_none() && value.as_sexpr().is_none() {
-            return pattern.structurally_equivalent(value);
-        }
-
-        // Match s-expressions recursively
-        if let (Some(p_items), Some(v_items)) = (pattern.as_sexpr(), value.as_sexpr()) {
-            if p_items.len() != v_items.len() {
-                return false;
-            }
-            for (p, v) in p_items.iter().zip(v_items.iter()) {
-                if !self.pattern_matches_generic(p, v) {
-                    return false;
+        match pattern.inner_raw() {
+            MettaValueInner::Atom(s) if s.starts_with('$') || *s == "_" => true,
+            MettaValueInner::SExpr(_) => {
+                if let Some(v_items) = value.as_sexpr() {
+                    let p_items = pattern.as_sexpr().expect("matched SExpr");
+                    p_items.len() == v_items.len()
+                        && p_items.iter().zip(v_items.iter())
+                            .all(|(p, v)| self.pattern_matches_generic(p, v))
+                } else {
+                    false
                 }
             }
-            return true;
+            MettaValueInner::Spanned(..) => {
+                let stripped = pattern.strip_one_span();
+                self.pattern_matches_generic(&stripped, value)
+            }
+            _ => pattern.structurally_equivalent(value),
         }
-
-        false
     }
 
     /// Pattern match with binding extraction.
@@ -3227,38 +3182,34 @@ where
         value: &V,
         bindings: &mut Vec<(String, V)>,
     ) -> bool {
-        // Variable captures value
-        if pattern.is_variable() {
-            if let Some(name) = pattern.as_atom() {
-                bindings.push((name.to_string(), value.clone()));
+        match pattern.inner_raw() {
+            MettaValueInner::Atom(s) if s.starts_with('$') => {
+                bindings.push((s.to_string(), value.clone()));
+                true
             }
-            return true;
-        }
-
-        // Wildcard matches but doesn't bind
-        if pattern.as_atom() == Some("_") {
-            return true;
-        }
-
-        // Non-expressions must match exactly
-        if pattern.as_sexpr().is_none() && value.as_sexpr().is_none() {
-            return pattern.structurally_equivalent(value);
-        }
-
-        // Match s-expressions recursively
-        if let (Some(p_items), Some(v_items)) = (pattern.as_sexpr(), value.as_sexpr()) {
-            if p_items.len() != v_items.len() {
-                return false;
-            }
-            for (p, v) in p_items.iter().zip(v_items.iter()) {
-                if !self.pattern_match_bind_recursive(p, v, bindings) {
-                    return false;
+            MettaValueInner::Atom(s) if *s == "_" => true,
+            MettaValueInner::SExpr(_) => {
+                if let Some(v_items) = value.as_sexpr() {
+                    let p_items = pattern.as_sexpr().expect("matched SExpr");
+                    if p_items.len() != v_items.len() {
+                        return false;
+                    }
+                    for (p, v) in p_items.iter().zip(v_items.iter()) {
+                        if !self.pattern_match_bind_recursive(p, v, bindings) {
+                            return false;
+                        }
+                    }
+                    true
+                } else {
+                    false
                 }
             }
-            return true;
+            MettaValueInner::Spanned(..) => {
+                let stripped = pattern.strip_one_span();
+                self.pattern_match_bind_recursive(&stripped, value, bindings)
+            }
+            _ => pattern.structurally_equivalent(value),
         }
-
-        false
     }
 
     /// Unification with binding extraction.
@@ -3272,39 +3223,45 @@ where
     }
 
     fn unify_recursive(&self, a: &V, b: &V, bindings: &mut Vec<(String, V)>) -> bool {
-        // Variables unify with anything
-        if a.is_variable() {
-            if let Some(name) = a.as_atom() {
+        // Check if a is a variable
+        if let MettaValueInner::Atom(name) = a.inner_raw() {
+            if name.starts_with('$') {
                 bindings.push((name.to_string(), b.clone()));
+                return true;
             }
-            return true;
         }
-        if b.is_variable() {
-            if let Some(name) = b.as_atom() {
+        // Check if b is a variable
+        if let MettaValueInner::Atom(name) = b.inner_raw() {
+            if name.starts_with('$') {
                 bindings.push((name.to_string(), a.clone()));
+                return true;
             }
-            return true;
         }
 
-        // Non-expressions must match
-        if a.as_sexpr().is_none() && b.as_sexpr().is_none() {
-            return a.structurally_equivalent(b);
-        }
-
-        // Unify s-expressions recursively
-        if let (Some(a_items), Some(b_items)) = (a.as_sexpr(), b.as_sexpr()) {
-            if a_items.len() != b_items.len() {
-                return false;
-            }
-            for (x, y) in a_items.iter().zip(b_items.iter()) {
-                if !self.unify_recursive(x, y, bindings) {
-                    return false;
+        // Dispatch on a's variant
+        match a.inner_raw() {
+            MettaValueInner::SExpr(_) => {
+                if let Some(b_items) = b.as_sexpr() {
+                    let a_items = a.as_sexpr().expect("matched SExpr");
+                    if a_items.len() != b_items.len() {
+                        return false;
+                    }
+                    for (x, y) in a_items.iter().zip(b_items.iter()) {
+                        if !self.unify_recursive(x, y, bindings) {
+                            return false;
+                        }
+                    }
+                    true
+                } else {
+                    false
                 }
             }
-            return true;
+            MettaValueInner::Spanned(..) => {
+                let stripped = a.strip_one_span();
+                self.unify_recursive(&stripped, b, bindings)
+            }
+            _ => a.structurally_equivalent(b),
         }
-
-        false
     }
 }
 
@@ -3357,6 +3314,30 @@ where
     #[cfg(test)]
     pub fn memo_cache_stats(&self) -> super::generic_memo_cache::GenericCacheStats {
         self.memo_cache.stats()
+    }
+}
+
+// ============================================================================
+// Free Helper Functions
+// ============================================================================
+
+/// Map a `MettaValueInner` variant to its MeTTa metatype string.
+///
+/// Used by `op_get_metatype` (VM) and the generic trampoline's get-metatype
+/// continuation. Handles `Spanned` by recursing on the inner value.
+fn metatype_of(inner: &MettaValueInner) -> &'static str {
+    match inner {
+        MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
+        MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
+        MettaValueInner::Atom(_) => "Symbol",
+        MettaValueInner::Bool(_) => "Bool",
+        MettaValueInner::Long(_) | MettaValueInner::Float(_) => "Number",
+        MettaValueInner::String(_) => "String",
+        MettaValueInner::Unit => "Unit",
+        MettaValueInner::Error(..) => "Error",
+        MettaValueInner::State(_) => "State",
+        MettaValueInner::Spanned(inner, _span) => metatype_of(inner.inner_raw()),
+        _ => "Grounded",
     }
 }
 

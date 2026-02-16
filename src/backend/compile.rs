@@ -29,22 +29,36 @@ where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
 {
-    match expr {
-        MettaExpr::Atom(s, _span) => {
-            // Parse literals (MeTTa uses capitalized True/False per hyperon-experimental)
-            match s.as_str() {
-                "True" => Ok(factory.bool(true)),
-                "False" => Ok(factory.bool(false)),
-                _ => Ok(factory.atom(s)),
-            }
+    /// Optionally wrap a value in Spanned if a span is present.
+    #[inline]
+    fn maybe_spanned<V, F>(factory: &F, value: V, span: &Option<crate::ir::Span>) -> V
+    where
+        V: MettaValueTrait + Clone,
+        F: MettaValueFactory<V>,
+    {
+        match span {
+            Some(s) => factory.spanned(value, *s),
+            None => value,
         }
-        MettaExpr::String(s, _span) => Ok(factory.string(s)),
-        MettaExpr::Integer(n, _span) => Ok(factory.long(*n)),
-        MettaExpr::Float(f, _span) => Ok(factory.float(*f)),
-        MettaExpr::List(items, _span) => {
+    }
+
+    match expr {
+        MettaExpr::Atom(s, span) => {
+            // Parse literals (MeTTa uses capitalized True/False per hyperon-experimental)
+            let value = match s.as_str() {
+                "True" => factory.bool(true),
+                "False" => factory.bool(false),
+                _ => factory.atom(s),
+            };
+            Ok(maybe_spanned(factory, value, span))
+        }
+        MettaExpr::String(s, span) => Ok(maybe_spanned(factory, factory.string(s), span)),
+        MettaExpr::Integer(n, span) => Ok(maybe_spanned(factory, factory.long(*n), span)),
+        MettaExpr::Float(f, span) => Ok(maybe_spanned(factory, factory.float(*f), span)),
+        MettaExpr::List(items, span) => {
             if items.is_empty() {
                 // HE-compatible: () is an empty S-expression, not unit
-                Ok(factory.sexpr(vec![]))
+                Ok(maybe_spanned(factory, factory.sexpr(vec![]), span))
             } else {
                 // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
                 let is_conjunction = items
@@ -57,7 +71,7 @@ where
                         .iter()
                         .map(|e| expr_to_value_generic(e, factory))
                         .collect();
-                    Ok(factory.conjunction(goals?))
+                    Ok(maybe_spanned(factory, factory.conjunction(goals?), span))
                 } else {
                     // Check for (quote expr) → Quoted(expr) variant
                     let is_quote = items.len() == 2
@@ -65,14 +79,14 @@ where
 
                     if is_quote {
                         let inner = expr_to_value_generic(&items[1], factory)?;
-                        Ok(factory.quote(inner))
+                        Ok(maybe_spanned(factory, factory.quote(inner), span))
                     } else {
                         // Regular S-expression
                         let values: Result<Vec<V>, String> = items
                             .iter()
                             .map(|e| expr_to_value_generic(e, factory))
                             .collect();
-                        Ok(factory.sexpr(values?))
+                        Ok(maybe_spanned(factory, factory.sexpr(values?), span))
                     }
                 }
             }
@@ -556,6 +570,174 @@ mod tests {
         } else {
             panic!("Expected error, got: {:?}", results[0]);
         }
+    }
+
+    // =========================================================================
+    // Span Tracking Tests
+    // =========================================================================
+
+    #[test]
+    fn test_compile_span_on_atom() {
+        // Source:  "$x"
+        // Offsets: 0123
+        let state = compile("$x").unwrap();
+        let val = {let s = state.source(); s[0]};
+
+        // Value should be a Spanned atom
+        assert!(val.is_spanned(), "compiled atom should have a span");
+        let span = val.span().expect("atom should carry a span");
+        assert_eq!(span.start.row, 0);
+        assert_eq!(span.start.column, 0);
+        assert_eq!(span.end.row, 0);
+        assert_eq!(span.end.column, 2);
+        assert_eq!(span.start.byte_offset, 0);
+        assert_eq!(span.end.byte_offset, 2);
+
+        // inner() should strip the Spanned wrapper transparently
+        assert!(val.is_atom());
+        assert_eq!(val.as_atom(), Some("$x"));
+    }
+
+    #[test]
+    fn test_compile_span_on_integer() {
+        // Source:  "42"
+        // Offsets: 01
+        let state = compile("42").unwrap();
+        let val = {let s = state.source(); s[0]};
+
+        assert!(val.is_spanned());
+        let span = val.span().expect("integer should carry a span");
+        assert_eq!(span.start.byte_offset, 0);
+        assert_eq!(span.end.byte_offset, 2);
+        assert!(val.is_long());
+        assert_eq!(val.as_long(), Some(42));
+    }
+
+    #[test]
+    fn test_compile_span_on_string() {
+        // Source:  '"hello"'
+        // Offsets: 0123456
+        let state = compile("\"hello\"").unwrap();
+        let val = {let s = state.source(); s[0]};
+
+        assert!(val.is_spanned());
+        let span = val.span().expect("string should carry a span");
+        assert_eq!(span.start.byte_offset, 0);
+        assert_eq!(span.end.byte_offset, 7);
+        assert!(val.is_string());
+        assert_eq!(val.as_string(), Some("hello"));
+    }
+
+    #[test]
+    fn test_compile_span_on_sexpr() {
+        // Source:  "(+ 1 2)"
+        // Offsets: 0123456
+        let state = compile("(+ 1 2)").unwrap();
+        let val = {let s = state.source(); s[0]};
+
+        // Outer expression should have a span covering the full S-expression
+        assert!(val.is_spanned());
+        let span = val.span().expect("sexpr should carry a span");
+        assert_eq!(span.start.byte_offset, 0);
+        assert_eq!(span.end.byte_offset, 7);
+
+        // Inner items should also have spans
+        if let MettaValueInner::SExpr(items) = val.inner() {
+            // "+" at offset 1
+            assert!(items[0].is_spanned(), "operator atom should have a span");
+            let op_span = items[0].span().expect("+ should have a span");
+            assert_eq!(op_span.start.byte_offset, 1);
+            assert_eq!(op_span.end.byte_offset, 2);
+
+            // "1" at offset 3
+            let one_span = items[1].span().expect("1 should have a span");
+            assert_eq!(one_span.start.byte_offset, 3);
+            assert_eq!(one_span.end.byte_offset, 4);
+
+            // "2" at offset 5
+            let two_span = items[2].span().expect("2 should have a span");
+            assert_eq!(two_span.start.byte_offset, 5);
+            assert_eq!(two_span.end.byte_offset, 6);
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+
+    #[test]
+    fn test_compile_span_on_prefix_operator() {
+        // Source:  "!(+ 1 2)"
+        // Offsets: 012345678
+        let state = compile("!(+ 1 2)").unwrap();
+        let val = {let s = state.source(); s[0]};
+
+        // Outer span should cover the full "!(+ 1 2)"
+        assert!(val.is_spanned());
+        let span = val.span().expect("prefix expr should carry a span");
+        assert_eq!(span.start.byte_offset, 0);
+        assert_eq!(span.end.byte_offset, 8);
+
+        // Inner structure: (! (+ 1 2))
+        if let MettaValueInner::SExpr(items) = val.inner() {
+            // "!" operator at offset 0
+            let bang_span = items[0].span().expect("! should have a span");
+            assert_eq!(bang_span.start.byte_offset, 0);
+            assert_eq!(bang_span.end.byte_offset, 1);
+
+            // "(+ 1 2)" at offsets 1-8
+            let inner_span = items[1].span().expect("inner sexpr should have a span");
+            assert_eq!(inner_span.start.byte_offset, 1);
+            assert_eq!(inner_span.end.byte_offset, 8);
+        } else {
+            panic!("Expected SExpr for prefix operator");
+        }
+    }
+
+    #[test]
+    fn test_compile_span_multiline() {
+        // Source:
+        //   line 0: "(+ 1 2)\n"  (bytes 0-7, newline at 7)
+        //   line 1: "(* 3 4)"    (bytes 8-14)
+        let state = compile("(+ 1 2)\n(* 3 4)").unwrap();
+        let src = state.source();
+
+        let span0 = src[0].span().expect("first expr should have a span");
+        assert_eq!(span0.start.row, 0);
+        assert_eq!(span0.start.column, 0);
+        assert_eq!(span0.end.row, 0);
+        assert_eq!(span0.end.column, 7);
+
+        let span1 = src[1].span().expect("second expr should have a span");
+        assert_eq!(span1.start.row, 1);
+        assert_eq!(span1.start.column, 0);
+        assert_eq!(span1.end.row, 1);
+        assert_eq!(span1.end.column, 7);
+    }
+
+    #[test]
+    fn test_compile_span_transparent_equality() {
+        // Spanned values should equal non-spanned values (span-transparent equality)
+        let state = compile("42").unwrap();
+        let val = {let s = state.source(); s[0]};
+
+        // val is Spanned(Long(42), span) but should equal bare Long(42)
+        assert_eq!(val, MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_compile_span_on_quote_prefix() {
+        // Source:  "'foo"
+        // Offsets: 0123
+        let state = compile("'foo").unwrap();
+        let val = {let s = state.source(); s[0]};
+
+        // Should be Spanned(Quoted(Spanned(Atom("foo"), ...)), full_span)
+        assert!(val.is_spanned());
+        let span = val.span().expect("quoted value should have a span");
+        assert_eq!(span.start.byte_offset, 0);
+        assert_eq!(span.end.byte_offset, 4);
+
+        // inner() strips Spanned → should see Quoted
+        assert!(val.is_quoted());
     }
 
     // =========================================================================

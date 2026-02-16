@@ -180,6 +180,7 @@ fn format_result(value: &MettaValue) -> String {
         MettaValueInner::Quoted(inner) => format!("(quote {})", format_result(inner)),
         MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
         MettaValueInner::Empty => "Empty".to_string(),
+        MettaValueInner::Spanned(_, _) => unreachable!("inner() strips Spanned"),
     }
 }
 

@@ -18,6 +18,10 @@
  *   8. Page release: empty pages are munmap'd after GC frees all their slots.
  *      Free-list entries from released pages are filtered via atomic drain +
  *      rebuild of the Treiber stack (zero hot-path overhead).
+ *   9. Session-based GC: per-eval session context IDs, bulk release of session
+ *      values on eval completion, root tracing for surviving set promotion.
+ *  10. GC reachability heartbeat: cron backpressure gated on GC lifecycle
+ *      reachability to prevent permanent throttling in library/test code.
  *
  * ROOT SET MODEL:
  *
@@ -38,6 +42,26 @@
  *
  *   This model VERIFIES this invariant (SnapshotCapturesAllRoots) rather
  *   than assuming it.
+ *
+ * SESSION-BASED GC MODEL:
+ *
+ *   Each top-level eval creates a SessionGuard with a unique context ID
+ *   (1..MaxContextIds, monotonically increasing). All allocations
+ *   during that eval are tagged with the session's context ID. On eval
+ *   completion (SessionGuard::drop), the context ID is enqueued for async
+ *   release by a background thread (session_release_thread_main).
+ *
+ *   The session release thread:
+ *     1. Waits for quiescence (ACTIVE_EVALUATORS == 0)
+ *     2. Acquires GC_IN_PROGRESS via CAS (try_enter)
+ *     3. Double-checks quiescence
+ *     4. Traces surviving set (root scan)
+ *     5. Releases GC_IN_PROGRESS
+ *     6. For each released session: promotes surviving values to ctx=0,
+ *        frees non-surviving session values
+ *
+ *   This model captures the session lifecycle, mutual exclusion with
+ *   quiescent GC on GC_IN_PROGRESS, and the surviving set promotion.
  *
  * MEMORY PRESSURE MODEL:
  *
@@ -86,8 +110,22 @@
  *   Tier 1 is not modeled explicitly since TLA+ doesn't model time — the
  *   slowdown effect is captured abstractly by the Tier 2 blocking.
  *
- *   ProcessGcResponse decrements backpressureLevel by 1 for immediate feedback
- *   (instead of waiting up to 100ms for the next cron poll).
+ *   ProcessGcResponse recomputes backpressureLevel from the new committed/
+ *   threshold ratio for immediate feedback (matching Rust lines 2030-2035)
+ *   instead of waiting up to 100ms for the next cron poll.
+ *
+ * GC REACHABILITY HEARTBEAT:
+ *
+ *   The cron monitor only escalates backpressure when the GC lifecycle is
+ *   reachable — i.e., code paths are calling maybe_quiescent_gc() and
+ *   maybe_process_gc_response(). If the reachable counter hasn't advanced
+ *   since the last poll, backpressure is set to 0 to avoid permanent
+ *   throttling in library/test code.
+ *
+ *   This model captures gcReachableAdvanced as a BOOLEAN that is set to
+ *   TRUE by TryQuiescentGc_AcquireFlag, ProcessGcResponse, and
+ *   SessionGc_TraceAndRelease (the three code paths that call
+ *   bump_gc_reachable()), and reset to FALSE by CronMonitorPoll.
  *
  * PAGE RELEASE MODEL:
  *
@@ -130,7 +168,10 @@
  *     if GC_CYCLE_IN_FLIGHT { return }    // at most one cycle
  *     if ACTIVE_EVALUATORS > 0 { return }
  *     if !CAS(GC_REQUESTED, true, false) { return }
- *     GC_IN_PROGRESS = true
+ *     if !CAS(GC_IN_PROGRESS, false, true) {  // try_enter()
+ *       GC_REQUESTED = true               // re-arm
+ *       return
+ *     }
  *     if ACTIVE_EVALUATORS > 0 {          // double-check
  *       GC_IN_PROGRESS = false
  *       GC_REQUESTED = true               // re-arm
@@ -139,6 +180,14 @@
  *     GC_CYCLE_IN_FLIGHT = true
  *     trigger_gc_cycle()                  // build snapshot, send to GC thread
  *     GC_IN_PROGRESS = false
+ *
+ *   session_release_thread_main():
+ *     wait(ACTIVE_EVALUATORS == 0)
+ *     if !CAS(GC_IN_PROGRESS, false, true) { retry }
+ *     if ACTIVE_EVALUATORS > 0 { GC_IN_PROGRESS = false; retry }
+ *     surviving = trace_surviving_set()
+ *     GC_IN_PROGRESS = false
+ *     for ctx in batch: release_session(ctx, surviving)
  *
  * KEY DESIGN DECISIONS:
  *
@@ -151,6 +200,14 @@
  *     - EvalGuardEnter_Increment (incrementing activeEvaluators)
  *     - EvalGuardEnter_BackOff (decrementing after seeing gcInProgressFlag)
  *   This models the real interleaving window in the Rust implementation.
+ *
+ *   SessionGc is modeled as SIX atomic steps to expose interleavings:
+ *     1. WaitQuiescent: session queue non-empty, ACTIVE_EVALUATORS == 0
+ *     2. AcquireFlag:   CAS GC_IN_PROGRESS false→true (try_enter succeeds)
+ *     3. AcquireFail:   CAS fails (quiescent GC holds the flag)
+ *     4. TraceAndRelease: double-check OK, trace roots, release flag
+ *     5. DoubleCheckFail: eval snuck in, release flag, retry
+ *     6. FreeSession:   free non-surviving values from one session
  *
  * INVARIANT NOTES:
  *
@@ -193,6 +250,11 @@
  *
  *   ReleasedPagesAreEmpty: all slots on released pages are freed or unbumped.
  *
+ *   ContextIdConsistency: all allocated slots have valid context IDs.
+ *
+ *   SessionGcExcludesQuiescentGc: mutual exclusion — no thread can be in
+ *     "gc_acquire" while session GC holds GC_IN_PROGRESS.
+ *
  * FAIRNESS NOTES:
  *
  *   Strong fairness (SF) is used for four action groups:
@@ -215,6 +277,11 @@
  *      enter/backoff cycles. In reality, GC_IN_PROGRESS is held for
  *      sub-millisecond, so forward progress is always achieved.
  *
+ *   4. SessionGc_TraceAndRelease / DoubleCheckFail — same pattern as
+ *      quiescent GC: enabled when activeEvaluators=0 but briefly disabled
+ *      by EvalGuardEnter_Increment. SF ensures session GC eventually
+ *      completes root tracing.
+ *
  * RELATIONSHIP TO SlabGC_Reactive:
  *   SlabGC_Reactive models single-thread GC with quiescent points.
  *   This model generalizes to multiple threads with lock-free coordination.
@@ -235,14 +302,18 @@ CONSTANTS
     MinGcThreshold,     \* Minimum GC threshold (slot count)
                         \* Models MIN_GC_THRESHOLD from gc_allocator.rs
                         \* gc_threshold never drops below this value
-    SlotsPerPage        \* Number of slots per page (e.g., 2)
+    SlotsPerPage,       \* Number of slots per page (e.g., 2)
                         \* Models PAGE_SIZE / slot_size in gc_allocator.rs
+    MaxContextIds       \* Session context IDs: {0=persistent, 1..MaxContextIds=sessions}
+                        \* Set to 1 for minimal state space (persistent vs one session)
+                        \* Models NEXT_CONTEXT_ID: AtomicU32 from gc_allocator.rs
 
 \* Maximum backpressure level (fixed, not a CONSTANT — mirrors MAX_BACKPRESSURE: u8 = 3)
 MAX_BP == 3
 
 Threads == 1..NumEvalThreads
 Slots == 1..MaxSlots
+ContextIds == 0..MaxContextIds  \* 0 = persistent, 1..MaxContextIds = session
 
 \* Number of pages (ceiling division)
 NumPages == (MaxSlots + SlotsPerPage - 1) \div SlotsPerPage
@@ -285,6 +356,40 @@ VARIABLES
     slotEpoch,          \* [Slots -> Nat] — epoch of last free-list alloc
 
     (*---------------------------------------------------------------*)
+    (* Session Context State                                         *)
+    (*---------------------------------------------------------------*)
+    slotContextId,      \* [Slots -> 0..MaxContextIds] — per-slot session context ID
+                        \* 0 = persistent (never released by session GC)
+                        \* >0 = session allocation (released on session drop)
+                        \* Models context_ids Vec<AtomicU32> in ValuePage
+    threadContextId,    \* [Threads -> 0..MaxContextIds] — per-thread active session
+                        \* Models THREAD_CONTEXT_ID: thread_local Cell<u32>
+                        \* 0 when no session is active
+    nextContextId,      \* 1..(MaxContextIds+1) — monotonic counter for session IDs
+                        \* Models NEXT_CONTEXT_ID: AtomicU32 (wraps, skips 0)
+
+    (*---------------------------------------------------------------*)
+    (* Session GC State                                              *)
+    (*---------------------------------------------------------------*)
+    sessionReleaseQueue,\* SUBSET(1..MaxContextIds) — pending session releases
+    sessionBatch,       \* SUBSET(1..MaxContextIds) — frozen batch from WaitQuiescent
+                        \* Captures which sessions to free in this cycle.
+                        \* New sessions added during freeing go to next cycle.
+                        \* Models mpsc channel to session_release_thread_main
+    sessionGcPhase,     \* "idle" | "waiting" | "acquired" | "freeing"
+                        \* Models the session release thread's state machine
+    sessionSurviving,   \* SUBSET(Slots) — surviving set from root trace
+                        \* Models trace_surviving_set() result
+
+    (*---------------------------------------------------------------*)
+    (* GC Reachability Heartbeat                                     *)
+    (*---------------------------------------------------------------*)
+    gcReachableAdvanced,\* BOOLEAN — did GC lifecycle advance since last cron poll?
+                        \* Models GC_REACHABLE_COUNTER comparison in gc_cron.rs
+                        \* Set TRUE by quiescent GC acquire, ProcessGcResponse,
+                        \* and session GC trace. Reset FALSE by CronMonitorPoll.
+
+    (*---------------------------------------------------------------*)
     (* Memory Pressure Statistics                                    *)
     (*---------------------------------------------------------------*)
     allocsSinceLastPoll,\* Nat — allocations since last cron monitor poll
@@ -308,7 +413,7 @@ VARIABLES
                         \*   1 = light (>= threshold) — yield
                         \*   2 = medium (>= 1.5x threshold) — sleep(10us)
                         \*   3 = heavy (>= 2x threshold) — sleep(100us)
-                        \* Decremented by ProcessGcResponse for faster feedback.
+                        \* Recomputed by ProcessGcResponse for faster feedback.
 
     (*---------------------------------------------------------------*)
     (* Page Release State                                            *)
@@ -343,11 +448,19 @@ VARIABLES
 
 vars == <<threadPhase, threadExprs, stackRoots, activeEvaluators,
           gcInProgressFlag, gcRequested, slotState, bumpPtr, freeSet,
-          registeredRoots, epoch, slotEpoch, allocsSinceLastPoll,
+          registeredRoots, epoch, slotEpoch,
+          slotContextId, threadContextId, nextContextId,
+          sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+          gcReachableAdvanced,
+          allocsSinceLastPoll,
           gcThreshold, backpressureLevel, releasedPages,
           hasGcRequest, snapSlotState,
           snapBumpPtr, snapFreeSet, snapRoots, snapEpoch, hasGcResponse,
           respDeadSet, respLiveCount, respEpoch, gcPhase, gcMarked>>
+
+\* Convenience: all session GC variables for UNCHANGED clauses
+sessionVars == <<slotContextId, threadContextId, nextContextId,
+                 sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving>>
 
 (*=======================================================================*)
 (* Helpers                                                               *)
@@ -384,6 +497,21 @@ PageIsEmpty(p) ==
     /\ \A s \in SlotsInPage(p) :
         s >= bumpPtr \/ slotState[s] = "freed"  \* all bumped slots are freed
 
+\* Upper bound on epoch for TypeOK.
+\* +1 for the session GC sentinel epoch (MaxEpoch + 1 models u64::MAX).
+\* Defined here (in Helpers) because SessionGc_FreeSession uses MaxEpoch + 1.
+MaxEpoch == MaxSlots * (MaxExprs + 2) * MaxRoots * NumEvalThreads + 1
+
+\* Compute backpressure level from committed/threshold ratio.
+\* Shared helper used by both CronMonitorPoll and ProcessGcResponse.
+ComputeBackpressure(committed, threshold) ==
+    IF threshold > 0
+    THEN IF committed >= threshold * 2 THEN 3
+         ELSE IF committed >= (threshold * 3) \div 2 THEN 2
+         ELSE IF committed >= threshold THEN 1
+         ELSE 0
+    ELSE 0
+
 (*=======================================================================*)
 (* Initial State                                                         *)
 (*=======================================================================*)
@@ -401,6 +529,14 @@ Init ==
     /\ registeredRoots = {}
     /\ epoch = 0
     /\ slotEpoch = [s \in Slots |-> 0]
+    /\ slotContextId = [s \in Slots |-> 0]
+    /\ threadContextId = [t \in Threads |-> 0]
+    /\ nextContextId = 1
+    /\ sessionReleaseQueue = {}
+    /\ sessionBatch = {}
+    /\ sessionGcPhase = "idle"
+    /\ sessionSurviving = {}
+    /\ gcReachableAdvanced = FALSE
     /\ allocsSinceLastPoll = 0
     /\ gcThreshold = MinGcThreshold
     /\ backpressureLevel = 0
@@ -425,6 +561,10 @@ Init ==
 (*-----------------------------------------------------------------------*)
 (* EvalGuardEnter_Increment: Thread increments ACTIVE_EVALUATORS.        *)
 (* First step of EvalGuard::enter(). Thread transitions to "entering".   *)
+(*                                                                        *)
+(* Context ID is NOT assigned here — it's assigned in Proceed to avoid   *)
+(* leaking IDs on BackOff. This matches Rust where the SessionGuard is   *)
+(* created only when eval actually starts.                                *)
 (*-----------------------------------------------------------------------*)
 EvalGuardEnter_Increment(t) ==
     /\ threadPhase[t] = "idle"
@@ -433,7 +573,10 @@ EvalGuardEnter_Increment(t) ==
     /\ threadPhase' = [threadPhase EXCEPT ![t] = "entering"]
     /\ UNCHANGED <<threadExprs, stackRoots, gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -443,14 +586,26 @@ EvalGuardEnter_Increment(t) ==
 (*-----------------------------------------------------------------------*)
 (* EvalGuardEnter_Proceed: Thread checks GC_IN_PROGRESS is clear.       *)
 (* Safe to proceed -> transitions to "eval".                              *)
+(*                                                                        *)
+(* SESSION CONTEXT: Assigns a new session context ID to the thread.      *)
+(* Models SessionGuard::new() which atomically fetches NEXT_CONTEXT_ID.  *)
+(* Assigned here (not in _Increment) so BackOff doesn't leak IDs.       *)
+(* IDs are monotonically increasing (matching Rust's AtomicU64), never   *)
+(* wrap — preventing aliasing with pending session releases.             *)
 (*-----------------------------------------------------------------------*)
 EvalGuardEnter_Proceed(t) ==
     /\ threadPhase[t] = "entering"
     /\ ~gcInProgressFlag
     /\ threadPhase' = [threadPhase EXCEPT ![t] = "eval"]
+    \* Assign session context ID (models SessionGuard::new())
+    /\ threadContextId' = [threadContextId EXCEPT ![t] = nextContextId]
+    /\ nextContextId' = nextContextId + 1   \* Monotonic, no wrapping
     /\ UNCHANGED <<threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested, slotState, bumpPtr,
                    freeSet, registeredRoots, epoch, slotEpoch,
+                   slotContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
                    allocsSinceLastPoll, gcThreshold, backpressureLevel,
                    releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
@@ -461,6 +616,7 @@ EvalGuardEnter_Proceed(t) ==
 (*-----------------------------------------------------------------------*)
 (* EvalGuardEnter_BackOff: Thread sees GC_IN_PROGRESS is set.            *)
 (* Back off: decrement counter, return to "idle" to retry.               *)
+(* No context ID was assigned (it's assigned in Proceed, not Increment). *)
 (*-----------------------------------------------------------------------*)
 EvalGuardEnter_BackOff(t) ==
     /\ threadPhase[t] = "entering"
@@ -470,7 +626,10 @@ EvalGuardEnter_BackOff(t) ==
     /\ threadPhase' = [threadPhase EXCEPT ![t] = "idle"]
     /\ UNCHANGED <<threadExprs, stackRoots, gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -485,6 +644,9 @@ EvalGuardEnter_BackOff(t) ==
 (* This models eval_trampoline() returning results that the caller        *)
 (* stores in MettaState.output (a registered root provider).              *)
 (* Some values may also be dropped (non-deterministic subset transfer).   *)
+(*                                                                        *)
+(* SESSION RELEASE: Clears the thread's context ID and enqueues the      *)
+(* session for async release (models SessionGuard::drop).                *)
 (*-----------------------------------------------------------------------*)
 EvalGuardDrop(t) ==
     /\ threadPhase[t] = "eval"
@@ -497,8 +659,18 @@ EvalGuardDrop(t) ==
     /\ \E surviving \in SUBSET stackRoots[t] :
         /\ registeredRoots' = registeredRoots \union surviving
         /\ stackRoots' = [stackRoots EXCEPT ![t] = {}]
+    \* Session release: clear context ID, enqueue for async release
+    /\ LET ctxId == threadContextId[t]
+       IN /\ threadContextId' = [threadContextId EXCEPT ![t] = 0]
+          /\ sessionReleaseQueue' =
+              IF ctxId > 0
+              THEN sessionReleaseQueue \union {ctxId}
+              ELSE sessionReleaseQueue
     /\ UNCHANGED <<gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, epoch, slotEpoch,
+                   slotContextId, nextContextId,
+                   sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
                    allocsSinceLastPoll, gcThreshold, backpressureLevel,
                    releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
@@ -518,6 +690,9 @@ EvalGuardDrop(t) ==
 (* Also increments allocsSinceLastPoll — this tracks the allocation rate *)
 (* delta that the cron monitor uses to detect allocation pressure.        *)
 (*                                                                        *)
+(* SESSION CONTEXT: Tags the allocated slot with the thread's current     *)
+(* session context ID (models page.set_context_id(idx, ctx_id)).         *)
+(*                                                                        *)
 (* PAGE RELEASE SAFETY: The bump allocation path includes a guard that   *)
 (* the target page has not been released. This is a safety assertion     *)
 (* (should always hold) since bump allocation only advances forward and  *)
@@ -535,6 +710,7 @@ AllocateSlot(t) ==
                /\ stackRoots' = [stackRoots EXCEPT ![t] = stackRoots[t] \union {s}]
                /\ epoch' = epoch + 1
                /\ slotEpoch' = [slotEpoch EXCEPT ![s] = epoch + 1]
+               /\ slotContextId' = [slotContextId EXCEPT ![s] = threadContextId[t]]
        ELSE LET s == bumpPtr
             IN /\ PageOf(s) \notin releasedPages  \* Safety: never bump into released page
                /\ slotState' = [slotState EXCEPT ![s] = "alloc"]
@@ -543,9 +719,13 @@ AllocateSlot(t) ==
                /\ stackRoots' = [stackRoots EXCEPT ![t] = stackRoots[t] \union {s}]
                /\ epoch' = epoch
                /\ slotEpoch' = slotEpoch
+               /\ slotContextId' = [slotContextId EXCEPT ![s] = threadContextId[t]]
     /\ allocsSinceLastPoll' = allocsSinceLastPoll + 1
     /\ UNCHANGED <<threadPhase, threadExprs, activeEvaluators,
                    gcInProgressFlag, gcRequested, registeredRoots,
+                   threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
                    gcThreshold, backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
@@ -564,7 +744,10 @@ DropStackRoot(t) ==
     /\ UNCHANGED <<threadPhase, threadExprs, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -586,6 +769,9 @@ PublishRoot(t) ==
     /\ UNCHANGED <<threadPhase, threadExprs, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, epoch, slotEpoch,
+                   slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
                    allocsSinceLastPoll, gcThreshold, backpressureLevel,
                    releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
@@ -605,6 +791,9 @@ DropRegisteredRoot(t) ==
     /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, epoch, slotEpoch,
+                   slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
                    allocsSinceLastPoll, gcThreshold, backpressureLevel,
                    releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
@@ -642,6 +831,11 @@ DropRegisteredRoot(t) ==
 (*   Level 2: committed >= gcThreshold * 3/2   — sleep(10us)             *)
 (*   Level 3: committed >= gcThreshold * 2     — sleep(100us)            *)
 (*                                                                        *)
+(* GC REACHABILITY GATING: Backpressure is only escalated when the GC    *)
+(* lifecycle is reachable (gcReachableAdvanced = TRUE). If no code path   *)
+(* is calling maybe_quiescent_gc() / maybe_process_gc_response(), we set *)
+(* backpressure to 0 to avoid permanent throttling.                       *)
+(*                                                                        *)
 (* The poll fires non-deterministically (TLA+ doesn't model real time).   *)
 (* WF(CronMonitorPoll) ensures it fires when continuously enabled.        *)
 (* It is enabled as long as at least one thread has not terminated.        *)
@@ -655,18 +849,18 @@ CronMonitorPoll ==
           THEN gcRequested' = TRUE
           ELSE gcRequested' = gcRequested
     /\ allocsSinceLastPoll' = 0
-    \* Compute backpressure level based on committed/threshold ratio
+    \* Compute backpressure level, gated on GC reachability
     /\ backpressureLevel' =
-        IF gcThreshold > 0
-        THEN IF CommittedSlotCount >= gcThreshold * 2 THEN 3
-             ELSE IF CommittedSlotCount >= (gcThreshold * 3) \div 2 THEN 2
-             ELSE IF CommittedSlotCount >= gcThreshold THEN 1
-             ELSE 0
-        ELSE 0
+        IF ~gcReachableAdvanced THEN 0  \* GC unreachable — don't escalate
+        ELSE ComputeBackpressure(CommittedSlotCount, gcThreshold)
+    \* Reset heartbeat
+    /\ gcReachableAdvanced' = FALSE
     /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, gcThreshold, releasedPages,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcThreshold, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
@@ -686,6 +880,10 @@ CronMonitorPoll ==
 (*   gcPhase="idle" — GC thread is not processing a snapshot              *)
 (* Together these ensure at most one GC cycle is in flight at a time.     *)
 (*                                                                        *)
+(* MUTUAL EXCLUSION: Requires sessionGcPhase = "idle" to prevent         *)
+(* quiescent GC from acquiring while session GC holds the flag.           *)
+(* Models try_enter() CAS — if session GC holds the flag, CAS fails.     *)
+(*                                                                        *)
 (* This is the FIRST of three steps (AcquireFlag -> SnapshotOK/Abort).    *)
 (* Between this step and the next, other threads CAN interleave:          *)
 (*   - EvalGuardEnter_Increment (incrementing activeEvaluators)           *)
@@ -698,15 +896,20 @@ TryQuiescentGc_AcquireFlag(t) ==
     /\ activeEvaluators = 0
     /\ ~hasGcRequest          \* No pending request already
     /\ ~hasGcResponse         \* No pending response (models GC_CYCLE_IN_FLIGHT)
-    /\ ~gcInProgressFlag      \* Not already in progress
+    /\ ~gcInProgressFlag      \* Not already in progress (try_enter CAS)
     /\ gcPhase = "idle"       \* GC thread is idle (not reading snap* vars)
+    /\ sessionGcPhase \notin {"acquired"}  \* Session GC not holding flag
     \* Consume GC request and set flag atomically (models CAS + store)
     /\ gcRequested' = FALSE
     /\ gcInProgressFlag' = TRUE
     /\ threadPhase' = [threadPhase EXCEPT ![t] = "gc_acquire"]
+    \* Signal GC reachability (models bump_gc_reachable() in maybe_quiescent_gc)
+    /\ gcReachableAdvanced' = TRUE
     /\ UNCHANGED <<threadExprs, stackRoots, activeEvaluators,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -737,7 +940,10 @@ TryQuiescentGc_SnapshotOK(t) ==
     /\ threadPhase' = [threadPhase EXCEPT ![t] = "between"]
     /\ UNCHANGED <<threadExprs, stackRoots, activeEvaluators, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcResponse, respDeadSet, respLiveCount,
                    respEpoch, gcPhase, gcMarked>>
@@ -755,7 +961,10 @@ TryQuiescentGc_Abort(t) ==
     /\ threadPhase' = [threadPhase EXCEPT ![t] = "between"]
     /\ UNCHANGED <<threadExprs, stackRoots, activeEvaluators,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -775,12 +984,9 @@ TryQuiescentGc_Abort(t) ==
 (* GC_GROWTH_FACTOR = 2.0, so we use live_count * 2 in the model.        *)
 (*                                                                        *)
 (* FASTER BACKPRESSURE FEEDBACK: After processing the response and        *)
-(* updating the threshold, backpressure is immediately decremented by 1   *)
-(* (clamped to 0). This models the Rust improvement where                 *)
-(* maybe_process_gc_response() re-evaluates backpressure after GC frees   *)
-(* memory, instead of waiting up to 100ms for the next cron poll.         *)
-(* Decrement-by-1 is conservative: GC freed some memory, so pressure     *)
-(* should be lower, but the exact level is computed by the next cron poll.*)
+(* updating the threshold, backpressure is immediately recomputed from    *)
+(* the new committed/threshold ratio (matching Rust lines 2030-2035).     *)
+(* This provides faster feedback than waiting for the next cron poll.     *)
 (*                                                                        *)
 (* PAGE RELEASE: After freeing dead slots, identifies empty pages         *)
 (* (excluding CurrentPage), filters free-set entries from those pages,    *)
@@ -811,15 +1017,16 @@ ProcessGcResponse(t) ==
           /\ releasedPages' = releasedPages \union emptyPages
     \* Adaptive threshold: max(liveCount * GC_GROWTH_FACTOR, MinGcThreshold)
     \* GC_GROWTH_FACTOR = 2.0 -> liveCount * 2
-    /\ gcThreshold' = LET candidate == respLiveCount * 2
-                       IN IF candidate >= MinGcThreshold
-                          THEN candidate
-                          ELSE MinGcThreshold
-    \* Faster backpressure feedback: decrement by 1, clamped to 0.
-    \* Models the immediate re-evaluation in maybe_process_gc_response().
-    /\ backpressureLevel' = IF backpressureLevel > 0
-                             THEN backpressureLevel - 1
-                             ELSE 0
+    /\ LET newThreshold == LET candidate == respLiveCount * 2
+                            IN IF candidate >= MinGcThreshold
+                               THEN candidate
+                               ELSE MinGcThreshold
+       IN /\ gcThreshold' = newThreshold
+          \* Recompute backpressure from new committed/threshold ratio
+          \* (matches Rust maybe_process_gc_response() lines 2030-2035)
+          /\ backpressureLevel' = ComputeBackpressure(CommittedSlotCount, newThreshold)
+    \* Signal GC reachability (models bump_gc_reachable() in maybe_process_gc_response)
+    /\ gcReachableAdvanced' = TRUE
     /\ hasGcResponse' = FALSE
     /\ respDeadSet' = {}
     /\ respLiveCount' = 0
@@ -827,6 +1034,8 @@ ProcessGcResponse(t) ==
     /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    bumpPtr, registeredRoots, epoch, slotEpoch,
+                   slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
                    allocsSinceLastPoll,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
@@ -853,7 +1062,10 @@ ContinueEval(t) ==
     /\ UNCHANGED <<threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -870,6 +1082,9 @@ ThreadDone(t) ==
     /\ UNCHANGED <<threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested, slotState, bumpPtr,
                    freeSet, registeredRoots, epoch, slotEpoch,
+                   slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
                    allocsSinceLastPoll, gcThreshold, backpressureLevel,
                    releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
@@ -890,7 +1105,10 @@ GcReceiveRequest ==
     /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
@@ -905,7 +1123,10 @@ GcMarkStep ==
     /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -919,7 +1140,10 @@ GcMarkComplete ==
     /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
@@ -945,10 +1169,238 @@ GcSweep ==
     /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
                    gcInProgressFlag, gcRequested,
                    slotState, bumpPtr, freeSet, registeredRoots, epoch,
-                   slotEpoch, allocsSinceLastPoll, gcThreshold,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch>>
+
+(*=======================================================================*)
+(* Session-Based GC Thread Actions                                       *)
+(*=======================================================================*)
+(*
+ * The session release thread (session_release_thread_main) runs as a
+ * dedicated background thread. It processes batched session releases:
+ *
+ *   1. Wait for quiescence (ACTIVE_EVALUATORS == 0)
+ *   2. Acquire GC_IN_PROGRESS via CAS (try_enter)
+ *   3. Double-check quiescence
+ *   4. Trace surviving set (root scan at quiescent point)
+ *   5. Release GC_IN_PROGRESS (evals can resume)
+ *   6. For each released session:
+ *      - Promote surviving values (ctx -> 0)
+ *      - Free non-surviving session values
+ *      - Release empty pages
+ *
+ * Mutual exclusion with quiescent GC is via CAS on GC_IN_PROGRESS:
+ *   - Quiescent GC: try_enter() in maybe_quiescent_gc()
+ *   - Session GC: try_enter() in session_release_thread_main()
+ *   Only one can succeed at a time.
+ *)
+
+(*-----------------------------------------------------------------------*)
+(* SessionGc_WaitQuiescent: Background thread detects pending session     *)
+(* releases and waits for quiescence. Transitions from "idle" to         *)
+(* "waiting" when the release queue is non-empty and no evaluators are   *)
+(* active.                                                                *)
+(*                                                                        *)
+(* Models the condvar wait loop in session_release_thread_main():         *)
+(*   while ACTIVE_EVALUATORS.load() > 0 { QUIESCENT_CONDVAR.wait() }     *)
+(*-----------------------------------------------------------------------*)
+SessionGc_WaitQuiescent ==
+    /\ sessionGcPhase = "idle"
+    /\ sessionReleaseQueue /= {}
+    /\ activeEvaluators = 0
+    /\ sessionGcPhase' = "waiting"
+    \* Freeze current release queue as the batch for this cycle.
+    \* Models Rust's channel drain at the top of the loop (recv + try_recv).
+    \* New sessions added during freeing will be handled in the next cycle.
+    /\ sessionBatch' = sessionReleaseQueue
+    /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
+                   gcInProgressFlag, gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
+                   backpressureLevel, releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr,
+                   snapFreeSet, snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* SessionGc_AcquireFlag: CAS GC_IN_PROGRESS false→true (try_enter).    *)
+(* Models the CAS loop in session_release_thread_main().                 *)
+(*-----------------------------------------------------------------------*)
+SessionGc_AcquireFlag ==
+    /\ sessionGcPhase = "waiting"
+    /\ ~gcInProgressFlag                    \* CAS(false→true) succeeds
+    /\ gcInProgressFlag' = TRUE
+    /\ sessionGcPhase' = "acquired"
+    /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
+                   gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
+                   backpressureLevel, releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr,
+                   snapFreeSet, snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* SessionGc_AcquireFail: CAS fails (quiescent GC holds the flag).      *)
+(* Retry from idle state.                                                *)
+(* Models the spin + condvar wait loop on GC_IN_PROGRESS.                *)
+(*-----------------------------------------------------------------------*)
+SessionGc_AcquireFail ==
+    /\ sessionGcPhase = "waiting"
+    /\ gcInProgressFlag                     \* CAS fails
+    /\ sessionGcPhase' = "idle"             \* Retry from idle
+    /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
+                   gcInProgressFlag, gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
+                   backpressureLevel, releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr,
+                   snapFreeSet, snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* SessionGc_TraceAndRelease: Double-check passes, trace roots, release  *)
+(* GC_IN_PROGRESS. The surviving set is captured at this quiescent point *)
+(* and used for all session releases in the batch.                       *)
+(*                                                                        *)
+(* CRITICAL: GC_IN_PROGRESS is released BEFORE freeing. This is safe     *)
+(* because:                                                               *)
+(*   - Surviving values are promoted to ctx=0 (persistent)               *)
+(*   - Only non-surviving values with the target session ID are freed    *)
+(*   - release_empty_pages() only frees live_count=0 pages              *)
+(*   - alloc() validates free-list pointers                              *)
+(*-----------------------------------------------------------------------*)
+SessionGc_TraceAndRelease ==
+    /\ sessionGcPhase = "acquired"
+    /\ activeEvaluators = 0                  \* Double-check: still quiescent
+    \* Trace surviving set = registered roots at quiescent point
+    \* (stackRoots are empty at quiescence — verified by SnapshotCapturesAllRoots)
+    /\ sessionSurviving' = registeredRoots
+    \* Release GC_IN_PROGRESS — evals can resume
+    /\ gcInProgressFlag' = FALSE
+    /\ sessionGcPhase' = "freeing"
+    \* Signal GC reachability (models bump_gc_reachable())
+    /\ gcReachableAdvanced' = TRUE
+    /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
+                   gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch,
+                   allocsSinceLastPoll, gcThreshold,
+                   backpressureLevel, releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr,
+                   snapFreeSet, snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* SessionGc_DoubleCheckFail: An eval snuck in between condvar wake      *)
+(* and double-check. Abort: release flag and retry from idle.            *)
+(*-----------------------------------------------------------------------*)
+SessionGc_DoubleCheckFail ==
+    /\ sessionGcPhase = "acquired"
+    /\ activeEvaluators > 0                  \* Eval snuck in
+    /\ gcInProgressFlag' = FALSE
+    /\ sessionGcPhase' = "idle"              \* Retry
+    /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
+                   gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
+                   backpressureLevel, releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr,
+                   snapFreeSet, snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* SessionGc_FreeSession: Free non-surviving values from one session.    *)
+(*                                                                        *)
+(* For each session context ID in the release queue:                      *)
+(*   - Identify session slots (alloc'd with the target context ID)       *)
+(*   - Surviving = intersection with sessionSurviving                    *)
+(*   - Dead = session slots NOT in sessionSurviving                      *)
+(*   - Promote surviving to persistent (ctx -> 0)                        *)
+(*   - Free dead slots (transition to "freed")                           *)
+(*   - Release empty pages (same logic as ProcessGcResponse)             *)
+(*   - Set freed slot epochs to MaxEpoch+1 sentinel (models u64::MAX)    *)
+(*                                                                        *)
+(* Models release_session_with_surviving() in gc_allocator.rs.            *)
+(*-----------------------------------------------------------------------*)
+SessionGc_FreeSession ==
+    /\ sessionGcPhase = "freeing"
+    \* Only process sessions from the frozen batch (captured at WaitQuiescent).
+    \* New sessions added to sessionReleaseQueue during freeing are safe —
+    \* they'll be handled in the next cycle.
+    /\ \E ctx \in sessionBatch :
+        LET sessionSlots == {s \in Slots :
+                slotContextId[s] = ctx /\ slotState[s] = "alloc"}
+            surviving == sessionSlots \intersect sessionSurviving
+            dead == sessionSlots \ sessionSurviving
+            \* Compute new slot states after freeing dead
+            newSlotState == [s \in Slots |->
+                IF s \in dead THEN "freed" ELSE slotState[s]]
+            \* Identify empty pages (excluding CurrentPage) — same as ProcessGcResponse
+            emptyPages == {p \in PageSet :
+                /\ p /= CurrentPage
+                /\ p \notin releasedPages
+                /\ \E s \in SlotsInPage(p) : s < bumpPtr
+                /\ \A s \in SlotsInPage(p) :
+                    s >= bumpPtr \/ newSlotState[s] = "freed"
+            }
+            \* Filter free-set entries from pages being released
+            filteredFreeSet == (freeSet \union dead) \
+                               {s \in Slots : PageOf(s) \in emptyPages}
+            remainingBatch == sessionBatch \ {ctx}
+        IN
+        \* Promote surviving slots to persistent (ctx -> 0)
+        /\ slotContextId' = [s \in Slots |->
+            IF s \in surviving THEN 0
+            ELSE slotContextId[s]]
+        \* Free dead slots
+        /\ slotState' = newSlotState
+        /\ freeSet' = filteredFreeSet
+        \* Set sentinel epoch on freed slots (models u64::MAX to prevent
+        \* false positive epoch filtering by future quiescent GC responses)
+        /\ slotEpoch' = [s \in Slots |->
+            IF s \in dead THEN MaxEpoch + 1
+            ELSE slotEpoch[s]]
+        /\ releasedPages' = releasedPages \union emptyPages
+        \* Remove from both the batch and the release queue
+        /\ sessionBatch' = remainingBatch
+        /\ sessionReleaseQueue' = sessionReleaseQueue \ {ctx}
+        /\ sessionGcPhase' = IF remainingBatch = {} THEN "idle" ELSE "freeing"
+        /\ sessionSurviving' = IF remainingBatch = {} THEN {} ELSE sessionSurviving
+    /\ UNCHANGED <<threadPhase, threadExprs, stackRoots, activeEvaluators,
+                   gcInProgressFlag, gcRequested,
+                   bumpPtr, registeredRoots, epoch,
+                   threadContextId, nextContextId,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold,
+                   backpressureLevel,
+                   hasGcRequest, snapSlotState, snapBumpPtr,
+                   snapFreeSet, snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   gcPhase, gcMarked>>
 
 (*=======================================================================*)
 (* Termination                                                           *)
@@ -986,6 +1438,12 @@ Next ==
     \/ GcMarkStep
     \/ GcMarkComplete
     \/ GcSweep
+    \/ SessionGc_WaitQuiescent
+    \/ SessionGc_AcquireFlag
+    \/ SessionGc_AcquireFail
+    \/ SessionGc_TraceAndRelease
+    \/ SessionGc_DoubleCheckFail
+    \/ SessionGc_FreeSession
     \/ AllDone
 
 Spec == Init /\ [][Next]_vars
@@ -1005,7 +1463,7 @@ FairSpec == Spec
         \* "between" then disabled when AcquireFlag transitions to "gc_acquire",
         \* or when Tier 2 backpressure blocks re-entry. SF ensures threads
         \* eventually resume evaluation — backpressure relaxes after GC
-        \* completes and ProcessGcResponse decrements the level.
+        \* completes and ProcessGcResponse recomputes the level.
         /\ SF_vars(ContinueEval(t))
         /\ WF_vars(TryQuiescentGc_AcquireFlag(t))
         \* Strong fairness for SnapshotOK and Abort: these are infinitely often
@@ -1031,13 +1489,19 @@ FairSpec == Spec
     /\ WF_vars(GcMarkStep)
     /\ WF_vars(GcMarkComplete)
     /\ WF_vars(GcSweep)
+    \* Session GC thread fairness
+    /\ WF_vars(SessionGc_WaitQuiescent)
+    /\ WF_vars(SessionGc_AcquireFlag)
+    /\ WF_vars(SessionGc_AcquireFail)
+    \* Strong fairness for TraceAndRelease: may be briefly disabled by
+    \* EvalGuardEnter_Increment (same pattern as quiescent GC SnapshotOK).
+    /\ SF_vars(SessionGc_TraceAndRelease)
+    /\ SF_vars(SessionGc_DoubleCheckFail)
+    /\ WF_vars(SessionGc_FreeSession)
 
 (*=======================================================================*)
 (* Safety Invariants                                                     *)
 (*=======================================================================*)
-
-\* Upper bound on epoch for TypeOK
-MaxEpoch == MaxSlots * (MaxExprs + 2) * MaxRoots * NumEvalThreads
 
 \* Upper bound on allocsSinceLastPoll for TypeOK.
 \* Between two CronMonitorPoll events, the max number of allocations is
@@ -1062,7 +1526,15 @@ TypeOK ==
     /\ freeSet \subseteq Slots
     /\ registeredRoots \subseteq Slots
     /\ epoch \in 0..MaxEpoch
-    /\ slotEpoch \in [Slots -> 0..MaxEpoch]
+    /\ slotEpoch \in [Slots -> 0..(MaxEpoch + 1)]  \* +1 for session GC sentinel
+    /\ slotContextId \in [Slots -> ContextIds]
+    /\ threadContextId \in [Threads -> ContextIds]
+    /\ nextContextId \in 1..(MaxContextIds + 1)
+    /\ sessionReleaseQueue \subseteq 1..MaxContextIds
+    /\ sessionBatch \subseteq 1..MaxContextIds
+    /\ sessionGcPhase \in {"idle", "waiting", "acquired", "freeing"}
+    /\ sessionSurviving \subseteq Slots
+    /\ gcReachableAdvanced \in BOOLEAN
     /\ allocsSinceLastPoll \in 0..MaxAllocsSinceLastPoll
     /\ gcThreshold \in 1..MaxGcThreshold
     /\ backpressureLevel \in 0..MAX_BP
@@ -1086,28 +1558,34 @@ NoLiveValueFreed ==
     \A s \in Slots :
         (s \in AllLiveRoots) => slotState[s] /= "freed"
 
-\* CRITICAL SAFETY: When a GC snapshot is in-flight (being processed by the
-\* GC thread or awaiting processing), ALL thread stack roots are empty.
-\* This verifies that the quiescent-state protocol ensures GC sees the
-\* complete root set — because at quiescent points, all trampoline call
-\* stacks have returned and their values are in registered root providers.
+\* CRITICAL SAFETY: When GC_IN_PROGRESS is set by quiescent GC (not session
+\* GC), ALL thread stack roots are empty. This verifies that the quiescent-
+\* state protocol ensures GC sees the complete root set — because at
+\* quiescent points, all trampoline call stacks have returned and their
+\* values are in registered root providers.
 \*
-\* The snapshot is "in-flight" from TryQuiescentGc_SnapshotOK (which sets
-\* hasGcRequest) through GC processing until ProcessGcResponse clears
-\* hasGcResponse. During this entire window, stack roots must remain empty
-\* for the GC's view of roots (snapRoots = registeredRoots) to be complete.
+\* Session GC can hold GC_IN_PROGRESS while evals have stack roots (an eval
+\* sneaked in between the condvar check and the CAS). The double-check in
+\* SessionGc_DoubleCheckFail will abort, and SessionGc_TraceAndRelease
+\* requires activeEvaluators = 0 (ensuring stack roots are empty when the
+\* surviving set is actually captured).
 \*
 \* NOTE: We check this at the snapshot BUILD time (when snapRoots is
 \* captured), not during the entire GC cycle. After the snapshot is built,
 \* new evals CAN start and create new stack roots — that's fine because
 \* epoch-based TOCTOU filtering protects any newly allocated values.
 SnapshotCapturesAllRoots ==
-    gcInProgressFlag =>
+    (gcInProgressFlag /\ sessionGcPhase /= "acquired") =>
         \A t \in Threads : stackRoots[t] = {}
 
-\* When GC_IN_PROGRESS is set, no thread is in "eval" phase.
+\* When GC_IN_PROGRESS is set by quiescent GC (not session GC), no thread
+\* is in "eval" phase. Session GC can acquire the flag while evals are
+\* running (the condvar check was earlier; an eval can sneak in between
+\* the condvar wake and the CAS). The double-check in
+\* SessionGc_DoubleCheckFail handles this case.
 GcFlagConsistent ==
-    gcInProgressFlag => \A t \in Threads : threadPhase[t] /= "eval"
+    (gcInProgressFlag /\ sessionGcPhase /= "acquired") =>
+        \A t \in Threads : threadPhase[t] /= "eval"
 
 \* ACTIVE_EVALUATORS is consistent with actual thread count.
 ActiveCountCorrect ==
@@ -1221,6 +1699,23 @@ ReleasedPagesAreEmpty ==
         \A s \in SlotsInPage(p) :
             s >= bumpPtr \/ slotState[s] = "freed"
 
+(*-----------------------------------------------------------------------*)
+(* Session GC Safety Invariants                                          *)
+(*-----------------------------------------------------------------------*)
+
+\* All allocated slots have valid context IDs.
+\* Verifies that slotContextId is always in the valid range.
+ContextIdConsistency ==
+    \A s \in Slots :
+        slotState[s] = "alloc" => slotContextId[s] \in ContextIds
+
+\* Mutual exclusion: quiescent GC and session GC cannot both hold
+\* GC_IN_PROGRESS simultaneously. This is enforced by CAS (try_enter)
+\* in both code paths.
+SessionGcExcludesQuiescentGc ==
+    \A t \in Threads :
+        ~(threadPhase[t] = "gc_acquire" /\ sessionGcPhase = "acquired")
+
 (*=======================================================================*)
 (* Liveness Properties                                                   *)
 (*=======================================================================*)
@@ -1237,7 +1732,7 @@ GcEventuallyTriggered ==
 \* Backpressure eventually relaxes after GC runs, OR all threads terminate.
 \* This verifies that Tier 2 blocking (which gates ContinueEval at MAX level)
 \* cannot cause permanent starvation — GC will complete, ProcessGcResponse
-\* will decrement the level, and threads will eventually resume.
+\* will recompute the level, and threads will eventually resume.
 BackpressureEventuallyRelaxes ==
     (backpressureLevel > 0) ~>
         (backpressureLevel = 0 \/ \A t \in Threads : threadPhase[t] = "done")
@@ -1245,7 +1740,7 @@ BackpressureEventuallyRelaxes ==
 \* Every dead value (allocated but unreachable from any root) is eventually
 \* either freed by GC or the system terminates (all threads done).
 \*
-\* This verifies RECLAMATION COMPLETENESS for both collection paths:
+\* This verifies RECLAMATION COMPLETENESS for all three collection paths:
 \*
 \*   (a) MettaState drop (DropRegisteredRoot): When MettaState goes out of
 \*       scope, its source/output values are removed from registeredRoots.
@@ -1255,6 +1750,9 @@ BackpressureEventuallyRelaxes ==
 \*       When a worker thread discards an intermediate computation result,
 \*       the value leaves stackRoots. If no other root references it, the
 \*       value is dead and will be collected by the next GC cycle.
+\*
+\*   (c) Session release (SessionGc_FreeSession): When a session ends, its
+\*       non-surviving values are freed by the session GC thread.
 \*
 \* The "all threads done" disjunct handles the edge case where values die
 \* during the final expression and GC doesn't run before system shutdown.
@@ -1273,10 +1771,25 @@ AllDeadValuesEventuallyFreed ==
 
 \* Empty pages are eventually released (or the system terminates).
 \* This verifies that the page release mechanism in ProcessGcResponse
-\* eventually reclaims empty pages, returning physical memory to the OS.
+\* and SessionGc_FreeSession eventually reclaims empty pages, returning
+\* physical memory to the OS.
 EmptyPagesEventuallyReleased ==
     \A p \in PageSet :
         PageIsEmpty(p) ~>
             (p \in releasedPages \/ \A t \in Threads : threadPhase[t] = "done")
+
+\* Session values not in roots are eventually freed or system terminates.
+\* This verifies that session-based GC eventually processes all released
+\* sessions and frees their non-surviving values.
+SessionValuesEventuallyFreed ==
+    \A s \in Slots :
+        (slotState[s] = "alloc" /\ slotContextId[s] > 0 /\ s \notin AllLiveRoots) ~>
+            (slotState[s] = "freed" \/ \A t \in Threads : threadPhase[t] = "done")
+
+\* Pending session releases are eventually processed or system terminates.
+\* This verifies that the session release thread eventually drains its queue.
+SessionQueueEventuallyDrained ==
+    sessionReleaseQueue /= {} ~>
+        (sessionReleaseQueue = {} \/ \A t \in Threads : threadPhase[t] = "done")
 
 =======================================================================

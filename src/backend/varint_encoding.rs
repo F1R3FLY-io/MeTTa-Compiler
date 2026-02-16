@@ -44,7 +44,7 @@ pub fn metta_to_varint_key(value: &MettaValue) -> Vec<u8> {
 
 /// Encode a MettaValue recursively into the buffer
 fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
-    match value.inner() {
+    match value.inner {
         MettaValueInner::SExpr(items) => {
             buf.push(tags::SEXPR);
             encode_varint(buf, items.len() as u64); // No 63 limit!
@@ -117,6 +117,10 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
         MettaValueInner::Empty => {
             // Empty sentinel - simple tag byte
             buf.push(tags::EMPTY);
+        }
+        // Spanned: strip span wrapper and encode the inner value transparently
+        MettaValueInner::Spanned(v, _) => {
+            encode_metta(buf, v);
         }
     }
 }
@@ -291,116 +295,81 @@ pub fn value_to_varint_key_generic<V: MettaValueTrait>(value: &V) -> Vec<u8> {
     buf
 }
 
-/// Encode a value recursively into the buffer using trait methods
+/// Encode a value recursively into the buffer using pattern matching on inner.
 fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
-    // Check each variant using trait methods
-
-    // S-expressions
-    if let Some(items) = value.as_sexpr() {
-        buf.push(tags::SEXPR);
-        encode_varint(buf, items.len() as u64);
-        for item in items {
-            encode_value_generic(buf, item);
+    match value.inner_raw() {
+        MettaValueInner::SExpr(_) => {
+            let items = value.as_sexpr().expect("matched SExpr");
+            buf.push(tags::SEXPR);
+            encode_varint(buf, items.len() as u64);
+            for item in items {
+                encode_value_generic(buf, item);
+            }
         }
-        return;
-    }
-
-    // Conjunctions
-    if let Some(goals) = value.as_conjunction() {
-        buf.push(tags::CONJUNCTION);
-        encode_varint(buf, goals.len() as u64);
-        for goal in goals {
-            encode_value_generic(buf, goal);
+        MettaValueInner::Conjunction(_) => {
+            let goals = value.as_conjunction().expect("matched Conjunction");
+            buf.push(tags::CONJUNCTION);
+            encode_varint(buf, goals.len() as u64);
+            for goal in goals {
+                encode_value_generic(buf, goal);
+            }
         }
-        return;
+        MettaValueInner::Atom(s) => {
+            buf.push(tags::ATOM);
+            encode_string(buf, s);
+        }
+        MettaValueInner::Long(n) => {
+            buf.push(tags::LONG);
+            buf.extend_from_slice(&n.to_le_bytes());
+        }
+        MettaValueInner::Float(f) => {
+            buf.push(tags::FLOAT);
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        MettaValueInner::Bool(b) => {
+            buf.push(if *b { tags::BOOL_TRUE } else { tags::BOOL_FALSE });
+        }
+        MettaValueInner::String(s) => {
+            buf.push(tags::STRING);
+            encode_string(buf, s);
+        }
+        MettaValueInner::Unit => buf.push(tags::UNIT),
+        MettaValueInner::Error(msg, _) => {
+            let (_, details) = value.as_error().expect("matched Error");
+            buf.push(tags::ERROR);
+            encode_string(buf, msg);
+            encode_value_generic(buf, details);
+        }
+        MettaValueInner::Type(_) => {
+            let inner = value.as_type().expect("matched Type");
+            buf.push(tags::TYPE);
+            encode_value_generic(buf, inner);
+        }
+        MettaValueInner::Space(handle) => {
+            buf.push(tags::SPACE);
+            encode_varint(buf, handle.id);
+            encode_string(buf, &handle.name);
+        }
+        MettaValueInner::State(id) => {
+            buf.push(tags::STATE);
+            encode_varint(buf, *id);
+        }
+        MettaValueInner::Memo(handle) => {
+            buf.push(tags::MEMO);
+            encode_varint(buf, handle.id);
+            encode_string(buf, &handle.name);
+        }
+        MettaValueInner::Empty => buf.push(tags::EMPTY),
+        MettaValueInner::Quoted(_) => {
+            let inner = value.as_quoted_ref().expect("matched Quoted");
+            buf.push(tags::QUOTED);
+            encode_value_generic(buf, inner);
+        }
+        MettaValueInner::Spanned(..) => {
+            let stripped = value.strip_one_span();
+            encode_value_generic(buf, &stripped);
+        }
     }
-
-    // Atoms
-    if let Some(s) = value.as_atom() {
-        buf.push(tags::ATOM);
-        encode_string(buf, s);
-        return;
-    }
-
-    // Long
-    if let Some(n) = value.as_long() {
-        buf.push(tags::LONG);
-        buf.extend_from_slice(&n.to_le_bytes());
-        return;
-    }
-
-    // Float
-    if let Some(f) = value.as_float() {
-        buf.push(tags::FLOAT);
-        buf.extend_from_slice(&f.to_le_bytes());
-        return;
-    }
-
-    // Bool
-    if let Some(b) = value.as_bool() {
-        buf.push(if b { tags::BOOL_TRUE } else { tags::BOOL_FALSE });
-        return;
-    }
-
-    // String
-    if let Some(s) = value.as_string() {
-        buf.push(tags::STRING);
-        encode_string(buf, s);
-        return;
-    }
-
-    // Unit
-    if value.is_unit() {
-        buf.push(tags::UNIT);
-        return;
-    }
-
-    // Error
-    if let Some((msg, details)) = value.as_error() {
-        buf.push(tags::ERROR);
-        encode_string(buf, msg);
-        encode_value_generic(buf, details);
-        return;
-    }
-
-    // Type
-    if let Some(inner) = value.as_type() {
-        buf.push(tags::TYPE);
-        encode_value_generic(buf, inner);
-        return;
-    }
-
-    // Space
-    if let Some(handle) = value.as_space() {
-        buf.push(tags::SPACE);
-        encode_varint(buf, handle.id);
-        encode_string(buf, &handle.name);
-        return;
-    }
-
-    // State
-    if let Some(id) = value.as_state() {
-        buf.push(tags::STATE);
-        encode_varint(buf, id);
-        return;
-    }
-
-    // Memo
-    if let Some(handle) = value.as_memo() {
-        buf.push(tags::MEMO);
-        encode_varint(buf, handle.id);
-        encode_string(buf, &handle.name);
-        return;
-    }
-
-    // Empty
-    if value.is_empty() {
-        buf.push(tags::EMPTY);
-        return;
-    }
-
-    // Fallback for unknown types - encode as unit
-    buf.push(tags::UNIT);
 }
 
 #[cfg(test)]

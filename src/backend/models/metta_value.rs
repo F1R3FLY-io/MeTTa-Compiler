@@ -21,6 +21,8 @@ use std::hash::{Hash, Hasher};
 
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::ir::Span;
+
 use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::{MemoHandle, SpaceHandle};
 
@@ -32,7 +34,7 @@ use self::serialize_tags::*;
 /// the same interface as MettaValue but using arena allocation.
 #[derive(Clone, Copy)]
 pub struct MettaValue {
-    inner: &'static MettaValueInner,
+    pub(crate) inner: &'static MettaValueInner,
 }
 
 /// The actual value enum, allocated in the arena.
@@ -71,6 +73,10 @@ pub enum MettaValueInner {
     Quoted(MettaValue),
     /// Empty sentinel
     Empty,
+    /// Source-annotated value — transparent to evaluation, preserves location for LSP/diagnostics.
+    /// Nesting is allowed: Spanned(Spanned(v, binding_span), template_span) gives full provenance.
+    /// `inner()` auto-strips all Spanned layers, so existing pattern matches work unchanged.
+    Spanned(MettaValue, &'static Span),
 }
 
 // ============================================================================
@@ -110,10 +116,82 @@ unsafe impl Send for MettaValueInner {}
 unsafe impl Sync for MettaValueInner {}
 
 impl MettaValue {
-    /// Access the inner enum for pattern matching
+    /// Access the inner enum for pattern matching.
+    ///
+    /// **Automatically strips all `Spanned` layers**, so existing pattern matches
+    /// work unchanged. Use `inner_raw()` to access the raw representation including
+    /// any Spanned wrapper.
     #[inline]
-    pub fn inner(&self) -> &MettaValueInner {
+    pub fn inner(&self) -> &'static MettaValueInner {
+        let mut current = self.inner;
+        loop {
+            match current {
+                MettaValueInner::Spanned(v, _) => current = v.inner,
+                _ => return current,
+            }
+        }
+    }
+
+    /// Access the raw inner representation **without** stripping Spanned layers.
+    ///
+    /// Use this for span-aware code that needs to inspect the Spanned wrapper.
+    /// Most code should use `inner()` instead.
+    #[inline]
+    pub fn inner_raw(&self) -> &'static MettaValueInner {
         self.inner
+    }
+
+    /// Get the outermost source span, if this value is wrapped in `Spanned`.
+    ///
+    /// Returns the span of the outermost Spanned layer (typically the template/usage site).
+    /// Returns `None` for bare values without span annotations.
+    #[inline]
+    pub fn span(&self) -> Option<&'static Span> {
+        match self.inner {
+            MettaValueInner::Spanned(_, span) => Some(span),
+            _ => None,
+        }
+    }
+
+    /// Collect all spans from outermost to innermost (full provenance chain).
+    ///
+    /// - `[0]` = template/usage site (outermost)
+    /// - `[1]` = binding origin
+    /// - `[2..]` = deeper origins
+    ///
+    /// Returns an empty Vec for bare values without span annotations.
+    pub fn spans(&self) -> Vec<&'static Span> {
+        let mut spans = Vec::with_capacity(2);
+        let mut current = self.inner;
+        loop {
+            match current {
+                MettaValueInner::Spanned(v, span) => {
+                    spans.push(*span);
+                    current = v.inner;
+                }
+                _ => break,
+            }
+        }
+        spans
+    }
+
+    /// Strip ALL Spanned wrappers, returning the bare value.
+    ///
+    /// The returned MettaValue points directly to the non-Spanned inner value.
+    #[inline]
+    pub fn strip_spans(&self) -> MettaValue {
+        MettaValue::from_inner(self.inner())
+    }
+
+    /// Strip one layer of Spanned, returning the inner value and its span.
+    ///
+    /// If the value is not Spanned, returns `(self, None)`.
+    #[inline]
+    pub fn peel_span(&self) -> (MettaValue, Option<&'static Span>) {
+        match self.inner {
+            MettaValueInner::Spanned(v, span) => (*v, Some(span)),
+            _ => (*self, None),
+        }
     }
 
     /// Construct an MettaValue from a reference to an MettaValueInner.
@@ -123,6 +201,9 @@ impl MettaValue {
     }
 
     /// Get a raw pointer to the inner value (used by GC for slot identification).
+    ///
+    /// Returns the pointer to the **outermost** MettaValueInner (which may be Spanned).
+    /// This is correct for GC marking, which needs to track the actual slab slot.
     #[inline]
     pub fn inner_ptr(&self) -> *const MettaValueInner {
         self.inner as *const MettaValueInner
@@ -132,233 +213,317 @@ impl MettaValue {
     // Type checking and inspection methods
     // ========================================================================
 
-    /// Check if this is an Atom variant
+    /// Check if this is an Atom variant (transparent through Spanned)
     #[inline]
     pub fn is_atom(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Atom(_))
+        match self.inner {
+            MettaValueInner::Atom(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_atom(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Bool variant
+    /// Check if this is a Bool variant (transparent through Spanned)
     #[inline]
     pub fn is_bool(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Bool(_))
+        match self.inner {
+            MettaValueInner::Bool(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_bool(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Long variant
+    /// Check if this is a Long variant (transparent through Spanned)
     #[inline]
     pub fn is_long(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Long(_))
+        match self.inner {
+            MettaValueInner::Long(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_long(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Float variant
+    /// Check if this is a Float variant (transparent through Spanned)
     #[inline]
     pub fn is_float(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Float(_))
+        match self.inner {
+            MettaValueInner::Float(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_float(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a String variant
+    /// Check if this is a String variant (transparent through Spanned)
     #[inline]
     pub fn is_string(&self) -> bool {
-        matches!(self.inner, MettaValueInner::String(_))
+        match self.inner {
+            MettaValueInner::String(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_string(),
+            _ => false,
+        }
     }
 
-    /// Check if this is an SExpr variant
+    /// Check if this is an SExpr variant (transparent through Spanned)
     #[inline]
     pub fn is_sexpr(&self) -> bool {
-        matches!(self.inner, MettaValueInner::SExpr(_))
+        match self.inner {
+            MettaValueInner::SExpr(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_sexpr(),
+            _ => false,
+        }
     }
 
-    /// Check if this is an Error variant
+    /// Check if this is an Error variant (transparent through Spanned)
     #[inline]
     pub fn is_error(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Error(_, _))
+        match self.inner {
+            MettaValueInner::Error(_, _) => true,
+            MettaValueInner::Spanned(v, _) => v.is_error(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Type variant
+    /// Check if this is a Type variant (transparent through Spanned)
     #[inline]
     pub fn is_type(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Type(_))
+        match self.inner {
+            MettaValueInner::Type(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_type(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Conjunction variant
+    /// Check if this is a Conjunction variant (transparent through Spanned)
     #[inline]
     pub fn is_conjunction(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Conjunction(_))
+        match self.inner {
+            MettaValueInner::Conjunction(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_conjunction(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Space variant
+    /// Check if this is a Space variant (transparent through Spanned)
     #[inline]
     pub fn is_space(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Space(_))
+        match self.inner {
+            MettaValueInner::Space(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_space(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a State variant
+    /// Check if this is a State variant (transparent through Spanned)
     #[inline]
     pub fn is_state(&self) -> bool {
-        matches!(self.inner, MettaValueInner::State(_))
+        match self.inner {
+            MettaValueInner::State(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_state(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Unit variant
+    /// Check if this is a Unit variant (transparent through Spanned)
     #[inline]
     pub fn is_unit(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Unit)
+        match self.inner {
+            MettaValueInner::Unit => true,
+            MettaValueInner::Spanned(v, _) => v.is_unit(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Memo variant
+    /// Check if this is a Memo variant (transparent through Spanned)
     #[inline]
     pub fn is_memo(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Memo(_))
+        match self.inner {
+            MettaValueInner::Memo(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_memo(),
+            _ => false,
+        }
     }
 
-    /// Check if this is a Quoted variant
+    /// Check if this is a Quoted variant (transparent through Spanned)
     #[inline]
     pub fn is_quoted(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Quoted(_))
+        match self.inner {
+            MettaValueInner::Quoted(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_quoted(),
+            _ => false,
+        }
     }
 
-    /// Check if this is an Empty variant
+    /// Check if this is an Empty variant (transparent through Spanned)
     #[inline]
     pub fn is_empty(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Empty)
+        match self.inner {
+            MettaValueInner::Empty => true,
+            MettaValueInner::Spanned(v, _) => v.is_empty(),
+            _ => false,
+        }
     }
 
-    /// Check if this value is a variable (Atom starting with $)
+    /// Check if this value is a variable (Atom starting with $) (transparent through Spanned)
     #[inline]
     pub fn is_variable(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Atom(s) if s.starts_with('$'))
+        match self.inner {
+            MettaValueInner::Atom(s) if s.starts_with('$') => true,
+            MettaValueInner::Spanned(v, _) => v.is_variable(),
+            _ => false,
+        }
+    }
+
+    /// Check if this value is a Spanned variant
+    #[inline]
+    pub fn is_spanned(&self) -> bool {
+        matches!(self.inner, MettaValueInner::Spanned(_, _))
     }
 
     // ========================================================================
     // Accessor methods for extracting inner values
     // ========================================================================
 
-    /// Try to extract as atom string
+    /// Try to extract as atom string (transparent through Spanned)
     #[inline]
     pub fn as_atom(&self) -> Option<&'static str> {
         match self.inner {
             MettaValueInner::Atom(s) => Some(s),
+            MettaValueInner::Spanned(v, _) => v.as_atom(),
             _ => None,
         }
     }
 
-    /// Try to extract as bool
+    /// Try to extract as bool (transparent through Spanned)
     #[inline]
     pub fn as_bool(&self) -> Option<bool> {
         match self.inner {
             MettaValueInner::Bool(b) => Some(*b),
+            MettaValueInner::Spanned(v, _) => v.as_bool(),
             _ => None,
         }
     }
 
-    /// Try to extract as i64
+    /// Try to extract as i64 (transparent through Spanned)
     #[inline]
     pub fn as_long(&self) -> Option<i64> {
         match self.inner {
             MettaValueInner::Long(n) => Some(*n),
+            MettaValueInner::Spanned(v, _) => v.as_long(),
             _ => None,
         }
     }
 
-    /// Try to extract as f64
+    /// Try to extract as f64 (transparent through Spanned)
     #[inline]
     pub fn as_float(&self) -> Option<f64> {
         match self.inner {
             MettaValueInner::Float(f) => Some(*f),
+            MettaValueInner::Spanned(v, _) => v.as_float(),
             _ => None,
         }
     }
 
-    /// Try to extract as string
+    /// Try to extract as string (transparent through Spanned)
     #[inline]
     pub fn as_string(&self) -> Option<&'static str> {
         match self.inner {
             MettaValueInner::String(s) => Some(s),
+            MettaValueInner::Spanned(v, _) => v.as_string(),
             _ => None,
         }
     }
 
-    /// Try to extract as sexpr items
+    /// Try to extract as sexpr items (transparent through Spanned)
     #[inline]
     pub fn as_sexpr(&self) -> Option<&[MettaValue]> {
         match self.inner {
             MettaValueInner::SExpr(items) => Some(items),
+            MettaValueInner::Spanned(v, _) => v.as_sexpr(),
             _ => None,
         }
     }
 
-    /// Try to extract as error (message, details)
+    /// Try to extract as error (message, details) (transparent through Spanned)
     #[inline]
     pub fn as_error(&self) -> Option<(&'static str, MettaValue)> {
         match self.inner {
             MettaValueInner::Error(msg, details) => Some((msg, *details)),
+            MettaValueInner::Spanned(v, _) => v.as_error(),
             _ => None,
         }
     }
 
-    /// Try to extract as type inner value
+    /// Try to extract as type inner value (transparent through Spanned)
     #[inline]
     pub fn as_type(&self) -> Option<MettaValue> {
         match self.inner {
             MettaValueInner::Type(inner) => Some(*inner),
+            MettaValueInner::Spanned(v, _) => v.as_type(),
             _ => None,
         }
     }
 
-    /// Try to extract as conjunction goals
+    /// Try to extract as conjunction goals (transparent through Spanned)
     #[inline]
     pub fn as_conjunction(&self) -> Option<&[MettaValue]> {
         match self.inner {
             MettaValueInner::Conjunction(goals) => Some(goals),
+            MettaValueInner::Spanned(v, _) => v.as_conjunction(),
             _ => None,
         }
     }
 
-    /// Try to extract as space handle
+    /// Try to extract as space handle (transparent through Spanned)
     #[inline]
     pub fn as_space(&self) -> Option<&SpaceHandle> {
         match self.inner {
             MettaValueInner::Space(handle) => Some(handle),
+            MettaValueInner::Spanned(v, _) => v.as_space(),
             _ => None,
         }
     }
 
-    /// Try to extract as state id
+    /// Try to extract as state id (transparent through Spanned)
     #[inline]
     pub fn as_state(&self) -> Option<u64> {
         match self.inner {
             MettaValueInner::State(id) => Some(*id),
+            MettaValueInner::Spanned(v, _) => v.as_state(),
             _ => None,
         }
     }
 
-    /// Try to extract as memo handle
+    /// Try to extract as memo handle (transparent through Spanned)
     #[inline]
     pub fn as_memo(&self) -> Option<&MemoHandle> {
         match self.inner {
             MettaValueInner::Memo(handle) => Some(handle),
+            MettaValueInner::Spanned(v, _) => v.as_memo(),
             _ => None,
         }
     }
 
-    /// Try to extract the inner value of a Quoted variant (owned copy)
+    /// Try to extract the inner value of a Quoted variant (owned copy) (transparent through Spanned)
     #[inline]
     pub fn as_quoted(&self) -> Option<MettaValue> {
         match self.inner {
             MettaValueInner::Quoted(inner) => Some(*inner),
+            MettaValueInner::Spanned(v, _) => v.as_quoted(),
             _ => None,
         }
     }
 
-    /// Try to extract a reference to the inner value of a Quoted variant
+    /// Try to extract a reference to the inner value of a Quoted variant (transparent through Spanned)
     #[inline]
     pub fn as_quoted_ref(&self) -> Option<&MettaValue> {
         match self.inner {
             MettaValueInner::Quoted(inner) => Some(inner),
+            MettaValueInner::Spanned(v, _) => v.as_quoted_ref(),
             _ => None,
         }
     }
 
-    /// Get the type name of this value as a string slice
+    /// Get the type name of this value as a string slice (transparent through Spanned)
     pub fn type_name(&self) -> &'static str {
         match self.inner {
             MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
@@ -377,6 +542,7 @@ impl MettaValue {
             MettaValueInner::Quoted(_) => "Expression",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
+            MettaValueInner::Spanned(v, _) => v.type_name(),
         }
     }
 }
@@ -512,6 +678,13 @@ impl MettaValue {
         super::gc_allocator::global_factory().quote(inner)
     }
 
+    /// Create a Spanned variant wrapping a value with its source location.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Spanned(value: Self, span: crate::ir::Span) -> Self {
+        super::gc_allocator::global_factory().spanned(value, span)
+    }
+
     /// Create a quoted expression.
     pub fn quote(inner: Self) -> Self {
         super::gc_allocator::global_factory().quote(inner)
@@ -538,7 +711,7 @@ impl MettaValue {
     /// Produces syntax that can be round-trip parsed by the MeTTa parser.
     /// Guarantees: parse(to_metta_string(value)) == value
     pub fn to_metta_string(&self) -> String {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Atom(s) => s.to_string(),
             MettaValueInner::Bool(true) => "True".to_string(),
             MettaValueInner::Bool(false) => "False".to_string(),
@@ -587,12 +760,13 @@ impl MettaValue {
             MettaValueInner::State(id) => format!("(State {})", id),
             MettaValueInner::Memo(h) => format!("(Memo {} \"{}\")", h.id, h.name),
             MettaValueInner::Empty => "Empty".to_string(),
+            MettaValueInner::Spanned(v, _) => v.to_metta_string(),
         }
     }
 
     /// Convert to MORK s-expression string format.
     pub fn to_mork_string(&self) -> String {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Atom(s) => {
                 if *s == "&" || *s == "&self" || *s == "&kb" || *s == "&stack" {
                     s.to_string()
@@ -634,12 +808,13 @@ impl MettaValue {
             MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_mork_string()),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
+            MettaValueInner::Spanned(v, _) => v.to_mork_string(),
         }
     }
 
     /// Convert to a JSON-like string representation.
     pub fn to_json_string(&self) -> String {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Atom(s) => {
                 format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s))
             }
@@ -694,6 +869,7 @@ impl MettaValue {
                 format!(r#"{{"type":"quoted","value":{}}}"#, inner.to_json_string())
             }
             MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
+            MettaValueInner::Spanned(v, _) => v.to_json_string(),
         }
     }
 }
@@ -746,6 +922,7 @@ impl fmt::Debug for MettaValue {
 
 impl fmt::Display for MettaValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Display is span-transparent: Spanned delegates to inner value
         match self.inner {
             MettaValueInner::Atom(s) => write!(f, "{}", s),
             MettaValueInner::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
@@ -777,20 +954,29 @@ impl fmt::Display for MettaValue {
             MettaValueInner::Quoted(inner) => write!(f, "(quote {})", inner),
             MettaValueInner::Memo(handle) => write!(f, "<Memo:{}>", handle.name),
             MettaValueInner::Empty => write!(f, "Empty"),
+            MettaValueInner::Spanned(v, _) => write!(f, "{}", v),
         }
     }
 }
 
 impl PartialEq for MettaValue {
     fn eq(&self, other: &Self) -> bool {
-        // Fast path: pointer equality
-        std::ptr::eq(self.inner, other.inner) || self.inner == other.inner
+        // Fast path: pointer equality (works even if both point to same Spanned slot)
+        std::ptr::eq(self.inner, other.inner)
+            // Compare through inner() which strips Spanned — span-transparent equality
+            || self.inner() == other.inner()
     }
 }
 
 impl PartialEq for MettaValueInner {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
+        // Strip Spanned wrappers for comparison — spans don't affect structural equality.
+        // This ensures Spanned(v, s1) == Spanned(v, s2) and Spanned(v, s) == v.
+        let a = strip_spanned(self);
+        let b = strip_spanned(other);
+        // If both point to the same non-Spanned inner, they're equal
+        if std::ptr::eq(a, b) { return true; }
+        match (a, b) {
             (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
             (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
             (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
@@ -807,6 +993,19 @@ impl PartialEq for MettaValueInner {
             (MettaValueInner::Memo(a), MettaValueInner::Memo(b)) => a.id == b.id,
             (MettaValueInner::Empty, MettaValueInner::Empty) => true,
             _ => false,
+        }
+    }
+}
+
+/// Strip all Spanned layers from a MettaValueInner reference.
+/// Returns a reference to the innermost non-Spanned variant.
+#[inline]
+fn strip_spanned(inner: &MettaValueInner) -> &MettaValueInner {
+    let mut current = inner;
+    loop {
+        match current {
+            MettaValueInner::Spanned(v, _) => current = v.inner,
+            _ => return current,
         }
     }
 }
@@ -881,7 +1080,13 @@ impl MettaValueTrait for MettaValue {
     type SExprSlice = [MettaValue];
 
     #[inline]
+    fn inner_raw(&self) -> &MettaValueInner {
+        self.inner // Raw field, no Spanned stripping
+    }
+
+    #[inline]
     fn inner_ptr(&self) -> *const MettaValueInner {
+        // Returns pointer to the OUTERMOST inner (may be Spanned) — correct for GC
         self.inner as *const MettaValueInner
     }
 
@@ -893,100 +1098,187 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_atom(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Atom(_))
+        match self.inner {
+            MettaValueInner::Atom(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_atom(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_bool(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Bool(_))
+        match self.inner {
+            MettaValueInner::Bool(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_bool(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_long(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Long(_))
+        match self.inner {
+            MettaValueInner::Long(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_long(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_float(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Float(_))
+        match self.inner {
+            MettaValueInner::Float(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_float(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_string(&self) -> bool {
-        matches!(self.inner, MettaValueInner::String(_))
+        match self.inner {
+            MettaValueInner::String(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_string(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_sexpr(&self) -> bool {
-        matches!(self.inner, MettaValueInner::SExpr(_))
+        match self.inner {
+            MettaValueInner::SExpr(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_sexpr(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_error(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Error(_, _))
+        match self.inner {
+            MettaValueInner::Error(_, _) => true,
+            MettaValueInner::Spanned(v, _) => v.is_error(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_type(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Type(_))
+        match self.inner {
+            MettaValueInner::Type(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_type(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_conjunction(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Conjunction(_))
+        match self.inner {
+            MettaValueInner::Conjunction(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_conjunction(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_space(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Space(_))
+        match self.inner {
+            MettaValueInner::Space(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_space(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_state(&self) -> bool {
-        matches!(self.inner, MettaValueInner::State(_))
+        match self.inner {
+            MettaValueInner::State(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_state(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_unit(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Unit)
+        match self.inner {
+            MettaValueInner::Unit => true,
+            MettaValueInner::Spanned(v, _) => v.is_unit(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_memo(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Memo(_))
+        match self.inner {
+            MettaValueInner::Memo(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_memo(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_quoted(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Quoted(_))
+        match self.inner {
+            MettaValueInner::Quoted(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_quoted(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_empty(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Empty)
+        match self.inner {
+            MettaValueInner::Empty => true,
+            MettaValueInner::Spanned(v, _) => v.is_empty(),
+            _ => false,
+        }
+    }
+
+    #[inline]
+    fn is_spanned(&self) -> bool {
+        matches!(self.inner, MettaValueInner::Spanned(_, _))
+    }
+
+    #[inline]
+    fn span(&self) -> Option<&'static crate::ir::Span> {
+        match self.inner {
+            MettaValueInner::Spanned(_, span) => Some(span),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn strip_one_span(&self) -> Self {
+        match self.inner {
+            MettaValueInner::Spanned(v, _) => *v,
+            _ => *self,
+        }
     }
 
     #[inline]
     fn is_variable(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Atom(s) if s.starts_with('$'))
+        match self.inner {
+            MettaValueInner::Atom(s) if s.starts_with('$') => true,
+            MettaValueInner::Spanned(v, _) => v.is_variable(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn is_ground_type(&self) -> bool {
         // Unit/() is NOT a ground type — it's an expression in MeTTa HE
-        matches!(
-            self.inner,
+        match self.inner {
             MettaValueInner::Bool(_)
                 | MettaValueInner::Long(_)
                 | MettaValueInner::Float(_)
-                | MettaValueInner::String(_)
-        )
+                | MettaValueInner::String(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_ground_type(),
+            _ => false,
+        }
     }
 
     #[inline]
     fn as_atom(&self) -> Option<&str> {
         match self.inner {
             MettaValueInner::Atom(s) => Some(s),
+            MettaValueInner::Spanned(v, _) => v.as_atom(),
             _ => None,
         }
     }
@@ -995,6 +1287,7 @@ impl MettaValueTrait for MettaValue {
     fn as_bool(&self) -> Option<bool> {
         match self.inner {
             MettaValueInner::Bool(b) => Some(*b),
+            MettaValueInner::Spanned(v, _) => v.as_bool(),
             _ => None,
         }
     }
@@ -1003,6 +1296,7 @@ impl MettaValueTrait for MettaValue {
     fn as_long(&self) -> Option<i64> {
         match self.inner {
             MettaValueInner::Long(n) => Some(*n),
+            MettaValueInner::Spanned(v, _) => v.as_long(),
             _ => None,
         }
     }
@@ -1011,6 +1305,7 @@ impl MettaValueTrait for MettaValue {
     fn as_float(&self) -> Option<f64> {
         match self.inner {
             MettaValueInner::Float(f) => Some(*f),
+            MettaValueInner::Spanned(v, _) => v.as_float(),
             _ => None,
         }
     }
@@ -1019,6 +1314,7 @@ impl MettaValueTrait for MettaValue {
     fn as_string(&self) -> Option<&str> {
         match self.inner {
             MettaValueInner::String(s) => Some(s),
+            MettaValueInner::Spanned(v, _) => v.as_string(),
             _ => None,
         }
     }
@@ -1027,6 +1323,7 @@ impl MettaValueTrait for MettaValue {
     fn as_sexpr(&self) -> Option<&[Self]> {
         match self.inner {
             MettaValueInner::SExpr(items) => Some(items),
+            MettaValueInner::Spanned(v, _) => v.as_sexpr(),
             _ => None,
         }
     }
@@ -1035,6 +1332,7 @@ impl MettaValueTrait for MettaValue {
     fn as_error(&self) -> Option<(&str, &Self)> {
         match self.inner {
             MettaValueInner::Error(msg, details) => Some((msg, details)),
+            MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_error(v),
             _ => None,
         }
     }
@@ -1043,6 +1341,7 @@ impl MettaValueTrait for MettaValue {
     fn as_type(&self) -> Option<&Self> {
         match self.inner {
             MettaValueInner::Type(inner) => Some(inner),
+            MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_type(v),
             _ => None,
         }
     }
@@ -1051,6 +1350,7 @@ impl MettaValueTrait for MettaValue {
     fn as_conjunction(&self) -> Option<&[Self]> {
         match self.inner {
             MettaValueInner::Conjunction(goals) => Some(goals),
+            MettaValueInner::Spanned(v, _) => v.as_conjunction(),
             _ => None,
         }
     }
@@ -1059,6 +1359,7 @@ impl MettaValueTrait for MettaValue {
     fn as_space(&self) -> Option<&SpaceHandle> {
         match self.inner {
             MettaValueInner::Space(handle) => Some(handle),
+            MettaValueInner::Spanned(v, _) => v.as_space(),
             _ => None,
         }
     }
@@ -1067,6 +1368,7 @@ impl MettaValueTrait for MettaValue {
     fn as_state(&self) -> Option<u64> {
         match self.inner {
             MettaValueInner::State(id) => Some(*id),
+            MettaValueInner::Spanned(v, _) => v.as_state(),
             _ => None,
         }
     }
@@ -1075,6 +1377,7 @@ impl MettaValueTrait for MettaValue {
     fn as_memo(&self) -> Option<&MemoHandle> {
         match self.inner {
             MettaValueInner::Memo(handle) => Some(handle),
+            MettaValueInner::Spanned(v, _) => v.as_memo(),
             _ => None,
         }
     }
@@ -1083,6 +1386,7 @@ impl MettaValueTrait for MettaValue {
     fn as_quoted(&self) -> Option<Self> {
         match self.inner {
             MettaValueInner::Quoted(inner) => Some(*inner),
+            MettaValueInner::Spanned(v, _) => v.as_quoted(),
             _ => None,
         }
     }
@@ -1091,6 +1395,7 @@ impl MettaValueTrait for MettaValue {
     fn as_quoted_ref(&self) -> Option<&Self> {
         match self.inner {
             MettaValueInner::Quoted(inner) => Some(inner),
+            MettaValueInner::Spanned(v, _) => v.as_quoted_ref(),
             _ => None,
         }
     }
@@ -1113,6 +1418,7 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Quoted(_) => "Expression",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
+            MettaValueInner::Spanned(v, _) => v.type_name(),
         }
     }
 
@@ -1133,6 +1439,7 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::State(_) => "State",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
+            MettaValueInner::Spanned(v, _) => v.friendly_type_name(),
         }
     }
 
@@ -1153,6 +1460,7 @@ impl MettaValueTrait for MettaValue {
                 {
                     Some(head)
                 }
+                MettaValueInner::Spanned(ref v, _) => v.get_head_symbol(),
                 _ => None,
             },
             // For bare atoms like foo, use the atom itself
@@ -1164,6 +1472,7 @@ impl MettaValueTrait for MettaValue {
             {
                 Some(head)
             }
+            MettaValueInner::Spanned(v, _) => v.get_head_symbol(),
             _ => None,
         }
     }
@@ -1171,6 +1480,7 @@ impl MettaValueTrait for MettaValue {
     fn get_arity(&self) -> usize {
         match self.inner {
             MettaValueInner::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
+            MettaValueInner::Spanned(v, _) => v.get_arity(),
             _ => 0,
         }
     }
@@ -1230,7 +1540,7 @@ impl MettaValueTrait for MettaValue {
 
         while let Some(work) = work_stack.pop() {
             match work {
-                ReprWork::Process(val) => match &val.inner {
+                ReprWork::Process(val) => match val.inner {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                     MettaValueInner::Float(f) => result_stack.push(f.to_string()),
                     MettaValueInner::Bool(b) => {
@@ -1300,6 +1610,9 @@ impl MettaValueTrait for MettaValue {
                             }
                         }
                     }
+                    MettaValueInner::Spanned(v, _) => {
+                        work_stack.push(ReprWork::Process(v));
+                    }
                 },
                 ReprWork::Join {
                     count,
@@ -1337,7 +1650,7 @@ impl MettaValueTrait for MettaValue {
 
         while let Some(work) = work_stack.pop() {
             match work {
-                ReprWork::Process(val) => match &val.inner {
+                ReprWork::Process(val) => match val.inner {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                     MettaValueInner::Float(f) => result_stack.push(f.to_string()),
                     MettaValueInner::Bool(b) => {
@@ -1407,6 +1720,9 @@ impl MettaValueTrait for MettaValue {
                                 work_stack.push(ReprWork::Process(goal));
                             }
                         }
+                    }
+                    MettaValueInner::Spanned(v, _) => {
+                        work_stack.push(ReprWork::Process(v));
                     }
                 },
                 ReprWork::Join {
@@ -1485,39 +1801,27 @@ pub(crate) fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::S
 ///
 /// Used by `MettaValue::hash_value()` for complex types (strings, atoms, s-expressions).
 fn hash_value_for_trait<H: Hasher>(value: &MettaValue, hasher: &mut H) {
-    // Hash type discriminant
-    let type_tag: u8 = if value.is_unit() { 0 }
-        else if value.is_bool() { 2 }
-        else if value.is_long() { 3 }
-        else if value.is_float() { 4 }
-        else if value.is_string() { 5 }
-        else if value.is_atom() { 6 }
-        else if value.is_sexpr() { 7 }
-        else if value.is_error() { 8 }
-        else if value.is_empty() { 9 }
-        else { 10 };
-    type_tag.hash(hasher);
-
-    // Hash content
-    if let Some(b) = value.as_bool() {
-        b.hash(hasher);
-    } else if let Some(n) = value.as_long() {
-        n.hash(hasher);
-    } else if let Some(f) = value.as_float() {
-        f.to_bits().hash(hasher);
-    } else if let Some(s) = value.as_string() {
-        s.hash(hasher);
-    } else if let Some(s) = value.as_atom() {
-        s.hash(hasher);
-    } else if let Some(items) = value.as_sexpr() {
-        items.len().hash(hasher);
-        for item in items {
-            hash_value_for_trait(item, hasher);
+    match value.inner {
+        MettaValueInner::Unit => 0u8.hash(hasher),
+        MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
+        MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
+        MettaValueInner::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
+        MettaValueInner::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
+        MettaValueInner::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
+        MettaValueInner::SExpr(items) => {
+            7u8.hash(hasher);
+            items.len().hash(hasher);
+            for item in items.iter() { hash_value_for_trait(item, hasher); }
         }
-    } else if let Some(inner) = value.as_quoted() {
-        // Hash Quoted as ("quote", inner) so it matches the S-expr representation
-        "quote".hash(hasher);
-        hash_value_for_trait(&inner, hasher);
+        MettaValueInner::Error(..) => 8u8.hash(hasher),
+        MettaValueInner::Empty => 9u8.hash(hasher),
+        MettaValueInner::Quoted(inner) => {
+            10u8.hash(hasher);
+            "quote".hash(hasher);
+            hash_value_for_trait(inner, hasher);
+        }
+        MettaValueInner::Spanned(inner, _span) => hash_value_for_trait(inner, hasher),
+        _ => 10u8.hash(hasher), // Type, Conjunction, Space, State, Memo
     }
 }
 
@@ -1598,6 +1902,7 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
             buf.push(MEMO);
             buf.extend_from_slice(&handle.id.to_le_bytes());
         }
+        MettaValueInner::Spanned(v, _) => serialize_value(v, buf),
     }
 }
 
@@ -2667,5 +2972,134 @@ mod tests {
             "numeric_equal_generic: Long(2) == Float(2.0) should be true");
         assert!(!numeric_equal_generic(&a, &c),
             "numeric_equal_generic: Long(2) == Long(3) should be false");
+    }
+
+    // ================================================================
+    // Phase 6: Serialization & trait transparency tests
+    // ================================================================
+
+    #[test]
+    fn test_spanned_equality_transparent() {
+        use crate::ir::{Position, Span};
+        use crate::backend::models::global_factory;
+
+        let factory = global_factory();
+        let span1 = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 2, byte_offset: 2 },
+        };
+        let span2 = Span {
+            start: Position { row: 5, column: 3, byte_offset: 50 },
+            end: Position { row: 5, column: 5, byte_offset: 52 },
+        };
+
+        let bare = factory.long(42);
+        let spanned1 = factory.spanned(factory.long(42), span1);
+        let spanned2 = factory.spanned(factory.long(42), span2);
+
+        // Spanned(v, s) == v
+        assert_eq!(bare, spanned1, "Spanned should equal bare value");
+        assert_eq!(spanned1, bare, "bare value should equal Spanned");
+        // Spanned(v, s1) == Spanned(v, s2) (different spans)
+        assert_eq!(spanned1, spanned2, "different spans should not affect equality");
+    }
+
+    #[test]
+    fn test_spanned_hash_transparent() {
+        use crate::ir::{Position, Span};
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        use crate::backend::models::global_factory;
+
+        let factory = global_factory();
+        let span = Span {
+            start: Position { row: 1, column: 0, byte_offset: 10 },
+            end: Position { row: 1, column: 5, byte_offset: 15 },
+        };
+
+        let bare = factory.long(42);
+        let spanned = factory.spanned(factory.long(42), span);
+
+        let hash_bare = {
+            let mut h = DefaultHasher::new();
+            bare.hash(&mut h);
+            h.finish()
+        };
+        let hash_spanned = {
+            let mut h = DefaultHasher::new();
+            spanned.hash(&mut h);
+            h.finish()
+        };
+
+        assert_eq!(hash_bare, hash_spanned, "Spanned and bare should hash identically");
+    }
+
+    #[test]
+    fn test_spanned_display_transparent() {
+        use crate::ir::{Position, Span};
+        use crate::backend::models::global_factory;
+
+        let factory = global_factory();
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 5, byte_offset: 5 },
+        };
+
+        let bare = factory.atom("hello");
+        let spanned = factory.spanned(factory.atom("hello"), span);
+
+        assert_eq!(format!("{}", bare), format!("{}", spanned),
+            "Spanned should display identically to bare value");
+        assert_eq!(format!("{}", spanned), "hello");
+    }
+
+    #[test]
+    fn test_spanned_serialize_transparent() {
+        use crate::ir::{Position, Span};
+        use crate::backend::models::{global_factory, MettaValueTrait};
+
+        let factory = global_factory();
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 2, byte_offset: 2 },
+        };
+
+        let bare = factory.long(42);
+        let spanned = factory.spanned(factory.long(42), span);
+
+        let bare_bytes = bare.serialize();
+        let spanned_bytes = spanned.serialize();
+
+        assert_eq!(bare_bytes, spanned_bytes,
+            "Spanned and bare should serialize identically (span stripped)");
+    }
+
+    #[test]
+    fn test_spanned_sexpr_serialize_transparent() {
+        use crate::ir::{Position, Span};
+        use crate::backend::models::{global_factory, MettaValueTrait};
+
+        let factory = global_factory();
+        let span = Span {
+            start: Position { row: 0, column: 0, byte_offset: 0 },
+            end: Position { row: 0, column: 7, byte_offset: 7 },
+        };
+
+        let bare = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ]);
+        let spanned = factory.spanned(factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ]), span);
+
+        let bare_bytes = bare.serialize();
+        let spanned_bytes = spanned.serialize();
+
+        assert_eq!(bare_bytes, spanned_bytes,
+            "Spanned S-expression should serialize identically to bare");
     }
 }

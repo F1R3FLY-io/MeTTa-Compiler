@@ -30,7 +30,7 @@
 //! 4. Rule matching deserializes rules directly to the target type V
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 // MettaValue only used in tests
 #[cfg(test)]
@@ -64,6 +64,24 @@ where
         return value.clone();
     }
 
+    // Peel Spanned wrapper: process inner value, re-wrap with same span
+    if let Some(span) = value.span() {
+        let span = *span; // Copy — Span is Copy
+        // as_atom()/as_sexpr()/etc. see through Spanned, so we can let the
+        // rest of the function process the value normally, then re-wrap.
+        let result = apply_bindings_generic_inner(value, bindings, factory);
+        return factory.spanned(result, span);
+    }
+
+    apply_bindings_generic_inner(value, bindings, factory)
+}
+
+/// Inner implementation of apply_bindings_generic (called after Spanned is peeled).
+fn apply_bindings_generic_inner<V, F>(value: &V, bindings: &GenericBindings<V>, factory: &F) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
     // Handle variables (atoms starting with $, &, or ')
     // IMPORTANT: standalone "&" is a literal operator (used in match), not a variable
     if let Some(var_name) = value.as_atom() {
@@ -358,7 +376,10 @@ pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize {
         }
 
         // Ground types contribute 0
-        if val.is_bool() || val.is_long() || val.is_float() || val.is_string() || val.is_unit() {
+        if matches!(val.inner_raw(),
+            MettaValueInner::Bool(_) | MettaValueInner::Long(_) | MettaValueInner::Float(_)
+            | MettaValueInner::String(_) | MettaValueInner::Unit)
+        {
             continue;
         }
 

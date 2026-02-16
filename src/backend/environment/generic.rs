@@ -37,21 +37,28 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use lru::LruCache;
-use mork_interning::SharedMappingHandle;
+use mork::space::Space;
+use mork_interning::{SharedMapping, SharedMappingHandle};
 use parking_lot::RwLock;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use pathmap::PathMap;
 use tracing::trace;
 
 use super::bloom::HeadArityBloomFilter;
-use super::multiplicity::Multiplicity;
+use super::mork_encoding::mork_bytes_to_generic_value;
+use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
+use super::rule_management::extract_rule_parts;
 use super::scope::ScopeTracker;
+use crate::backend::eval::bindings_generic::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::grounded::{GenericGroundedRegistry, GroundedRegistry};
+use crate::backend::models::gc_allocator::{try_register_env_roots, RootProvider};
 use crate::backend::models::{
-    MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
+    GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
 };
 use crate::backend::modules::ModuleRegistry;
-use crate::backend::models::GcFactory;
+use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
+use crate::backend::varint_encoding::value_to_varint_key_generic;
 
 // ============================================================================
 // Static Sentinel for Unmodified Environments
@@ -71,8 +78,6 @@ fn merge_pathmaps_max(
     a: &PathMap<Multiplicity>,
     b: &PathMap<Multiplicity>,
 ) -> PathMap<Multiplicity> {
-    use pathmap::zipper::*;
-
     // Start with a clone of 'a'
     let mut result = a.clone();
 
@@ -321,8 +326,6 @@ where
     /// The factory is stored and used for creating V values during operations
     /// like `match_space` that need to construct values from MORK bytes.
     pub fn new(factory: F) -> Self {
-        use mork_interning::SharedMapping;
-
         // Create the shared mapping for MORK symbol interning.
         let shared_mapping = SharedMapping::new();
 
@@ -374,7 +377,7 @@ where
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
-        crate::backend::models::gc_allocator::try_register_env_roots(&shared);
+        try_register_env_roots(&shared);
 
         // Compute the MORK byte prefix for rules: [Arity(3)] + "=" symbol bytes.
         // This is constant for the lifetime of the environment (determined by shared_mapping).
@@ -467,7 +470,7 @@ where
         });
 
         // Register new shared state as GC root provider
-        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
+        try_register_env_roots(&new_shared);
 
         self.shared = new_shared;
         self.owns_data = true;
@@ -521,7 +524,7 @@ where
         });
 
         // Register forked shared state as GC root provider
-        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
+        try_register_env_roots(&new_shared);
 
         GenericEnvironment {
             shared: new_shared,
@@ -620,7 +623,6 @@ where
 
         // Calculate total atoms from merged PathMap
         let merged_total_atoms = {
-            use pathmap::zipper::*;
             let mut rz = merged_btm.read_zipper();
             let mut total = 0usize;
             while rz.to_next_val() {
@@ -737,7 +739,7 @@ where
         });
 
         // Register merged shared state as GC root provider
-        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
+        try_register_env_roots(&new_shared);
 
         GenericEnvironment {
             shared: new_shared,
@@ -885,7 +887,6 @@ where
 
         // Calculate total atoms from merged PathMap
         let merged_total_atoms = {
-            use pathmap::zipper::*;
             let mut rz = merged_btm.read_zipper();
             let mut total = 0usize;
             while rz.to_next_val() {
@@ -1021,7 +1022,7 @@ where
         });
 
         // Register batch-merged shared state as GC root provider
-        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
+        try_register_env_roots(&new_shared);
 
         GenericEnvironment {
             shared: new_shared,
@@ -1130,8 +1131,6 @@ where
 // RootProvider — GC Root Collection for Arena Environments
 // ============================================================================
 
-use crate::backend::models::gc_allocator::RootProvider;
-
 impl RootProvider for GenericEnvironmentShared<MettaValue> {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
         // Pre-estimate capacity from all sources to eliminate Vec reallocations.
@@ -1221,8 +1220,6 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
 // MORK Space Access Methods
 // ============================================================================
 
-use mork::space::Space;
-
 impl<V, F> GenericEnvironment<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -1302,11 +1299,6 @@ where
     ///
     /// Uses MeTTa HE semantics: each `add_to_space` call increments the atom's multiplicity.
     pub fn add_to_space(&mut self, value: &V) {
-        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
-        use crate::backend::varint_encoding::value_to_varint_key_generic;
-        use super::multiplicity::add_atom;
-        use super::rule_management::extract_rule_parts;
-
         self.make_owned();
 
         // Check if this is a rule (= lhs rhs) — rules must use De Bruijn encoding
@@ -1395,11 +1387,6 @@ where
     ///
     /// Decrements the atom's multiplicity. If multiplicity reaches 0, the atom is removed.
     pub fn remove_from_space(&mut self, value: &V) {
-        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
-        use crate::backend::varint_encoding::value_to_varint_key_generic;
-        use super::multiplicity::{get_multiplicity, remove_atom};
-        use super::rule_management::extract_rule_parts;
-
         self.make_owned();
 
         // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
@@ -1546,11 +1533,6 @@ where
     /// - In loops where calling `add_to_space()` would trigger repeated CoW copies
     /// - In arena mode evaluation where state must persist across cloned environments
     pub fn add_to_space_shared(&self, value: &V) {
-        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
-        use crate::backend::varint_encoding::value_to_varint_key_generic;
-        use super::multiplicity::add_atom;
-        use super::rule_management::extract_rule_parts;
-
         // Check if this is a rule (= lhs rhs) — rules must use De Bruijn encoding
         // to be consistent with add_rule() which stores in RuleIndex + PathMap with De Bruijn.
         if let Some((_lhs, _rhs)) = extract_rule_parts(value) {
@@ -1640,11 +1622,6 @@ where
     /// Uses `RwLock::write()` for PathMap access and atomic operations for counters.
     /// Safe to call from multiple clones of the same environment.
     pub fn remove_from_space_shared(&self, value: &V) {
-        use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
-        use crate::backend::varint_encoding::value_to_varint_key_generic;
-        use super::multiplicity::{get_multiplicity, remove_atom};
-        use super::rule_management::extract_rule_parts;
-
         // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
             let sm = self.shared_mapping.clone();
@@ -1763,12 +1740,6 @@ where
     ///
     /// No intermediate `MettaValue` conversions occur in the hot path.
     pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
-        use crate::backend::eval::bindings_generic::{
-            apply_bindings_generic, pattern_match_generic,
-        };
-        use super::multiplicity::get_multiplicity;
-        use super::mork_encoding::mork_bytes_to_generic_value;
-
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
@@ -1780,7 +1751,6 @@ where
         }
 
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
@@ -1835,9 +1805,6 @@ where
     /// - `mork_bytes_to_generic_value()` - MORK bytes → V
     /// - `pattern_match_generic()` - pattern matching on V
     pub fn match_space_exists(&self, pattern: &V) -> bool {
-        use crate::backend::eval::bindings_generic::pattern_match_generic;
-        use super::mork_encoding::mork_bytes_to_generic_value;
-
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
@@ -1849,7 +1816,6 @@ where
         }
 
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         while rz.to_next_val() {
@@ -1893,10 +1859,7 @@ where
     ///
     /// Uses `mork_bytes_to_generic_value()` for direct MORK bytes → V conversion.
     pub fn get_all_atoms(&self) -> Vec<V> {
-        use super::mork_encoding::mork_bytes_to_generic_value;
-
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
         let mut atoms = Vec::new();
 

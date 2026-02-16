@@ -12,28 +12,30 @@
 mod analysis;
 pub mod init;
 
+use std::collections::HashMap;
+
 use cranelift::codegen::ir::BlockArg;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-
-use super::codegen::CodegenContext;
-use super::handlers;
-use super::types::{
-    JitError, JitResult,
-};
 #[cfg(test)]
 use tracing::trace;
+
+use super::codegen::{CodegenContext, ErrorFuncRefs};
+use super::handlers;
+use super::runtime;
+use super::types::{JitError, JitResult};
+
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
-use std::collections::HashMap;
 
 // Import initialization traits for zero-cost static dispatch
 use init::{
     ArithmeticFuncIds, ArithmeticInit, BindingFuncIds, BindingsInit, CallFuncIds, CallsInit,
     DebugFuncIds, DebugInit, ErrorFuncIds, ErrorHandlingInit, GlobalsFuncIds, GlobalsInit,
     HigherOrderFuncIds, HigherOrderInit, NondetFuncIds, NondetInit, PatternMatchingFuncIds,
-    PatternMatchingInit, RulesFuncIds, RulesInit, SExprFuncIds, SExprInit, SpaceFuncIds, SpaceInit,
-    SetOpsFuncIds, SetOpsInit, SpecialFormsFuncIds, SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
+    PatternMatchingInit, RulesFuncIds, RulesInit, SExprFuncIds, SExprInit, SetOpsFuncIds,
+    SetOpsInit, SpaceFuncIds, SpaceInit, SpecialFormsFuncIds, SpecialFormsInit, TypeOpsFuncIds,
+    TypeOpsInit,
 };
 
 /// JIT Compiler for bytecode chunks
@@ -374,8 +376,6 @@ impl JitCompiler {
     /// Uses trait-based initialization for grouped symbols with zero-cost
     /// static dispatch. Miscellaneous symbols are registered directly.
     fn register_runtime_symbols(builder: &mut JITBuilder) {
-        use super::runtime;
-
         // Register grouped symbols using trait methods
         Self::register_arithmetic_symbols(builder);
         Self::register_bindings_symbols(builder);
@@ -597,7 +597,6 @@ impl JitCompiler {
             // Declare error handler FuncRefs for bailout code
             // These allow graceful fallback to interpreter instead of SIGILL from trap()
             let error_func_refs = {
-                use super::codegen::ErrorFuncRefs;
                 ErrorFuncRefs {
                     type_error: self
                         .module

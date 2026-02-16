@@ -244,6 +244,8 @@ impl std::error::Error for TryRecvError {}
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -294,7 +296,7 @@ mod tests {
         }
 
         // Give tasks time to complete
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(100));
 
         assert_eq!(counter.load(Ordering::SeqCst), 10);
 

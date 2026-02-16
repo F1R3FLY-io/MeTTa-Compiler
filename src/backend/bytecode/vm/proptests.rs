@@ -3598,13 +3598,13 @@ proptest! {
 
 #[cfg(test)]
 mod tests {
+    use proptest::test_runner::TestRunner;
+
     use super::*;
 
     /// Sanity test that proptest strategies generate valid values
     #[test]
     fn test_strategy_sanity() {
-        use proptest::test_runner::TestRunner;
-
         let mut runner = TestRunner::default();
 
         // Test simple value generation - runner.run returns Result<(), TestError>
@@ -3639,11 +3639,12 @@ mod tests {
 #[cfg(test)]
 mod multi_tier_tests {
     use super::*;
-    use crate::backend::grounded::{AddOp, SubOp, MulOp, DivOp, ModOp};
-    use crate::backend::grounded::{LessOp, LessEqOp, GreaterOp, GreaterEqOp, EqualOp, NotEqualOp};
-    use crate::backend::grounded::{AndOp, OrOp, NotOp};
-    use crate::backend::grounded::GroundedOperation;
+
     use crate::backend::environment::MettaEnvironment;
+    use crate::backend::grounded::{
+        AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperation, LessEqOp,
+        LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
+    };
 
     // =========================================================================
     // Tier Definitions and Helpers
@@ -4101,18 +4102,20 @@ mod multi_tier_tests {
 
 #[cfg(test)]
 mod three_tier_tests {
+    use std::sync::Arc;
+
     use super::*;
+
     use crate::backend::bytecode::chunk::ChunkBuilder;
     use crate::backend::bytecode::jit::{JitCompiler, JitContext, JitValue};
     use crate::backend::bytecode::opcodes::Opcode;
     use crate::backend::bytecode::BytecodeVM;
     use crate::backend::environment::MettaEnvironment;
     use crate::backend::grounded::{
-        AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperation, LessEqOp, LessOp,
-        ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
+        AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperation, LessEqOp,
+        LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
     };
     use crate::backend::models::{MettaValue, MettaValueInner};
-    use std::sync::Arc;
 
     // =========================================================================
     // Helper Functions

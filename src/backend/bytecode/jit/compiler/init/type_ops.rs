@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for type operations
 ///
@@ -51,7 +51,7 @@ impl<T> TypeOpsInit for T {
     }
 
     fn declare_type_ops_funcs<M: Module>(module: &mut M) -> JitResult<TypeOpsFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // get_type: fn(ctx, value, ip) -> type
         let mut get_type_sig = module.make_signature();

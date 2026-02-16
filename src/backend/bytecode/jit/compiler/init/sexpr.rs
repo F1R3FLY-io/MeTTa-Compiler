@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for S-expression operations
 ///
@@ -89,7 +89,7 @@ impl<T> SExprInit for T {
     }
 
     fn declare_sexpr_funcs<M: Module>(module: &mut M) -> JitResult<SExprFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // push_empty: fn() -> empty_sexpr (no parameters)
         let mut push_empty_sig = module.make_signature();

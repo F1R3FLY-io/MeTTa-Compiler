@@ -18,16 +18,21 @@
 //! - `age`: Time since task was enqueued (seconds)
 //! - Lower score = scheduled first (min-heap)
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, LazyLock};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
 use crossbeam_channel::Receiver;
 use dashmap::DashMap;
 use parking_lot::{Condvar, Mutex};
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
-use std::hash::Hash;
-use std::sync::{Arc, LazyLock};
-use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use xxhash_rust::xxh3::Xxh3;
+
+use crate::backend::bytecode::cache::hash_metta_value;
+use crate::backend::models::MettaValue;
 
 // ============================================================================
 // P² Median Estimator
@@ -218,8 +223,7 @@ pub enum TaskTypeId {
 
 impl TaskTypeId {
     /// Create task type ID from a MettaValue expression
-    pub fn from_expr(expr: &crate::backend::models::MettaValue) -> Self {
-        use crate::backend::bytecode::cache::hash_metta_value;
+    pub fn from_expr(expr: &MettaValue) -> Self {
         TaskTypeId::Eval(hash_metta_value(expr))
     }
 
@@ -296,8 +300,6 @@ impl RuntimeTracker {
     }
 
     fn hash_task_type(&self, task_type: &TaskTypeId) -> u64 {
-        use std::hash::Hasher;
-        use xxhash_rust::xxh3::Xxh3;
         let mut h = Xxh3::new();
         task_type.hash(&mut h);
         h.finish()
@@ -749,7 +751,7 @@ impl PriorityEvalThreadPool {
     pub fn spawn_eval<F, R>(
         &self,
         f: F,
-        expr: &crate::backend::models::MettaValue,
+        expr: &MettaValue,
         priority: u32,
     ) -> ResultReceiver<R>
     where
@@ -957,7 +959,7 @@ mod tests {
         );
 
         // Give time for tasks to execute
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(100));
 
         let execution_order = order.lock();
         // With single worker and immediate scheduling, high should execute first

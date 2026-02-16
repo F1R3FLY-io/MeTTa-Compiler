@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for global and closure operations
 pub struct GlobalsFuncIds {
@@ -52,7 +52,7 @@ impl<T> GlobalsInit for T {
     }
 
     fn declare_globals_funcs<M: Module>(module: &mut M) -> JitResult<GlobalsFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // load_global: fn(ctx, symbol_idx, ip) -> value
         let mut load_global_sig = module.make_signature();

@@ -343,6 +343,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::backend::eval::trampoline::{ContextEnv, StaticEvalContext};
     use crate::backend::models::gc_allocator::global_factory;
     use crate::backend::models::MettaValueFactory;
 
@@ -374,10 +375,8 @@ mod tests {
         ]);
         let items = vec![f.atom("unique-atom"), list];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_unique_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -394,10 +393,8 @@ mod tests {
         let list = f.sexpr(vec![]);
         let items = vec![f.atom("unique-atom"), list];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_unique_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -420,10 +417,8 @@ mod tests {
         let list = f.sexpr(vec![e1, e2, e3]);
         let items = vec![f.atom("unique-atom"), list];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_unique_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -445,10 +440,8 @@ mod tests {
         let right = f.sexpr(vec![f.atom("c"), f.atom("d")]);
         let items = vec![f.atom("union-atom"), left, right];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_union_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -482,10 +475,8 @@ mod tests {
         ]);
         let items = vec![f.atom("intersection-atom"), left, right];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_intersection_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -503,10 +494,8 @@ mod tests {
         let right = f.sexpr(vec![f.atom("c"), f.atom("d")]);
         let items = vec![f.atom("intersection-atom"), left, right];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_intersection_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -539,10 +528,8 @@ mod tests {
         ]);
         let items = vec![f.atom("subtraction-atom"), left, right];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_subtraction_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -558,10 +545,8 @@ mod tests {
         let f = global_factory();
         let items = vec![f.atom("subtraction-atom"), f.long(42), f.long(43)];
 
-        let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let ctx = StaticEvalContext::get();
+        let env = ContextEnv::<StaticEvalContext>::default();
 
         let step = eval_subtraction_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {

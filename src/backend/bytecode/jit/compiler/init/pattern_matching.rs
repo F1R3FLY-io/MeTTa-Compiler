@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for pattern matching operations
 pub struct PatternMatchingFuncIds {
@@ -65,7 +65,7 @@ impl<T> PatternMatchingInit for T {
     fn declare_pattern_matching_funcs<M: Module>(
         module: &mut M,
     ) -> JitResult<PatternMatchingFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // pattern_match: fn(ctx, value, pattern, ip) -> bool
         let mut pattern_match_sig = module.make_signature();

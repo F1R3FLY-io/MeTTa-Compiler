@@ -1,6 +1,14 @@
+use std::sync::Arc;
+
 use super::*;
-use crate::backend::bytecode::ChunkBuilder;
+
+use crate::backend::bytecode::jit::runtime::{jit_runtime_collect_native, jit_runtime_yield_native};
+use crate::backend::bytecode::jit::{
+    JitBailoutReason, JitBindingFrame, JitChoicePoint, JitContext, JitValue, JIT_SIGNAL_YIELD,
+};
+use crate::backend::bytecode::{compile, BytecodeVM, ChunkBuilder};
 use crate::backend::models::metta_value::MettaValueInner;
+use crate::backend::MettaValue;
 
 #[test]
 fn test_can_compile_stage1_arithmetic() {
@@ -76,7 +84,6 @@ fn test_compile_simple_addition() {
 
 #[test]
 fn test_jit_execute_addition() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -114,7 +121,6 @@ fn test_jit_execute_addition() {
 
 #[test]
 fn test_jit_execute_arithmetic_chain() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -150,7 +156,6 @@ fn test_jit_execute_arithmetic_chain() {
 
 #[test]
 fn test_jit_execute_boolean_logic() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -186,7 +191,6 @@ fn test_jit_execute_boolean_logic() {
 
 #[test]
 fn test_jit_execute_comparison() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -219,7 +223,6 @@ fn test_jit_execute_comparison() {
 
 #[test]
 fn test_jit_execute_division() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -252,7 +255,6 @@ fn test_jit_execute_division() {
 
 #[test]
 fn test_jit_execute_modulo() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -305,7 +307,6 @@ fn test_can_compile_pow() {
 
 #[test]
 fn test_jit_execute_pow() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -343,7 +344,6 @@ fn test_jit_execute_pow() {
 
 #[test]
 fn test_jit_execute_pow_zero_exponent() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -380,7 +380,6 @@ fn test_jit_execute_pow_zero_exponent() {
 
 #[test]
 fn test_can_compile_push_constant() {
-    use crate::backend::MettaValue;
 
     // Test that PushConstant is now compilable (Stage 2)
     let mut builder = ChunkBuilder::new("test_const_compilable");
@@ -397,8 +396,6 @@ fn test_can_compile_push_constant() {
 
 #[test]
 fn test_jit_execute_push_constant() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -432,8 +429,6 @@ fn test_jit_execute_push_constant() {
 
 #[test]
 fn test_jit_execute_push_constant_arithmetic() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -480,7 +475,6 @@ fn exec_jit(
     code_ptr: *const (),
     constants: &[crate::backend::MettaValue],
 ) -> crate::backend::bytecode::jit::JitValue {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
@@ -496,8 +490,6 @@ fn exec_jit(
 
 #[test]
 fn test_jit_integration_simple_arithmetic() {
-    use crate::backend::bytecode::compile;
-    use crate::backend::MettaValue;
 
     // Build MeTTa expression: (+ 10 20) = 30
     let expr = MettaValue::SExpr(vec![
@@ -523,8 +515,6 @@ fn test_jit_integration_simple_arithmetic() {
 
 #[test]
 fn test_jit_integration_nested_arithmetic() {
-    use crate::backend::bytecode::compile;
-    use crate::backend::MettaValue;
 
     // Build MeTTa expression: (+ (- 100 50) (* 5 3)) = 50 + 15 = 65
     let expr = MettaValue::SExpr(vec![
@@ -557,8 +547,6 @@ fn test_jit_integration_nested_arithmetic() {
 
 #[test]
 fn test_jit_integration_comparison_chain() {
-    use crate::backend::bytecode::compile;
-    use crate::backend::MettaValue;
 
     // Build MeTTa expression: (< (+ 5 5) 20) = True
     let expr = MettaValue::SExpr(vec![
@@ -587,8 +575,6 @@ fn test_jit_integration_comparison_chain() {
 
 #[test]
 fn test_jit_integration_pow() {
-    use crate::backend::bytecode::compile;
-    use crate::backend::MettaValue;
 
     // Build MeTTa expression: (pow 2 8) = 256
     let expr = MettaValue::SExpr(vec![
@@ -617,9 +603,6 @@ fn test_jit_integration_pow() {
 
 #[test]
 fn test_jit_vm_equivalence_arithmetic() {
-    use crate::backend::bytecode::{compile, BytecodeVM};
-    use crate::backend::MettaValue;
-    use std::sync::Arc;
 
     // Test various arithmetic expressions
     let test_cases = vec![
@@ -684,9 +667,6 @@ fn test_jit_vm_equivalence_arithmetic() {
 
 #[test]
 fn test_jit_vm_equivalence_comparisons() {
-    use crate::backend::bytecode::{compile, BytecodeVM};
-    use crate::backend::MettaValue;
-    use std::sync::Arc;
 
     // Test comparison operators
     let test_cases = vec![
@@ -999,8 +979,6 @@ fn test_jit_execute_pow_chain() {
 
 #[test]
 fn test_jit_execute_deep_expression() {
-    use crate::backend::bytecode::compile;
-    use crate::backend::MettaValue;
 
     // Build a deeply nested expression: ((((1 + 2) + 3) + 4) + 5) = 15
     fn build_nested_add(depth: usize) -> MettaValue {
@@ -1032,7 +1010,6 @@ fn test_jit_execute_deep_expression() {
 
 #[test]
 fn test_jit_execute_large_constant_arithmetic() {
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -1234,7 +1211,6 @@ fn test_can_compile_fork_in_middle_with_bailout() {
 #[test]
 fn test_jit_bailout_reason_nondeterminism_exists() {
     // Verify that JitBailoutReason::NonDeterminism exists and has correct value
-    use crate::backend::bytecode::jit::JitBailoutReason;
 
     let reason = JitBailoutReason::NonDeterminism;
     assert_eq!(reason as u8, 8, "NonDeterminism should have discriminant 8");
@@ -1243,7 +1219,6 @@ fn test_jit_bailout_reason_nondeterminism_exists() {
 #[test]
 fn test_jit_bailout_reason_phase4_values() {
     // Verify Phase 4 bailout reasons have correct discriminant values
-    use crate::backend::bytecode::jit::JitBailoutReason;
 
     assert_eq!(
         JitBailoutReason::Fork as u8,
@@ -1270,7 +1245,6 @@ fn test_jit_bailout_reason_phase4_values() {
 fn test_jit_fork_creates_choice_points_native() {
     // Phase 9: Fork chunks are now detected statically and routed to bytecode tier
     // This test verifies that Fork chunks are properly rejected by can_compile_stage1()
-    use crate::backend::MettaValue;
 
     // Create chunk with Fork opcode
     // Format: Fork count:u16 idx0:u16 idx1:u16
@@ -1300,8 +1274,6 @@ fn test_jit_fork_creates_choice_points_native() {
 fn test_jit_yield_signals_bailout() {
     // Stage 2 JIT: Yield now returns JIT_SIGNAL_YIELD to dispatcher instead of bailout
     // Note: This test verifies that Yield stores result and returns signal
-    use crate::backend::bytecode::jit::runtime::jit_runtime_yield_native;
-    use crate::backend::bytecode::jit::{JitChoicePoint, JitContext, JitValue, JIT_SIGNAL_YIELD};
 
     // Test the runtime function directly instead of JIT code generation
     // (JIT code gen for Yield returns immediately, which breaks block filling)
@@ -1341,8 +1313,6 @@ fn test_jit_yield_signals_bailout() {
 fn test_jit_collect_signals_bailout() {
     // Stage 2 JIT: Collect now uses native function and pushes result to stack
     // Note: The return value is the NaN-boxed SExpr result, not a signal
-    use crate::backend::bytecode::jit::runtime::jit_runtime_collect_native;
-    use crate::backend::bytecode::jit::{JitChoicePoint, JitContext, JitValue};
 
     // Test the runtime function directly
     let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
@@ -3155,7 +3125,6 @@ fn test_jit_can_compile_push_empty() {
 
 #[test]
 fn test_jit_can_compile_push_atom() {
-    use crate::backend::MettaValue;
 
     let mut builder = ChunkBuilder::new("push_atom");
     let idx = builder.add_constant(MettaValue::Atom("foo".to_string()));
@@ -3171,7 +3140,6 @@ fn test_jit_can_compile_push_atom() {
 
 #[test]
 fn test_jit_can_compile_push_string() {
-    use crate::backend::MettaValue;
 
     let mut builder = ChunkBuilder::new("push_string");
     let idx = builder.add_constant(MettaValue::String("hello".to_string()));
@@ -3187,7 +3155,6 @@ fn test_jit_can_compile_push_string() {
 
 #[test]
 fn test_jit_can_compile_push_variable() {
-    use crate::backend::MettaValue;
 
     let mut builder = ChunkBuilder::new("push_variable");
     let idx = builder.add_constant(MettaValue::Atom("$x".to_string()));
@@ -3203,7 +3170,6 @@ fn test_jit_can_compile_push_variable() {
 
 #[test]
 fn test_jit_execute_push_empty() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3237,8 +3203,6 @@ fn test_jit_execute_push_empty() {
 
 #[test]
 fn test_jit_execute_push_atom() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3273,8 +3237,6 @@ fn test_jit_execute_push_atom() {
 
 #[test]
 fn test_jit_execute_push_string() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3309,8 +3271,6 @@ fn test_jit_execute_push_string() {
 
 #[test]
 fn test_jit_execute_push_variable() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3391,7 +3351,6 @@ fn test_jit_can_compile_get_arity() {
 
 #[test]
 fn test_jit_execute_get_arity_empty() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3428,8 +3387,6 @@ fn test_jit_execute_get_arity_empty() {
 
 #[test]
 fn test_jit_execute_get_arity_nonempty() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3472,8 +3429,6 @@ fn test_jit_execute_get_arity_nonempty() {
 
 #[test]
 fn test_jit_execute_get_head() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3516,8 +3471,6 @@ fn test_jit_execute_get_head() {
 
 #[test]
 fn test_jit_execute_get_tail() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3561,8 +3514,6 @@ fn test_jit_execute_get_tail() {
 
 #[test]
 fn test_jit_execute_get_tail_get_head() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3606,7 +3557,6 @@ fn test_jit_execute_get_tail_get_head() {
 
 #[test]
 fn test_jit_can_compile_get_element() {
-    use crate::backend::MettaValue;
 
     let mut builder = ChunkBuilder::new("get_element");
     let sexpr = MettaValue::SExpr(vec![
@@ -3628,8 +3578,6 @@ fn test_jit_can_compile_get_element() {
 
 #[test]
 fn test_jit_execute_get_element_first() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3672,8 +3620,6 @@ fn test_jit_execute_get_element_first() {
 
 #[test]
 fn test_jit_execute_get_element_middle() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3716,8 +3662,6 @@ fn test_jit_execute_get_element_middle() {
 
 #[test]
 fn test_jit_execute_get_element_last() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3760,8 +3704,6 @@ fn test_jit_execute_get_element_last() {
 
 #[test]
 fn test_jit_execute_get_element_combined() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3812,7 +3754,6 @@ fn test_jit_execute_get_element_combined() {
 
 #[test]
 fn test_jit_execute_get_type_long() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3848,7 +3789,6 @@ fn test_jit_execute_get_type_long() {
 
 #[test]
 fn test_jit_execute_get_type_bool() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3884,8 +3824,6 @@ fn test_jit_execute_get_type_bool() {
 
 #[test]
 fn test_jit_execute_get_type_sexpr() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3929,8 +3867,6 @@ fn test_jit_execute_get_type_sexpr() {
 
 #[test]
 fn test_jit_execute_check_type_match() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3970,8 +3906,6 @@ fn test_jit_execute_check_type_match() {
 
 #[test]
 fn test_jit_execute_check_type_mismatch() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4011,8 +3945,6 @@ fn test_jit_execute_check_type_mismatch() {
 
 #[test]
 fn test_jit_execute_is_type_match() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4052,8 +3984,6 @@ fn test_jit_execute_is_type_match() {
 
 #[test]
 fn test_jit_execute_check_type_variable_matches_any() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4098,8 +4028,6 @@ fn test_jit_execute_check_type_variable_matches_any() {
 
 #[test]
 fn test_jit_execute_assert_type_match() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4142,8 +4070,6 @@ fn test_jit_execute_assert_type_match() {
 
 #[test]
 fn test_jit_execute_assert_type_mismatch() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4175,8 +4101,6 @@ fn test_jit_execute_assert_type_mismatch() {
 
 #[test]
 fn test_jit_execute_assert_type_variable_matches_any() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4272,7 +4196,6 @@ fn test_jit_can_compile_cons_atom() {
 
 #[test]
 fn test_jit_execute_make_sexpr_empty() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4304,7 +4227,6 @@ fn test_jit_execute_make_sexpr_empty() {
 
 #[test]
 fn test_jit_execute_make_sexpr_single() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4345,7 +4267,6 @@ fn test_jit_execute_make_sexpr_single() {
 
 #[test]
 fn test_jit_execute_make_sexpr_multiple() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4390,7 +4311,6 @@ fn test_jit_execute_make_sexpr_multiple() {
 
 #[test]
 fn test_jit_execute_cons_atom_to_nil() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4432,7 +4352,6 @@ fn test_jit_execute_cons_atom_to_nil() {
 
 #[test]
 fn test_jit_execute_cons_atom_to_sexpr() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4481,7 +4400,6 @@ fn test_jit_execute_cons_atom_to_sexpr() {
 
 #[test]
 fn test_jit_execute_make_sexpr_nested() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4556,7 +4474,6 @@ fn test_jit_execute_make_sexpr_nested() {
 
 #[test]
 fn test_jit_can_compile_push_uri() {
-    use crate::backend::MettaValue;
 
     // Test that PushUri is compilable
     let mut builder = ChunkBuilder::new("push_uri");
@@ -4604,8 +4521,6 @@ fn test_jit_can_compile_make_quote() {
 
 #[test]
 fn test_jit_execute_push_uri() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4639,7 +4554,6 @@ fn test_jit_execute_push_uri() {
 
 #[test]
 fn test_jit_execute_make_list_empty() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4674,7 +4588,6 @@ fn test_jit_execute_make_list_empty() {
 
 #[test]
 fn test_jit_execute_make_list_single() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4718,7 +4631,6 @@ fn test_jit_execute_make_list_single() {
 
 #[test]
 fn test_jit_execute_make_list_multiple() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4766,7 +4678,6 @@ fn test_jit_execute_make_list_multiple() {
 
 #[test]
 fn test_jit_execute_make_quote() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4806,7 +4717,6 @@ fn test_jit_execute_make_quote() {
 
 #[test]
 fn test_jit_execute_make_quote_nested() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4861,7 +4771,6 @@ fn test_jit_execute_make_quote_nested() {
 
 #[test]
 fn test_jit_can_compile_call() {
-    use crate::backend::MettaValue;
 
     // Test that Call opcode is compilable
     let mut builder = ChunkBuilder::new("call_test");
@@ -4880,7 +4789,6 @@ fn test_jit_can_compile_call() {
 
 #[test]
 fn test_jit_can_compile_tail_call() {
-    use crate::backend::MettaValue;
 
     // Test that TailCall opcode is compilable
     let mut builder = ChunkBuilder::new("tail_call_test");
@@ -4898,8 +4806,6 @@ fn test_jit_can_compile_tail_call() {
 
 #[test]
 fn test_jit_execute_call_with_bailout() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4937,8 +4843,6 @@ fn test_jit_execute_call_with_bailout() {
 
 #[test]
 fn test_jit_execute_call_no_args() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4970,8 +4874,6 @@ fn test_jit_execute_call_no_args() {
 
 #[test]
 fn test_jit_execute_tail_call_with_bailout() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5004,8 +4906,6 @@ fn test_jit_execute_tail_call_with_bailout() {
 
 #[test]
 fn test_jit_call_builds_correct_expression() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5066,8 +4966,6 @@ fn test_jit_call_builds_correct_expression() {
 fn test_jit_call_with_mixed_argument_types() {
     // Test Call with mixed argument types: atom, long, bool, nested sexpr
     // This validates the expression structure for rule pattern matching
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5173,8 +5071,6 @@ fn test_jit_call_with_mixed_argument_types() {
 fn test_jit_call_expression_valid_for_rule_pattern() {
     // Test that JIT-constructed expressions match expected rule patterns
     // Pattern: (fib $n) -> matches (fib 10)
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5233,8 +5129,6 @@ fn test_jit_call_expression_valid_for_rule_pattern() {
 #[test]
 fn test_jit_tail_call_preserves_tco_flag() {
     // Test that TailCall sets the correct bailout reason for TCO
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5293,8 +5187,6 @@ fn test_jit_tail_call_preserves_tco_flag() {
 #[test]
 fn test_jit_call_with_zero_args_returns_head_only() {
     // Test Call with no arguments returns just the head in an SExpr
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5356,7 +5248,6 @@ fn test_can_compile_binding_opcodes() {
 
 #[test]
 fn test_jit_binding_frame_operations() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5407,7 +5298,6 @@ fn test_jit_binding_frame_operations() {
 
 #[test]
 fn test_jit_has_binding() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5458,7 +5348,6 @@ fn test_jit_has_binding() {
 
 #[test]
 fn test_jit_clear_bindings() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5556,7 +5445,6 @@ fn test_can_compile_pattern_matching_opcodes() {
 
 #[test]
 fn test_jit_pattern_match_simple() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5595,7 +5483,6 @@ fn test_jit_pattern_match_simple() {
 
 #[test]
 fn test_jit_pattern_match_mismatch() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5634,7 +5521,6 @@ fn test_jit_pattern_match_mismatch() {
 
 #[test]
 fn test_jit_unify_simple() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5673,8 +5559,6 @@ fn test_jit_unify_simple() {
 
 #[test]
 fn test_jit_match_arity() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5722,8 +5606,6 @@ fn test_jit_match_arity() {
 
 #[test]
 fn test_jit_match_head() {
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5774,8 +5656,6 @@ fn test_jit_match_head() {
 fn test_jit_match_bind_variable_extraction() {
     // Test Phase 2.1: MatchBind with variable extraction
     // Pattern: ($x 2) matches against (1 2), should bind $x = 1
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5883,7 +5763,6 @@ fn test_can_compile_space_opcodes() {
 fn test_jit_space_add_returns_result() {
     // Test that SpaceAdd JIT compilation produces valid code
     // Note: With nil space, this should return error/fail gracefully
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5922,7 +5801,6 @@ fn test_jit_space_add_returns_result() {
 #[test]
 fn test_jit_space_remove_returns_result() {
     // Test that SpaceRemove JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5959,7 +5837,6 @@ fn test_jit_space_remove_returns_result() {
 #[test]
 fn test_jit_space_get_atoms_returns_result() {
     // Test that SpaceGetAtoms JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5996,7 +5873,6 @@ fn test_jit_space_get_atoms_returns_result() {
 #[test]
 fn test_jit_space_match_returns_result() {
     // Test that SpaceMatch JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6085,7 +5961,6 @@ fn test_can_compile_rule_dispatch_opcodes() {
 #[test]
 fn test_jit_dispatch_rules_returns_result() {
     // Test that DispatchRules JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6122,7 +5997,6 @@ fn test_jit_dispatch_rules_returns_result() {
 #[test]
 fn test_jit_try_rule_returns_result() {
     // Test that TryRule JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6158,7 +6032,6 @@ fn test_jit_try_rule_returns_result() {
 #[test]
 fn test_jit_lookup_rules_returns_result() {
     // Test that LookupRules JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6194,7 +6067,6 @@ fn test_jit_lookup_rules_returns_result() {
 #[test]
 fn test_jit_apply_subst_returns_result() {
     // Test that ApplySubst JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6231,7 +6103,6 @@ fn test_jit_apply_subst_returns_result() {
 #[test]
 fn test_jit_define_rule_returns_result() {
     // Test that DefineRule JIT compilation produces valid code
-    use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6277,7 +6148,6 @@ fn test_jit_let_binding_scope_cleanup() {
     // - StoreLocal removes the value from the simulated stack (into locals vec)
     // - The subsequent Swap/Pop scope cleanup expected the value on stack
     // The fix makes Swap/Pop gracefully handle this case.
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6322,7 +6192,6 @@ fn test_jit_let_binding_scope_cleanup() {
 fn test_jit_nested_let_bindings() {
     // Test nested let bindings: (let $x 1 (let $y 2 $y))
     // Verifies multiple scope cleanup sequences work correctly
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6375,7 +6244,6 @@ fn test_jit_nested_let_bindings() {
 #[test]
 fn test_jit_pop_empty_stack_is_noop() {
     // Test that Pop on empty stack is a no-op (not an error)
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -6408,7 +6276,6 @@ fn test_jit_pop_empty_stack_is_noop() {
 #[test]
 fn test_jit_swap_single_value_is_noop() {
     // Test that Swap with single value on stack is a no-op
-    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 

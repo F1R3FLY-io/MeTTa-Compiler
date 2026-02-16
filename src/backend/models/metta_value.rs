@@ -17,9 +17,14 @@
 //! Values live for the program duration and are reclaimed by the GC when no longer reachable.
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
-use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
+use xxhash_rust::xxh3::Xxh3;
+
+use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::{MemoHandle, SpaceHandle};
+
+use self::serialize_tags::*;
 
 /// Arena-allocated MeTTa value with O(1) clone (just copies the pointer).
 ///
@@ -1127,9 +1132,6 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn hash_value(&self) -> u64 {
-        use std::hash::Hasher;
-        use xxhash_rust::xxh3::Xxh3;
-
         // Golden ratio constant for good hash distribution
         const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
         const LONG_SEED: u64 = 0x517cc1b727220a95;
@@ -1431,9 +1433,7 @@ pub(crate) fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::S
 /// Recursively hash an MettaValue using trait-based accessors.
 ///
 /// Used by `MettaValue::hash_value()` for complex types (strings, atoms, s-expressions).
-fn hash_value_for_trait<H: std::hash::Hasher>(value: &MettaValue, hasher: &mut H) {
-    use std::hash::Hash;
-
+fn hash_value_for_trait<H: Hasher>(value: &MettaValue, hasher: &mut H) {
     // Hash type discriminant
     let type_tag: u8 = if value.is_unit() { 0 }
         else if value.is_bool() { 2 }
@@ -1472,7 +1472,6 @@ fn hash_value_for_trait<H: std::hash::Hasher>(value: &MettaValue, hasher: &mut H
 
 /// Serialize an MettaValue to bytes
 fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
-    use serialize_tags::*;
     match value.inner {
         MettaValueInner::Atom(s) => {
             buf.push(ATOM);

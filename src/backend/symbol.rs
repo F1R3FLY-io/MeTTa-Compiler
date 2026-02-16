@@ -251,6 +251,8 @@ pub use string_based::{intern, intern_string, Symbol};
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]
@@ -287,7 +289,6 @@ mod tests {
 
     #[test]
     fn test_symbol_hash() {
-        use std::collections::HashMap;
         let mut map: HashMap<Symbol, i32> = HashMap::new();
         map.insert(intern("key"), 42);
         assert_eq!(map.get(&intern("key")), Some(&42));

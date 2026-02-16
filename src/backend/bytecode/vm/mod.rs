@@ -20,14 +20,23 @@
 //! - `types`: Core type definitions (VmError, VmConfig, CallFrame, etc.)
 //! - `pattern`: Pattern matching helpers
 
+use std::collections::HashMap;
 use std::fmt;
 use std::marker::Unpin;
 use std::ops::ControlFlow;
 use std::sync::Arc;
-use tracing::trace;
 
+use tracing::trace;
+use xxhash_rust::xxh3::xxh3_64;
+
+use super::chunk::GenericBytecodeChunk;
+use super::external_registry::{ExternalError, GenericExternalContext};
+use super::native_registry::GenericNativeContext;
 use super::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+
+use crate::backend::environment::GenericEnvironment;
+use crate::backend::eval::bindings_generic::apply_bindings_generic;
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 
 // === Submodules ===
 
@@ -47,14 +56,6 @@ pub use types::{
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
     Alternative, BindingFrame, CallFrame, ChoicePoint,
 };
-
-// ============================================================================
-// Generic Bytecode VM - Zero-Conversion Support
-// ============================================================================
-
-use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
-use super::chunk::GenericBytecodeChunk;
 
 /// Generic bytecode virtual machine that works with any value type.
 ///
@@ -1386,7 +1387,6 @@ where
             .ok_or_else(|| VmError::Runtime(format!("Invalid jump table index: {}", table_index)))?;
 
         // Compute hash of selector value for table lookup
-        use xxhash_rust::xxh3::xxh3_64;
         // Hash the selector value using debug repr for consistent hashing
         let selector_hash = xxh3_64(format!("{:?}", selector).as_bytes());
 
@@ -2345,7 +2345,6 @@ where
     /// Two values are alpha-equivalent if they are structurally identical
     /// except that $-prefixed variables can be consistently renamed.
     fn alpha_equiv(&self, a: &V, b: &V) -> bool {
-        use std::collections::HashMap;
         let mut l2r: HashMap<String, String> = HashMap::new();
         let mut r2l: HashMap<String, String> = HashMap::new();
         self.alpha_equiv_inner(a, b, &mut l2r, &mut r2l)
@@ -2675,7 +2674,6 @@ where
     /// Stack: [arg1, arg2, ..., argN] -> [result]
     fn op_call_native(&mut self) -> VmResult<()> {
         trace!(target: "mettatron::vm::call", ip = self.ip, "call_native (generic)");
-        use super::native_registry::GenericNativeContext;
 
         let func_id = self.read_u16()?;
         let arity = self.read_u8()? as usize;
@@ -2717,7 +2715,6 @@ where
     /// Stack: [arg1, arg2, ..., argN] -> [result]
     fn op_call_external(&mut self) -> VmResult<()> {
         trace!(target: "mettatron::vm::call", ip = self.ip, "call_external (generic)");
-        use super::external_registry::{ExternalError, GenericExternalContext};
 
         let symbol_idx = self.read_u16()?;
         let arity = self.read_u8()? as usize;
@@ -2876,7 +2873,6 @@ where
     }
 
     fn op_dispatch_rules(&mut self) -> VmResult<()> {
-        use crate::backend::eval::bindings_generic::apply_bindings_generic;
         trace!(target: "mettatron::vm::rules", ip = self.ip, "dispatch_rules (generic)");
 
         // Pop the call expression from the stack
@@ -3063,8 +3059,6 @@ where
             .clone();
 
         if let Some(space_name) = name.as_atom() {
-            use xxhash_rust::xxh3::xxh3_64;
-            use crate::backend::models::SpaceHandle;
             let handle = SpaceHandle::new(xxh3_64(space_name.as_bytes()), space_name.to_string());
             self.push(self.factory.space(handle));
             Ok(())

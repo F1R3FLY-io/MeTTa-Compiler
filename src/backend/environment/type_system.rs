@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 
 use mork::space::Space;
 use mork_expr::Expr;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
 use pathmap::PathMap;
 use tracing::trace;
 
@@ -98,7 +99,6 @@ impl MettaEnvironment {
 
         // Insert a single path with just ":" to match all type assertions
         {
-            use pathmap::zipper::*;
             let mut wz = type_prefix_map.write_zipper();
             for &byte in colon_bytes {
                 wz.descend_to_byte(byte);
@@ -160,7 +160,6 @@ impl MettaEnvironment {
             mmaps: HashMap::new(),
         };
 
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         // Try O(p + m) lookup within type subtrie where m << n
@@ -196,7 +195,6 @@ impl MettaEnvironment {
     /// Used when exact match via descend_to_check() fails
     fn get_type_linear(&self, name: &str) -> Option<MettaValue> {
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         // Iterate through all values in the trie

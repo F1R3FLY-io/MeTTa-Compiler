@@ -4,9 +4,13 @@
 
 use std::sync::Arc;
 
-use super::types::VmError;
+use xxhash_rust::xxh3::xxh3_64;
+
+use super::types::{Alternative, ChoicePoint, VmError};
 use super::BytecodeVM;
-use crate::backend::bytecode::chunk::ChunkBuilder;
+
+use crate::backend::bytecode::chunk::{ChunkBuilder, JumpTable};
+use crate::backend::bytecode::external_registry::{ExternalError, ExternalRegistry};
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{GcFactory, MettaValue, MettaValueInner, SpaceHandle};
@@ -2061,8 +2065,6 @@ fn test_vm_call_cached_different_args() {
 #[test]
 fn test_vm_call_external() {
     // Test CallExternal with a registered function
-    use crate::backend::bytecode::external_registry::{ExternalError, ExternalRegistry};
-
     let mut builder = ChunkBuilder::new("test_call_external");
 
     // Add function name constant
@@ -2123,8 +2125,6 @@ fn test_vm_call_external_not_found() {
 #[test]
 fn test_vm_call_external_multiple_args() {
     // Test CallExternal with multiple arguments
-    use crate::backend::bytecode::external_registry::ExternalRegistry;
-
     let mut builder = ChunkBuilder::new("test_call_external_multi");
 
     let name_idx = builder.add_constant(MettaValue::Atom("add3".to_string()));
@@ -2338,8 +2338,6 @@ fn test_vm_tail_call_n_irreducible() {
 /// Test op_jump_table: multi-way branch
 #[test]
 fn test_vm_jump_table() {
-    use crate::backend::bytecode::chunk::JumpTable;
-
     let mut builder = ChunkBuilder::new("test_jump_table");
 
     // We'll create a simple jump table with 2 entries
@@ -2349,7 +2347,7 @@ fn test_vm_jump_table() {
     builder.emit_byte(Opcode::PushLongSmall, 1);
 
     // Calculate hash for selector value (must match what control_flow.rs uses)
-    use xxhash_rust::xxh3::xxh3_64;
+
     let hash_1 = xxh3_64(format!("{:?}", MettaValue::Long(1)).as_bytes());
 
     // Create jump table - entries will be patched after we know offsets
@@ -2387,9 +2385,6 @@ fn test_vm_jump_table() {
 
 #[test]
 fn test_vm_jump_table_default() {
-    use crate::backend::bytecode::chunk::JumpTable;
-    use xxhash_rust::xxh3::xxh3_64;
-
     let mut builder = ChunkBuilder::new("test_jump_table_default");
 
     // Push selector that won't match any case
@@ -2426,8 +2421,6 @@ fn test_vm_jump_table_default() {
 /// Test Alternative::Index in nondeterminism
 #[test]
 fn test_vm_alternative_index() {
-    use super::types::{Alternative, ChoicePoint};
-
     let mut builder = ChunkBuilder::new("test_alt_index");
 
     // Push some initial value
@@ -2588,7 +2581,7 @@ fn test_vm_space_match_no_matches() {
 /// Test LoadSpace opcode creates a space with correct hash-based ID.
 #[test]
 fn test_vm_load_space() {
-    use xxhash_rust::xxh3::xxh3_64;
+
 
     let mut builder = ChunkBuilder::new("test_load_space");
 
@@ -2620,7 +2613,7 @@ fn test_vm_load_space() {
 /// Test LoadSpace opcode with different space names produces different IDs.
 #[test]
 fn test_vm_load_space_different_names() {
-    use xxhash_rust::xxh3::xxh3_64;
+
 
     // Test with first space name
     let mut builder1 = ChunkBuilder::new("test_load_space_1");
@@ -2665,13 +2658,15 @@ fn test_vm_load_space_different_names() {
 mod generic_vm_tests {
     use std::sync::Arc;
 
-    use crate::backend::bytecode::chunk::GenericChunkBuilder;
+    use super::super::BytecodeVM;
+
+    use crate::backend::bytecode::chunk::{ChunkBuilder, GenericChunkBuilder};
+    use crate::backend::bytecode::external_registry::GenericExternalRegistry;
+    use crate::backend::bytecode::native_registry::GenericNativeRegistry;
     use crate::backend::bytecode::opcodes::Opcode;
     use crate::backend::bytecode::vm::GenericBytecodeVM;
     use crate::backend::environment::GenericEnvironment;
-    use crate::backend::models::{
-        GcFactory, MettaValue, MettaValueFactory,
-    };
+    use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory};
 
     fn factory() -> GcFactory {
         GcFactory::default()
@@ -2835,8 +2830,6 @@ mod generic_vm_tests {
     /// Test CallNative dispatches to the generic native registry.
     #[test]
     fn test_generic_vm_call_native() {
-        use crate::backend::bytecode::native_registry::GenericNativeRegistry;
-
         let f = factory();
         let mut registry = GenericNativeRegistry::<MettaValue, GcFactory>::new();
         let func_id = registry.register("add2", |args, _ctx| {
@@ -2878,8 +2871,6 @@ mod generic_vm_tests {
     /// Test CallExternal dispatches to the generic external registry.
     #[test]
     fn test_generic_vm_call_external() {
-        use crate::backend::bytecode::external_registry::GenericExternalRegistry;
-
         let f = factory();
         let mut registry = GenericExternalRegistry::<MettaValue, GcFactory>::new();
         registry.register("triple", |args, _ctx| {
@@ -3031,9 +3022,6 @@ mod generic_vm_tests {
     /// Test the BytecodeVM type alias works.
     #[test]
     fn test_heap_generic_vm_alias() {
-        use super::super::BytecodeVM;
-        use crate::backend::bytecode::chunk::ChunkBuilder;
-
         let mut builder = ChunkBuilder::new("test_alias");
         builder.emit_byte(Opcode::PushLongSmall, 7);
         builder.emit(Opcode::Dup);

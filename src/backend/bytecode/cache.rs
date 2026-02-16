@@ -220,6 +220,9 @@ pub fn cache_sizes() -> (usize, usize) {
 mod tests {
     use super::*;
 
+    use crate::backend::bytecode::chunk::ChunkBuilder;
+    use crate::backend::bytecode::Opcode;
+
     #[test]
     fn test_hash_stability() {
         let expr = MettaValue::SExpr(vec![
@@ -266,9 +269,6 @@ mod tests {
 
     #[test]
     fn test_bytecode_cache() {
-        use crate::backend::bytecode::chunk::ChunkBuilder;
-        use crate::backend::bytecode::Opcode;
-
         clear_caches();
         let hash = 67890u64;
 

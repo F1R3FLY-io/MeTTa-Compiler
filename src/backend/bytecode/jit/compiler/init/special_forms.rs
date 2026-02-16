@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for special form operations
 pub struct SpecialFormsFuncIds {
@@ -142,7 +142,7 @@ impl<T> SpecialFormsInit for T {
     }
 
     fn declare_special_forms_funcs<M: Module>(module: &mut M) -> JitResult<SpecialFormsFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // eval_if: fn(ctx, condition, then_val, else_val, ip) -> result
         let mut eval_if_sig = module.make_signature();

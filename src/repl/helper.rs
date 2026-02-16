@@ -259,6 +259,10 @@ impl Helper for MettaHelper {}
 mod tests {
     use super::*;
 
+    use rustyline::history::DefaultHistory;
+
+    use crate::backend::{compile, eval, new_env};
+
     #[test]
     fn test_helper_creation() {
         let helper = MettaHelper::new();
@@ -330,7 +334,6 @@ mod tests {
 
     #[test]
     fn test_completion_basic() {
-        use rustyline::history::DefaultHistory;
 
         let helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
@@ -344,7 +347,6 @@ mod tests {
 
     #[test]
     fn test_completion_operators() {
-        use rustyline::history::DefaultHistory;
 
         let helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
@@ -358,7 +360,6 @@ mod tests {
 
     #[test]
     fn test_hint_from_history() {
-        use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
@@ -375,7 +376,6 @@ mod tests {
 
     #[test]
     fn test_hint_no_match() {
-        use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_update_from_environment() {
-        use crate::backend::{compile, eval, new_env};
+
 
         let mut helper = MettaHelper::new().unwrap();
         let mut env = new_env();
@@ -436,8 +436,7 @@ mod tests {
 
     #[test]
     fn test_completion_with_user_defined() {
-        use crate::backend::{compile, eval, new_env};
-        use rustyline::history::DefaultHistory;
+
 
         let mut helper = MettaHelper::new().unwrap();
         let mut env = new_env();
@@ -464,8 +463,7 @@ mod tests {
 
     #[test]
     fn test_constant_completion() {
-        use crate::backend::{compile, eval, new_env};
-        use rustyline::history::DefaultHistory;
+
 
         let mut helper = MettaHelper::new().unwrap();
         let mut env = new_env();

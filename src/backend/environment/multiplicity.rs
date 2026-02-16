@@ -190,6 +190,8 @@ pub fn decrement_multiplicity(btm: &mut PathMap<Multiplicity>, path: &[u8]) -> u
 
 #[cfg(test)]
 mod tests {
+    use pathmap::zipper::ZipperIteration;
+
     use super::*;
 
     #[test]
@@ -395,8 +397,6 @@ mod tests {
 
     #[test]
     fn test_iteration_with_multiplicity() {
-        use pathmap::zipper::ZipperIteration;
-
         let mut btm: PathMap<Multiplicity> = PathMap::new();
         let path1 = vec![0xC3, b'f', b'o', b'o'];
         let path2 = vec![0xC3, b'b', b'a', b'r'];

@@ -3,6 +3,7 @@
 //! Provides configuration options for tuning the async runtime and parallel evaluation behavior.
 
 use std::sync::OnceLock;
+use std::thread;
 
 /// Global configuration for MeTTaTron's async evaluation
 static EVAL_CONFIG: OnceLock<EvalConfig> = OnceLock::new();
@@ -113,7 +114,7 @@ impl EvalConfig {
     /// Sets `max_blocking_threads` to `num_cpus * 2` for optimal CPU utilization
     /// without excessive context switching.
     pub fn cpu_optimized() -> Self {
-        let num_cpus = std::thread::available_parallelism()
+        let num_cpus = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
 
@@ -127,7 +128,7 @@ impl EvalConfig {
     ///
     /// Limits thread pool to match CPU count to minimize memory overhead.
     pub fn memory_optimized() -> Self {
-        let num_cpus = std::thread::available_parallelism()
+        let num_cpus = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
 
@@ -228,7 +229,7 @@ mod tests {
     #[test]
     fn test_cpu_optimized() {
         let config = EvalConfig::cpu_optimized();
-        let num_cpus = std::thread::available_parallelism()
+        let num_cpus = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
 
@@ -239,7 +240,7 @@ mod tests {
     #[test]
     fn test_memory_optimized() {
         let config = EvalConfig::memory_optimized();
-        let num_cpus = std::thread::available_parallelism()
+        let num_cpus = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
 

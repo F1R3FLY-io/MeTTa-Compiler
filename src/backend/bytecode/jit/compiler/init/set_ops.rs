@@ -9,7 +9,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for set operations
 pub struct SetOpsFuncIds {
@@ -59,7 +59,7 @@ impl<T> SetOpsInit for T {
     }
 
     fn declare_set_ops_funcs<M: Module>(module: &mut M) -> JitResult<SetOpsFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // eval_if_equal: fn(ctx, pred1, pred2, then, else, ip) -> result
         let mut if_equal_sig = module.make_signature();

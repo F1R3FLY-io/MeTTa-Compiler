@@ -17,6 +17,15 @@
 
 use std::sync::Once;
 
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::sync::Arc;
+#[cfg(unix)]
+use std::thread;
+#[cfg(unix)]
+use std::time::{SystemTime, UNIX_EPOCH};
+
 /// Guard to ensure `install_signal_handlers()` runs at most once.
 static INSTALL_ONCE: Once = Once::new();
 
@@ -39,27 +48,27 @@ pub fn install_signal_handlers() {
         }
 
         // Create shared Arc<AtomicBool> flags for signal-hook
-        let sigterm_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let sigusr1_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sigterm_flag = Arc::new(AtomicBool::new(false));
+        let sigusr1_flag = Arc::new(AtomicBool::new(false));
 
         // Register signal flags (async-signal-safe: only sets atomics)
         if let Err(e) = signal_hook::flag::register(
             signal_hook::consts::SIGTERM,
-            std::sync::Arc::clone(&sigterm_flag),
+            Arc::clone(&sigterm_flag),
         ) {
             eprintln!("[diagnostics] Failed to register SIGTERM handler: {}", e);
             return;
         }
         if let Err(e) = signal_hook::flag::register(
             signal_hook::consts::SIGUSR1,
-            std::sync::Arc::clone(&sigusr1_flag),
+            Arc::clone(&sigusr1_flag),
         ) {
             eprintln!("[diagnostics] Failed to register SIGUSR1 handler: {}", e);
             return;
         }
 
         // Spawn daemon watcher thread (won't prevent process exit)
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name("diag-watcher".to_string())
             .spawn(move || signal_watcher_loop(sigterm_flag, sigusr1_flag))
             .expect("Failed to spawn diagnostic watcher thread");
@@ -73,8 +82,8 @@ pub fn install_signal_handlers() {}
 /// Watcher thread main loop. Polls signal flags every 50ms.
 #[cfg(unix)]
 fn signal_watcher_loop(
-    sigterm_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    sigusr1_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    sigterm_flag: Arc<AtomicBool>,
+    sigusr1_flag: Arc<AtomicBool>,
 ) {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -82,7 +91,7 @@ fn signal_watcher_loop(
     let poll_interval = Duration::from_millis(50);
 
     loop {
-        std::thread::sleep(poll_interval);
+        thread::sleep(poll_interval);
 
         if sigterm_flag.swap(false, Ordering::AcqRel) {
             dump_diagnostics("SIGTERM");
@@ -102,8 +111,8 @@ fn signal_watcher_loop(
 #[cfg(unix)]
 fn dump_diagnostics(signal_name: &str) {
     let pid = std::process::id();
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 

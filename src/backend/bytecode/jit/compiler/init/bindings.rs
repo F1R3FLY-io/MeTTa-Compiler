@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for binding operations
 pub struct BindingFuncIds {
@@ -64,7 +64,7 @@ impl<T> BindingsInit for T {
     }
 
     fn declare_bindings_funcs<M: Module>(module: &mut M) -> JitResult<BindingFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // load_binding: fn(ctx, var_hash, ip) -> value
         let mut load_sig = module.make_signature();

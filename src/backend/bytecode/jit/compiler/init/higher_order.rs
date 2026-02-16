@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for higher-order operations
 pub struct HigherOrderFuncIds {
@@ -55,7 +55,7 @@ impl<T> HigherOrderInit for T {
     }
 
     fn declare_higher_order_funcs<M: Module>(module: &mut M) -> JitResult<HigherOrderFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // map_atom: fn(ctx, list, func_chunk, ip) -> result
         let mut map_atom_sig = module.make_signature();

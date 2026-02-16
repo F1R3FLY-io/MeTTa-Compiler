@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for call operations
 pub struct CallFuncIds {
@@ -67,7 +67,7 @@ impl<T> CallsInit for T {
     }
 
     fn declare_calls_funcs<M: Module>(module: &mut M) -> JitResult<CallFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // call: fn(ctx, head_idx, args_ptr, arity, ip) -> result
         let mut call_sig = module.make_signature();

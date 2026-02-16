@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for arithmetic operations
 pub struct ArithmeticFuncIds {
@@ -84,7 +84,7 @@ impl<T> ArithmeticInit for T {
     }
 
     fn declare_arithmetic_funcs<M: Module>(module: &mut M) -> JitResult<ArithmeticFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // Binary arithmetic signature: fn(a: u64, b: u64) -> u64
         let mut binary_sig = module.make_signature();

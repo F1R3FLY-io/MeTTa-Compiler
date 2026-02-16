@@ -12,7 +12,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for error handling operations
 ///
@@ -108,7 +108,7 @@ impl<T> ErrorHandlingInit for T {
     }
 
     fn declare_error_handling_funcs<M: Module>(module: &mut M) -> JitResult<ErrorFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // Type error signature: fn(ctx: *mut, ip: u64, expected: u64) -> ()
         let mut type_error_sig = module.make_signature();

@@ -10,6 +10,7 @@
 //! De Bruijn index but represent different logical variables.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use mork::space::Space;
 use mork_expr::{maybe_byte_item, Expr, Tag};
@@ -17,7 +18,7 @@ use smallvec::SmallVec;
 use tracing::warn;
 
 use super::MettaValue;
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{global_factory, MettaValueFactory, MettaValueTrait};
 
 // ============================================================================
 // Thread-local deserialization state — eliminates per-call String allocations
@@ -97,7 +98,7 @@ static VARNAME_BASES: [&str; 64] = [
 /// Global epoch counter for unique variable name generation.
 /// Each MORK-to-value conversion increments this to get a unique epoch,
 /// ensuring that variables from different rule applications never collide.
-static VARNAME_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static VARNAME_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 impl super::MettaEnvironment {
     /// Convert a MORK Expr directly to MettaValue without text serialization
@@ -119,7 +120,6 @@ impl super::MettaEnvironment {
         // Delegate to the efficient factory-based generic implementation.
         // Since MettaValue = MettaValue, the factory allocates directly
         // into the global slab allocator without intermediate heap Strings.
-        use crate::backend::models::global_factory;
         let factory = global_factory();
         super::mork_encoding::mork_expr_to_generic_value(expr, space, &factory)
     }
@@ -254,7 +254,7 @@ where
     let mut stack: Vec<StackFrame<V>> = Vec::new();
     let mut offset = 0usize;
     let mut newvar_count = 0u8;
-    let epoch = VARNAME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let epoch = VARNAME_EPOCH.fetch_add(1, Ordering::Relaxed);
 
     // Use thread-local DeserState for variable name caching (zero alloc after warmup)
     DESER_STATE.with(|state| {

@@ -31,13 +31,23 @@
 //! after the allocator is dropped (only at program exit).
 
 use std::alloc::Layout;
+use std::any::Any;
 use std::cell::Cell;
-use std::sync::{Arc, OnceLock, Weak};
-use parking_lot::{Condvar, Mutex, RwLock};
+use std::mem;
+use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, OnceLock, Weak};
+use std::thread;
+use std::time::Duration;
+
+use parking_lot::{Condvar, Mutex, RwLock};
 use portable_atomic::AtomicU128;
 
+use super::metta_value::read_varint;
+use super::metta_value::serialize_tags::*;
 use super::metta_value::{MettaValue, MettaValueInner};
+use super::metta_value_trait::MettaValueFactory;
 
 // ============================================================================
 // Constants
@@ -83,7 +93,7 @@ impl MmapPage {
     fn new(size: usize) -> Self {
         let ptr = unsafe {
             libc::mmap(
-                std::ptr::null_mut(),
+                ptr::null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
@@ -480,7 +490,7 @@ unsafe fn asan_poison_slab_slot(ptr: *mut u8, slot_size: usize) {
         extern "C" {
             fn __asan_poison_memory_region(addr: *const std::ffi::c_void, size: usize);
         }
-        let free_node_size = std::mem::size_of::<FreeNode>();
+        let free_node_size = mem::size_of::<FreeNode>();
         if slot_size > free_node_size {
             __asan_poison_memory_region(
                 ptr.add(free_node_size) as *const std::ffi::c_void,
@@ -524,7 +534,7 @@ impl DataClassAllocator {
             slot_size,
             pages: RwLock::new(Vec::new()),
             free_list: TreiberStack::new(),
-            current_page: AtomicPtr::new(std::ptr::null_mut()),
+            current_page: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -729,7 +739,7 @@ impl DataClassAllocator {
 
         // Phase 6: Update current_page if all pages were released
         if pages.is_empty() {
-            self.current_page.store(std::ptr::null_mut(), Ordering::Release);
+            self.current_page.store(ptr::null_mut(), Ordering::Release);
         }
         // Otherwise current_page is still valid — we excluded it from release,
         // and Box<DataPage> heap address is stable across swap_remove.
@@ -756,14 +766,14 @@ struct ValueAllocator {
 
 impl ValueAllocator {
     fn new() -> Self {
-        let raw_size = std::mem::size_of::<MettaValueInner>();
+        let raw_size = mem::size_of::<MettaValueInner>();
         let slot_size = (raw_size + SLOT_ALIGN - 1) & !(SLOT_ALIGN - 1);
         Self {
             slot_size,
             pages: RwLock::new(Vec::new()),
             free_list: TreiberStack::new(),
             epoch: AtomicU64::new(0),
-            current_page: AtomicPtr::new(std::ptr::null_mut()),
+            current_page: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -972,7 +982,7 @@ impl ValueAllocator {
 
         // Phase 6: Update current_page if all pages were released
         if pages.is_empty() {
-            self.current_page.store(std::ptr::null_mut(), Ordering::Release);
+            self.current_page.store(ptr::null_mut(), Ordering::Release);
         }
         // Otherwise current_page is still valid — we excluded it from release,
         // and Box<ValuePage> heap address is stable across swap_remove.
@@ -1066,9 +1076,9 @@ impl SlabAllocator {
 
         unsafe {
             // Zero the slot to eliminate stale padding bytes
-            std::ptr::write_bytes(ptr, 0, self.values.slot_size);
+            ptr::write_bytes(ptr, 0, self.values.slot_size);
             // Write the value
-            std::ptr::write(ptr as *mut MettaValueInner, val);
+            ptr::write(ptr as *mut MettaValueInner, val);
             &*(ptr as *const MettaValueInner)
         }
     }
@@ -1082,7 +1092,7 @@ impl SlabAllocator {
         let bytes = s.as_bytes();
         let ptr = self.alloc_data(bytes.len());
         unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+            ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, bytes.len()))
         }
     }
@@ -1097,12 +1107,12 @@ impl SlabAllocator {
             return &[];
         }
         let len = items.len();
-        let byte_len = len * std::mem::size_of::<MettaValue>();
+        let byte_len = len * mem::size_of::<MettaValue>();
         let ptr = self.alloc_data(byte_len);
         unsafe {
             let slot = ptr as *mut MettaValue;
             for (i, item) in items.into_iter().enumerate() {
-                std::ptr::write(slot.add(i), item);
+                ptr::write(slot.add(i), item);
             }
             std::slice::from_raw_parts(slot as *const MettaValue, len)
         }
@@ -1113,11 +1123,11 @@ impl SlabAllocator {
         if items.is_empty() {
             return &[];
         }
-        let byte_len = items.len() * std::mem::size_of::<MettaValue>();
+        let byte_len = items.len() * mem::size_of::<MettaValue>();
         let ptr = self.alloc_data(byte_len);
         unsafe {
             let slot = ptr as *mut MettaValue;
-            std::ptr::copy_nonoverlapping(items.as_ptr(), slot, items.len());
+            ptr::copy_nonoverlapping(items.as_ptr(), slot, items.len());
             std::slice::from_raw_parts(slot as *const MettaValue, items.len())
         }
     }
@@ -1487,10 +1497,10 @@ impl Drop for SessionGuard {
 // The thread is lazily spawned on the first session release request.
 
 /// Channel sender for session release requests. Lazily initialized.
-static SESSION_RELEASE_TX: OnceLock<std::sync::mpsc::Sender<u32>> = OnceLock::new();
+static SESSION_RELEASE_TX: OnceLock<mpsc::Sender<u32>> = OnceLock::new();
 
 /// Handle to the session release thread (for join on shutdown).
-static SESSION_RELEASE_THREAD: OnceLock<Mutex<Option<std::thread::JoinHandle<()>>>> = OnceLock::new();
+static SESSION_RELEASE_THREAD: OnceLock<Mutex<Option<thread::JoinHandle<()>>>> = OnceLock::new();
 
 /// Enqueue a session context ID for async release.
 ///
@@ -1502,9 +1512,9 @@ fn enqueue_session_release(context_id: u32) {
     }
 
     let tx = SESSION_RELEASE_TX.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<u32>();
+        let (tx, rx) = mpsc::channel::<u32>();
 
-        let handle = std::thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("mettatron-session-gc".to_string())
             .spawn(move || {
                 session_release_thread_main(rx);
@@ -1523,7 +1533,7 @@ fn enqueue_session_release(context_id: u32) {
 ///
 /// Receives context IDs and calls `release_session()` on the global allocator.
 /// Batches multiple pending releases to reduce root-tracing overhead.
-fn session_release_thread_main(rx: std::sync::mpsc::Receiver<u32>) {
+fn session_release_thread_main(rx: mpsc::Receiver<u32>) {
     loop {
         // Block waiting for the first request
         match rx.recv() {
@@ -1863,9 +1873,9 @@ pub fn apply_backpressure_tier1() {
     }
     match backpressure_level() {
         0 => {} // No backpressure — hot path, zero overhead
-        1 => std::thread::yield_now(),
-        2 => std::thread::sleep(std::time::Duration::from_micros(10)),
-        _ => std::thread::sleep(std::time::Duration::from_micros(100)),
+        1 => thread::yield_now(),
+        2 => thread::sleep(Duration::from_micros(10)),
+        _ => thread::sleep(Duration::from_micros(100)),
     }
 }
 
@@ -1895,7 +1905,7 @@ pub fn apply_backpressure_tier2() {
             // Timeout prevents infinite wait if GC response notification is lost.
             // 100ms matches cron monitor poll interval — at worst we retry at
             // the same cadence as before.
-            GC_CYCLE_CONDVAR.wait_for(&mut lock, std::time::Duration::from_millis(100));
+            GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(100));
         }
     }
 }
@@ -2131,7 +2141,6 @@ where
     // session-allocated values (including RuleEntry.lhs/rhs) are freed, causing
     // use-after-free when match_rules_native() dereferences freed slab slots.
 
-    use std::any::Any;
     // Clone the Arc and try to downcast to the concrete MettaValue type
     let any: Arc<dyn Any + Send + Sync> = shared.clone();
     if let Ok(arena_shared) = any.downcast::<crate::backend::environment::GenericEnvironmentShared<MettaValue>>() {
@@ -3003,8 +3012,8 @@ fn data_size_of(inner: &MettaValueInner) -> usize {
     match inner {
         MettaValueInner::Atom(s) => s.len(),
         MettaValueInner::String(s) => s.len(),
-        MettaValueInner::SExpr(children) => children.len() * std::mem::size_of::<MettaValue>(),
-        MettaValueInner::Conjunction(goals) => goals.len() * std::mem::size_of::<MettaValue>(),
+        MettaValueInner::SExpr(children) => children.len() * mem::size_of::<MettaValue>(),
+        MettaValueInner::Conjunction(goals) => goals.len() * mem::size_of::<MettaValue>(),
         MettaValueInner::Error(msg, _) => msg.len(),
         _ => 0,
     }
@@ -3020,11 +3029,11 @@ fn collect_dead_data(inner: &MettaValueInner, dead_data: &mut Vec<(*mut u8, usiz
             dead_data.push((s.as_ptr() as *mut u8, s.len()));
         }
         MettaValueInner::SExpr(children) if !children.is_empty() => {
-            let byte_len = children.len() * std::mem::size_of::<MettaValue>();
+            let byte_len = children.len() * mem::size_of::<MettaValue>();
             dead_data.push((children.as_ptr() as *mut u8, byte_len));
         }
         MettaValueInner::Conjunction(goals) if !goals.is_empty() => {
-            let byte_len = goals.len() * std::mem::size_of::<MettaValue>();
+            let byte_len = goals.len() * mem::size_of::<MettaValue>();
             dead_data.push((goals.as_ptr() as *mut u8, byte_len));
         }
         MettaValueInner::Error(msg, _) if !msg.is_empty() => {
@@ -3195,10 +3204,6 @@ fn deserialize_slab_value(
     factory: &GcFactory,
     bytes: &[u8],
 ) -> Result<(MettaValue, usize), String> {
-    use super::metta_value::serialize_tags::*;
-    use super::metta_value::read_varint;
-    use super::metta_value_trait::MettaValueFactory;
-
     if bytes.is_empty() {
         return Err("unexpected end of input".to_string());
     }
@@ -3349,7 +3354,10 @@ fn deserialize_slab_value(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Barrier;
+
     use super::*;
+    use super::super::metta_value_trait::MettaValueFactory;
 
     #[test]
     fn test_slab_allocator_creation() {
@@ -3361,7 +3369,7 @@ mod tests {
     fn test_value_slot_size() {
         let alloc = SlabAllocator::new();
         let slot_size = alloc.value_slot_size();
-        assert!(slot_size >= std::mem::size_of::<MettaValueInner>());
+        assert!(slot_size >= mem::size_of::<MettaValueInner>());
         assert_eq!(slot_size % SLOT_ALIGN, 0);
     }
 
@@ -3551,8 +3559,6 @@ mod tests {
     // ====================================================================
     // GcFactory Tests
     // ====================================================================
-
-    use super::super::metta_value_trait::MettaValueFactory;
 
     fn test_factory(alloc: &SlabAllocator) -> GcFactory {
         let static_ref: &'static SlabAllocator = unsafe {
@@ -3946,7 +3952,7 @@ mod tests {
 
         let handles: Vec<_> = (0..4).map(|t| {
             let f = factory;
-            std::thread::spawn(move || {
+            thread::spawn(move || {
                 let mut values = Vec::new();
                 for i in 0..1000 {
                     values.push(f.long(t * 1000 + i));
@@ -4105,12 +4111,10 @@ mod tests {
 
     #[test]
     fn test_concurrent_sessions_different_ids() {
-        use std::sync::Barrier;
-
         let barrier = Arc::new(Barrier::new(4));
         let handles: Vec<_> = (0..4).map(|_| {
             let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
+            thread::spawn(move || {
                 let guard = SessionGuard::enter();
                 let id = guard.context_id();
                 barrier.wait(); // All threads have their session IDs
@@ -4156,7 +4160,7 @@ mod tests {
         assert_eq!(v.as_long(), Some(42));
 
         // Prevent double release from guard drop
-        std::mem::forget(guard);
+        mem::forget(guard);
     }
 
     #[test]
@@ -4182,7 +4186,7 @@ mod tests {
         assert!(alloc.contains_value(persistent_ptr),
             "persistent value should still exist after session release");
 
-        std::mem::forget(guard);
+        mem::forget(guard);
     }
 
     #[test]

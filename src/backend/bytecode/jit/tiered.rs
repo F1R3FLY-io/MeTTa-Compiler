@@ -14,13 +14,16 @@
 //! - Warm code gets bytecode compilation amortized over many runs
 //! - Hot code gets JIT compiled for maximum performance
 
-use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+use parking_lot::RwLock;
+use xxhash_rust::xxh3::Xxh3;
 
 use super::compiler::JitCompiler;
 use super::profile::{JitProfile, JitState, HOT_THRESHOLD, WARM_THRESHOLD};
+
 use crate::backend::bytecode::chunk::BytecodeChunk;
 
 /// Threshold for Stage 2 JIT (full native with runtime calls)
@@ -85,9 +88,6 @@ pub struct ChunkId(u64);
 impl ChunkId {
     /// Create a new chunk ID from a bytecode chunk
     pub fn from_chunk(chunk: &BytecodeChunk) -> Self {
-        use std::hash::Hasher;
-        use xxhash_rust::xxh3::Xxh3;
-
         // Hash bytecode content and constant pool size together
         let mut h = Xxh3::new();
         (chunk.code(), chunk.constant_count()).hash(&mut h);
@@ -102,9 +102,6 @@ impl ChunkId {
     where
         V: crate::backend::models::MettaValueTrait + Clone + Send + Sync + 'static,
     {
-        use std::hash::Hasher;
-        use xxhash_rust::xxh3::Xxh3;
-
         // Hash bytecode content and constant pool size together
         let mut h = Xxh3::new();
         (chunk.code(), chunk.constant_count()).hash(&mut h);

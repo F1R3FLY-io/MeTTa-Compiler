@@ -1,13 +1,20 @@
-use crate::backend::environment::multiplicity::Multiplicity;
-use crate::backend::environment::MettaEnvironment;
 /// PathMap Par Integration Module
 ///
 /// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
 /// This module enables MettaState to be represented as Rholang EPathMap structures.
-use crate::backend::models::{MettaState, MettaValue, MettaValueInner};
+use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use models::rhoapi::{expr::ExprInstance, EList, EPathMap, ETuple, Expr, Par};
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use tracing::{debug, trace};
+
+use crate::backend::environment::multiplicity::Multiplicity;
+use crate::backend::environment::MettaEnvironment;
+use crate::backend::models::{MettaState, MettaValue, MettaValueInner};
+use crate::backend::varint_encoding::{metta_to_varint_key, varint_key_to_metta};
 
 /// Helper function to create a Par with a string value
 fn create_string_par(s: String) -> Par {
@@ -228,9 +235,6 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
 
     // First, serialize the symbol table to a temp file, then read it
     let symbol_table_bytes = {
-        use std::fs;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
         // Create unique temp file for symbol table (include timestamp to avoid parallel test collisions)
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -307,7 +311,6 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
         let mut count = 0u64;
         for (_key, metta_value) in fallback.iter() {
             // Serialize each value using varint encoding
-            use crate::backend::varint_encoding::metta_to_varint_key;
             let value_bytes = metta_to_varint_key(metta_value);
             // Write length (4 bytes, big-endian)
             let len = value_bytes.len() as u32;
@@ -592,7 +595,6 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 ///   or (("space", GByteArray), ("multiplicities", GByteArray), ("large_exprs", GByteArray))
 /// Note: Type assertions are stored within the space, not separately
 pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
-    use std::collections::HashMap;
     trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
 
     // The par should be an ETuple with 2 or 3 named field tuples (3 if large_exprs present)
@@ -752,10 +754,6 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                 sym_len, offset, "Restore symbol table"
                             );
 
-                            use std::fs;
-                            use std::io::Write;
-                            use std::time::{SystemTime, UNIX_EPOCH};
-
                             let symbol_table_bytes = &space_dump_bytes[offset..offset + sym_len];
                             offset += sym_len;
 
@@ -862,7 +860,6 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                 offset += 8;
 
                                 // Read and restore each large expression
-                                use crate::backend::varint_encoding::varint_key_to_metta;
                                 for _ in 0..count {
                                     if offset + 4 > large_bytes.len() {
                                         break;
@@ -1018,7 +1015,11 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
+
+    use crate::backend::compile::compile;
 
     #[test]
     fn test_environment_serialization_roundtrip() {
@@ -1615,7 +1616,7 @@ mod tests {
         let env2 = par_to_environment(&par).expect("Deserialization failed");
 
         // Verify the deserialized environment contains the fact
-        assert!(env2.shared.total_atoms.load(std::sync::atomic::Ordering::Relaxed) > 0, "Should find the connected fact after deserialization");
+        assert!(env2.shared.total_atoms.load(Ordering::Relaxed) > 0, "Should find the connected fact after deserialization");
 
         println!("✓ Deserialized Environment can be used after reserved-byte roundtrip!");
     }
@@ -1623,8 +1624,6 @@ mod tests {
     #[test]
     fn test_source_field_roundtrip_with_eval_expr() {
         // Test that source field with ! expression survives roundtrip
-        use crate::backend::compile::compile;
-
         // Compile a query with ! expression
         let query = "!(get_neighbors room_a)";
         let state = compile(query).expect("Failed to compile");

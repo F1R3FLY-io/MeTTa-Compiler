@@ -996,7 +996,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValue, MettaValueInner};
+
+    use crate::backend::models::{MettaValue, MettaValueInner, SpaceHandle};
 
     #[test]
     fn test_integration_arithmetic() {
@@ -1250,8 +1251,6 @@ mod tests {
 
     #[test]
     fn test_can_compile_not_compilable() {
-        use crate::backend::models::SpaceHandle;
-
         // Rule definition (needs environment registration)
         let rule = MettaValue::SExpr(vec![
             MettaValue::sym("="),

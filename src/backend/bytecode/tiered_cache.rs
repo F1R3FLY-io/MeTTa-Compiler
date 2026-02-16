@@ -28,8 +28,11 @@
 //! until the next tier becomes Ready.
 
 use std::cell::Cell;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
+
+use xxhash_rust::xxh3::Xxh3;
 
 // Thread-local sampling counter to avoid atomic contention on the global counter
 // Each thread tracks its own count and only samples every SAMPLE_RATE evals
@@ -94,6 +97,7 @@ use crate::backend::priority_scheduler::{global_priority_eval_pool, priority_lev
 use super::cache::hash_metta_value;
 use super::chunk::BytecodeChunk;
 use super::compiler::compile_arc;
+use super::jit::compiler::JitCompiler;
 
 /// Threshold to trigger bytecode compilation (eager: after 1st execution)
 /// Compilation is non-blocking (rayon background), so eager compilation
@@ -686,8 +690,6 @@ impl TieredCache {
         // JIT compilation closure
         let jit_compile = move || {
             // JIT compilation using Cranelift
-            use super::jit::compiler::JitCompiler;
-
             // Check if chunk can be JIT compiled
             if !JitCompiler::can_compile_stage1(&chunk) {
                 state_clone.set_jit1_failed();
@@ -774,8 +776,6 @@ impl TieredCache {
 
         // JIT Stage 2 compilation closure
         let jit_compile = move || {
-            use super::jit::compiler::JitCompiler;
-
             // Check if chunk can be JIT compiled
             // Stage 2 uses same compilability check as Stage 1 for now
             if !JitCompiler::can_compile_stage1(&chunk) {
@@ -963,9 +963,6 @@ pub fn global_tiered_cache() -> &'static TieredCache {
 /// Uses the same hashing strategy as MettaValue (FxHash-style mixing for primitives,
 /// xxHash3 for complex types) to ensure consistent and efficient lookups.
 pub fn hash_value(expr: &MettaValue) -> u64 {
-    use std::hash::Hasher;
-    use xxhash_rust::xxh3::Xxh3;
-
     // Golden ratio constant for good hash distribution
     const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
     // Type-specific seeds
@@ -1003,8 +1000,6 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
 
 /// Recursively hash an MettaValue for complex types.
 fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H) {
-    use std::hash::Hash;
-
     // Hash type discriminant first
     let type_tag: u8 = if expr.is_unit() { 0 }
         else if expr.is_bool() { 2 }
@@ -1045,7 +1040,11 @@ fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H)
 
 #[cfg(test)]
 mod tests {
+    use std::ptr;
+
     use super::*;
+
+    use crate::backend::models::{global_factory, MettaValueFactory};
 
     #[test]
     fn test_tier_status_kind_conversion() {
@@ -1393,8 +1392,6 @@ mod tests {
 
     #[test]
     fn test_hash_value_primitives() {
-        use crate::backend::models::{MettaValue, global_factory, MettaValueFactory};
-
         let factory = global_factory();
 
         // Test that hashing primitives produces consistent results
@@ -1422,8 +1419,6 @@ mod tests {
 
     #[test]
     fn test_hash_value_strings() {
-        use crate::backend::models::{MettaValue, global_factory, MettaValueFactory};
-
         let factory = global_factory();
 
         // Test hashing strings and atoms
@@ -1440,7 +1435,7 @@ mod tests {
     #[test]
     fn test_native_code_debug() {
         let code = NativeCode {
-            ptr: std::ptr::null(),
+            ptr: ptr::null(),
             code_size: 100,
         };
         let debug_str = format!("{:?}", code);

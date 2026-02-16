@@ -36,14 +36,17 @@ use std::sync::Arc;
 use mork_interning::{SharedMapping, SharedMappingHandle};
 use parking_lot::RwLock;
 use pathmap::PathMap;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 
+use super::gc_allocator::GcFactory;
 use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::MettaValue;
+
 use crate::backend::environment::multiplicity::{self, Multiplicity};
 use crate::backend::environment::mork_encoding;
 use crate::backend::environment::MultiplicityMatch;
-use crate::backend::mork_convert::with_mork_bytes;
 use crate::backend::modules::{ModId, ModuleSpace};
+use crate::backend::mork_convert::with_mork_bytes;
 
 /// Generic version of MultiplicityMatch that works with any value type.
 ///
@@ -350,7 +353,6 @@ impl SpaceHandle {
                 let factory = super::GcFactory::default();
                 let mut result = Vec::new();
 
-                use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
                 let mut rz = pm.read_zipper();
                 while rz.to_next_val() {
                     let path = rz.path();
@@ -391,7 +393,6 @@ impl SpaceHandle {
                 let factory = super::GcFactory::default();
                 let mut results = Vec::new();
 
-                use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
                 let mut rz = pm.read_zipper();
                 while rz.to_next_val() {
                     let path = rz.path();
@@ -425,7 +426,6 @@ impl SpaceHandle {
             SpaceBacking::Owned { atoms, .. } => {
                 let pm = atoms.read();
                 let mut total: usize = 0;
-                use pathmap::zipper::{ZipperIteration, ZipperValues};
                 let mut rz = pm.read_zipper();
                 while rz.to_next_val() {
                     total += rz.val().map(|m| m.count() as usize).unwrap_or(0);
@@ -445,7 +445,6 @@ impl SpaceHandle {
             SpaceBacking::Owned { atoms, .. } => {
                 let pm = atoms.read();
                 let mut count: usize = 0;
-                use pathmap::zipper::ZipperIteration;
                 let mut rz = pm.read_zipper();
                 while rz.to_next_val() {
                     count += 1;
@@ -601,7 +600,6 @@ impl SpaceHandle {
 
     /// Deserialize bytes to MettaValue using the built-in deserializer.
     fn deserialize_to_metta(&self, bytes: &[u8]) -> MettaValue {
-        use super::GcFactory;
         let factory = GcFactory::default();
         match factory.deserialize(bytes) {
             Ok((value, _)) => value,
@@ -667,6 +665,8 @@ impl std::hash::Hash for SpaceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::backend::models::GcFactory;
 
     #[test]
     fn test_space_handle_new() {
@@ -1132,8 +1132,6 @@ mod tests {
 
     #[test]
     fn test_collapse_generic() {
-        use crate::backend::models::GcFactory;
-
         let handle = SpaceHandle::new(1, "test".to_string());
         handle.add_atom(MettaValue::Long(1));
         handle.add_atom(MettaValue::Long(2));
@@ -1153,8 +1151,6 @@ mod tests {
 
     #[test]
     fn test_collapse_with_multiplicity_generic() {
-        use crate::backend::models::GcFactory;
-
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom = MettaValue::Long(42);
 
@@ -1175,9 +1171,6 @@ mod tests {
 
     #[test]
     fn test_atom_multiplicity_generic() {
-        #[allow(unused_imports)]
-        use crate::backend::models::GcFactory;
-
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom = MettaValue::Atom("foo".to_string());
 
@@ -1190,8 +1183,6 @@ mod tests {
 
     #[test]
     fn test_generic_operations_roundtrip() {
-        use crate::backend::models::GcFactory;
-
         let handle1 = SpaceHandle::new(1, "test1".to_string());
         let handle2 = SpaceHandle::new(2, "test2".to_string());
 
@@ -1235,8 +1226,6 @@ mod tests {
 
     #[test]
     fn test_generic_operations_with_forked_space() {
-        use crate::backend::models::GcFactory;
-
         let original = SpaceHandle::new(1, "test".to_string());
         original.add_atom(MettaValue::Long(1));
 

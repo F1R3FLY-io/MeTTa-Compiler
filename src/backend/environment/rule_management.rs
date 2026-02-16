@@ -30,6 +30,7 @@ use mork_expr::{maybe_byte_item, Expr, ExprZipper, Tag};
 // Disabled: PathMap no longer directly constructed in this module — add_rules_bulk now
 // delegates to add_rule() for consistent De Bruijn encoding.
 // use pathmap::PathMap;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use smallvec::SmallVec;
 use tracing::trace;
 
@@ -250,7 +251,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 /// cause panics in `ExprZipper::new()` or `ExprZipper::tag()` (which call `byte_item()`).
 #[cfg(any(debug_assertions, test))]
 fn validate_mork_bytes(bytes: &[u8]) -> Result<usize, (usize, u8)> {
-    use mork_expr::Tag;
     let mut offset = 0usize;
     let mut depth = 1u32;
 
@@ -951,7 +951,6 @@ where
         rule_prefix_len: usize,
         rules: &mut Vec<(V, V, u64)>,
     ) {
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
         let descended = rz.descend_to_existing(prefix);
         if descended < prefix.len() {
@@ -1013,7 +1012,6 @@ where
         query_arity: usize,
         rules: &mut Vec<(V, V, u64)>,
     ) {
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
         let descended = rz.descend_to_existing(rule_prefix);
         if descended < rule_prefix.len() {

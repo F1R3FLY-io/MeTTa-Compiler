@@ -24,9 +24,6 @@ use std::collections::VecDeque;
 
 use tracing::trace;
 
-use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
-
 use super::context::{ContextEnv, EvalContext};
 use super::generic_engine::{
     apply_bindings_generic, eval_switch_generic, is_boolean_check_pattern, pattern_match_generic,
@@ -34,10 +31,13 @@ use super::generic_engine::{
 };
 use super::generic_types::{GenericContinuation, GenericEvalResult, GenericWorkItem};
 use super::super::list_ops::substitute_variable_generic;
-use super::super::step::{eval_step_generic, GenericEvalStep};
 use super::super::processing::{
     process_collected_sexpr_generic, GenericProcessedSExpr,
 };
+use super::super::step::{eval_step_generic, GenericEvalStep};
+
+use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
+use crate::backend::models::{GenericMultiplicityMatch, MettaValueFactory, MettaValueTrait};
 
 /// Generic trampoline evaluation entry point.
 ///
@@ -2618,7 +2618,7 @@ fn process_continuation_generic<C: EvalContext>(
                             }
                         } else {
                             // GENERIC: Non-module spaces - use generic collapse_with_multiplicity
-                            use crate::backend::models::GenericMultiplicityMatch;
+
                             let matches: Vec<GenericMultiplicityMatch<C::Value>> =
                                 handle.collapse_with_multiplicity_generic(ctx.factory());
 
@@ -2795,7 +2795,7 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                     } else {
                         // GENERIC: Non-module spaces - use generic collapse_with_multiplicity
-                        use crate::backend::models::GenericMultiplicityMatch;
+
                         let matches: Vec<GenericMultiplicityMatch<C::Value>> =
                             handle.collapse_with_multiplicity_generic(ctx.factory());
 
@@ -2931,7 +2931,7 @@ fn process_continuation_generic<C: EvalContext>(
                         });
                     } else {
                         // Full match: get matches from appropriate source
-                        use crate::backend::models::GenericMultiplicityMatch;
+
                         let matches: Vec<GenericMultiplicityMatch<C::Value>> =
                             if handle.is_module_space() || handle.name == "self" {
                                 // Module/self spaces - use match_space

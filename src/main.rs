@@ -1,14 +1,17 @@
 /// MeTTaTron - MeTTa Evaluator CLI
-use mettatron::backend::*;
-use mettatron::repl::{MettaHelper, QueryHighlighter};
-use rustyline::error::ReadlineError;
-use rustyline::history::DefaultHistory;
-use rustyline::Editor;
 use std::env;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process;
+
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::history::DefaultHistory;
+use rustyline::Editor;
+
+use mettatron::backend::*;
+use mettatron::repl::{MettaHelper, QueryHighlighter};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -275,7 +278,6 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
 
 /// Check if stdout is a TTY (for conditional color output)
 fn is_stdout_tty() -> bool {
-    use std::io::IsTerminal;
     std::io::stdout().is_terminal()
 }
 
@@ -295,7 +297,6 @@ fn highlight_output(text: &str, highlighter: Option<&QueryHighlighter>) -> Strin
     }
     match highlighter {
         Some(h) => {
-            use rustyline::highlight::Highlighter;
             h.highlight(text, text.len()).to_string()
         }
         None => text.to_string(),

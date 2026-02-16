@@ -241,6 +241,9 @@ pub fn make_error(msg: &str, details: MettaValue) -> MettaValue {
 mod tests {
     use super::*;
 
+    use crate::backend::eval::eval;
+    use crate::backend::eval::trampoline::{eval_trampoline, new_env};
+
     #[test]
     fn test_compile_empty_input() {
         let result = compile("");
@@ -542,11 +545,6 @@ mod tests {
 
     #[test]
     fn test_error_with_atom_message() {
-        use crate::backend::compile::compile;
-        use crate::backend::eval::eval;
-        use crate::backend::eval::trampoline::new_env;
-        use crate::backend::models::MettaValueInner;
-
         let input = r#"!(error failure-code 42)"#;
         let state = compile(input).expect("compile failed");
         let env = new_env();
@@ -566,9 +564,6 @@ mod tests {
 
     #[test]
     fn test_compile_with_eval() {
-        use crate::backend::compile::compile;
-        use crate::backend::eval::trampoline::{eval_trampoline, new_env};
-
         let src = "!(+ 1 2)";
         let state = compile(src).unwrap();
         let env = new_env();

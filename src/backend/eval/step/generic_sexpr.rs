@@ -16,6 +16,15 @@
 
 use tracing::trace;
 
+use super::generic_types::GenericEvalStep;
+use super::grounded::find_grounded_arg_indices_generic;
+
+use crate::backend::eval::bindings_generic::{eval_atom_subst_generic, eval_sealed_generic};
+use crate::backend::eval::list_ops::generic::{
+    eval_car_atom_generic, eval_cdr_atom_generic, eval_cons_atom_generic,
+    eval_decons_atom_generic, eval_index_atom_generic, eval_max_atom_generic,
+    eval_min_atom_generic, eval_size_atom_generic,
+};
 use crate::backend::eval::list_ops::helpers::suggest_variable_format;
 // Generic module operations - used directly (no boundary conversion)
 use crate::backend::eval::modules_generic::{
@@ -26,11 +35,9 @@ use crate::backend::eval::mork_forms_generic::{
     eval_coalg_generic, eval_exec_generic, eval_lookup_generic, eval_rulify_generic,
 };
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
+use crate::backend::eval::types_generic::{eval_check_type_generic, eval_get_type_generic};
 use crate::backend::grounded::{has_generic_grounded_op, GenericGroundedState};
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
-
-use super::generic_types::GenericEvalStep;
-use super::grounded::find_grounded_arg_indices_generic;
+use crate::backend::models::{MettaValueFactory, MettaValueTrait, SpaceHandle};
 
 /// Generic S-expression step evaluation.
 ///
@@ -531,14 +538,12 @@ where
 
             // sealed - native generic implementation (zero conversion)
             "sealed" => {
-                use crate::backend::eval::bindings_generic::eval_sealed_generic;
                 let results = eval_sealed_generic(&items, ctx.factory());
                 return GenericEvalStep::Done((results, env));
             }
 
             // atom-subst - native generic implementation (zero conversion)
             "atom-subst" => {
-                use crate::backend::eval::bindings_generic::eval_atom_subst_generic;
                 let results = eval_atom_subst_generic(&items, ctx.factory());
                 return GenericEvalStep::Done((results, env));
             }
@@ -583,14 +588,12 @@ where
 
             // get-type - native generic implementation
             "get-type" => {
-                use crate::backend::eval::types_generic::eval_get_type_generic;
                 let results = eval_get_type_generic(&items, ctx.factory(), &env);
                 return GenericEvalStep::Done((results, env));
             }
 
             // check-type - native generic implementation
             "check-type" => {
-                use crate::backend::eval::types_generic::eval_check_type_generic;
                 let results = eval_check_type_generic(&items, ctx.factory(), &env);
                 return GenericEvalStep::Done((results, env));
             }
@@ -836,7 +839,6 @@ where
             // List operations - native generic implementations (zero conversion)
             "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom" | "max-atom"
             | "index-atom" | "min-atom" => {
-                use crate::backend::eval::list_ops::generic::*;
                 let results = match op {
                     "car-atom" => eval_car_atom_generic(&items, ctx.factory()),
                     "cdr-atom" => eval_cdr_atom_generic(&items, ctx.factory()),
@@ -853,8 +855,6 @@ where
 
             // Space operations - native generic implementation (zero-conversion)
             "new-space" => {
-                use crate::backend::models::SpaceHandle;
-
                 // Get optional name, default to "unnamed"
                 let name = if items.len() > 1 {
                     if let Some(s) = items[1].as_string() {

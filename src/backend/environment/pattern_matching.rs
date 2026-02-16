@@ -16,8 +16,7 @@
 //! or use `.into_iter().flat_map(|m| m.expand()).collect()` to expand all results.
 
 use mork_expr::{maybe_byte_item, Expr};
-#[allow(unused_imports)]
-use pathmap::zipper::ZipperValues;
+use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use tracing::trace;
 
 use super::multiplicity::get_multiplicity;
@@ -186,7 +185,6 @@ impl MettaEnvironment {
         }
 
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         // OPTIMIZATION: Extract pattern's head symbol and arity for lazy pre-filtering

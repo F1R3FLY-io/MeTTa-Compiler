@@ -8,6 +8,10 @@
 //! Uses xxh3 (SIMD-accelerated) instead of SipHash for 3-5× faster hashing.
 //! This reduces bloom filter overhead from ~27% to ~5-10% of total CPU time.
 
+use std::hash::{Hash, Hasher};
+
+use xxhash_rust::xxh3::Xxh3;
+
 /// Bloom filter for (head_symbol, arity) pairs.
 ///
 /// Enables O(1) rejection in `match_space()` when the pattern's (head, arity)
@@ -82,9 +86,6 @@ impl HeadArityBloomFilter {
     /// overhead from ~27% to ~5-10% of total CPU time in match_space().
     #[inline]
     fn hash_pair(head: &[u8], arity: u8) -> (usize, usize) {
-        use std::hash::{Hash, Hasher};
-        use xxhash_rust::xxh3::Xxh3;
-
         let mut hasher = Xxh3::with_seed(0);
         head.hash(&mut hasher);
         arity.hash(&mut hasher);

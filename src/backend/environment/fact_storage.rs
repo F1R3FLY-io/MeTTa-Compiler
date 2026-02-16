@@ -6,11 +6,15 @@
 use std::sync::atomic::Ordering;
 
 use mork_expr::Expr;
+use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use pathmap::PathMap;
 use tracing::trace;
 
+use super::multiplicity::Multiplicity;
 use super::{MettaEnvironment, MettaValue, MettaValueInner};
 use crate::backend::models::metta_value_trait::MettaValueTrait;
+use crate::backend::mork_convert::with_mork_bytes;
+use crate::backend::varint_encoding::metta_to_varint_key;
 
 impl MettaEnvironment {
     /// Check if an atom fact exists (queries MORK Space)
@@ -28,7 +32,6 @@ impl MettaEnvironment {
         let mork_bytes = mork_str.as_bytes();
 
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         // O(p) exact match navigation through the trie (typically p=1 for atoms)
@@ -73,7 +76,6 @@ impl MettaEnvironment {
     /// Fallback linear search for has_sexpr_fact (O(n) iteration)
     fn has_sexpr_fact_linear(&self, sexpr: &MettaValue) -> bool {
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         // Directly iterate through all values in the trie
@@ -135,7 +137,6 @@ impl MettaEnvironment {
         let mork_bytes = mork_str.as_bytes();
 
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         // O(p) exact match navigation through the trie
@@ -210,7 +211,6 @@ impl MettaEnvironment {
     /// - Acquires read lock on PathMap
     pub fn rebuild_bloom_filter_from_space(&mut self) {
         let space = self.create_space();
-        use pathmap::zipper::*;
         let mut rz = space.btm.read_zipper();
 
         // Clear existing bloom filter
@@ -259,9 +259,6 @@ impl MettaEnvironment {
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // OPTIMIZATION: Build temporary PathMap directly from callback (zero-copy per fact)
-        use super::multiplicity::Multiplicity;
-        use crate::backend::mork_convert::with_mork_bytes;
-
         let sm = &self.shared_mapping;
         let mut fact_trie: PathMap<Multiplicity> = PathMap::new();
 
@@ -308,7 +305,6 @@ impl MettaEnvironment {
     /// Used during deserialization to restore large expressions (arity >= 64)
     /// that exceed MORK's 63-arity limit
     pub fn insert_large_expr(&self, value: MettaValue) {
-        use crate::backend::varint_encoding::metta_to_varint_key;
         let key = metta_to_varint_key(&value);
         // parking_lot::RwLock - no .expect()
         let mut guard = self.shared.large_expr_pathmap.write();

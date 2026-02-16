@@ -7,11 +7,10 @@
 #[cfg(test)]
 mod tests {
     use crate::backend::compile::compile;
-    use crate::backend::eval::trampoline::new_env;
+    use crate::backend::eval::trampoline::{eval_trampoline, new_env};
 
     /// Helper to run arena-based evaluation and collect results as strings
     fn run_eval(src: &str) -> Vec<String> {
-        use crate::backend::eval::trampoline::eval_trampoline;
         let state = compile(src).expect("compile failed");
         let mut env = new_env();
         let mut all_results = Vec::new();

@@ -64,7 +64,7 @@ use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use parking_lot::Mutex;
-use std::thread::JoinHandle;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
@@ -531,7 +531,7 @@ impl CronStateMachine {
         };
 
         if sleep_ms > 0 {
-            std::thread::sleep(Duration::from_millis(sleep_ms));
+            thread::sleep(Duration::from_millis(sleep_ms));
         }
     }
 
@@ -683,7 +683,7 @@ pub fn spawn_cron_with_interval(
 
     let terminating_clone = Arc::clone(&terminating);
 
-    let thread_handle = std::thread::Builder::new()
+    let thread_handle = thread::Builder::new()
         .name("mettatron-gc-cron".to_string())
         .spawn(move || {
             // Pass ready_tx to state machine - signal will be sent inside run()
@@ -943,7 +943,7 @@ mod tests {
             .map(|_| {
                 let h = handle.clone();
                 let c = Arc::clone(&counter);
-                std::thread::spawn(move || {
+                thread::spawn(move || {
                     for _ in 0..100 {
                         h.schedule_after(
                             0,
@@ -966,7 +966,7 @@ mod tests {
         }
 
         // Wait for tasks to execute
-        std::thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(500));
 
         handle.request_shutdown();
         thread.join().expect("Cron thread panicked");
@@ -992,7 +992,7 @@ mod tests {
         });
 
         // Wait ~275ms - should execute ~5-6 times
-        std::thread::sleep(Duration::from_millis(275));
+        thread::sleep(Duration::from_millis(275));
 
         handle.request_shutdown();
         thread.join().expect("Cron thread panicked");
@@ -1022,7 +1022,7 @@ mod tests {
         });
 
         // Wait longer than needed for all executions
-        std::thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200));
 
         handle.request_shutdown();
         thread.join().expect("Cron thread panicked");
@@ -1048,7 +1048,7 @@ mod tests {
         });
 
         // Wait for execution
-        std::thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(100));
 
         handle.request_shutdown();
         thread.join().expect("Cron thread panicked");
@@ -1083,12 +1083,12 @@ mod tests {
         });
 
         // Poll until normal task executes (with timeout)
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let deadline = Instant::now() + Duration::from_millis(500);
         while counter.load(Ordering::Relaxed) == 0 {
-            if std::time::Instant::now() > deadline {
+            if Instant::now() > deadline {
                 panic!("Timeout waiting for normal task to execute");
             }
-            std::thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(10));
         }
 
         handle.request_shutdown();
@@ -1135,7 +1135,7 @@ mod tests {
         drop(handle);
 
         // Wait for the delayed task to execute
-        std::thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200));
 
         // Scheduler should terminate after task completes
         terminating.store(true, AtomicOrdering::Release);
@@ -1234,15 +1234,15 @@ mod tests {
         });
 
         // Poll until both tasks execute (with timeout)
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let deadline = Instant::now() + Duration::from_millis(500);
         while counter.load(Ordering::Relaxed) < 2 {
-            if std::time::Instant::now() > deadline {
+            if Instant::now() > deadline {
                 panic!(
                     "Timeout waiting for tasks: {} of 2 executed",
                     counter.load(Ordering::Relaxed)
                 );
             }
-            std::thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(10));
         }
 
         handle.request_shutdown();
@@ -1312,14 +1312,14 @@ mod tests {
         // Poll until GC_REQUESTED is set (with timeout).
         // The monitor fires every 100ms and will re-set the flag if cleared
         // by other parallel tests calling maybe_trigger_gc().
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let deadline = Instant::now() + Duration::from_millis(500);
         let mut observed = false;
-        while std::time::Instant::now() < deadline {
+        while Instant::now() < deadline {
             if is_gc_requested() {
                 observed = true;
                 break;
             }
-            std::thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(10));
         }
 
         assert!(

@@ -4,22 +4,84 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::advanced_nondet::jit_runtime_cut;
-    use super::super::arithmetic::{jit_runtime_abs, jit_runtime_pow, jit_runtime_signum};
-    use super::super::helpers::{box_long, extract_long_signed};
+    // External crates
+    use xxhash_rust::xxh3::xxh3_64;
+
+    // Relative imports (super::)
+    use super::super::advanced_nondet::{
+        jit_runtime_amb, jit_runtime_backtrack, jit_runtime_begin_nondet, jit_runtime_commit,
+        jit_runtime_cut, jit_runtime_end_nondet, jit_runtime_enter_cut_scope,
+        jit_runtime_exit_cut_scope, jit_runtime_guard,
+    };
+    use super::super::arithmetic::{
+        jit_runtime_abs, jit_runtime_acos, jit_runtime_asin, jit_runtime_atan, jit_runtime_ceil,
+        jit_runtime_cos, jit_runtime_floor_math, jit_runtime_isinf, jit_runtime_isnan,
+        jit_runtime_log, jit_runtime_pow, jit_runtime_round, jit_runtime_signum, jit_runtime_sin,
+        jit_runtime_sqrt, jit_runtime_tan, jit_runtime_trunc,
+    };
+    use super::super::bindings::{
+        jit_runtime_clear_bindings, jit_runtime_fork_bindings, jit_runtime_free_saved_bindings,
+        jit_runtime_has_binding, jit_runtime_load_binding, jit_runtime_pop_binding_frame,
+        jit_runtime_push_binding_frame, jit_runtime_restore_bindings,
+        jit_runtime_saved_bindings_size, jit_runtime_store_binding,
+    };
+    use super::super::error_handling::{
+        jit_runtime_div_by_zero, jit_runtime_integer_overflow, jit_runtime_stack_overflow,
+        jit_runtime_stack_underflow, jit_runtime_type_error,
+    };
+    use super::super::expression_ops::jit_runtime_index_atom;
+    use super::super::global_ops::{
+        jit_runtime_load_global, jit_runtime_load_space, jit_runtime_store_global,
+    };
+    use super::super::helpers::{box_long, extract_long_signed, metta_to_jit};
     use super::super::nondeterminism::{
-        collect_results, execute_once, jit_runtime_collect_native, jit_runtime_fail,
-        jit_runtime_fail_native, jit_runtime_get_current_alternative, jit_runtime_has_alternatives,
+        collect_results, execute_once, jit_runtime_collect, jit_runtime_collect_native,
+        jit_runtime_fail, jit_runtime_fail_native, jit_runtime_fork, jit_runtime_fork_native,
+        jit_runtime_get_choice_point_count, jit_runtime_get_current_alternative,
+        jit_runtime_get_results_count, jit_runtime_get_resume_ip, jit_runtime_has_alternatives,
         jit_runtime_push_choice_point, jit_runtime_restore_stack, jit_runtime_save_stack,
         jit_runtime_yield, jit_runtime_yield_native,
     };
-    use super::super::type_predicates::jit_runtime_is_long;
-    use crate::backend::bytecode::jit::types::{
-        JitAlternative, JitAlternativeTag, JitBailoutReason, JitChoicePoint, JitContext, JitValue,
-        JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_PTR,
-        TAG_MASK,
+    use super::super::pattern_matching::{
+        jit_runtime_match_arity, jit_runtime_match_head, jit_runtime_pattern_match,
+        jit_runtime_pattern_match_bind, jit_runtime_unify, jit_runtime_unify_bind,
     };
-    use crate::backend::models::{MettaValue, MettaValueInner};
+    use super::super::rule_dispatch::hash_string;
+    use super::super::sexpr_ops::{
+        jit_runtime_get_arity, jit_runtime_get_head, jit_runtime_get_tail,
+        jit_runtime_push_empty,
+    };
+    use super::super::space_ops::{
+        jit_runtime_space_add, jit_runtime_space_get_atoms, jit_runtime_space_match,
+        jit_runtime_space_match_nondet, jit_runtime_space_remove,
+    };
+    use super::super::special_forms::{
+        jit_runtime_eval_bind, jit_runtime_eval_case, jit_runtime_eval_chain,
+        jit_runtime_eval_collapse, jit_runtime_eval_eval, jit_runtime_eval_if,
+        jit_runtime_eval_let, jit_runtime_eval_let_star, jit_runtime_eval_match,
+        jit_runtime_eval_memo, jit_runtime_eval_memo_first, jit_runtime_eval_new,
+        jit_runtime_eval_pragma, jit_runtime_eval_quote, jit_runtime_eval_superpose,
+        jit_runtime_eval_unquote,
+    };
+    use super::super::stack_ops::jit_runtime_load_constant;
+    use super::super::type_ops::{
+        jit_runtime_assert_type, jit_runtime_check_type, jit_runtime_get_type,
+    };
+    use super::super::type_predicates::{
+        jit_runtime_get_tag, jit_runtime_is_bool, jit_runtime_is_long, jit_runtime_is_unit,
+    };
+    use super::super::value_creation::{
+        jit_runtime_cons_atom, jit_runtime_make_list, jit_runtime_make_quote,
+        jit_runtime_make_sexpr, jit_runtime_push_uri,
+    };
+
+    // Absolute crate imports (crate::)
+    use crate::backend::bytecode::jit::types::{
+        JitAlternative, JitAlternativeTag, JitBailoutReason, JitBindingFrame, JitChoicePoint,
+        JitContext, JitValue, JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD,
+        PAYLOAD_MASK, TAG_BOOL, TAG_LONG, TAG_MASK, TAG_PTR, TAG_UNIT,
+    };
+    use crate::backend::models::{MettaValue, MettaValueInner, SpaceHandle};
 
     #[test]
     fn test_pow_positive() {
@@ -90,7 +152,6 @@ mod tests {
         let result = jit_runtime_is_long(long);
         assert_eq!(result & 1, 1); // true
 
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
         let bool_val = TAG_BOOL | 1;
         let result = jit_runtime_is_long(bool_val);
         assert_eq!(result & 1, 0); // false
@@ -995,9 +1056,6 @@ mod tests {
 
     #[test]
     fn test_hash_string_stability() {
-        use super::super::rule_dispatch::hash_string;
-        use xxhash_rust::xxh3::xxh3_64;
-
         // Hash should be stable
         let h1 = hash_string("test_binding");
         let h2 = hash_string("test_binding");
@@ -1009,8 +1067,6 @@ mod tests {
 
     #[test]
     fn test_hash_string_different_strings() {
-        use super::super::rule_dispatch::hash_string;
-
         // Different strings should produce different hashes
         let h1 = hash_string("binding_a");
         let h2 = hash_string("binding_b");
@@ -1024,9 +1080,6 @@ mod tests {
 
     #[test]
     fn test_hash_string_empty() {
-        use super::super::rule_dispatch::hash_string;
-        use xxhash_rust::xxh3::xxh3_64;
-
         // Empty string should have a valid hash
         let h = hash_string("");
         assert_eq!(h, xxh3_64(b""));
@@ -1040,9 +1093,6 @@ mod tests {
 
     #[test]
     fn test_jit_load_space_fallback_xxh3() {
-        use super::super::global_ops::jit_runtime_load_space;
-        use xxhash_rust::xxh3::xxh3_64;
-
         // Create constants with space name
         let space_name = "fallback_test_space";
         let constants = vec![MettaValue::sym(space_name)];
@@ -1157,7 +1207,6 @@ mod tests {
 
     #[test]
     fn test_is_long_nil() {
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
         let nil_val = TAG_UNIT;
         let result = jit_runtime_is_long(nil_val);
         assert_eq!(result & 1, 0); // nil is not a long
@@ -1357,9 +1406,6 @@ mod tests {
 
     #[test]
     fn test_eval_if_true() {
-        use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let condition = TAG_BOOL | 1; // True
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
@@ -1371,9 +1417,6 @@ mod tests {
 
     #[test]
     fn test_eval_if_false() {
-        use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let condition = TAG_BOOL; // False (TAG_BOOL | 0)
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
@@ -1385,9 +1428,6 @@ mod tests {
 
     #[test]
     fn test_eval_if_nil() {
-        use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let condition = TAG_UNIT; // Unit is falsy
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
@@ -1399,8 +1439,6 @@ mod tests {
 
     #[test]
     fn test_eval_if_truthy_non_bool() {
-        use super::super::special_forms::jit_runtime_eval_if;
-
         // Non-boolean values are truthy
         let condition = JitValue::from_long(100).to_bits(); // Number is truthy
         let then_val = JitValue::from_long(42).to_bits();
@@ -1413,8 +1451,6 @@ mod tests {
 
     #[test]
     fn test_eval_quote() {
-        use super::super::special_forms::jit_runtime_eval_quote;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0)
@@ -1430,8 +1466,6 @@ mod tests {
 
     #[test]
     fn test_eval_let_star() {
-        use super::super::special_forms::jit_runtime_eval_let_star;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0)
@@ -1456,8 +1490,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_ground_equal() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -1476,8 +1508,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_ground_unequal() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -1505,8 +1535,6 @@ mod tests {
 
     #[test]
     fn test_get_type_long() {
-        use super::super::type_ops::jit_runtime_get_type;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1523,9 +1551,6 @@ mod tests {
 
     #[test]
     fn test_get_type_bool() {
-        use super::super::type_ops::jit_runtime_get_type;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1542,9 +1567,6 @@ mod tests {
 
     #[test]
     fn test_get_type_nil() {
-        use super::super::type_ops::jit_runtime_get_type;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1565,8 +1587,6 @@ mod tests {
 
     #[test]
     fn test_push_empty() {
-        use super::super::sexpr_ops::jit_runtime_push_empty;
-
         let result = unsafe { jit_runtime_push_empty() };
         let _jv = JitValue::from_raw(result);
 
@@ -1587,8 +1607,6 @@ mod tests {
 
     #[test]
     fn test_sqrt() {
-        use super::super::arithmetic::jit_runtime_sqrt;
-
         // sqrt(16) = 4.0
         let val = box_long(16);
         let result = unsafe { jit_runtime_sqrt(val) };
@@ -1599,8 +1617,6 @@ mod tests {
 
     #[test]
     fn test_log() {
-        use super::super::arithmetic::jit_runtime_log;
-
         // log_2(8) = 3.0
         let base = box_long(2);
         let val = box_long(8);
@@ -1612,8 +1628,6 @@ mod tests {
 
     #[test]
     fn test_trunc() {
-        use super::super::arithmetic::jit_runtime_trunc;
-
         // trunc(integer) should work
         let val = box_long(42);
         let result = unsafe { jit_runtime_trunc(val) };
@@ -1623,8 +1637,6 @@ mod tests {
 
     #[test]
     fn test_ceil() {
-        use super::super::arithmetic::jit_runtime_ceil;
-
         // ceil(integer) should return same value
         let val = box_long(42);
         let result = unsafe { jit_runtime_ceil(val) };
@@ -1634,8 +1646,6 @@ mod tests {
 
     #[test]
     fn test_floor_math() {
-        use super::super::arithmetic::jit_runtime_floor_math;
-
         // floor(integer) should return same value
         let val = box_long(42);
         let result = unsafe { jit_runtime_floor_math(val) };
@@ -1645,8 +1655,6 @@ mod tests {
 
     #[test]
     fn test_round() {
-        use super::super::arithmetic::jit_runtime_round;
-
         // round(integer) should return same value
         let val = box_long(42);
         let result = unsafe { jit_runtime_round(val) };
@@ -1660,8 +1668,6 @@ mod tests {
 
     #[test]
     fn test_sin() {
-        use super::super::arithmetic::jit_runtime_sin;
-
         // sin(0) = 0.0
         let val = box_long(0);
         let result = unsafe { jit_runtime_sin(val) };
@@ -1672,8 +1678,6 @@ mod tests {
 
     #[test]
     fn test_cos() {
-        use super::super::arithmetic::jit_runtime_cos;
-
         // cos(0) = 1.0
         let val = box_long(0);
         let result = unsafe { jit_runtime_cos(val) };
@@ -1684,8 +1688,6 @@ mod tests {
 
     #[test]
     fn test_tan() {
-        use super::super::arithmetic::jit_runtime_tan;
-
         // tan(0) = 0.0
         let val = box_long(0);
         let result = unsafe { jit_runtime_tan(val) };
@@ -1696,8 +1698,6 @@ mod tests {
 
     #[test]
     fn test_asin() {
-        use super::super::arithmetic::jit_runtime_asin;
-
         // asin(0) = 0.0
         let val = box_long(0);
         let result = unsafe { jit_runtime_asin(val) };
@@ -1708,8 +1708,6 @@ mod tests {
 
     #[test]
     fn test_acos() {
-        use super::super::arithmetic::jit_runtime_acos;
-
         // acos(1) = 0.0
         let val = box_long(1);
         let result = unsafe { jit_runtime_acos(val) };
@@ -1720,8 +1718,6 @@ mod tests {
 
     #[test]
     fn test_atan() {
-        use super::super::arithmetic::jit_runtime_atan;
-
         // atan(0) = 0.0
         let val = box_long(0);
         let result = unsafe { jit_runtime_atan(val) };
@@ -1732,8 +1728,6 @@ mod tests {
 
     #[test]
     fn test_isnan() {
-        use super::super::arithmetic::jit_runtime_isnan;
-
         // isnan(integer) should be false
         let val = box_long(42);
         let result = unsafe { jit_runtime_isnan(val) };
@@ -1743,8 +1737,6 @@ mod tests {
 
     #[test]
     fn test_isinf() {
-        use super::super::arithmetic::jit_runtime_isinf;
-
         // isinf(integer) should be false
         let val = box_long(42);
         let result = unsafe { jit_runtime_isinf(val) };
@@ -1758,9 +1750,6 @@ mod tests {
 
     #[test]
     fn test_is_bool_true() {
-        use super::super::type_predicates::jit_runtime_is_bool;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let bool_true = TAG_BOOL | 1;
         let result = jit_runtime_is_bool(bool_true);
         assert_eq!(result & 1, 1); // True
@@ -1768,9 +1757,6 @@ mod tests {
 
     #[test]
     fn test_is_bool_false() {
-        use super::super::type_predicates::jit_runtime_is_bool;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let bool_false = TAG_BOOL;
         let result = jit_runtime_is_bool(bool_false);
         assert_eq!(result & 1, 1); // True (it's a bool)
@@ -1778,8 +1764,6 @@ mod tests {
 
     #[test]
     fn test_is_bool_non_bool() {
-        use super::super::type_predicates::jit_runtime_is_bool;
-
         let long_val = box_long(42);
         let result = jit_runtime_is_bool(long_val);
         assert_eq!(result & 1, 0); // False (not a bool)
@@ -1787,9 +1771,6 @@ mod tests {
 
     #[test]
     fn test_is_unit_with_legacy_nil_tag() {
-        use super::super::type_predicates::jit_runtime_is_unit;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let nil = TAG_UNIT;
         let result = jit_runtime_is_unit(nil);
         assert_eq!(result & 1, 1); // True — legacy TAG_UNIT is treated as unit
@@ -1797,8 +1778,6 @@ mod tests {
 
     #[test]
     fn test_is_unit_non_unit() {
-        use super::super::type_predicates::jit_runtime_is_unit;
-
         let long_val = box_long(42);
         let result = jit_runtime_is_unit(long_val);
         assert_eq!(result & 1, 0); // False — Long is not unit
@@ -1806,9 +1785,6 @@ mod tests {
 
     #[test]
     fn test_get_tag() {
-        use super::super::type_predicates::jit_runtime_get_tag;
-        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
-
         // jit_runtime_get_tag returns a boxed Long with the tag value >> 48
         // The tag values are: TAG_BOOL = 0x7FF8..., so shifted >> 48 = 32760
         // We verify the function returns a valid Long
@@ -1838,8 +1814,6 @@ mod tests {
 
     #[test]
     fn test_error_type_error() {
-        use super::super::error_handling::jit_runtime_type_error;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1855,8 +1829,6 @@ mod tests {
 
     #[test]
     fn test_error_div_by_zero() {
-        use super::super::error_handling::jit_runtime_div_by_zero;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1872,8 +1844,6 @@ mod tests {
 
     #[test]
     fn test_error_stack_overflow() {
-        use super::super::error_handling::jit_runtime_stack_overflow;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1889,8 +1859,6 @@ mod tests {
 
     #[test]
     fn test_error_stack_underflow() {
-        use super::super::error_handling::jit_runtime_stack_underflow;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1906,8 +1874,6 @@ mod tests {
 
     #[test]
     fn test_error_integer_overflow() {
-        use super::super::error_handling::jit_runtime_integer_overflow;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -1927,9 +1893,6 @@ mod tests {
 
     #[test]
     fn test_jit_store_and_load_binding() {
-        use super::super::bindings::{jit_runtime_load_binding, jit_runtime_store_binding, jit_runtime_push_binding_frame};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -1959,9 +1922,6 @@ mod tests {
 
     #[test]
     fn test_jit_has_binding() {
-        use super::super::bindings::{jit_runtime_has_binding, jit_runtime_store_binding, jit_runtime_push_binding_frame};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x"), MettaValue::sym("$y")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -1989,9 +1949,6 @@ mod tests {
 
     #[test]
     fn test_jit_push_pop_binding_frame() {
-        use super::super::bindings::{jit_runtime_push_binding_frame, jit_runtime_pop_binding_frame, jit_runtime_store_binding, jit_runtime_load_binding};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -2028,9 +1985,6 @@ mod tests {
 
     #[test]
     fn test_jit_clear_bindings() {
-        use super::super::bindings::{jit_runtime_clear_bindings, jit_runtime_store_binding, jit_runtime_push_binding_frame, jit_runtime_has_binding};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -2056,9 +2010,6 @@ mod tests {
 
     #[test]
     fn test_jit_fork_restore_bindings() {
-        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_restore_bindings, jit_runtime_store_binding, jit_runtime_push_binding_frame, jit_runtime_load_binding};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -2094,9 +2045,6 @@ mod tests {
 
     #[test]
     fn test_jit_binding_not_found() {
-        use super::super::bindings::{jit_runtime_load_binding, jit_runtime_push_binding_frame};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -2123,10 +2071,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_add() {
-        use super::super::space_ops::jit_runtime_space_add;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(1, "test_space".to_string());
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -2150,10 +2094,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_remove() {
-        use super::super::space_ops::jit_runtime_space_remove;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(2, "test_space".to_string());
         space.add_atom(MettaValue::Long(1));
         space.add_atom(MettaValue::Long(2));
@@ -2180,10 +2120,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_remove_not_found() {
-        use super::super::space_ops::jit_runtime_space_remove;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(3, "test_space".to_string());
         space.add_atom(MettaValue::Long(1));
 
@@ -2205,10 +2141,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_get_atoms() {
-        use super::super::space_ops::jit_runtime_space_get_atoms;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(4, "test_space".to_string());
         space.add_atom(MettaValue::Long(1));
         space.add_atom(MettaValue::Long(2));
@@ -2239,10 +2171,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_get_atoms_empty() {
-        use super::super::space_ops::jit_runtime_space_get_atoms;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(5, "empty_space".to_string());
 
         let constants: Vec<MettaValue> = vec![];
@@ -2264,10 +2192,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_match() {
-        use super::super::space_ops::jit_runtime_space_match;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(6, "match_space".to_string());
         space.add_atom(MettaValue::SExpr(vec![MettaValue::sym("fact"), MettaValue::Long(1)]));
         space.add_atom(MettaValue::SExpr(vec![MettaValue::sym("fact"), MettaValue::Long(2)]));
@@ -2299,10 +2223,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_match_no_matches() {
-        use super::super::space_ops::jit_runtime_space_match;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(7, "nomatch_space".to_string());
         space.add_atom(MettaValue::SExpr(vec![MettaValue::sym("bar"), MettaValue::Long(1)]));
 
@@ -2333,8 +2253,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_string() {
-        use super::super::type_ops::jit_runtime_get_type;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2352,9 +2270,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_unit() {
-        use super::super::type_ops::jit_runtime_get_type;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2368,9 +2283,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_sexpr() {
-        use super::super::type_ops::jit_runtime_get_type;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2387,9 +2299,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_variable() {
-        use super::super::type_ops::jit_runtime_get_type;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2406,9 +2315,6 @@ mod tests {
 
     #[test]
     fn test_jit_check_type_match() {
-        use super::super::type_ops::jit_runtime_check_type;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2426,9 +2332,6 @@ mod tests {
 
     #[test]
     fn test_jit_check_type_mismatch() {
-        use super::super::type_ops::jit_runtime_check_type;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2446,9 +2349,6 @@ mod tests {
 
     #[test]
     fn test_jit_check_type_variable() {
-        use super::super::type_ops::jit_runtime_check_type;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2466,9 +2366,6 @@ mod tests {
 
     #[test]
     fn test_jit_assert_type_pass() {
-        use super::super::type_ops::jit_runtime_assert_type;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2487,9 +2384,6 @@ mod tests {
 
     #[test]
     fn test_jit_assert_type_fail() {
-        use super::super::type_ops::jit_runtime_assert_type;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2512,9 +2406,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_if_true_branch() {
-        use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2531,9 +2422,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_if_false_branch() {
-        use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2550,9 +2438,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_if_nil_falsy() {
-        use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2569,8 +2454,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_if_truthy_non_bool() {
-        use super::super::special_forms::jit_runtime_eval_if;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2588,8 +2471,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_let_basic() {
-        use super::super::special_forms::jit_runtime_eval_let;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2606,8 +2487,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_let_star_marker() {
-        use super::super::special_forms::jit_runtime_eval_let_star;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2623,8 +2502,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_chain_returns_second() {
-        use super::super::special_forms::jit_runtime_eval_chain;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2640,9 +2517,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_quote_wraps_value() {
-        use super::super::special_forms::jit_runtime_eval_quote;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2665,9 +2539,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_unquote_unwraps() {
-        use super::super::special_forms::jit_runtime_eval_unquote;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2690,9 +2561,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_unquote_not_quoted() {
-        use super::super::special_forms::jit_runtime_eval_unquote;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2710,9 +2578,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_eval_passthrough() {
-        use super::super::special_forms::jit_runtime_eval_eval;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2728,8 +2593,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_bind_stores_binding() {
-        use super::super::special_forms::jit_runtime_eval_bind;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2746,8 +2609,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_new_creates_space() {
-        use super::super::special_forms::jit_runtime_eval_new;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2764,8 +2625,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_pragma_returns_unit() {
-        use super::super::special_forms::jit_runtime_eval_pragma;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2782,8 +2641,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_memo_passthrough() {
-        use super::super::special_forms::jit_runtime_eval_memo;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2799,8 +2656,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_memo_first_passthrough() {
-        use super::super::special_forms::jit_runtime_eval_memo_first;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2816,10 +2671,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_superpose_empty() {
-        use super::super::special_forms::jit_runtime_eval_superpose;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2836,9 +2687,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_superpose_single() {
-        use super::super::special_forms::jit_runtime_eval_superpose;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2857,8 +2705,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_superpose_non_list() {
-        use super::super::special_forms::jit_runtime_eval_superpose;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2875,9 +2721,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_collapse_no_results() {
-        use super::super::special_forms::jit_runtime_eval_collapse;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2901,9 +2744,6 @@ mod tests {
 
     #[test]
     fn test_jit_eval_collapse_null_ctx() {
-        use super::super::special_forms::jit_runtime_eval_collapse;
-        use super::super::helpers::metta_to_jit;
-
         // Null context
         let val = metta_to_jit(&MettaValue::Long(42)).to_bits();
         let result = unsafe { jit_runtime_eval_collapse(std::ptr::null_mut(), val, 0) };
@@ -2920,10 +2760,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_add_valid_4c() {
-        use super::super::space_ops::jit_runtime_space_add;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2947,9 +2783,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_add_non_space_4c() {
-        use super::super::space_ops::jit_runtime_space_add;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -2969,10 +2802,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_remove_exists_4c() {
-        use super::super::space_ops::jit_runtime_space_remove;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3000,10 +2829,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_remove_missing_4c() {
-        use super::super::space_ops::jit_runtime_space_remove;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3024,9 +2849,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_remove_non_space_4c() {
-        use super::super::space_ops::jit_runtime_space_remove;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3046,10 +2868,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_get_atoms_empty_4c() {
-        use super::super::space_ops::jit_runtime_space_get_atoms;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3071,10 +2889,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_get_atoms_populated_4c() {
-        use super::super::space_ops::jit_runtime_space_get_atoms;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3100,8 +2914,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_get_atoms_non_space_4c() {
-        use super::super::space_ops::jit_runtime_space_get_atoms;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3122,10 +2934,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_match_single_4c() {
-        use super::super::space_ops::jit_runtime_space_match;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3153,10 +2961,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_match_none_4c() {
-        use super::super::space_ops::jit_runtime_space_match;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3183,9 +2987,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_match_non_space_4c() {
-        use super::super::space_ops::jit_runtime_space_match;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3209,11 +3010,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_match_nondet_null_ctx_4c() {
-        use super::super::space_ops::jit_runtime_space_match_nondet;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-        use crate::backend::models::SpaceHandle;
-
         let space = SpaceHandle::new(108, "test-space-4c8".to_string());
         let space_jit = metta_to_jit(&MettaValue::Space(space)).to_bits();
         let pattern_jit = metta_to_jit(&MettaValue::sym("foo")).to_bits();
@@ -3235,10 +3031,6 @@ mod tests {
 
     #[test]
     fn test_jit_space_match_nondet_not_space_4c() {
-        use super::super::space_ops::jit_runtime_space_match_nondet;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3265,8 +3057,6 @@ mod tests {
 
     #[test]
     fn test_jit_make_sexpr_empty_4c() {
-        use super::super::value_creation::jit_runtime_make_sexpr;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3285,8 +3075,6 @@ mod tests {
 
     #[test]
     fn test_jit_make_sexpr_single_4c() {
-        use super::super::value_creation::jit_runtime_make_sexpr;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3309,9 +3097,6 @@ mod tests {
 
     #[test]
     fn test_jit_make_sexpr_multiple_4c() {
-        use super::super::value_creation::jit_runtime_make_sexpr;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3335,9 +3120,6 @@ mod tests {
 
     #[test]
     fn test_jit_cons_atom_to_sexpr_4c() {
-        use super::super::value_creation::jit_runtime_cons_atom;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3363,9 +3145,6 @@ mod tests {
 
     #[test]
     fn test_jit_cons_atom_to_nil_4c() {
-        use super::super::value_creation::jit_runtime_cons_atom;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3390,9 +3169,6 @@ mod tests {
 
     #[test]
     fn test_jit_make_quote_wraps_4c() {
-        use super::super::value_creation::jit_runtime_make_quote;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3419,8 +3195,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_bool_true_4c() {
-        use super::super::type_ops::jit_runtime_get_type;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3440,8 +3214,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_bool_false_4c() {
-        use super::super::type_ops::jit_runtime_get_type;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3461,8 +3233,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_unit_4c() {
-        use super::super::type_ops::jit_runtime_get_type;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3482,9 +3252,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_sexpr_4c() {
-        use super::super::helpers::metta_to_jit;
-        use super::super::type_ops::jit_runtime_get_type;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3505,10 +3272,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_type_space_4c() {
-        use super::super::helpers::metta_to_jit;
-        use super::super::type_ops::jit_runtime_get_type;
-        use crate::backend::models::SpaceHandle;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3533,9 +3296,6 @@ mod tests {
 
     #[test]
     fn test_jit_pattern_match_literal_success() {
-        use super::super::helpers::metta_to_jit;
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3555,9 +3315,6 @@ mod tests {
 
     #[test]
     fn test_jit_pattern_match_literal_fail() {
-        use super::super::helpers::metta_to_jit;
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3577,9 +3334,6 @@ mod tests {
 
     #[test]
     fn test_jit_pattern_match_variable() {
-        use super::super::helpers::metta_to_jit;
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3600,9 +3354,6 @@ mod tests {
 
     #[test]
     fn test_jit_pattern_match_sexpr_success() {
-        use super::super::helpers::metta_to_jit;
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3628,9 +3379,6 @@ mod tests {
 
     #[test]
     fn test_jit_pattern_match_sexpr_fail_length() {
-        use super::super::helpers::metta_to_jit;
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3659,8 +3407,6 @@ mod tests {
 
     #[test]
     fn test_jit_pattern_match_number() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3680,8 +3426,6 @@ mod tests {
 
     #[test]
     fn test_jit_pattern_match_number_fail() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3705,8 +3449,6 @@ mod tests {
 
     #[test]
     fn test_jit_load_constant_4c() {
-        use super::super::stack_ops::jit_runtime_load_constant;
-
         let constants: Vec<MettaValue> = vec![MettaValue::Long(42), MettaValue::sym("foo")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3723,9 +3465,6 @@ mod tests {
 
     #[test]
     fn test_jit_load_constant_out_of_bounds_4c() {
-        use super::super::stack_ops::jit_runtime_load_constant;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![MettaValue::Long(42)];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3744,9 +3483,6 @@ mod tests {
 
     #[test]
     fn test_jit_load_global_not_found_4c() {
-        use super::super::global_ops::jit_runtime_load_global;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("undefined")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3761,8 +3497,6 @@ mod tests {
 
     #[test]
     fn test_jit_store_global_4c() {
-        use super::super::global_ops::jit_runtime_store_global;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("test-var")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3783,8 +3517,6 @@ mod tests {
 
     #[test]
     fn test_jit_cut_null_ctx() {
-        use super::super::advanced_nondet::jit_runtime_cut;
-
         let result = unsafe { jit_runtime_cut(std::ptr::null_mut(), 0) };
 
         // Should return Unit even with null ctx
@@ -3794,8 +3526,6 @@ mod tests {
 
     #[test]
     fn test_jit_cut_no_markers() {
-        use super::super::advanced_nondet::jit_runtime_cut;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3815,8 +3545,6 @@ mod tests {
 
     #[test]
     fn test_jit_enter_cut_scope_null_ctx() {
-        use super::super::advanced_nondet::jit_runtime_enter_cut_scope;
-
         let result = unsafe { jit_runtime_enter_cut_scope(std::ptr::null_mut()) };
 
         // Should return 0 for null ctx
@@ -3825,8 +3553,6 @@ mod tests {
 
     #[test]
     fn test_jit_enter_cut_scope_success() {
-        use super::super::advanced_nondet::jit_runtime_enter_cut_scope;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3848,8 +3574,6 @@ mod tests {
 
     #[test]
     fn test_jit_exit_cut_scope_null_ctx() {
-        use super::super::advanced_nondet::jit_runtime_exit_cut_scope;
-
         let result = unsafe { jit_runtime_exit_cut_scope(std::ptr::null_mut()) };
 
         // Should return 0 for null ctx
@@ -3858,8 +3582,6 @@ mod tests {
 
     #[test]
     fn test_jit_exit_cut_scope_no_markers() {
-        use super::super::advanced_nondet::jit_runtime_exit_cut_scope;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3877,10 +3599,6 @@ mod tests {
 
     #[test]
     fn test_jit_exit_cut_scope_success() {
-        use super::super::advanced_nondet::{
-            jit_runtime_enter_cut_scope, jit_runtime_exit_cut_scope,
-        };
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3904,9 +3622,6 @@ mod tests {
 
     #[test]
     fn test_jit_guard_true() {
-        use super::super::advanced_nondet::jit_runtime_guard;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3922,9 +3637,6 @@ mod tests {
 
     #[test]
     fn test_jit_guard_false() {
-        use super::super::advanced_nondet::jit_runtime_guard;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3940,8 +3652,6 @@ mod tests {
 
     #[test]
     fn test_jit_amb_null_ctx() {
-        use super::super::advanced_nondet::jit_runtime_amb;
-
         let result = unsafe { jit_runtime_amb(std::ptr::null_mut(), 2, 0) };
 
         // Should return unit with null ctx
@@ -3951,8 +3661,6 @@ mod tests {
 
     #[test]
     fn test_jit_amb_empty() {
-        use super::super::advanced_nondet::jit_runtime_amb;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3968,8 +3676,6 @@ mod tests {
 
     #[test]
     fn test_jit_commit_null_ctx() {
-        use super::super::advanced_nondet::jit_runtime_commit;
-
         let result = unsafe { jit_runtime_commit(std::ptr::null_mut(), 1, 0) };
 
         // Should return Unit with null ctx
@@ -3979,8 +3685,6 @@ mod tests {
 
     #[test]
     fn test_jit_commit_removes_choice_points() {
-        use super::super::advanced_nondet::jit_runtime_commit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -3999,8 +3703,6 @@ mod tests {
 
     #[test]
     fn test_jit_commit_all() {
-        use super::super::advanced_nondet::jit_runtime_commit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4019,9 +3721,6 @@ mod tests {
 
     #[test]
     fn test_jit_backtrack_null_ctx() {
-        use super::super::advanced_nondet::jit_runtime_backtrack;
-        use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
-
         let result = unsafe { jit_runtime_backtrack(std::ptr::null_mut(), 0) };
 
         // Should signal fail with null ctx
@@ -4030,9 +3729,6 @@ mod tests {
 
     #[test]
     fn test_jit_backtrack_signals_fail() {
-        use super::super::advanced_nondet::jit_runtime_backtrack;
-        use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4047,8 +3743,6 @@ mod tests {
 
     #[test]
     fn test_jit_begin_nondet_increments_fork_depth() {
-        use super::super::advanced_nondet::jit_runtime_begin_nondet;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4065,8 +3759,6 @@ mod tests {
 
     #[test]
     fn test_jit_end_nondet_decrements_fork_depth() {
-        use super::super::advanced_nondet::jit_runtime_end_nondet;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4083,8 +3775,6 @@ mod tests {
 
     #[test]
     fn test_jit_end_nondet_no_underflow() {
-        use super::super::advanced_nondet::jit_runtime_end_nondet;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4105,9 +3795,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_head_sexpr() {
-        use super::super::sexpr_ops::jit_runtime_get_head;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4130,10 +3817,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_head_empty() {
-        use super::super::sexpr_ops::jit_runtime_get_head;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4151,9 +3834,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_tail_sexpr() {
-        use super::super::sexpr_ops::jit_runtime_get_tail;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4176,8 +3856,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_tail_empty() {
-        use super::super::sexpr_ops::jit_runtime_get_tail;
-        use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -4200,9 +3878,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_arity_sexpr() {
-        use super::super::sexpr_ops::jit_runtime_get_arity;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4223,9 +3898,6 @@ mod tests {
 
     #[test]
     fn test_jit_get_arity_empty() {
-        use super::super::sexpr_ops::jit_runtime_get_arity;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4245,9 +3917,6 @@ mod tests {
 
     #[test]
     fn test_jit_index_atom_valid() {
-        use super::super::expression_ops::jit_runtime_index_atom;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4269,9 +3938,6 @@ mod tests {
 
     #[test]
     fn test_jit_index_atom_out_of_bounds() {
-        use super::super::expression_ops::jit_runtime_index_atom;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4291,8 +3957,6 @@ mod tests {
 
     #[test]
     fn test_jit_index_atom_non_sexpr() {
-        use super::super::expression_ops::jit_runtime_index_atom;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -4315,9 +3979,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_wildcard() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4337,9 +3998,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_variable() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4358,8 +4016,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_bool_true() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -4381,9 +4037,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_nil() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4399,9 +4052,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_unit() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4417,9 +4067,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_type_mismatch() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4440,9 +4087,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_null_context() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         // Null context should return false
         let pattern = TAG_BOOL | 1;
         let value = TAG_BOOL | 1;
@@ -4452,9 +4096,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_sexpr() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4479,9 +4120,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_sexpr_length_mismatch() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4507,10 +4145,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_bind_variable() {
-        use super::super::pattern_matching::jit_runtime_pattern_match_bind;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -4522,7 +4156,6 @@ mod tests {
         ctx.binding_frames_cap = binding_frames.len();
 
         // Push a binding frame
-        use super::super::bindings::jit_runtime_push_binding_frame;
         unsafe { jit_runtime_push_binding_frame(&mut ctx) };
 
         // Pattern: $x, Value: 42 - should match and bind
@@ -4534,9 +4167,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_bind_wildcard() {
-        use super::super::pattern_matching::jit_runtime_pattern_match_bind;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
@@ -4553,9 +4183,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_bind_null_context() {
-        use super::super::pattern_matching::jit_runtime_pattern_match_bind;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let pattern = TAG_BOOL | 1;
         let value = TAG_BOOL | 1;
         let result = unsafe { jit_runtime_pattern_match_bind(std::ptr::null_mut(), pattern, value, 0) };
@@ -4564,9 +4191,6 @@ mod tests {
 
     #[test]
     fn test_match_arity() {
-        use super::super::pattern_matching::jit_runtime_match_arity;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4592,8 +4216,6 @@ mod tests {
 
     #[test]
     fn test_match_arity_non_sexpr() {
-        use super::super::pattern_matching::jit_runtime_match_arity;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4608,9 +4230,6 @@ mod tests {
 
     #[test]
     fn test_match_head() {
-        use super::super::pattern_matching::jit_runtime_match_head;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("foo"), MettaValue::sym("bar")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4636,9 +4255,6 @@ mod tests {
 
     #[test]
     fn test_match_head_null_context() {
-        use super::super::pattern_matching::jit_runtime_match_head;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let value = JitValue::from_long(42).to_bits();
         let result = unsafe { jit_runtime_match_head(std::ptr::null(), value, 0, 0) };
         assert_eq!(result, TAG_BOOL, "Null context returns false");
@@ -4646,10 +4262,6 @@ mod tests {
 
     #[test]
     fn test_match_head_invalid_index() {
-        use super::super::pattern_matching::jit_runtime_match_head;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("foo")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4666,10 +4278,6 @@ mod tests {
 
     #[test]
     fn test_match_head_empty_sexpr() {
-        use super::super::pattern_matching::jit_runtime_match_head;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("foo")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4686,8 +4294,6 @@ mod tests {
 
     #[test]
     fn test_unify_basic() {
-        use super::super::pattern_matching::jit_runtime_unify;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4708,9 +4314,6 @@ mod tests {
 
     #[test]
     fn test_unify_variable() {
-        use super::super::pattern_matching::jit_runtime_unify;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4730,9 +4333,6 @@ mod tests {
 
     #[test]
     fn test_unify_wildcard() {
-        use super::super::pattern_matching::jit_runtime_unify;
-        use super::super::helpers::metta_to_jit;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -4752,10 +4352,6 @@ mod tests {
 
     #[test]
     fn test_unify_bind() {
-        use super::super::pattern_matching::jit_runtime_unify_bind;
-        use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -4766,7 +4362,6 @@ mod tests {
         ctx.binding_frames = binding_frames.as_mut_ptr();
         ctx.binding_frames_cap = binding_frames.len();
 
-        use super::super::bindings::jit_runtime_push_binding_frame;
         unsafe { jit_runtime_push_binding_frame(&mut ctx) };
 
         // Unify with binding
@@ -4778,9 +4373,6 @@ mod tests {
 
     #[test]
     fn test_unify_bind_null_context() {
-        use super::super::pattern_matching::jit_runtime_unify_bind;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let a = JitValue::from_long(42).to_bits();
         let result = unsafe { jit_runtime_unify_bind(std::ptr::null_mut(), a, a, 0) };
         assert_eq!(result, TAG_BOOL, "Null context returns false");
@@ -4831,8 +4423,6 @@ mod tests {
 
     #[test]
     fn test_get_results_count() {
-        use super::super::nondeterminism::jit_runtime_get_results_count;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
         let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -4859,15 +4449,12 @@ mod tests {
 
     #[test]
     fn test_get_results_count_null_context() {
-        use super::super::nondeterminism::jit_runtime_get_results_count;
         let result = unsafe { jit_runtime_get_results_count(std::ptr::null()) };
         assert_eq!(result, 0, "Null context returns 0");
     }
 
     #[test]
     fn test_get_choice_point_count() {
-        use super::super::nondeterminism::jit_runtime_get_choice_point_count;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
         let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -4893,16 +4480,12 @@ mod tests {
 
     #[test]
     fn test_get_choice_point_count_null_context() {
-        use super::super::nondeterminism::jit_runtime_get_choice_point_count;
         let result = unsafe { jit_runtime_get_choice_point_count(std::ptr::null()) };
         assert_eq!(result, 0, "Null context returns 0");
     }
 
     #[test]
     fn test_fork_zero_alternatives() {
-        use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
@@ -4918,9 +4501,6 @@ mod tests {
 
     #[test]
     fn test_fork_null_indices() {
-        use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
@@ -4936,9 +4516,6 @@ mod tests {
 
     #[test]
     fn test_fork_invalid_index() {
-        use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
@@ -4955,18 +4532,12 @@ mod tests {
 
     #[test]
     fn test_fork_null_context() {
-        use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let result = unsafe { jit_runtime_fork(std::ptr::null_mut(), 1, std::ptr::null(), 0) };
         assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_yield_null_context() {
-        use super::super::nondeterminism::jit_runtime_yield;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let value = JitValue::from_long(42).to_bits();
         let result = unsafe { jit_runtime_yield(std::ptr::null_mut(), value, 0) };
         assert_eq!(result, TAG_UNIT, "Null context returns NIL");
@@ -4974,8 +4545,6 @@ mod tests {
 
     #[test]
     fn test_yield_results_overflow() {
-        use super::super::nondeterminism::jit_runtime_yield;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
         let mut results: Vec<JitValue> = vec![JitValue::unit(); 2]; // Small capacity
@@ -5006,17 +4575,12 @@ mod tests {
 
     #[test]
     fn test_collect_null_context() {
-        use super::super::nondeterminism::jit_runtime_collect;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let result = unsafe { jit_runtime_collect(std::ptr::null_mut(), 0, 0) };
         assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_collect_empty_results() {
-        use super::super::nondeterminism::jit_runtime_collect;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
         let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -5104,18 +4668,12 @@ mod tests {
 
     #[test]
     fn test_fork_native_null_context() {
-        use super::super::nondeterminism::jit_runtime_fork_native;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let result = unsafe { jit_runtime_fork_native(std::ptr::null_mut(), 1, std::ptr::null(), 0) };
         assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_fork_native_zero_alternatives() {
-        use super::super::nondeterminism::jit_runtime_fork_native;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
         let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -5145,16 +4703,12 @@ mod tests {
 
     #[test]
     fn test_fail_native_null_context() {
-        use super::super::nondeterminism::jit_runtime_fail_native;
-
         let result = unsafe { jit_runtime_fail_native(std::ptr::null_mut()) };
         assert_eq!(result, JIT_SIGNAL_FAIL as u64, "Null context returns FAIL");
     }
 
     #[test]
     fn test_fail_native_no_choice_points() {
-        use super::super::nondeterminism::jit_runtime_fail_native;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
         let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -5178,9 +4732,6 @@ mod tests {
 
     #[test]
     fn test_collect_native_null_context() {
-        use super::super::nondeterminism::jit_runtime_collect_native;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let result = unsafe { jit_runtime_collect_native(std::ptr::null_mut()) };
         assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
@@ -5193,8 +4744,6 @@ mod tests {
 
     #[test]
     fn test_get_resume_ip() {
-        use super::super::nondeterminism::jit_runtime_get_resume_ip;
-
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
         let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -5219,7 +4768,6 @@ mod tests {
 
     #[test]
     fn test_get_resume_ip_null_context() {
-        use super::super::nondeterminism::jit_runtime_get_resume_ip;
         let result = unsafe { jit_runtime_get_resume_ip(std::ptr::null()) };
         assert_eq!(result, 0, "Null context returns 0");
     }
@@ -5230,25 +4778,18 @@ mod tests {
 
     #[test]
     fn test_load_binding_null_context() {
-        use super::super::bindings::jit_runtime_load_binding;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let result = unsafe { jit_runtime_load_binding(std::ptr::null_mut(), 0, 0) };
         assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_store_binding_null_context() {
-        use super::super::bindings::jit_runtime_store_binding;
-
         let result = unsafe { jit_runtime_store_binding(std::ptr::null_mut(), 0, 0, 0) };
         assert_eq!(result, -2, "Null context returns -2");
     }
 
     #[test]
     fn test_store_binding_no_frames() {
-        use super::super::bindings::jit_runtime_store_binding;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -5262,33 +4803,24 @@ mod tests {
 
     #[test]
     fn test_has_binding_null_context() {
-        use super::super::bindings::jit_runtime_has_binding;
-        use crate::backend::bytecode::jit::types::TAG_BOOL;
-
         let result = unsafe { jit_runtime_has_binding(std::ptr::null(), 0) };
         assert_eq!(result, TAG_BOOL, "Null context returns false");
     }
 
     #[test]
     fn test_clear_bindings_null_context() {
-        use super::super::bindings::jit_runtime_clear_bindings;
         // Should not crash
         unsafe { jit_runtime_clear_bindings(std::ptr::null_mut()) };
     }
 
     #[test]
     fn test_push_binding_frame_null_context() {
-        use super::super::bindings::jit_runtime_push_binding_frame;
-
         let result = unsafe { jit_runtime_push_binding_frame(std::ptr::null_mut()) };
         assert_eq!(result, -2, "Null context returns -2");
     }
 
     #[test]
     fn test_push_binding_frame_overflow() {
-        use super::super::bindings::jit_runtime_push_binding_frame;
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 2];
@@ -5311,17 +4843,12 @@ mod tests {
 
     #[test]
     fn test_pop_binding_frame_null_context() {
-        use super::super::bindings::jit_runtime_pop_binding_frame;
-
         let result = unsafe { jit_runtime_pop_binding_frame(std::ptr::null_mut()) };
         assert_eq!(result, -2, "Null context returns -2");
     }
 
     #[test]
     fn test_pop_binding_frame_root() {
-        use super::super::bindings::{jit_runtime_pop_binding_frame, jit_runtime_push_binding_frame};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -5343,16 +4870,12 @@ mod tests {
 
     #[test]
     fn test_fork_bindings_null_context() {
-        use super::super::bindings::jit_runtime_fork_bindings;
-
         let result = unsafe { jit_runtime_fork_bindings(std::ptr::null()) };
         assert!(result.is_null(), "Null context returns null");
     }
 
     #[test]
     fn test_fork_bindings_empty() {
-        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_free_saved_bindings};
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -5369,8 +4892,6 @@ mod tests {
 
     #[test]
     fn test_restore_bindings_null_context() {
-        use super::super::bindings::{jit_runtime_restore_bindings, jit_runtime_fork_bindings};
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -5384,8 +4905,6 @@ mod tests {
 
     #[test]
     fn test_restore_bindings_null_saved() {
-        use super::super::bindings::jit_runtime_restore_bindings;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -5398,23 +4917,18 @@ mod tests {
 
     #[test]
     fn test_free_saved_bindings_null() {
-        use super::super::bindings::jit_runtime_free_saved_bindings;
         // Should not crash
         unsafe { jit_runtime_free_saved_bindings(std::ptr::null_mut()) };
     }
 
     #[test]
     fn test_saved_bindings_size_null() {
-        use super::super::bindings::jit_runtime_saved_bindings_size;
         let result = unsafe { jit_runtime_saved_bindings_size(std::ptr::null()) };
         assert_eq!(result, 0, "Null returns 0");
     }
 
     #[test]
     fn test_saved_bindings_size() {
-        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_saved_bindings_size, jit_runtime_free_saved_bindings, jit_runtime_push_binding_frame, jit_runtime_store_binding};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x"), MettaValue::sym("$y")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -5438,9 +4952,6 @@ mod tests {
 
     #[test]
     fn test_binding_update_existing() {
-        use super::super::bindings::{jit_runtime_store_binding, jit_runtime_load_binding, jit_runtime_push_binding_frame};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -5466,9 +4977,6 @@ mod tests {
 
     #[test]
     fn test_binding_shadowing() {
-        use super::super::bindings::{jit_runtime_store_binding, jit_runtime_load_binding, jit_runtime_push_binding_frame, jit_runtime_pop_binding_frame};
-        use crate::backend::bytecode::jit::types::JitBindingFrame;
-
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
@@ -5507,7 +5015,6 @@ mod tests {
 
     #[test]
     fn test_eval_let_star_marker() {
-        use super::super::special_forms::jit_runtime_eval_let_star;
         // let* is mainly a placeholder/marker - just verify it returns Unit
         let result = unsafe { jit_runtime_eval_let_star(std::ptr::null_mut(), 0) };
         assert_eq!(JitValue::from_raw(result).is_unit(), true);
@@ -5515,7 +5022,6 @@ mod tests {
 
     #[test]
     fn test_eval_match_null_context() {
-        use super::super::special_forms::jit_runtime_eval_match;
         // Pattern matching with null context returns false (early return)
         let val = JitValue::from_long(42);
         let pattern = JitValue::from_long(42);
@@ -5526,7 +5032,6 @@ mod tests {
 
     #[test]
     fn test_eval_match_no_match() {
-        use super::super::special_forms::jit_runtime_eval_match;
         let val = JitValue::from_long(42);
         let pattern = JitValue::from_long(99);
         let result = unsafe { jit_runtime_eval_match(std::ptr::null_mut(), val.to_bits(), pattern.to_bits(), 0) };
@@ -5536,7 +5041,6 @@ mod tests {
 
     #[test]
     fn test_eval_case_null_context() {
-        use super::super::special_forms::jit_runtime_eval_case;
         let val = JitValue::from_long(42);
         let result = unsafe { jit_runtime_eval_case(std::ptr::null_mut(), val.to_bits(), 3, 0) };
         // Null context should return -1 (no match)
@@ -5546,7 +5050,6 @@ mod tests {
 
     #[test]
     fn test_eval_chain_simple() {
-        use super::super::special_forms::jit_runtime_eval_chain;
         let first = JitValue::from_long(1);
         let second = JitValue::from_long(2);
         let result = unsafe { jit_runtime_eval_chain(std::ptr::null_mut(), first.to_bits(), second.to_bits(), 0) };
@@ -5556,7 +5059,6 @@ mod tests {
 
     #[test]
     fn test_eval_chain_with_unit() {
-        use super::super::special_forms::jit_runtime_eval_chain;
         let first = JitValue::unit();
         let second = JitValue::from_long(42);
         let result = unsafe { jit_runtime_eval_chain(std::ptr::null_mut(), first.to_bits(), second.to_bits(), 0) };
@@ -5565,7 +5067,6 @@ mod tests {
 
     #[test]
     fn test_eval_unquote_non_quote() {
-        use super::super::special_forms::jit_runtime_eval_unquote;
         // Unquoting a non-quoted value should return it unchanged
         let val = JitValue::from_long(42);
         let result = unsafe { jit_runtime_eval_unquote(std::ptr::null_mut(), val.to_bits(), 0) };
@@ -5576,9 +5077,6 @@ mod tests {
 
     #[test]
     fn test_make_list_empty() {
-        use super::super::value_creation::jit_runtime_make_list;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -5592,8 +5090,6 @@ mod tests {
 
     #[test]
     fn test_make_list_single() {
-        use super::super::value_creation::jit_runtime_make_list;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -5629,8 +5125,6 @@ mod tests {
 
     #[test]
     fn test_push_uri_loads_constant() {
-        use super::super::value_creation::jit_runtime_push_uri;
-
         let constants: Vec<MettaValue> = vec![
             MettaValue::String("http://example.com".to_string()),
         ];
@@ -5647,8 +5141,6 @@ mod tests {
 
     #[test]
     fn test_get_type_unknown_tag() {
-        use super::super::type_ops::jit_runtime_get_type;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -5670,9 +5162,6 @@ mod tests {
 
     #[test]
     fn test_check_type_invalid_type_atom() {
-        use super::super::type_ops::jit_runtime_check_type;
-        use crate::backend::bytecode::jit::types::TAG_LONG;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -5690,9 +5179,6 @@ mod tests {
 
     #[test]
     fn test_assert_type_with_null_context() {
-        use super::super::type_ops::jit_runtime_assert_type;
-        use crate::backend::bytecode::jit::types::TAG_LONG;
-
         let val = JitValue::from_long(42).to_bits();
         let type_val: u64 = TAG_LONG | 123; // Invalid type atom
 
@@ -5705,9 +5191,6 @@ mod tests {
 
     #[test]
     fn test_space_match_nondet_with_context_no_choice_points() {
-        use super::super::space_ops::jit_runtime_space_match_nondet;
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
@@ -5746,7 +5229,6 @@ mod tests {
         // collect_native returns u64
         let result = unsafe { jit_runtime_collect_native(std::ptr::null_mut()) };
         // Should return nil with null context
-        use crate::backend::bytecode::jit::types::TAG_UNIT;
         assert_eq!(result, TAG_UNIT);
     }
 
@@ -5779,8 +5261,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_long_via_fast_path() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         // Long comparison uses fast path (doesn't need context)
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -5803,8 +5283,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_bool_via_fast_path() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
@@ -5820,8 +5298,6 @@ mod tests {
 
     #[test]
     fn test_pattern_match_nil_via_fast_path() {
-        use super::super::pattern_matching::jit_runtime_pattern_match;
-
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {

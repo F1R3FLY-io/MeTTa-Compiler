@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for rule dispatch operations
 pub struct RulesFuncIds {
@@ -76,7 +76,7 @@ impl<T> RulesInit for T {
     }
 
     fn declare_rules_funcs<M: Module>(module: &mut M) -> JitResult<RulesFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // dispatch_rules: fn(ctx, expr, ip) -> count
         let mut dispatch_rules_sig = module.make_signature();

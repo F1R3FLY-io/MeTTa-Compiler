@@ -22,20 +22,23 @@
 //! its RHS is compiled to bytecode (if not already cached) and executed.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
 use parking_lot::RwLock;
 use tracing::warn;
+use xxhash_rust::xxh3::Xxh3;
+
+use super::chunk::BytecodeChunk;
+use super::compiler::{compile, CompileError};
 
 use crate::backend::environment::MettaEnvironment;
 // Disabled: pattern_match no longer needed — match_rules_native handles matching at byte level.
 // use crate::backend::eval::pattern_match;
-use crate::backend::models::{Bindings, MettaValue};
+use crate::backend::models::{Bindings, GcFactory, GenericBindings, MettaValue};
 // Disabled: MettaValueTrait import no longer needed — MettaValue has inherent inner() method.
 // use crate::backend::models::metta_value_trait::MettaValueTrait;
-
-use super::chunk::BytecodeChunk;
-use super::compiler::{compile, CompileError};
 
 /// A compiled rule ready for bytecode execution
 #[derive(Debug, Clone)]
@@ -58,8 +61,6 @@ struct RuleCacheKey {
 
 impl RuleCacheKey {
     fn from_rhs(rhs: &MettaValue) -> Self {
-        use std::hash::{Hash, Hasher};
-        use xxhash_rust::xxh3::Xxh3;
         let mut h = Xxh3::new();
         rhs.hash(&mut h);
         Self {
@@ -226,7 +227,6 @@ impl MorkBridge {
         expr: &MettaValue,
         env: &MettaEnvironment,
     ) -> Vec<(MettaValue, MettaValue, Bindings)> {
-        use crate::backend::models::{GcFactory, GenericBindings};
 
         // Pass a no-op closure instead of apply_bindings_generic because we only use
         // rhs_template + bindings — the instantiated_rhs field is discarded. This avoids

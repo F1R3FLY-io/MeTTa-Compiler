@@ -9,9 +9,26 @@
 ///
 /// **Note**: For Rholang integration, use the PathMap Par functions in
 /// `pathmap_par_integration` module, not the JSON functions here.
-use crate::backend::fuzzy_match::FuzzyMatcher;
-use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 use std::sync::OnceLock;
+
+use crate::backend::compile::compile;
+use crate::backend::eval::eval;
+use crate::backend::eval::trampoline::{new_env, MettaEnvironment};
+use crate::backend::fuzzy_match::FuzzyMatcher;
+use crate::backend::models::{
+    EvalGuard, MettaState, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
+    SessionGuard,
+};
+use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+#[cfg(all(feature = "async", not(feature = "hybrid-p2-priority-scheduler")))]
+use rayon::prelude::*;
+
+#[cfg(all(feature = "async", feature = "hybrid-p2-priority-scheduler"))]
+use crate::backend::priority_scheduler::global_priority_eval_pool;
+
+#[cfg(feature = "async")]
+use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
 
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -89,10 +106,7 @@ fn keyword_matcher() -> &'static FuzzyMatcher {
 /// let state = compile_safe("(+ 1 2");  // Unclosed parenthesis
 /// // state.source()[0] == (error "Syntax error at line 1, column 7: ...")
 /// ```
-pub fn compile_safe(src: &str) -> crate::backend::models::MettaState {
-    use crate::backend::compile::compile;
-    use crate::backend::models::{MettaState, MettaValueFactory};
-
+pub fn compile_safe(src: &str) -> MettaState {
     match compile(src) {
         Ok(state) => state,
         Err(error) => {
@@ -197,7 +211,6 @@ fn matching_open(close: char) -> char {
 /// Convert MettaValue to a JSON-like string representation
 /// Used for debugging and human-readable output
 fn value_to_json_string(value: &MettaValue) -> String {
-    use crate::backend::models::MettaValueInner;
     match value.inner() {
         MettaValueInner::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
         MettaValueInner::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
@@ -327,7 +340,7 @@ pub fn run_state(
     for &expr in source_exprs.iter() {
         let is_eval_expr = is_eval_expression(&expr);
 
-        let guard = crate::backend::models::SessionGuard::enter();
+        let guard = SessionGuard::enter();
 
         let (results, new_env) = eval(expr, env, compiled_state);
         env = new_env;
@@ -383,8 +396,6 @@ pub async fn run_state_async(
     env: MettaEnvironment,
     compiled_state: &MettaState,
 ) -> Result<MettaState, String> {
-    use crate::backend::models::MettaValueInner;
-
     info!("Run state async");
 
     let mut env = env;
@@ -465,8 +476,6 @@ async fn evaluate_batch_parallel_arena(
     batch: Vec<(usize, MettaValue, bool)>,
     env: MettaEnvironment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
-    use crate::backend::priority_scheduler::global_priority_eval_pool;
-
     debug!(
         batch_size = batch.len(),
         "Evaluate batch parallel arena (P2 scheduler)"
@@ -483,10 +492,9 @@ async fn evaluate_batch_parallel_arena(
             let env = env.clone();
             pool.spawn(move || {
                 // Track this parallel eval as active (prevents GC during evaluation)
-                let _guard = crate::backend::models::EvalGuard::enter();
+                let _guard = EvalGuard::enter();
                 // For parallel evaluation, use StaticEvalContext which provides
                 // a thread-local leaked Bump arena per thread (Copy, Send-safe)
-                use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
                 let ctx = StaticEvalContext::get();
                 let (results, _new_env) = eval_trampoline_generic(expr, env, &ctx);
                 (idx, results, should_output)
@@ -525,8 +533,6 @@ async fn evaluate_batch_parallel_arena(
     batch: Vec<(usize, MettaValue, bool)>,
     env: MettaEnvironment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
-    use rayon::prelude::*;
-
     debug!(
         batch_size = batch.len(),
         "Evaluate batch parallel arena (Rayon)"
@@ -536,10 +542,9 @@ async fn evaluate_batch_parallel_arena(
         .into_par_iter()
         .map(|(idx, expr, should_output)| {
             // Track this parallel eval as active (prevents GC during evaluation)
-            let _guard = crate::backend::models::EvalGuard::enter();
+            let _guard = EvalGuard::enter();
             // For parallel evaluation, use StaticEvalContext which provides
             // a thread-local leaked Bump arena per thread (Copy, Send-safe)
-            use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
             let ctx = StaticEvalContext::get();
             let (results, _new_env) = eval_trampoline_generic(expr, env.clone(), &ctx);
             (idx, results, should_output)
@@ -553,11 +558,6 @@ async fn evaluate_batch_parallel_arena(
 // ============================================================================
 // Session-Based Arena Evaluation API
 // ============================================================================
-
-use crate::backend::compile::compile;
-use crate::backend::eval::eval;
-use crate::backend::eval::trampoline::{new_env, MettaEnvironment};
-use crate::backend::models::{MettaState, MettaValue, MettaValueTrait};
 
 /// Evaluate MeTTa source using session-based dual-arena allocation.
 ///
@@ -620,7 +620,7 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
     for expr in source_exprs {
         let is_eval_expr = is_eval_expression(&expr);
 
-        let guard = crate::backend::models::SessionGuard::enter();
+        let guard = SessionGuard::enter();
 
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
@@ -708,7 +708,7 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
     for expr in source_exprs {
         let is_eval_expr = is_eval_expression(&expr);
 
-        let guard = crate::backend::models::SessionGuard::enter();
+        let guard = SessionGuard::enter();
 
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
@@ -733,6 +733,8 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
 mod tests {
     use super::*;
 
+    use crate::backend::models::global_factory;
+
     #[test]
     fn test_state_to_json() {
         let src = "(+ 1 2)";
@@ -747,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_value_atom_json() {
-        use crate::backend::models::{global_factory, MettaValueFactory};
+
         let f = global_factory();
         let value = f.atom("test");
         let json = value_to_json_string(&value);
@@ -756,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_value_number_json() {
-        use crate::backend::models::{global_factory, MettaValueFactory};
+
         let f = global_factory();
         let value = f.long(42);
         let json = value_to_json_string(&value);
@@ -765,7 +767,7 @@ mod tests {
 
     #[test]
     fn test_value_bool_json() {
-        use crate::backend::models::{global_factory, MettaValueFactory};
+
         let f = global_factory();
         let value = f.bool(true);
         let json = value_to_json_string(&value);
@@ -774,7 +776,7 @@ mod tests {
 
     #[test]
     fn test_value_string_json() {
-        use crate::backend::models::{global_factory, MettaValueFactory};
+
         let f = global_factory();
         let value = f.string("hello");
         let json = value_to_json_string(&value);
@@ -783,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_value_unit_json() {
-        use crate::backend::models::{global_factory, MettaValueFactory};
+
         let f = global_factory();
         let value = f.unit();
         let json = value_to_json_string(&value);
@@ -792,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_value_sexpr_json() {
-        use crate::backend::models::{global_factory, MettaValueFactory};
+
         let f = global_factory();
         let value = f.sexpr(vec![f.atom("+"), f.long(1), f.long(2)]);
         let json = value_to_json_string(&value);
@@ -808,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_compile_safe_success() {
-        use crate::backend::models::MettaValueInner;
+
         let state = compile_safe("(+ 1 2)");
         let source = state.source();
         assert_eq!(source.len(), 1);
@@ -827,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_compile_safe_syntax_error() {
-        use crate::backend::models::MettaValueInner;
+
         let state = compile_safe("(+ 1 2");
         let source = state.source();
         assert_eq!(source.len(), 1);
@@ -852,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_compile_safe_improves_error_message() {
-        use crate::backend::models::MettaValueInner;
+
         let state = compile_safe("(+ 1 2");
         let source = state.source();
         match source[0].inner() {
@@ -868,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_run_state_simple() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
@@ -884,7 +886,7 @@ mod tests {
 
     #[test]
     fn test_run_state_with_rules() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile(
             r#"
@@ -908,7 +910,7 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_simple() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
@@ -926,7 +928,7 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_parallel() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile(
             r#"
@@ -959,7 +961,7 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_with_rules() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile(
             r#"
@@ -1004,7 +1006,7 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_multiple_rules_sequential() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile(
             r#"
@@ -1032,7 +1034,7 @@ mod tests {
 
     #[test]
     fn test_run_state_accumulated_state() {
-        use crate::backend::models::MettaValueInner;
+
         // Test that rules persist across multiple run_state calls
         let state1 = compile("(= (double $x) (* $x 2))").expect("compile failed");
         let result1 = run_state(new_env(), &state1).expect("run_state failed");
@@ -1108,7 +1110,7 @@ mod tests {
     // Space Operations Tests - Adding Facts
     #[test]
     fn test_run_state_add_facts_to_space() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile(
             r#"
@@ -1289,7 +1291,7 @@ mod tests {
     // Constraint Solving Tests
     #[test]
     fn test_run_state_nondeterministic_choice() {
-        use crate::backend::models::MettaValueInner;
+
         let env = new_env();
         let state = compile(
             r#"
@@ -1581,7 +1583,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_paren() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedDelimiter('('),
@@ -1597,7 +1598,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_extra_close_paren() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::ExtraClosingDelimiter(')'),
@@ -1613,7 +1613,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_string() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedString,
@@ -1629,7 +1628,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_invalid_escape() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::InvalidEscape("z".to_string()),
@@ -1645,7 +1643,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_generic_has_hint() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::Generic,
@@ -1666,7 +1663,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_bracket() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedDelimiter('['),
@@ -1682,7 +1678,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_brace() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedDelimiter('{'),
@@ -1698,7 +1693,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_quota_to_quote() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         // "quota" is close to "quote"
         let error = SyntaxError {
@@ -1719,7 +1713,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_iff_to_if() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         // "iff" is close to "if"
         let error = SyntaxError {
@@ -1740,7 +1733,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_no_match() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         // "xyzzy" is not close to any keyword
         let error = SyntaxError {
@@ -1761,7 +1753,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_empty_text() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         // Empty text should not produce a suggestion
         let error = SyntaxError {
@@ -1781,7 +1772,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unknown_node_kind() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnknownNodeKind("weird_node".to_string()),
@@ -1806,7 +1796,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_parser_init() {
-        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
         let error = SyntaxError {
             kind: SyntaxErrorKind::ParserInit("failed to load grammar".to_string()),

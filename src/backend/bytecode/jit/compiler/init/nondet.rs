@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for nondeterminism operations
 pub struct NondetFuncIds {
@@ -84,7 +84,7 @@ impl<T> NondetInit for T {
     }
 
     fn declare_nondet_funcs<M: Module>(module: &mut M) -> JitResult<NondetFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // fork_native: fn(ctx, n_alternatives, resume_ip, ip) -> result
         let mut fork_sig = module.make_signature();

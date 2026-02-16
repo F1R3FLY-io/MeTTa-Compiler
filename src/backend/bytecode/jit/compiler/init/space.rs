@@ -8,7 +8,7 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::backend::bytecode::jit::runtime;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for space operations
 pub struct SpaceFuncIds {
@@ -70,7 +70,7 @@ impl<T> SpaceInit for T {
     }
 
     fn declare_space_funcs<M: Module>(module: &mut M) -> JitResult<SpaceFuncIds> {
-        use crate::backend::bytecode::jit::types::JitError;
+
 
         // space_add: fn(ctx, space, atom, ip) -> u64 (Bool)
         let mut space_add_sig = module.make_signature();

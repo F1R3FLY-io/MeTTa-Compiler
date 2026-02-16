@@ -136,8 +136,8 @@ impl GcThread {
     pub fn try_recv_response(&self) -> TryRecvGcResponse {
         match self.response_rx.try_recv() {
             Ok(response) => TryRecvGcResponse::Response(response),
-            Err(std::sync::mpsc::TryRecvError::Empty) => TryRecvGcResponse::Empty,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => TryRecvGcResponse::Disconnected,
+            Err(mpsc::TryRecvError::Empty) => TryRecvGcResponse::Empty,
+            Err(mpsc::TryRecvError::Disconnected) => TryRecvGcResponse::Disconnected,
         }
     }
 
@@ -208,6 +208,8 @@ fn gc_thread_main(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use super::super::gc_allocator::{GcFactory, SlabAllocator};
     use super::super::metta_value_trait::MettaValueFactory;
@@ -285,7 +287,7 @@ mod tests {
         gc.request_gc(snapshot);
 
         // Wait a bit for the GC thread to process
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
 
         // Should now have a response
         let response = gc.try_recv_response();

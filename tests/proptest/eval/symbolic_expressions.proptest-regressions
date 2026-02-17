@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 77e1cf24714c8e8312ea95c9a7c5504ffd776016cf31506397158a80ea99e879 # shrinks to test_program = SymbolicReductionTestProgram { source: "! (_A) \n ", reduced_exprs: ["(_A)"] }

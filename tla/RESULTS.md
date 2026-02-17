@@ -349,11 +349,27 @@ could overwrite `GC_IN_PROGRESS` set by session GC. Fixed to CAS-based
 
 **Result**: **Model checking completed. No error has been found.** All 22 safety invariants hold.
 
-#### Liveness (Pending)
+#### Liveness (Complete — 16 hours 40 minutes)
 
-Constants reduced to `MaxSlots=2, MaxRoots=1, MaxExprs=1, MaxContextIds=2`
-for tractability. Liveness checking is extremely expensive due to cycle
-detection in the state graph. Results pending.
+| Parameter | Value |
+|-----------|-------|
+| MaxSlots | 2 |
+| MaxRoots | 1 |
+| MaxExprs | 1 |
+| MaxContextIds | 2 |
+| SlotsPerPage | 2 |
+| States generated | 2,085,079 |
+| Distinct states | 473,678 |
+| Depth | 61 |
+| Time | 16h 40min |
+
+**Result**: **Model checking completed. No error has been found.** All 7 temporal properties hold under fairness (FairSpec with weak + strong fairness).
+
+Note: Liveness checking is extremely expensive due to cycle detection in the
+state graph for each temporal property. Constants are minimized to make this
+tractable — even small increases cause exponential blowup in temporal checking
+time. The session-based GC properties (`SessionValuesEventuallyFreed`,
+`SessionQueueEventuallyDrained`) verify end-to-end session lifecycle liveness.
 
 ### All Safety Invariants — Session-Based GC Extension
 
@@ -381,6 +397,18 @@ detection in the state graph. Results pending.
 | `ReleasedPagesAreEmpty` | HOLDS (complete) | HOLDS (complete) |
 | `ContextIdConsistency` | HOLDS (complete) | HOLDS (complete) |
 | `SessionGcExcludesQuiescentGc` | HOLDS (complete) | HOLDS (complete) |
+
+### All Liveness Properties — Session-Based GC Extension
+
+| Property | Minimal (2,1,1) | Result |
+|----------|-----------------|--------|
+| `AllThreadsComplete` | HOLDS (complete) | All threads eventually finish |
+| `GcEventuallyTriggered` | HOLDS (complete) | GC requests are eventually consumed |
+| `BackpressureEventuallyRelaxes` | HOLDS (complete) | Backpressure cannot permanently stall |
+| `AllDeadValuesEventuallyFreed` | HOLDS (complete) | Dead values eventually freed |
+| `EmptyPagesEventuallyReleased` | HOLDS (complete) | Empty pages eventually munmap'd |
+| `SessionValuesEventuallyFreed` | HOLDS (complete) | Non-root session values eventually freed |
+| `SessionQueueEventuallyDrained` | HOLDS (complete) | Pending session releases eventually processed |
 
 ---
 

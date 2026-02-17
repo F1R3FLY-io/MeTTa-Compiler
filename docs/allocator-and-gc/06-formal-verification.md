@@ -411,7 +411,7 @@ idle → WaitQuiescent (freeze batch) → AcquireFlag (CAS) → TraceAndRelease 
 
 #### Liveness (7 properties)
 
-- **Minimal** (MaxSlots=2, MaxRoots=1, MaxContextIds=2): Pending verification
+- **Minimal** (MaxSlots=2, MaxRoots=1, MaxContextIds=2): 473,678 distinct states, 16h 40min, all hold
 
 ## Model Checking Configuration
 

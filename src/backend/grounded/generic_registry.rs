@@ -37,7 +37,8 @@
 use std::collections::HashMap;
 
 use super::generic_arithmetic::{
-    AddOpGeneric, DivOpGeneric, ModOpGeneric, MulOpGeneric, SubOpGeneric,
+    AddOpGeneric, DivOpGeneric, MaxOpGeneric, MinOpGeneric, ModOpGeneric, MulOpGeneric,
+    SubOpGeneric,
 };
 use super::generic_comparison::{
     EqualOpGeneric, GreaterEqOpGeneric, GreaterOpGeneric, LessEqOpGeneric, LessOpGeneric,
@@ -86,6 +87,8 @@ where
         "*" => Some(MulOpGeneric.execute_step_generic(state, factory)),
         "/" => Some(DivOpGeneric.execute_step_generic(state, factory)),
         "%" => Some(ModOpGeneric.execute_step_generic(state, factory)),
+        "min" => Some(MinOpGeneric.execute_step_generic(state, factory)),
+        "max" => Some(MaxOpGeneric.execute_step_generic(state, factory)),
         // Comparison operations
         "<" => Some(LessOpGeneric.execute_step_generic(state, factory)),
         "<=" => Some(LessEqOpGeneric.execute_step_generic(state, factory)),
@@ -117,7 +120,7 @@ where
 pub fn has_generic_grounded_op(name: &str) -> bool {
     matches!(
         name,
-        "+" | "-" | "*" | "/" | "%" |
+        "+" | "-" | "*" | "/" | "%" | "min" | "max" |
         "<" | "<=" | ">" | ">=" | "==" | "!=" |
         "and" | "or" | "not"
     )
@@ -196,6 +199,8 @@ impl GenericGroundedRegistry {
         registry.register(Box::new(GenericOpWrapper(MulOpGeneric)));
         registry.register(Box::new(GenericOpWrapper(DivOpGeneric)));
         registry.register(Box::new(GenericOpWrapper(ModOpGeneric)));
+        registry.register(Box::new(GenericOpWrapper(MinOpGeneric)));
+        registry.register(Box::new(GenericOpWrapper(MaxOpGeneric)));
 
         // Comparison operations
         registry.register(Box::new(GenericOpWrapper(LessOpGeneric)));
@@ -302,6 +307,8 @@ mod tests {
         assert!(registry.contains("*"));
         assert!(registry.contains("/"));
         assert!(registry.contains("%"));
+        assert!(registry.contains("min"));
+        assert!(registry.contains("max"));
 
         // Check all comparison ops are registered
         assert!(registry.contains("<"));
@@ -316,8 +323,8 @@ mod tests {
         assert!(registry.contains("or"));
         assert!(registry.contains("not"));
 
-        // Total: 5 arithmetic + 6 comparison + 3 logical = 14 ops
-        assert_eq!(registry.len(), 14);
+        // Total: 7 arithmetic + 6 comparison + 3 logical = 16 ops
+        assert_eq!(registry.len(), 16);
     }
 
     #[test]
@@ -370,7 +377,7 @@ mod tests {
     #[test]
     fn test_get_generic_registry() {
         let registry = get_generic_registry();
-        assert_eq!(registry.len(), 14);
+        assert_eq!(registry.len(), 16);
 
         // Verify it's the same instance
         let registry2 = get_generic_registry();
@@ -401,6 +408,8 @@ mod tests {
         assert!(has_generic_grounded_op("*"));
         assert!(has_generic_grounded_op("/"));
         assert!(has_generic_grounded_op("%"));
+        assert!(has_generic_grounded_op("min"));
+        assert!(has_generic_grounded_op("max"));
 
         // Comparison ops
         assert!(has_generic_grounded_op("<"));

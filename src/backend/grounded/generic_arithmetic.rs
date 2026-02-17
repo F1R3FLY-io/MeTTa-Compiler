@@ -475,6 +475,164 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for ModOpGeneric
     }
 }
 
+/// Generic TCO Minimum operation: (min a b)
+pub struct MinOpGeneric;
+
+impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for MinOpGeneric {
+    fn name(&self) -> &str {
+        "min"
+    }
+
+    fn execute_step_generic<F: MettaValueFactory<V>>(
+        &self,
+        state: &mut GenericGroundedState<V>,
+        factory: &F,
+    ) -> GenericGroundedWork<V> {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GenericGroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "min requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                if let Some(err) = find_error_generic(a_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
+
+                if let Some(err) = find_error_generic(b_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+                            (Some(x), _, Some(y), _) => {
+                                // Long min Long → Long
+                                results.push((factory.long(x.min(y)), None));
+                            }
+                            (_, Some(x), _, Some(y)) => {
+                                // Float min Float → Float
+                                results.push((factory.float(x.min(y)), None));
+                            }
+                            (Some(x), _, _, Some(y)) => {
+                                // Long min Float → Float
+                                results.push((factory.float((x as f64).min(y)), None));
+                            }
+                            (_, Some(x), Some(y), _) => {
+                                // Float min Long → Float
+                                results.push((factory.float(x.min(y as f64)), None));
+                            }
+                            _ => {
+                                return GenericGroundedWork::Error(ExecError::NoReduce)
+                            }
+                        }
+                    }
+                }
+                GenericGroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for MinOpGeneric", state.step),
+        }
+    }
+}
+
+/// Generic TCO Maximum operation: (max a b)
+pub struct MaxOpGeneric;
+
+impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for MaxOpGeneric {
+    fn name(&self) -> &str {
+        "max"
+    }
+
+    fn execute_step_generic<F: MettaValueFactory<V>>(
+        &self,
+        state: &mut GenericGroundedState<V>,
+        factory: &F,
+    ) -> GenericGroundedWork<V> {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GenericGroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "max requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                if let Some(err) = find_error_generic(a_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
+
+                if let Some(err) = find_error_generic(b_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+                            (Some(x), _, Some(y), _) => {
+                                // Long max Long → Long
+                                results.push((factory.long(x.max(y)), None));
+                            }
+                            (_, Some(x), _, Some(y)) => {
+                                // Float max Float → Float
+                                results.push((factory.float(x.max(y)), None));
+                            }
+                            (Some(x), _, _, Some(y)) => {
+                                // Long max Float → Float
+                                results.push((factory.float((x as f64).max(y)), None));
+                            }
+                            (_, Some(x), Some(y), _) => {
+                                // Float max Long → Float
+                                results.push((factory.float(x.max(y as f64)), None));
+                            }
+                            _ => {
+                                return GenericGroundedWork::Error(ExecError::NoReduce)
+                            }
+                        }
+                    }
+                }
+                GenericGroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for MaxOpGeneric", state.step),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,5 +931,201 @@ mod tests {
             matches!(work, GenericGroundedWork::Error(ExecError::Arithmetic(_))),
             "Float modulo by zero should produce an Arithmetic error"
         );
+    }
+
+    // --- Min operation tests ---
+
+    #[test]
+    fn test_min_op_generic_longs() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("min".to_string(), vec![MettaValue::Long(10), MettaValue::Long(3)]);
+        let op = MinOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Long(10)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Long(3)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_long(), Some(3));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_min_op_generic_floats() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("min".to_string(), vec![MettaValue::Float(1.5), MettaValue::Float(2.5)]);
+        let op = MinOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(1.5)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Float(2.5)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(1.5));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_min_op_generic_long_float() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("min".to_string(), vec![MettaValue::Long(10), MettaValue::Float(3.5)]);
+        let op = MinOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Long(10)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Float(3.5)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(3.5));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_min_op_generic_float_long() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("min".to_string(), vec![MettaValue::Float(2.5), MettaValue::Long(10)]);
+        let op = MinOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(2.5)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Long(10)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(2.5));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    // --- Max operation tests ---
+
+    #[test]
+    fn test_max_op_generic_longs() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("max".to_string(), vec![MettaValue::Long(10), MettaValue::Long(3)]);
+        let op = MaxOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Long(10)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Long(3)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_long(), Some(10));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_max_op_generic_floats() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("max".to_string(), vec![MettaValue::Float(1.5), MettaValue::Float(2.5)]);
+        let op = MaxOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(1.5)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Float(2.5)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(2.5));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_max_op_generic_long_float() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("max".to_string(), vec![MettaValue::Long(3), MettaValue::Float(10.5)]);
+        let op = MaxOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Long(3)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Float(10.5)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(10.5));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_max_op_generic_float_long() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("max".to_string(), vec![MettaValue::Float(10.5), MettaValue::Long(3)]);
+        let op = MaxOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(10.5)]);
+        state.step = 1;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Long(3)]);
+        state.step = 2;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(10.5));
+            }
+            _ => panic!("Expected Done"),
+        }
     }
 }

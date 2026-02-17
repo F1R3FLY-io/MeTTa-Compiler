@@ -18,7 +18,7 @@ use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 /// Uses compile-time perfect hash for O(1) lookup.
 static GROUNDED_OPS: phf::Set<&'static str> = phf_set! {
     // Basic arithmetic
-    "+", "-", "*", "/", "%",
+    "+", "-", "*", "/", "%", "min", "max",
     // Math functions (short names)
     "pow", "abs", "floor", "ceil", "round", "sqrt",
     // Math functions (full names from try_eval_builtin)

@@ -22,7 +22,9 @@ use std::fmt::Debug;
 
 use crate::backend::environment::MettaEnvironment;
 use crate::backend::grounded::GenericGroundedState;
-use crate::backend::models::{GenericBindings, MemoHandle, MettaValueTrait, SpaceHandle};
+use crate::backend::models::{GenericBindings, MemoHandle, MettaValueTrait};
+// SpaceHandle was previously used by ProcessAddAtomAtom and ProcessRemoveAtomAtom,
+// which are now disabled (see comments on those variants below).
 
 // Import generic Cartesian product iterator
 use super::super::processing::GenericCartesianProductIter;
@@ -411,14 +413,16 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         parent_cont: usize,
     },
 
-    /// Processing add-atom atom
-    ProcessAddAtomAtom {
-        space_handle: SpaceHandle,
-        atom: V,
-        env: E,
-        depth: usize,
-        parent_cont: usize,
-    },
+    // Disabled: ProcessAddAtomAtom is no longer constructed. The atom evaluation
+    // step has been eliminated — add-atom now takes unevaluated atoms per MeTTa HE
+    // semantics. Rule table and type system are updated directly in ProcessAddAtomSpace.
+    // ProcessAddAtomAtom {
+    //     space_handle: SpaceHandle,
+    //     atom: V,
+    //     env: E,
+    //     depth: usize,
+    //     parent_cont: usize,
+    // },
 
     /// Processing remove-atom space
     ProcessRemoveAtomSpace {
@@ -429,14 +433,16 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         parent_cont: usize,
     },
 
-    /// Processing remove-atom atom
-    ProcessRemoveAtomAtom {
-        space_handle: SpaceHandle,
-        atom: V,
-        env: E,
-        depth: usize,
-        parent_cont: usize,
-    },
+    // Disabled: ProcessRemoveAtomAtom is no longer constructed. The atom evaluation
+    // step has been eliminated — remove-atom now takes unevaluated atoms per MeTTa HE
+    // semantics. Rule table and type system are updated directly in ProcessRemoveAtomSpace.
+    // ProcessRemoveAtomAtom {
+    //     space_handle: SpaceHandle,
+    //     atom: V,
+    //     env: E,
+    //     depth: usize,
+    //     parent_cont: usize,
+    // },
 
     /// Processing new-state
     ProcessNewState {

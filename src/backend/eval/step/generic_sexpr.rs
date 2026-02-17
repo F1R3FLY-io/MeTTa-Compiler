@@ -1317,12 +1317,13 @@ where
             }
 
             // Module operations - use generic implementations directly (zero-conversion)
+            // Passes full ctx (not just factory) so import/include can force-eval `!` expressions
             "include" => {
-                let (results, new_env) = eval_include_generic(items, env, ctx.factory());
+                let (results, new_env) = eval_include_generic(items, env, ctx);
                 return GenericEvalStep::Done((results, new_env));
             }
             "import!" => {
-                let (results, new_env) = eval_import_generic(items, env, ctx.factory());
+                let (results, new_env) = eval_import_generic(items, env, ctx);
                 return GenericEvalStep::Done((results, new_env));
             }
             "mod-space!" => {

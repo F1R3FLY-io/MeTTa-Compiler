@@ -3382,17 +3382,9 @@ fn process_continuation_generic<C: EvalContext>(
                             result: (generic_results, env_after),
                         });
                     } else {
-                        // Owned space - match against atoms in SpaceHandle
-                        // GENERIC: Use collapse_generic and pattern_match_generic to avoid heap conversions
-                        let atoms: Vec<C::Value> = handle.collapse_generic(ctx.factory());
-                        let mut instantiated_templates: Vec<C::Value> = Vec::new();
-
-                        for atom in &atoms {
-                            if let Some(bindings) = pattern_match_generic(&pattern, atom) {
-                                let instantiated = apply_bindings_generic(&template, &bindings, ctx.factory());
-                                instantiated_templates.push(instantiated);
-                            }
-                        }
+                        // Owned space - match against atoms in SpaceHandle via unified match_pattern_generic
+                        let instantiated_templates: Vec<C::Value> =
+                            handle.match_pattern_generic(&pattern, &template, ctx.factory());
 
                         if instantiated_templates.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
@@ -3490,10 +3482,10 @@ fn process_continuation_generic<C: EvalContext>(
             space_ref,
             atom,
             env: _,
-            depth,
+            depth: _,
             parent_cont,
         } => {
-            let (space_results, env_after) = result;
+            let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
                 let err = ctx.factory().error(
@@ -3507,21 +3499,27 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 let first = &space_results[0];
                 if let Some(handle) = first.as_space() {
-                    let add_atom_cont_id = continuations.len();
-                    continuations.push(GenericContinuation::ProcessAddAtomAtom {
-                        space_handle: handle.clone(),
-                        atom: atom.clone(),
-                        env: env_after.clone(),
-                        depth,
-                        parent_cont,
-                    });
+                    // MeTTa HE semantics: add the UNEVALUATED atom to the space.
+                    // The atom is NOT evaluated — per HE docs: "Adds atom into the
+                    // atomspace without reducing it".
+                    let is_self_space = handle.is_module_space() || handle.name == "self";
 
-                    work_stack.push(GenericWorkItem::Eval {
-                        value: atom,
-                        env: env_after,
-                        depth: depth + 1,
-                        cont_id: add_atom_cont_id,
-                        is_tail_call: false,
+                    if is_self_space {
+                        // &self space: add directly to environment's PathMap/RuleIndex.
+                        // match &self and get-atoms query env.match_space() / env.get_all_atoms(),
+                        // NOT the SpaceHandle, so atoms must live in the environment.
+                        // add_to_space() handles routing: rules → add_rule() (PathMap + RuleIndex),
+                        // type assertions → types HashMap, all atoms → PathMap.
+                        env_after.add_to_space(&atom);
+                    } else {
+                        // Named space: add to SpaceHandle (match queries SpaceHandle
+                        // for non-&self spaces via handle.collapse_generic()).
+                        handle.add_atom_generic(&atom);
+                    }
+
+                    work_stack.push(GenericWorkItem::Resume {
+                        cont_id: parent_cont,
+                        result: (vec![ctx.factory().unit()], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -3539,42 +3537,45 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessAddAtomAtom {
-            space_handle,
-            atom,
-            env: _,
-            depth: _,
-            parent_cont,
-        } => {
-            let (atom_results, env_after) = result;
-
-            if atom_results.is_empty() {
-                let err = ctx.factory().error(
-                    "add-atom: atom evaluated to empty",
-                    atom,
-                );
-                work_stack.push(GenericWorkItem::Resume {
-                    cont_id: parent_cont,
-                    result: (vec![err], env_after),
-                });
-            } else {
-                // GENERIC: Use add_atom_generic to avoid heap conversion
-                space_handle.add_atom_generic(&atom_results[0]);
-                work_stack.push(GenericWorkItem::Resume {
-                    cont_id: parent_cont,
-                    result: (vec![ctx.factory().unit()], env_after),
-                });
-            }
-        }
+        // Disabled: ProcessAddAtomAtom is no longer constructed. The atom evaluation
+        // step has been eliminated — add-atom now takes unevaluated atoms per MeTTa HE
+        // semantics. See ProcessAddAtomSpace above.
+        // GenericContinuation::ProcessAddAtomAtom {
+        //     space_handle,
+        //     atom,
+        //     env: _,
+        //     depth: _,
+        //     parent_cont,
+        // } => {
+        //     let (atom_results, env_after) = result;
+        //
+        //     if atom_results.is_empty() {
+        //         let err = ctx.factory().error(
+        //             "add-atom: atom evaluated to empty",
+        //             atom,
+        //         );
+        //         work_stack.push(GenericWorkItem::Resume {
+        //             cont_id: parent_cont,
+        //             result: (vec![err], env_after),
+        //         });
+        //     } else {
+        //         // GENERIC: Use add_atom_generic to avoid heap conversion
+        //         space_handle.add_atom_generic(&atom_results[0]);
+        //         work_stack.push(GenericWorkItem::Resume {
+        //             cont_id: parent_cont,
+        //             result: (vec![ctx.factory().unit()], env_after),
+        //         });
+        //     }
+        // }
 
         GenericContinuation::ProcessRemoveAtomSpace {
             space_ref,
             atom,
             env: _,
-            depth,
+            depth: _,
             parent_cont,
         } => {
-            let (space_results, env_after) = result;
+            let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
                 let err = ctx.factory().error(
@@ -3588,21 +3589,25 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 let first = &space_results[0];
                 if let Some(handle) = first.as_space() {
-                    let remove_atom_cont_id = continuations.len();
-                    continuations.push(GenericContinuation::ProcessRemoveAtomAtom {
-                        space_handle: handle.clone(),
-                        atom: atom.clone(),
-                        env: env_after.clone(),
-                        depth,
-                        parent_cont,
-                    });
+                    // MeTTa HE semantics: remove the UNEVALUATED atom from the space.
+                    // The atom is NOT evaluated — mirrors add-atom behavior.
+                    let is_self_space = handle.is_module_space() || handle.name == "self";
 
-                    work_stack.push(GenericWorkItem::Eval {
-                        value: atom,
-                        env: env_after,
-                        depth: depth + 1,
-                        cont_id: remove_atom_cont_id,
-                        is_tail_call: false,
+                    if is_self_space {
+                        // &self space: remove from environment's PathMap/RuleIndex.
+                        // Mirrors the add-atom routing: match &self queries the
+                        // environment, so removals must target the environment.
+                        // remove_from_space() handles routing: rules → De Bruijn removal
+                        // + RuleIndex sync, type assertions → types HashMap, all atoms → PathMap.
+                        env_after.remove_from_space(&atom);
+                    } else {
+                        // Named space: remove from SpaceHandle
+                        handle.remove_atom_generic(&atom);
+                    }
+
+                    work_stack.push(GenericWorkItem::Resume {
+                        cont_id: parent_cont,
+                        result: (vec![ctx.factory().unit()], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -3620,35 +3625,38 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessRemoveAtomAtom {
-            space_handle,
-            atom,
-            env: _,
-            depth: _,
-            parent_cont,
-        } => {
-            let (atom_results, env_after) = result;
-
-            if atom_results.is_empty() {
-                let err = ctx.factory().error(
-                    "remove-atom: atom evaluated to empty",
-                    atom,
-                );
-                work_stack.push(GenericWorkItem::Resume {
-                    cont_id: parent_cont,
-                    result: (vec![err], env_after),
-                });
-            } else {
-                // Remove the atom from the space
-                // NOTE: Arena engine returns Unit() regardless of whether removal succeeded
-                // GENERIC: Use remove_atom_generic to avoid heap conversion
-                space_handle.remove_atom_generic(&atom_results[0]);
-                work_stack.push(GenericWorkItem::Resume {
-                    cont_id: parent_cont,
-                    result: (vec![ctx.factory().unit()], env_after),
-                });
-            }
-        }
+        // Disabled: ProcessRemoveAtomAtom is no longer constructed. The atom evaluation
+        // step has been eliminated — remove-atom now takes unevaluated atoms per MeTTa HE
+        // semantics. See ProcessRemoveAtomSpace above.
+        // GenericContinuation::ProcessRemoveAtomAtom {
+        //     space_handle,
+        //     atom,
+        //     env: _,
+        //     depth: _,
+        //     parent_cont,
+        // } => {
+        //     let (atom_results, env_after) = result;
+        //
+        //     if atom_results.is_empty() {
+        //         let err = ctx.factory().error(
+        //             "remove-atom: atom evaluated to empty",
+        //             atom,
+        //         );
+        //         work_stack.push(GenericWorkItem::Resume {
+        //             cont_id: parent_cont,
+        //             result: (vec![err], env_after),
+        //         });
+        //     } else {
+        //         // Remove the atom from the space
+        //         // NOTE: Arena engine returns Unit() regardless of whether removal succeeded
+        //         // GENERIC: Use remove_atom_generic to avoid heap conversion
+        //         space_handle.remove_atom_generic(&atom_results[0]);
+        //         work_stack.push(GenericWorkItem::Resume {
+        //             cont_id: parent_cont,
+        //             result: (vec![ctx.factory().unit()], env_after),
+        //         });
+        //     }
+        // }
 
         GenericContinuation::ProcessNewState {
             initial_value,

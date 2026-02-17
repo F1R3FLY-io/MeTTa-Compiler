@@ -24,6 +24,7 @@
 //! - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>` (O(1) Arc clone)
 //! - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>` (slab-allocated)
 
+pub(crate) mod atom_space;
 mod bloom;
 mod fact_storage;
 pub(crate) mod generic;

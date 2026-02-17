@@ -599,24 +599,32 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
     let mut bindings = Bindings::new();
     let mut conversion_errors: Vec<String> = Vec::new();
 
-    for (&(old_var, _new_var), expr_env) in mork_bindings {
-        // Get the variable name from context
-        if (old_var as usize) >= ctx.var_names.len() {
+    for (&(namespace, var_index), expr_env) in mork_bindings {
+        // MORK ExprVar = (namespace, var_index):
+        //   namespace 0 = pattern-side bindings (what we want)
+        //   namespace 1+ = stored-atom-side bindings (for future bidirectional matching)
+        // Only process pattern-side bindings (namespace 0) for now.
+        if namespace != 0 {
+            continue;
+        }
+
+        // Get the variable name from context using var_index (NOT namespace)
+        if (var_index as usize) >= ctx.var_names.len() {
             warn!(
                 target: "mettatron::conversion::mork_bindings_to_metta",
-                old_var, max_vars = ctx.var_names.len(),
+                var_index, max_vars = ctx.var_names.len(),
                 "Variable index exceeds known variables - internal inconsistency detected"
             );
 
             // Variable index out of bounds - this indicates an internal inconsistency
             conversion_errors.push(format!(
                 "Variable index {} exceeds known variables (max: {})",
-                old_var,
+                var_index,
                 ctx.var_names.len().saturating_sub(1)
             ));
             continue;
         }
-        let var_name = &ctx.var_names[old_var as usize];
+        let var_name = &ctx.var_names[var_index as usize];
 
         // Convert MORK Expr directly to MettaValue
         // FIXED: Use mork_expr_to_metta_value() instead of serialize2()

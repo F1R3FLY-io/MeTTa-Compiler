@@ -1674,7 +1674,7 @@ mod thread_safety {
         let mut env = MettaEnvironment::default();
 
         // Check initial atom count
-        let initial_atoms = env.shared.total_atoms.load(Ordering::Relaxed);
+        let initial_atoms = env.shared.atom_space.total_atoms.load(Ordering::Relaxed);
         assert_eq!(initial_atoms, 0, "New environment should have 0 atoms");
 
         // Add a rule via add_to_space
@@ -1696,7 +1696,7 @@ mod thread_safety {
 
         // Verify the atom was added (total atoms should increase)
         // We can access internals since shared is pub(crate)
-        let final_atoms = env.shared.total_atoms.load(Ordering::Relaxed);
+        let final_atoms = env.shared.atom_space.total_atoms.load(Ordering::Relaxed);
         assert_eq!(final_atoms, 1, "After add_to_space, total_atoms should be 1");
     }
 

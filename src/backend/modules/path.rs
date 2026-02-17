@@ -54,17 +54,65 @@ pub fn resolve_module_path(path: &str, current_dir: Option<&Path>) -> PathBuf {
         };
         PathBuf::from(absolute_with_ext)
     } else {
-        // Bare name: treat as self:name
+        // Bare name: search multiple locations
         let relative = path.replace(':', "/");
-        let relative_with_ext = if relative.ends_with(".metta") {
-            relative
+        let name_with_ext = if relative.ends_with(".metta") {
+            relative.clone()
         } else {
             format!("{}.metta", relative)
         };
+
+        // 1. {current_dir}/{name}.metta (original behavior)
         if let Some(dir) = current_dir {
-            dir.join(relative_with_ext)
+            let candidate = dir.join(&name_with_ext);
+            if candidate.exists() {
+                return candidate;
+            }
+
+            // 2. {current_dir}/{name}/{name}.metta (directory-based module)
+            let dir_candidate = dir.join(&relative).join(&name_with_ext);
+            if dir_candidate.exists() {
+                return dir_candidate;
+            }
+
+            // 3. Walk up parent directories
+            let mut ancestor = dir.parent();
+            while let Some(parent) = ancestor {
+                let candidate = parent.join(&name_with_ext);
+                if candidate.exists() {
+                    return candidate;
+                }
+                // Also check directory-based module in parent
+                let dir_candidate = parent.join(&relative).join(&name_with_ext);
+                if dir_candidate.exists() {
+                    return dir_candidate;
+                }
+                ancestor = parent.parent();
+            }
+        }
+
+        // 4. Search METTA_MODULE_PATH directories
+        if let Ok(module_path) = std::env::var("METTA_MODULE_PATH") {
+            for search_dir in module_path.split(':') {
+                let search_path = Path::new(search_dir);
+                let candidate = search_path.join(&name_with_ext);
+                if candidate.exists() {
+                    return candidate;
+                }
+                // Also check directory-based module
+                let dir_candidate = search_path.join(&relative).join(&name_with_ext);
+                if dir_candidate.exists() {
+                    return dir_candidate;
+                }
+            }
+        }
+
+        // Fallback: return the original {current_dir}/{name}.metta path
+        // (will produce a clear "file not found" error)
+        if let Some(dir) = current_dir {
+            dir.join(name_with_ext)
         } else {
-            PathBuf::from(relative_with_ext)
+            PathBuf::from(name_with_ext)
         }
     }
 }

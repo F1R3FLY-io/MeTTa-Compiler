@@ -12,18 +12,17 @@
 //!
 //! ## Operations
 //!
-//! - `eval_include_generic`: Load and evaluate a MeTTa file
-//! - `eval_import_generic`: Import a module into scope
+//! - `eval_include_generic`: Load and evaluate a MeTTa file (force-evals `!` expressions)
+//! - `eval_import_generic`: Import a module into scope (force-evals `!` expressions)
 //! - `eval_mod_space_generic`: Module space operations
 //! - `eval_print_mods_generic`: Print loaded modules
 
+use std::hash::{Hash, Hasher};
+
 use crate::backend::compile::compile_generic;
-use crate::backend::environment::GenericEnvironment;
+use crate::backend::eval::trampoline::{eval_trampoline_generic, ContextEnv, EvalContext};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::resolve_module_path;
-
-/// Generic result type for module operations
-pub type GenericModuleResult<V, F> = (Vec<V>, GenericEnvironment<V, F>);
 
 // ============================================================================
 // Generic Module Operations
@@ -32,15 +31,18 @@ pub type GenericModuleResult<V, F> = (Vec<V>, GenericEnvironment<V, F>);
 /// Generic eval_include: Load and evaluate a MeTTa file
 ///
 /// Zero-conversion implementation that works with any value type.
-pub fn eval_include_generic<V, F>(
-    items: Vec<V>,
-    mut env: GenericEnvironment<V, F>,
-    factory: &F,
-) -> GenericModuleResult<V, F>
+/// Evaluates `!`-prefixed expressions (force-eval) encountered in the file,
+/// enabling transitive imports and runtime operations in included modules.
+pub fn eval_include_generic<C: EvalContext>(
+    items: Vec<C::Value>,
+    mut env: ContextEnv<C>,
+    ctx: &C,
+) -> (Vec<C::Value>, ContextEnv<C>)
 where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
+    C::Value: Clone,
 {
+    let factory = ctx.factory();
+
     if items.len() < 2 {
         let err = factory.error(
             "include requires 1 argument: (include path)",
@@ -67,10 +69,24 @@ where
     // Resolve path using module path notation
     let resolved_path = resolve_module_path(&path_str, env.current_module_dir());
 
+    // Cycle detection: hash the resolved path
+    let content_hash = {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        resolved_path.hash(&mut hasher);
+        hasher.finish()
+    };
+
+    if env.is_module_loading(content_hash) {
+        // Cycle detected — return unit silently (HE-compatible: no error)
+        return (vec![factory.unit()], env);
+    }
+    env.mark_module_loading(content_hash);
+
     // Read the file contents
     let contents = match std::fs::read_to_string(&resolved_path) {
         Ok(c) => c,
         Err(e) => {
+            env.unmark_module_loading(content_hash);
             let err = factory.error(
                 &format!(
                     "include: failed to read file '{}': {}",
@@ -84,9 +100,10 @@ where
     };
 
     // Compile the file contents using generic compile
-    let expressions: Vec<V> = match compile_generic(&contents, factory) {
+    let expressions: Vec<C::Value> = match compile_generic(&contents, factory) {
         Ok(exprs) => exprs,
         Err(e) => {
+            env.unmark_module_loading(content_hash);
             let err = factory.error(
                 &format!(
                     "include: failed to parse file '{}': {}",
@@ -99,12 +116,31 @@ where
         }
     };
 
-    // Process expressions: extract rules and evaluate
+    // Save current module dir and set to the included file's directory
+    let prev_module_dir = env.current_module_dir().map(|p| p.to_path_buf());
+    if let Some(parent) = resolved_path.parent() {
+        env.set_current_module_path(Some(parent.to_path_buf()));
+    }
+
+    // Process expressions: extract rules, evaluate force-eval expressions
     let mut last_result = factory.unit();
 
     for expr in expressions {
-        // Check if it's a rule definition (= pattern body) using trait methods
         if let Some(sexpr_items) = expr.as_sexpr() {
+            // Force-eval: (! inner) → evaluate inner via trampoline
+            if sexpr_items.len() == 2 {
+                if let Some("!") = sexpr_items[0].as_atom() {
+                    let inner = sexpr_items[1].clone();
+                    let (results, new_env) = eval_trampoline_generic(inner, env, ctx);
+                    env = new_env;
+                    if let Some(r) = results.into_iter().last() {
+                        last_result = r;
+                    }
+                    continue;
+                }
+            }
+
+            // Rule definition: (= pattern body)
             if sexpr_items.len() == 3 {
                 if let Some(op) = sexpr_items[0].as_atom() {
                     if op == "=" {
@@ -128,51 +164,159 @@ where
         last_result = expr;
     }
 
+    // Restore previous module dir and unmark loading
+    env.set_current_module_path(prev_module_dir);
+    env.unmark_module_loading(content_hash);
+
     (vec![last_result], env)
 }
 
 /// Generic eval_import: Import a module into scope
 ///
-/// Zero-conversion implementation that works with any value type.
-pub fn eval_import_generic<V, F>(
-    items: Vec<V>,
-    env: GenericEnvironment<V, F>,
-    factory: &F,
-) -> GenericModuleResult<V, F>
+/// MeTTa HE syntax: `(import! space-ref module-path)` or `(import! module-path)`
+///
+/// - 3 items: `[import!, &self, PLN]` → space ref ignored, module-path = items[2]
+/// - 2 items: `[import!, PLN]` → module-path = items[1]
+///
+/// Loads the module file, adds all rules/types/atoms to the current environment,
+/// evaluates `!`-prefixed expressions (enabling transitive imports),
+/// and returns `()` (unit).
+pub fn eval_import_generic<C: EvalContext>(
+    items: Vec<C::Value>,
+    mut env: ContextEnv<C>,
+    ctx: &C,
+) -> (Vec<C::Value>, ContextEnv<C>)
 where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Clone,
+    C::Value: Clone,
 {
+    let factory = ctx.factory();
+
     if items.len() < 2 {
         let err = factory.error(
-            "import! requires 1 argument: (import! module-path)",
+            "import! requires at least 1 argument: (import! [space] module-path)",
             factory.sexpr(items),
         );
         return (vec![err], env);
     }
 
-    // For now, import! is similar to include
-    // In a full implementation, it would handle module namespacing
-    let path_arg = &items[1];
+    // Parse arguments: (import! &self PLN) or (import! PLN)
+    let path_arg = if items.len() >= 3 {
+        // 3-arg form: items[1] is space ref (ignored), items[2] is module path
+        &items[2]
+    } else {
+        // 2-arg form: items[1] is module path
+        &items[1]
+    };
+
     let path_str = if let Some(s) = path_arg.as_string() {
         s.to_string()
     } else if let Some(s) = path_arg.as_atom() {
         s.to_string()
     } else {
         let err = factory.error(
-            "import!: expected string or symbol path",
+            "import!: expected string or symbol for module path",
             path_arg.clone(),
         );
         return (vec![err], env);
     };
 
-    // Return a placeholder indicating the import
-    let result = factory.sexpr(vec![
-        factory.atom("imported"),
-        factory.atom(&path_str),
-    ]);
+    // Resolve module path
+    let resolved_path = resolve_module_path(&path_str, env.current_module_dir());
 
-    (vec![result], env)
+    // Cycle detection: hash the resolved path
+    let content_hash = {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        resolved_path.hash(&mut hasher);
+        hasher.finish()
+    };
+
+    if env.is_module_loading(content_hash) {
+        // Cycle detected — return unit silently (HE-compatible: no error)
+        return (vec![factory.unit()], env);
+    }
+    env.mark_module_loading(content_hash);
+
+    // Read the file contents
+    let contents = match std::fs::read_to_string(&resolved_path) {
+        Ok(c) => c,
+        Err(e) => {
+            env.unmark_module_loading(content_hash);
+            let err = factory.error(
+                &format!(
+                    "import!: failed to read file '{}': {}",
+                    resolved_path.display(),
+                    e
+                ),
+                factory.atom(&path_str),
+            );
+            return (vec![err], env);
+        }
+    };
+
+    // Save current module dir and set it to the imported file's directory
+    let prev_module_dir = env.current_module_dir().map(|p| p.to_path_buf());
+    if let Some(parent) = resolved_path.parent() {
+        env.set_current_module_path(Some(parent.to_path_buf()));
+    }
+
+    // Compile the file contents
+    let expressions: Vec<C::Value> = match compile_generic(&contents, factory) {
+        Ok(exprs) => exprs,
+        Err(e) => {
+            // Restore module dir and unmark before returning
+            env.set_current_module_path(prev_module_dir);
+            env.unmark_module_loading(content_hash);
+            let err = factory.error(
+                &format!(
+                    "import!: failed to parse file '{}': {}",
+                    resolved_path.display(),
+                    e
+                ),
+                factory.atom(&path_str),
+            );
+            return (vec![err], env);
+        }
+    };
+
+    // Process expressions: extract rules, type declarations, evaluate force-eval
+    for expr in expressions {
+        if let Some(sexpr_items) = expr.as_sexpr() {
+            // Force-eval: (! inner) → evaluate inner via trampoline
+            if sexpr_items.len() == 2 {
+                if let Some("!") = sexpr_items[0].as_atom() {
+                    let inner = sexpr_items[1].clone();
+                    let (_results, new_env) = eval_trampoline_generic(inner, env, ctx);
+                    env = new_env;
+                    continue;
+                }
+            }
+
+            // Rule/type extraction
+            if sexpr_items.len() == 3 {
+                if let Some(op) = sexpr_items[0].as_atom() {
+                    if op == "=" {
+                        env.add_rule(sexpr_items[1].clone(), sexpr_items[2].clone());
+                        continue;
+                    }
+                    if op == ":" {
+                        if let Some(name) = sexpr_items[1].as_atom() {
+                            env.add_type_generic(name, sexpr_items[2].clone());
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // For other expressions, add to space as facts (queryable via `match &self`)
+        env.add_to_space(&expr);
+    }
+
+    // Restore previous module dir and unmark loading
+    env.set_current_module_path(prev_module_dir);
+    env.unmark_module_loading(content_hash);
+
+    (vec![factory.unit()], env)
 }
 
 /// Generic eval_mod_space: Module space operations
@@ -180,9 +324,9 @@ where
 /// Zero-conversion implementation that works with any value type.
 pub fn eval_mod_space_generic<V, F>(
     items: Vec<V>,
-    env: GenericEnvironment<V, F>,
+    env: ContextEnv2<V, F>,
     factory: &F,
-) -> GenericModuleResult<V, F>
+) -> (Vec<V>, ContextEnv2<V, F>)
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
@@ -220,9 +364,9 @@ where
 /// Zero-conversion implementation that works with any value type.
 pub fn eval_print_mods_generic<V, F>(
     _items: Vec<V>,
-    env: GenericEnvironment<V, F>,
+    env: ContextEnv2<V, F>,
     factory: &F,
-) -> GenericModuleResult<V, F>
+) -> (Vec<V>, ContextEnv2<V, F>)
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
@@ -236,19 +380,24 @@ where
     (vec![result], env)
 }
 
+/// Type alias for non-context module operations (mod-space!, print-mods!)
+/// that don't need force-eval and still use the old V, F generic parameters.
+type ContextEnv2<V, F> = crate::backend::environment::GenericEnvironment<V, F>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::environment::MettaEnvironment;
+    use crate::backend::eval::trampoline::StaticEvalContext;
     use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_eval_include_generic_missing_args() {
         let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let ctx = StaticEvalContext::get();
 
         let items = vec![MettaValue::Atom("include".to_string())];
-        let (results, _) = eval_include_generic(items, env, &factory);
+        let (results, _) = eval_include_generic(items, env, &ctx);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].as_error().is_some());
@@ -257,10 +406,10 @@ mod tests {
     #[test]
     fn test_eval_import_generic_missing_args() {
         let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let ctx = StaticEvalContext::get();
 
         let items = vec![MettaValue::Atom("import!".to_string())];
-        let (results, _) = eval_import_generic(items, env, &factory);
+        let (results, _) = eval_import_generic(items, env, &ctx);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].as_error().is_some());

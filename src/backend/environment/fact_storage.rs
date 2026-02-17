@@ -215,7 +215,7 @@ impl MettaEnvironment {
 
         // Clear existing bloom filter
         self.shared
-            .head_arity_bloom
+            .atom_space.head_arity_bloom
             .write()
                         .clear();
 
@@ -231,7 +231,7 @@ impl MettaEnvironment {
                 if let Some(head) = MettaValueTrait::get_head_symbol(&metta_value) {
                     let arity = MettaValueTrait::get_arity(&metta_value) as u8;
                     self.shared
-                        .head_arity_bloom
+                        .atom_space.head_arity_bloom
                         .write()
                                                 .insert(head.as_bytes(), arity);
                 }
@@ -276,7 +276,7 @@ impl MettaEnvironment {
         // Single lock acquisition → union → unlock
         // This is the only critical section, minimizing lock contention
         {
-            let mut btm = self.shared.btm.write();
+            let mut btm = self.shared.atom_space.btm.write();
             *btm = btm.join(&fact_trie);
         }
 
@@ -298,7 +298,7 @@ impl MettaEnvironment {
         &self,
     ) -> parking_lot::RwLockReadGuard<'_, Option<PathMap<MettaValue>>> {
         // parking_lot::RwLock - no .expect()
-        self.shared.large_expr_pathmap.read()
+        self.shared.atom_space.large_expr_pathmap.read()
     }
 
     /// Insert a value into the large expressions fallback PathMap
@@ -307,7 +307,7 @@ impl MettaEnvironment {
     pub fn insert_large_expr(&self, value: MettaValue) {
         let key = metta_to_varint_key(&value);
         // parking_lot::RwLock - no .expect()
-        let mut guard = self.shared.large_expr_pathmap.write();
+        let mut guard = self.shared.atom_space.large_expr_pathmap.write();
         let fallback = guard.get_or_insert_with(PathMap::new);
         fallback.insert(&key, value);
     }

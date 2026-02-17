@@ -57,6 +57,30 @@ pub fn has_variables_generic<V: MettaValueTrait>(value: &V) -> bool {
     false
 }
 
+/// Check if a value contains `$`-prefixed pattern variables.
+///
+/// This is more targeted than `has_variables_generic` which also checks
+/// `&` and `'` prefixes. For MORK routing, only `$`-prefixed variables
+/// matter because `&self`, `&kb`, `'x` etc. are concrete in MORK encoding
+/// and can be found by trie search.
+///
+/// Used by AtomSpace to route atoms to PathMap (ground) vs variable_atoms Vec.
+pub fn has_pattern_variables<V: MettaValueTrait>(value: &V) -> bool {
+    if let Some(name) = value.as_atom() {
+        return name.starts_with('$');
+    }
+    if let Some(items) = value.as_sexpr() {
+        return items.iter().any(has_pattern_variables);
+    }
+    if let Some(goals) = value.as_conjunction() {
+        return goals.iter().any(has_pattern_variables);
+    }
+    if let Some((_, details)) = value.as_error() {
+        return has_pattern_variables(details);
+    }
+    false
+}
+
 /// Check if a generic value is an exec form: (exec ...)
 pub fn is_exec_form_generic<V: MettaValueTrait>(value: &V) -> bool {
     if let Some(items) = value.as_sexpr() {

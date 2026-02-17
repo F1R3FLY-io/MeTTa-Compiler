@@ -42,6 +42,7 @@ use super::gc_allocator::GcFactory;
 use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::MettaValue;
 
+use crate::backend::environment::atom_space::AtomSpace;
 use crate::backend::environment::multiplicity::{self, Multiplicity};
 use crate::backend::environment::mork_encoding;
 use crate::backend::environment::MultiplicityMatch;
@@ -71,18 +72,15 @@ impl<V> GenericMultiplicityMatch<V> {
 /// The backing store for a SpaceHandle.
 ///
 /// This enum allows SpaceHandle to work with both:
-/// - Standalone spaces (from `new-space`) with PathMap-based CoW
+/// - Standalone spaces (from `new-space`) with AtomSpace-based storage (MORK + Bloom + variable atoms)
 /// - Module spaces (from `mod-space!`) with live references
 #[derive(Clone)]
 pub enum SpaceBacking {
-    /// Owned space data (for new-space) using PathMap for O(1) CoW fork
+    /// Owned space data (for new-space) backed by AtomSpace.
+    /// AtomSpace provides: PathMap (ground atoms), Bloom filter (O(1) rejection),
+    /// variable atoms Vec, and O(1) CoW fork via PathMap structural sharing.
     Owned {
-        /// Atoms stored as MORK bytes with multiplicity tracking.
-        /// PathMap::clone() provides O(1) CoW structural sharing.
-        atoms: Arc<RwLock<PathMap<Multiplicity>>>,
-        /// SharedMappingHandle for MORK symbol interning.
-        /// Each SpaceHandle has its own interning table.
-        shared_mapping: SharedMappingHandle,
+        space: Arc<AtomSpace<MettaValue>>,
     },
     /// Module-backed space (for mod-space!) with live reference
     Module {
@@ -94,10 +92,9 @@ pub enum SpaceBacking {
 impl std::fmt::Debug for SpaceBacking {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SpaceBacking::Owned { atoms, .. } => f
+            SpaceBacking::Owned { space } => f
                 .debug_struct("Owned")
-                .field("atoms", atoms)
-                .field("shared_mapping", &"<SharedMappingHandle>")
+                .field("atom_count", &space.atom_count())
                 .finish(),
             SpaceBacking::Module { mod_id, space } => f
                 .debug_struct("Module")
@@ -150,12 +147,12 @@ fn deserialization_space(sm: &SharedMappingHandle) -> mork::space::Space<Multipl
 impl SpaceHandle {
     /// Create a new space handle with the given ID and name.
     pub fn new(id: u64, name: String) -> Self {
+        let sm = new_space_mapping();
         Self {
             id,
             name,
             backing: SpaceBacking::Owned {
-                atoms: Arc::new(RwLock::new(PathMap::new())),
-                shared_mapping: new_space_mapping(),
+                space: Arc::new(AtomSpace::new(sm, 1000)),
             },
         }
     }
@@ -163,18 +160,21 @@ impl SpaceHandle {
     /// Create a space handle with existing data.
     pub fn with_data(id: u64, name: String, atoms: Vec<MettaValue>) -> Self {
         let sm = new_space_mapping();
-        let mut pm = PathMap::new();
-        for atom in &atoms {
-            let _ = with_mork_bytes(atom, &sm, |bytes| {
-                multiplicity::add_atom(&mut pm, bytes);
-            });
+        let atom_space = AtomSpace::new(sm, atoms.len().max(100));
+        {
+            let mut pm = atom_space.btm.write();
+            for atom in &atoms {
+                let _ = with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
+                    multiplicity::add_atom(&mut pm, bytes);
+                });
+            }
         }
+        atom_space.total_atoms.store(atoms.len(), std::sync::atomic::Ordering::Relaxed);
         Self {
             id,
             name,
             backing: SpaceBacking::Owned {
-                atoms: Arc::new(RwLock::new(pm)),
-                shared_mapping: sm,
+                space: Arc::new(atom_space),
             },
         }
     }
@@ -219,38 +219,36 @@ impl SpaceHandle {
     /// ```
     pub fn fork(&self) -> Self {
         match &self.backing {
-            SpaceBacking::Owned {
-                atoms,
-                shared_mapping,
-            } => {
-                // PathMap::clone() is O(1) via Arc CoW structural sharing.
-                let forked_atoms = atoms.read().clone();
+            SpaceBacking::Owned { space } => {
+                // AtomSpace::fork() is O(1) via PathMap CoW structural sharing.
                 Self {
                     id: self.id,
                     name: self.name.clone(),
                     backing: SpaceBacking::Owned {
-                        atoms: Arc::new(RwLock::new(forked_atoms)),
-                        shared_mapping: shared_mapping.clone(),
+                        space: Arc::new(space.fork()),
                     },
                 }
             }
             SpaceBacking::Module { space, .. } => {
                 // Module spaces: fork creates a snapshot (not live).
-                // Serialize module atoms into a new PathMap for isolation.
+                // Serialize module atoms into a new AtomSpace for isolation.
                 let module_atoms = space.read().get_all_atoms();
                 let sm = new_space_mapping();
-                let mut pm = PathMap::new();
-                for atom in &module_atoms {
-                    let _ = with_mork_bytes(atom, &sm, |bytes| {
-                        multiplicity::add_atom(&mut pm, bytes);
-                    });
+                let atom_space = AtomSpace::new(sm, module_atoms.len().max(100));
+                {
+                    let mut pm = atom_space.btm.write();
+                    for atom in &module_atoms {
+                        let _ = with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
+                            multiplicity::add_atom(&mut pm, bytes);
+                        });
+                    }
                 }
+                atom_space.total_atoms.store(module_atoms.len(), std::sync::atomic::Ordering::Relaxed);
                 Self {
                     id: self.id,
                     name: self.name.clone(),
                     backing: SpaceBacking::Owned {
-                        atoms: Arc::new(RwLock::new(pm)),
-                        shared_mapping: sm,
+                        space: Arc::new(atom_space),
                     },
                 }
             }
@@ -286,19 +284,31 @@ impl SpaceHandle {
 
     /// Add an atom to this space.
     ///
-    /// For owned spaces, serializes to MORK bytes and adds to PathMap.
+    /// For owned spaces: ground atoms go to PathMap (MORK bytes),
+    /// variable atoms ($-prefixed) go to the variable_atoms Vec.
     /// For module spaces, delegates to ModuleSpace.
     pub fn add_atom(&self, atom: MettaValue) {
+        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+
         match &self.backing {
-            SpaceBacking::Owned {
-                atoms,
-                shared_mapping,
-                ..
-            } => {
-                let _ = with_mork_bytes(&atom, shared_mapping, |bytes| {
-                    let mut pm = atoms.write();
-                    multiplicity::add_atom(&mut pm, bytes);
-                });
+            SpaceBacking::Owned { space } => {
+                if has_pattern_variables(&atom) {
+                    // Variable atom → store in Vec with multiplicity 1
+                    let mut var_atoms = space.variable_atoms.write();
+                    // Check if already present, increment multiplicity
+                    if let Some(entry) = var_atoms.iter_mut().find(|(v, _)| v == &atom) {
+                        entry.1 += 1;
+                    } else {
+                        var_atoms.push((atom, 1));
+                    }
+                } else {
+                    // Ground atom → MORK PathMap
+                    let _ = with_mork_bytes(&atom, &space.shared_mapping, |bytes| {
+                        let mut pm = space.btm.write();
+                        multiplicity::add_atom(&mut pm, bytes);
+                    });
+                }
+                space.total_atoms.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             SpaceBacking::Module { space, .. } => {
                 let mut space = space.write();
@@ -310,24 +320,41 @@ impl SpaceHandle {
     /// Remove an atom from this space.
     /// Returns true if the atom was found and removed.
     pub fn remove_atom(&self, atom: &MettaValue) -> bool {
+        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+
         match &self.backing {
-            SpaceBacking::Owned {
-                atoms,
-                shared_mapping,
-                ..
-            } => {
-                match with_mork_bytes(atom, shared_mapping, |bytes| {
-                    let mut pm = atoms.write();
-                    let old_count = multiplicity::get_multiplicity(&pm, bytes);
-                    if old_count > 0 {
-                        multiplicity::remove_atom(&mut pm, bytes);
+            SpaceBacking::Owned { space } => {
+                if has_pattern_variables(atom) {
+                    // Variable atom → remove from Vec
+                    let mut var_atoms = space.variable_atoms.write();
+                    if let Some(idx) = var_atoms.iter().position(|(v, _)| v == atom) {
+                        let count = &mut var_atoms[idx].1;
+                        if *count > 1 {
+                            *count -= 1;
+                        } else {
+                            var_atoms.swap_remove(idx);
+                        }
+                        space.total_atoms.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         true
                     } else {
                         false
                     }
-                }) {
-                    Ok(removed) => removed,
-                    Err(_) => false,
+                } else {
+                    // Ground atom → MORK PathMap
+                    match with_mork_bytes(atom, &space.shared_mapping, |bytes| {
+                        let mut pm = space.btm.write();
+                        let old_count = multiplicity::get_multiplicity(&pm, bytes);
+                        if old_count > 0 {
+                            multiplicity::remove_atom(&mut pm, bytes);
+                            space.total_atoms.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            true
+                        } else {
+                            false
+                        }
+                    }) {
+                        Ok(removed) => removed,
+                        Err(_) => false,
+                    }
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -339,35 +366,50 @@ impl SpaceHandle {
 
     /// Get all atoms in this space (collapse) - expands multiplicities.
     ///
-    /// Iterates the PathMap, deserializes each MORK entry to MettaValue,
-    /// and expands by multiplicity count.
+    /// Iterates the PathMap (ground atoms) and variable_atoms Vec.
+    /// Variable atoms are freshened independently to ensure cross-atom
+    /// variable isolation (matching HE's `make_variables_unique()`).
     pub fn collapse(&self) -> Vec<MettaValue> {
+        use crate::backend::eval::freshening::freshen_variables_generic;
+
         match &self.backing {
-            SpaceBacking::Owned {
-                atoms,
-                shared_mapping,
-                ..
-            } => {
-                let pm = atoms.read();
-                let space = deserialization_space(shared_mapping);
+            SpaceBacking::Owned { space } => {
                 let factory = super::GcFactory::default();
                 let mut result = Vec::new();
 
-                let mut rz = pm.read_zipper();
-                while rz.to_next_val() {
-                    let path = rz.path();
-                    let count = rz.val().map(|m| m.count()).unwrap_or(0);
-                    if count == 0 {
-                        continue;
-                    }
-                    if let Ok(value) =
-                        mork_encoding::mork_bytes_to_generic_value(path, &space, &factory)
-                    {
-                        for _ in 0..count {
-                            result.push(value);
+                // Ground atoms from PathMap
+                {
+                    let pm = space.btm.read();
+                    let deser_space = deserialization_space(&space.shared_mapping);
+
+                    let mut rz = pm.read_zipper();
+                    while rz.to_next_val() {
+                        let path = rz.path();
+                        let count = rz.val().map(|m| m.count()).unwrap_or(0);
+                        if count == 0 {
+                            continue;
+                        }
+                        if let Ok(value) =
+                            mork_encoding::mork_bytes_to_generic_value(path, &deser_space, &factory)
+                        {
+                            for _ in 0..count {
+                                result.push(value);
+                            }
                         }
                     }
                 }
+
+                // Variable atoms from Vec — freshen each independently
+                {
+                    let var_atoms = space.variable_atoms.read();
+                    for (atom, mult) in var_atoms.iter() {
+                        for _ in 0..*mult {
+                            let freshened = freshen_variables_generic(atom, &factory);
+                            result.push(freshened);
+                        }
+                    }
+                }
+
                 result
             }
             SpaceBacking::Module { space, .. } => {
@@ -380,32 +422,44 @@ impl SpaceHandle {
     /// Get all atoms as MultiplicityMatch with their actual counts.
     ///
     /// Returns the actual multiplicities, enabling efficient handling of
-    /// high-multiplicity atoms.
+    /// high-multiplicity atoms. Variable atoms are freshened independently.
     pub fn collapse_with_multiplicity(&self) -> Vec<MultiplicityMatch<MettaValue>> {
+        use crate::backend::eval::freshening::freshen_variables_generic;
+
         match &self.backing {
-            SpaceBacking::Owned {
-                atoms,
-                shared_mapping,
-                ..
-            } => {
-                let pm = atoms.read();
-                let space = deserialization_space(shared_mapping);
+            SpaceBacking::Owned { space } => {
                 let factory = super::GcFactory::default();
                 let mut results = Vec::new();
 
-                let mut rz = pm.read_zipper();
-                while rz.to_next_val() {
-                    let path = rz.path();
-                    let count = rz.val().map(|m| m.count()).unwrap_or(0);
-                    if count == 0 {
-                        continue;
-                    }
-                    if let Ok(value) =
-                        mork_encoding::mork_bytes_to_generic_value(path, &space, &factory)
-                    {
-                        results.push(MultiplicityMatch::new(value, count as usize));
+                // Ground atoms from PathMap
+                {
+                    let pm = space.btm.read();
+                    let deser_space = deserialization_space(&space.shared_mapping);
+
+                    let mut rz = pm.read_zipper();
+                    while rz.to_next_val() {
+                        let path = rz.path();
+                        let count = rz.val().map(|m| m.count()).unwrap_or(0);
+                        if count == 0 {
+                            continue;
+                        }
+                        if let Ok(value) =
+                            mork_encoding::mork_bytes_to_generic_value(path, &deser_space, &factory)
+                        {
+                            results.push(MultiplicityMatch::new(value, count as usize));
+                        }
                     }
                 }
+
+                // Variable atoms from Vec — freshen each independently
+                {
+                    let var_atoms = space.variable_atoms.read();
+                    for (atom, mult) in var_atoms.iter() {
+                        let freshened = freshen_variables_generic(atom, &factory);
+                        results.push(MultiplicityMatch::new(freshened, *mult));
+                    }
+                }
+
                 results
             }
             SpaceBacking::Module { space, .. } => {
@@ -423,15 +477,7 @@ impl SpaceHandle {
     /// Get the total number of atoms in this space (sum of multiplicities).
     pub fn atom_count(&self) -> usize {
         match &self.backing {
-            SpaceBacking::Owned { atoms, .. } => {
-                let pm = atoms.read();
-                let mut total: usize = 0;
-                let mut rz = pm.read_zipper();
-                while rz.to_next_val() {
-                    total += rz.val().map(|m| m.count() as usize).unwrap_or(0);
-                }
-                total
-            }
+            SpaceBacking::Owned { space } => space.atom_count(),
             SpaceBacking::Module { space, .. } => {
                 let space = space.read();
                 space.get_all_atoms().len()
@@ -442,13 +488,15 @@ impl SpaceHandle {
     /// Get the number of unique atoms in this space (distinct count).
     pub fn distinct_atom_count(&self) -> usize {
         match &self.backing {
-            SpaceBacking::Owned { atoms, .. } => {
-                let pm = atoms.read();
+            SpaceBacking::Owned { space } => {
+                let pm = space.btm.read();
                 let mut count: usize = 0;
                 let mut rz = pm.read_zipper();
                 while rz.to_next_val() {
                     count += 1;
                 }
+                // Also count distinct variable atoms
+                count += space.variable_atoms.read().len();
                 count
             }
             SpaceBacking::Module { space, .. } => {
@@ -460,18 +508,23 @@ impl SpaceHandle {
 
     /// Check if the space contains a specific atom.
     pub fn contains(&self, atom: &MettaValue) -> bool {
+        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+
         match &self.backing {
-            SpaceBacking::Owned {
-                atoms,
-                shared_mapping,
-                ..
-            } => {
-                match with_mork_bytes(atom, shared_mapping, |bytes| {
-                    let pm = atoms.read();
-                    multiplicity::get_multiplicity(&pm, bytes) > 0
-                }) {
-                    Ok(found) => found,
-                    Err(_) => false,
+            SpaceBacking::Owned { space } => {
+                if has_pattern_variables(atom) {
+                    // Check variable atoms Vec
+                    let var_atoms = space.variable_atoms.read();
+                    var_atoms.iter().any(|(v, _)| v == atom)
+                } else {
+                    // Check PathMap
+                    match with_mork_bytes(atom, &space.shared_mapping, |bytes| {
+                        let pm = space.btm.read();
+                        multiplicity::get_multiplicity(&pm, bytes) > 0
+                    }) {
+                        Ok(found) => found,
+                        Err(_) => false,
+                    }
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -483,18 +536,26 @@ impl SpaceHandle {
 
     /// Get the multiplicity (count) of a specific atom in this space.
     pub fn atom_multiplicity(&self, atom: &MettaValue) -> usize {
+        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+
         match &self.backing {
-            SpaceBacking::Owned {
-                atoms,
-                shared_mapping,
-                ..
-            } => {
-                match with_mork_bytes(atom, shared_mapping, |bytes| {
-                    let pm = atoms.read();
-                    multiplicity::get_multiplicity(&pm, bytes) as usize
-                }) {
-                    Ok(count) => count,
-                    Err(_) => 0,
+            SpaceBacking::Owned { space } => {
+                if has_pattern_variables(atom) {
+                    // Check variable atoms Vec
+                    let var_atoms = space.variable_atoms.read();
+                    var_atoms.iter()
+                        .find(|(v, _)| v == atom)
+                        .map(|(_, mult)| *mult)
+                        .unwrap_or(0)
+                } else {
+                    // Check PathMap
+                    match with_mork_bytes(atom, &space.shared_mapping, |bytes| {
+                        let pm = space.btm.read();
+                        multiplicity::get_multiplicity(&pm, bytes) as usize
+                    }) {
+                        Ok(count) => count,
+                        Err(_) => 0,
+                    }
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -594,6 +655,101 @@ impl SpaceHandle {
         self.atom_multiplicity(&heap_atom)
     }
 
+    /// Match a pattern against atoms in this space and instantiate a template.
+    ///
+    /// This is the unified match path for owned spaces. For &self/module spaces,
+    /// the caller should use `env.match_space()` instead (which uses RuleIndex + MORK).
+    ///
+    /// Returns a list of template instantiations — one per matching atom.
+    ///
+    /// **Ground atoms** (PathMap): unidirectional matching via `pattern_match_generic`
+    /// (fast — variables only on pattern side).
+    ///
+    /// **Variable atoms** (Vec): freshened then matched bidirectionally via
+    /// `space_match_bidirectional_generic` (handles variables on both sides).
+    pub fn match_pattern_generic<V, F>(
+        &self,
+        pattern: &V,
+        template: &V,
+        factory: &F,
+    ) -> Vec<V>
+    where
+        V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+        F: MettaValueFactory<V>,
+    {
+        use crate::backend::eval::bindings_generic::{
+            apply_bindings_generic, collect_variables_generic, pattern_match_generic,
+        };
+        use crate::backend::eval::freshening::freshen_variables_generic;
+        use crate::backend::eval::space_match::space_match_bidirectional_generic;
+
+        let mut results = Vec::new();
+
+        match &self.backing {
+            SpaceBacking::Owned { space } => {
+                // 1. Match against ground atoms from PathMap (unidirectional)
+                {
+                    let pm = space.btm.read();
+                    let deser_space = deserialization_space(&space.shared_mapping);
+
+                    let mut rz = pm.read_zipper();
+                    while rz.to_next_val() {
+                        let path = rz.path();
+                        let count = rz.val().map(|m| m.count()).unwrap_or(0);
+                        if count == 0 {
+                            continue;
+                        }
+                        if let Ok(atom) =
+                            mork_encoding::mork_bytes_to_generic_value(path, &deser_space, factory)
+                        {
+                            if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                                let instantiated = apply_bindings_generic(template, &bindings, factory);
+                                for _ in 0..count {
+                                    results.push(instantiated.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Match against variable atoms from Vec (bidirectional with freshening)
+                {
+                    let var_atoms = space.variable_atoms.read();
+                    if !var_atoms.is_empty() {
+                        let pattern_vars = collect_variables_generic(pattern);
+                        for (stored, mult) in var_atoms.iter() {
+                            // Freshen stored atom variables to prevent capture
+                            let freshened: V = freshen_variables_generic(
+                                &factory.from_metta_value(*stored),
+                                factory,
+                            );
+                            if let Some(bindings) =
+                                space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
+                            {
+                                let instantiated = apply_bindings_generic(template, &bindings, factory);
+                                for _ in 0..*mult {
+                                    results.push(instantiated.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            SpaceBacking::Module { .. } => {
+                // Module spaces — fallback to collapse+scan
+                let atoms: Vec<V> = self.collapse_generic(factory);
+                for atom in &atoms {
+                    if let Some(bindings) = pattern_match_generic(pattern, atom) {
+                        let instantiated = apply_bindings_generic(template, &bindings, factory);
+                        results.push(instantiated);
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
     // ========================================================================
     // Internal Helpers
     // ========================================================================
@@ -615,13 +771,14 @@ impl SpaceHandle {
     ///
     /// Used by the GC mark phase to traverse into Space values.
     ///
-    /// Owned spaces store atoms as MORK bytes in PathMap (no slab pointers),
-    /// so no GC collection is needed. Module spaces have live MettaValue atoms
-    /// that reference slab memory.
+    /// Owned spaces: collect variable_atoms and large_expr_pathmap values
+    /// from AtomSpace (these hold slab-allocated MettaValues).
+    /// Module spaces: collect live MettaValue atoms from ModuleSpace.
     pub(crate) fn collect_gc_values(&self, values: &mut Vec<MettaValue>) {
         match &self.backing {
-            SpaceBacking::Owned { .. } => {
-                // PathMap atoms are MORK bytes — no slab pointers, no GC roots.
+            SpaceBacking::Owned { space } => {
+                // Collect GC roots from AtomSpace (variable_atoms + large_expr_pathmap)
+                space.collect_gc_roots(values);
             }
             SpaceBacking::Module { space, .. } => {
                 // Collect atoms from module space (local atoms only — dependencies have
@@ -636,8 +793,8 @@ impl SpaceHandle {
     pub fn same_space(&self, other: &SpaceHandle) -> bool {
         match (&self.backing, &other.backing) {
             (
-                SpaceBacking::Owned { atoms: a, .. },
-                SpaceBacking::Owned { atoms: b, .. },
+                SpaceBacking::Owned { space: a },
+                SpaceBacking::Owned { space: b },
             ) => Arc::ptr_eq(a, b),
             (SpaceBacking::Module { mod_id: a, .. }, SpaceBacking::Module { mod_id: b, .. }) => {
                 a == b

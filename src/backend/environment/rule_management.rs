@@ -560,10 +560,10 @@ where
             |debruijn_bytes, ctx| {
                 // 1. Insert De Bruijn bytes into PathMap (increment multiplicity)
                 {
-                    let mut btm = self.shared.btm.write();
+                    let mut btm = self.shared.atom_space.btm.write();
                     super::multiplicity::add_atom(&mut btm, debruijn_bytes);
                 }
-                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
 
                 // 2. Split De Bruijn bytes into LHS and RHS ranges
                 // Layout: [Arity(3)] ["=" symbol bytes] [LHS bytes] [RHS bytes]
@@ -660,16 +660,31 @@ where
             },
         );
 
-        // Fallback for expressions that can't be MORK-encoded (arity >= 64)
+        // Fallback for expressions that can't be MORK-encoded (arity >= 64).
+        // Store directly in large_expr_pathmap (bypasses add_to_space to avoid recursion,
+        // since add_to_space routes rules back to add_rule).
         if result.is_err() {
-            self.add_to_space(&rule_sexpr);
+            let key = crate::backend::varint_encoding::value_to_varint_key_generic(&rule_sexpr);
+
+            {
+                let mut btm = self.shared.atom_space.btm.write();
+                super::multiplicity::add_atom(&mut btm, &key);
+            }
+
+            {
+                let mut guard = self.shared.atom_space.large_expr_pathmap.write();
+                let fallback = guard.get_or_insert_with(pathmap::PathMap::new);
+                fallback.insert(&key, rule_sexpr);
+            }
+
+            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
         }
 
         // Update bloom filter with (head, arity) for O(1) match_space() rejection
         if let Some(ref head) = head_owned {
             let arity_u8 = arity as u8;
             self.shared
-                .head_arity_bloom
+                .atom_space.head_arity_bloom
                 .write()
                 .insert(head.as_bytes(), arity_u8);
         }
@@ -709,7 +724,7 @@ where
         if !head.is_empty() {
             if !self
                 .shared
-                .head_arity_bloom
+                .atom_space.head_arity_bloom
                 .read()
                 .may_contain(head.as_bytes(), arity as u8)
             {
@@ -891,7 +906,7 @@ where
         if !head.is_empty() {
             if !self
                 .shared
-                .head_arity_bloom
+                .atom_space.head_arity_bloom
                 .read()
                 .may_contain(head.as_bytes(), arity as u8)
             {
@@ -1167,7 +1182,7 @@ impl MettaEnvironment {
 
         let sm = self.shared_mapping.clone();
         match with_mork_query_bytes(&rule_sexpr, &sm, |mork_bytes, _ctx| {
-            let btm = self.shared.btm.read();
+            let btm = self.shared.atom_space.btm.read();
             let count = get_multiplicity(&btm, mork_bytes);
             if count == 0 { 1 } else { count as usize }
         }) {
@@ -1179,7 +1194,7 @@ impl MettaEnvironment {
     /// Get the multiplicities (for serialization).
     /// The keys are hex-encoded MORK bytes for serialization stability.
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
-        let btm = self.shared.btm.read();
+        let btm = self.shared.atom_space.btm.read();
         let mut result = HashMap::new();
 
         for (path, multiplicity) in btm.iter() {
@@ -1196,12 +1211,12 @@ impl MettaEnvironment {
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
         self.make_owned();
 
-        let mut btm = self.shared.btm.write();
+        let mut btm = self.shared.atom_space.btm.write();
 
         for (hex_key, count) in counts {
             if let Ok(mork_bytes) = hex::decode(&hex_key) {
                 set_multiplicity(&mut btm, &mork_bytes, count as u64);
-                self.shared.total_atoms.fetch_add(count, Ordering::Relaxed);
+                self.shared.atom_space.total_atoms.fetch_add(count, Ordering::Relaxed);
             }
         }
 
@@ -1242,7 +1257,7 @@ impl MettaEnvironment {
                     if let Some(ref head) = head_owned {
                         self.shared.fuzzy_matcher.write().insert(head);
                         self.shared
-                            .head_arity_bloom
+                            .atom_space.head_arity_bloom
                             .write()
                             .insert(head.as_bytes(), arity as u8);
                     }
@@ -1315,11 +1330,11 @@ impl MettaEnvironment {
 
         let sm = self.shared_mapping.clone();
         match with_mork_query_bytes(rule_sexpr, &sm, |mork_bytes, _ctx| {
-            let mut btm = self.shared.btm.write();
+            let mut btm = self.shared.atom_space.btm.write();
             let new_count = increment_multiplicity(&mut btm, mork_bytes);
             drop(btm);
 
-            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
             self.modified.store(true, Ordering::Release);
             new_count as usize
         }) {
@@ -1366,7 +1381,7 @@ impl MettaEnvironment {
         let sm = self.shared_mapping.clone();
         match with_mork_query_bytes(rule_sexpr, &sm, |mork_bytes, _ctx| {
             let old_count = {
-                let btm = self.shared.btm.read();
+                let btm = self.shared.atom_space.btm.read();
                 get_multiplicity(&btm, mork_bytes)
             };
 
@@ -1375,11 +1390,11 @@ impl MettaEnvironment {
                 return 0;
             }
 
-            let mut btm = self.shared.btm.write();
+            let mut btm = self.shared.atom_space.btm.write();
             let new_count = decrement_multiplicity(&mut btm, mork_bytes);
             drop(btm);
 
-            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
             self.modified.store(true, Ordering::Release);
             new_count as usize
         }) {
@@ -1418,11 +1433,11 @@ impl MettaEnvironment {
         self.make_owned();
 
         match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
-            let mut btm = self.shared.btm.write();
+            let mut btm = self.shared.atom_space.btm.write();
             let new_count = increment_multiplicity(&mut btm, mork_bytes);
             drop(btm);
 
-            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
             self.modified.store(true, Ordering::Release);
             new_count as usize
         }) {
@@ -1440,7 +1455,7 @@ impl MettaEnvironment {
 
         match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
             let old_count = {
-                let btm = self.shared.btm.read();
+                let btm = self.shared.atom_space.btm.read();
                 get_multiplicity(&btm, mork_bytes)
             };
 
@@ -1448,11 +1463,11 @@ impl MettaEnvironment {
                 return 0;
             }
 
-            let mut btm = self.shared.btm.write();
+            let mut btm = self.shared.atom_space.btm.write();
             let new_count = decrement_multiplicity(&mut btm, mork_bytes);
             drop(btm);
 
-            self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
             self.modified.store(true, Ordering::Release);
             new_count as usize
         }) {
@@ -1467,7 +1482,7 @@ impl MettaEnvironment {
         if extract_rule_parts(value).is_some() {
             let sm = self.shared_mapping.clone();
             match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
-                let btm = self.shared.btm.read();
+                let btm = self.shared.atom_space.btm.read();
                 let count = get_multiplicity(&btm, mork_bytes);
                 if count == 0 { 1 } else { count as usize }
             }) {
@@ -1476,7 +1491,7 @@ impl MettaEnvironment {
             }
         } else {
             match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
-                let btm = self.shared.btm.read();
+                let btm = self.shared.atom_space.btm.read();
                 let count = get_multiplicity(&btm, mork_bytes);
                 if count == 0 { 1 } else { count as usize }
             }) {
@@ -1488,7 +1503,7 @@ impl MettaEnvironment {
 
     /// Get atom multiplicity from raw MORK bytes.
     pub fn get_multiplicity_from_mork_bytes(&self, mork_bytes: &[u8]) -> usize {
-        let btm = self.shared.btm.read();
+        let btm = self.shared.atom_space.btm.read();
         let count = get_multiplicity(&btm, mork_bytes);
         if count == 0 { 1 } else { count as usize }
     }

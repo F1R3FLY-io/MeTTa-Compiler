@@ -638,14 +638,9 @@ fn test_transitive_imports() {
     let mut env = new_env();
     env.set_current_module_path(Some(fixtures_dir()));
 
-    // The generic include path does not recursively evaluate !(include ...) within
-    // included files. To test that rules from multiple modules compose correctly,
-    // we explicitly include both modules A and B in the correct dependency order.
-    let fixture_a = fixtures_dir().join("test_import_a.metta");
-    let include_a = format!(r#"(include "{}")"#, fixture_a.display());
-    let state_a = compile(&include_a).expect("compilation should succeed");
-    let (_, env) = eval(state_a.source()[0], env, &state_a);
-
+    // Module B contains `!(include "test_import_a.metta")` which is now force-evaluated
+    // during include processing. So including B alone transitively includes A —
+    // no need to explicitly include A first.
     let fixture_b = fixtures_dir().join("test_import_b.metta");
     let include_b = format!(r#"(include "{}")"#, fixture_b.display());
     let state_b = compile(&include_b).expect("compilation should succeed");
@@ -661,6 +656,244 @@ fn test_transitive_imports() {
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(20)),
         "Expected Long(20), got {:?}",
+        results[0].inner()
+    );
+}
+
+// ============================================================
+// Force-eval tests
+// ============================================================
+
+#[test]
+fn test_import_force_eval_in_module() {
+    // Tests that `!`-prefixed expressions in imported files are evaluated.
+    // force_eval_module.metta contains:
+    //   (= (static-rule) 42)
+    //   !(add-atom &self (= (dynamic-rule) 99))
+    let mut env = new_env();
+    env.set_current_module_path(Some(fixtures_dir()));
+
+    let fixture = fixtures_dir().join("force_eval_module.metta");
+    let import_code = format!(r#"(import! &self "{}")"#, fixture.display());
+    let state = compile(&import_code).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
+
+    // Import returns unit
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Unit),
+        "Expected Unit from import, got {:?}",
+        results[0].inner()
+    );
+
+    // Verify static rule works
+    let test_static = "!(static-rule)";
+    let state = compile(test_static).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(42)),
+        "Expected Long(42) from static-rule, got {:?}",
+        results[0].inner()
+    );
+
+    // Verify dynamically added rule (via force-eval of add-atom) also works
+    let test_dynamic = "!(dynamic-rule)";
+    let state = compile(test_dynamic).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(99)),
+        "Expected Long(99) from dynamic-rule, got {:?}",
+        results[0].inner()
+    );
+}
+
+// ============================================================
+// Cycle detection tests
+// ============================================================
+
+#[test]
+fn test_import_cycle_detection() {
+    // cycle_a.metta imports cycle_b.metta, which imports cycle_a.metta.
+    // Without cycle detection this would infinite loop.
+    // With cycle detection, the second import returns unit silently.
+    let mut env = new_env();
+    env.set_current_module_path(Some(fixtures_dir()));
+
+    let fixture_a = fixtures_dir().join("cycle_a.metta");
+    let import_code = format!(r#"(import! &self "{}")"#, fixture_a.display());
+    let state = compile(&import_code).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
+
+    // Import completes without hanging
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Unit),
+        "Expected Unit from import, got {:?}",
+        results[0].inner()
+    );
+
+    // Verify rules from both modules are accessible
+    let test_a = "!(from-a)";
+    let state = compile(test_a).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(42)),
+        "Expected Long(42) from from-a, got {:?}",
+        results[0].inner()
+    );
+
+    let test_b = "!(from-b)";
+    let state = compile(test_b).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(99)),
+        "Expected Long(99) from from-b, got {:?}",
+        results[0].inner()
+    );
+}
+
+// ============================================================
+// Path resolution tests
+// ============================================================
+
+#[test]
+fn test_path_resolution_directory_module() {
+    // Tests {dir}/{name}/{name}.metta resolution pattern
+    use mettatron::backend::modules::resolve_module_path;
+
+    let fixtures = fixtures_dir();
+    let resolved = resolve_module_path("dirmod", Some(fixtures.as_path()));
+
+    // Should resolve to fixtures/dirmod/dirmod.metta
+    let expected = fixtures.join("dirmod").join("dirmod.metta");
+    assert_eq!(
+        resolved, expected,
+        "Expected directory module resolution to {}, got {}",
+        expected.display(),
+        resolved.display()
+    );
+
+    // Verify the file actually exists and rules can be loaded
+    let mut env = new_env();
+    env.set_current_module_path(Some(fixtures));
+
+    let import_code = format!(r#"(import! &self "{}")"#, expected.display());
+    let state = compile(&import_code).expect("compilation should succeed");
+    let (_, env) = eval(state.source()[0], env, &state);
+
+    let test_code = "!(dirmod-fn)";
+    let state = compile(test_code).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(777)),
+        "Expected Long(777) from dirmod-fn, got {:?}",
+        results[0].inner()
+    );
+}
+
+#[test]
+fn test_path_resolution_metta_module_path() {
+    // Tests METTA_MODULE_PATH env var resolution
+    use mettatron::backend::modules::resolve_module_path;
+
+    let fixtures = fixtures_dir();
+
+    // Set METTA_MODULE_PATH to the fixtures directory
+    std::env::set_var("METTA_MODULE_PATH", fixtures.display().to_string());
+
+    // Resolve a bare name that only exists in the fixtures dir
+    let resolved = resolve_module_path("test_module", None);
+
+    // Should find test_module.metta in the METTA_MODULE_PATH
+    let expected = fixtures.join("test_module.metta");
+    assert_eq!(
+        resolved, expected,
+        "Expected METTA_MODULE_PATH resolution to {}, got {}",
+        expected.display(),
+        resolved.display()
+    );
+
+    // Clean up env var
+    std::env::remove_var("METTA_MODULE_PATH");
+}
+
+// ============================================================
+// Transitive import tests (via force-eval)
+// ============================================================
+
+#[test]
+fn test_transitive_import_via_force_eval() {
+    // transitive_mid.metta contains: !(import! &self "transitive_base.metta")
+    // This tests that the force-eval of import! inside an imported module
+    // makes base module rules available transitively.
+    let mut env = new_env();
+    env.set_current_module_path(Some(fixtures_dir()));
+
+    // Only import mid — it should transitively pull in base
+    let fixture_mid = fixtures_dir().join("transitive_mid.metta");
+    let import_code = format!(r#"(import! &self "{}")"#, fixture_mid.display());
+    let state = compile(&import_code).expect("compilation should succeed");
+    let (_, env) = eval(state.source()[0], env, &state);
+
+    // Verify base-add is available (transitively imported)
+    let test_base = "!(base-add 7)";
+    let state = compile(test_base).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(107)),
+        "Expected Long(107) from base-add, got {:?}",
+        results[0].inner()
+    );
+
+    // Verify mid-add uses base-add correctly
+    let test_mid = "!(mid-add 7)";
+    let state = compile(test_mid).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(157)),
+        "Expected Long(157) from mid-add (107 + 50), got {:?}",
+        results[0].inner()
+    );
+}
+
+// ============================================================
+// 3-arg import! form test
+// ============================================================
+
+#[test]
+fn test_import_3arg_form() {
+    // Tests (import! &self module-path) 3-argument syntax
+    let mut env = new_env();
+    env.set_current_module_path(Some(fixtures_dir()));
+
+    let fixture = fixtures_dir().join("test_module.metta");
+    let import_code = format!(r#"(import! &self "{}")"#, fixture.display());
+    let state = compile(&import_code).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
+
+    // Import returns unit
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Unit),
+        "Expected Unit, got {:?}",
+        results[0].inner()
+    );
+
+    // Verify imported rules work
+    let test_code = "!(test-add 10 20)";
+    let state = compile(test_code).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(results[0].inner(), MettaValueInner::Long(30)),
+        "Expected Long(30) from test-add, got {:?}",
         results[0].inner()
     );
 }

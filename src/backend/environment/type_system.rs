@@ -48,6 +48,30 @@ where
     pub fn get_type_generic(&self, name: &str) -> Option<V> {
         self.shared.types.read().get(name).cloned()
     }
+
+    /// Remove a type assertion (generic version).
+    ///
+    /// Removes the type from the `types` HashMap. Also removes the
+    /// `(: name type)` atom from the MORK space for consistency.
+    /// Invalidates the type index cache.
+    pub fn remove_type_generic(&mut self, name: &str, _type_val: &V) {
+        trace!(target: "mettatron::environment::remove_type_generic", name);
+        self.make_owned();
+
+        self.shared.types.write().remove(name);
+
+        // Remove the type assertion from MORK space
+        let type_assertion = self.factory.sexpr(vec![
+            self.factory.atom(":"),
+            self.factory.atom(name),
+            _type_val.clone(),
+        ]);
+        self.remove_from_space(&type_assertion);
+
+        // Invalidate type index cache
+        self.shared.type_index_dirty.store(true, Ordering::Release);
+        self.modified.store(true, Ordering::Release);
+    }
 }
 
 // ============================================================================
@@ -90,7 +114,7 @@ impl MettaEnvironment {
         // Build type index using PathMap::restrict()
         // This extracts a subtrie containing only paths that start with ":"
         // parking_lot::RwLock - no .expect()
-        let btm = self.shared.btm.read();
+        let btm = self.shared.atom_space.btm.read();
 
         // Create a PathMap containing only the ":" prefix
         // restrict() will return all paths in btm that have matching prefixes in this map

@@ -68,7 +68,7 @@ impl MettaEnvironment {
             // parking_lot::RwLock - no .expect()
             let bloom_result = self
                 .shared
-                .head_arity_bloom
+                .atom_space.head_arity_bloom
                 .read()
                 .may_contain(expected_head.as_bytes(), pattern_arity);
             if !bloom_result {
@@ -136,9 +136,9 @@ impl MettaEnvironment {
 
         // Also check large expression fallback PathMap
         // parking_lot::RwLock - no .expect()
-        let guard = self.shared.large_expr_pathmap.read();
+        let guard = self.shared.atom_space.large_expr_pathmap.read();
         if let Some(ref fallback) = *guard {
-            let btm = self.shared.btm.read();
+            let btm = self.shared.atom_space.btm.read();
 
             for (key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
@@ -175,7 +175,7 @@ impl MettaEnvironment {
             // parking_lot::RwLock - no .expect()
             if !self
                 .shared
-                .head_arity_bloom
+                .atom_space.head_arity_bloom
                 .read()
                 .may_contain(expected_head.as_bytes(), pattern_arity)
             {
@@ -226,7 +226,7 @@ impl MettaEnvironment {
 
         // 2. Check large expression fallback PathMap
         // parking_lot::RwLock - no .expect()
-        let guard = self.shared.large_expr_pathmap.read();
+        let guard = self.shared.atom_space.large_expr_pathmap.read();
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {

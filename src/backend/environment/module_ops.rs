@@ -68,6 +68,33 @@ where
             .options()
             .strict_mode
     }
+
+    /// Check if a module is currently being loaded (cycle detection).
+    ///
+    /// Used by `eval_import_generic` and `eval_include_generic` to detect
+    /// circular imports and return unit silently instead of infinite recursion.
+    pub fn is_module_loading(&self, content_hash: u64) -> bool {
+        self.shared
+            .module_registry
+            .read()
+            .is_loading(content_hash)
+    }
+
+    /// Mark a module as being loaded (start of import/include).
+    pub fn mark_module_loading(&self, content_hash: u64) {
+        self.shared
+            .module_registry
+            .write()
+            .mark_loading(content_hash);
+    }
+
+    /// Unmark a module as loading (end of import/include).
+    pub fn unmark_module_loading(&self, content_hash: u64) {
+        self.shared
+            .module_registry
+            .write()
+            .unmark_loading(content_hash);
+    }
 }
 
 // ============================================================================
@@ -89,30 +116,6 @@ impl MettaEnvironment {
             .module_registry
             .read()
             .get_by_content(content_hash)
-    }
-
-    /// Check if a module is currently being loaded (cycle detection)
-    pub fn is_module_loading(&self, content_hash: u64) -> bool {
-        self.shared
-            .module_registry
-            .read()
-            .is_loading(content_hash)
-    }
-
-    /// Mark a module as being loaded
-    pub fn mark_module_loading(&self, content_hash: u64) {
-        self.shared
-            .module_registry
-            .write()
-            .mark_loading(content_hash);
-    }
-
-    /// Unmark a module as loading
-    pub fn unmark_module_loading(&self, content_hash: u64) {
-        self.shared
-            .module_registry
-            .write()
-            .unmark_loading(content_hash);
     }
 
     /// Register a new module in the registry

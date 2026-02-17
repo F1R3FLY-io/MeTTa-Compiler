@@ -1618,7 +1618,7 @@ mod tests {
         let env2 = par_to_environment(&par).expect("Deserialization failed");
 
         // Verify the deserialized environment contains the fact
-        assert!(env2.shared.total_atoms.load(Ordering::Relaxed) > 0, "Should find the connected fact after deserialization");
+        assert!(env2.shared.atom_space.total_atoms.load(Ordering::Relaxed) > 0, "Should find the connected fact after deserialization");
 
         println!("✓ Deserialized Environment can be used after reserved-byte roundtrip!");
     }

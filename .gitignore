@@ -7,3 +7,7 @@ flamegraph*.svg
 
 examples/sandbox.rs
 dev-notes.md
+
+# macOS
+.DS_Store
+**/.DS_Store

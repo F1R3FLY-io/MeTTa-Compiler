@@ -1149,6 +1149,17 @@ impl JitCompiler {
                 );
             }
 
+            Opcode::JumpIfNotBool => {
+                return handlers::compile_jump_if_not_bool(
+                    codegen,
+                    chunk,
+                    op,
+                    offset,
+                    offset_to_block,
+                    merge_blocks,
+                );
+            }
+
             // =====================================================================
             // Stage 4: Local Variables (delegated to handlers module)
             // =====================================================================

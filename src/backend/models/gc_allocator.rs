@@ -422,7 +422,15 @@ impl TreiberStack {
     }
 
     /// Pop a free slot from the stack (lock-free). Returns None if empty.
+    ///
+    /// Under ASAN, always returns None to prevent slot reuse. Freed slots
+    /// remain poisoned so any stale `MettaValue` dereference triggers an
+    /// ASAN report. The free list is still populated by `push()` (the
+    /// FreeNode header stays unpoisoned) so `drain()` and snapshot
+    /// `free_set` filtering work correctly.
     fn pop(&self) -> Option<*mut u8> {
+        #[cfg(sanitize = "address")]
+        { return None; }
         loop {
             let old_head = self.head.load(Ordering::Acquire);
             if old_head == TREIBER_NULL {
@@ -1280,6 +1288,49 @@ impl SlabAllocator {
     pub fn contains_value(&self, ptr: *const u8) -> bool {
         self.values.contains(ptr)
     }
+
+    /// Get page-level allocation statistics for diagnostics.
+    pub fn page_stats(&self) -> PageStats {
+        let pages = self.values.pages.read();
+        let page_count = pages.len();
+        let slots_per_page = PAGE_SIZE / self.values.slot_size;
+        let mut total_bumped = 0usize;
+        let mut total_live = 0usize;
+
+        for page in pages.iter() {
+            total_bumped += page.bump_count.load(Ordering::Relaxed);
+            total_live += page.live_count.load(Ordering::Relaxed) as usize;
+        }
+
+        let mut data_pages = 0usize;
+        let mut data_committed = 0usize;
+        for dc in &self.data_classes {
+            let dp = dc.pages.read();
+            data_pages += dp.len();
+            data_committed += dc.committed_bytes();
+        }
+
+        PageStats {
+            value_page_count: page_count,
+            slots_per_page,
+            total_bumped_slots: total_bumped,
+            total_live_slots: total_live,
+            value_committed_bytes: self.values.committed_bytes(),
+            data_page_count: data_pages,
+            data_committed_bytes: data_committed,
+        }
+    }
+}
+
+/// Page-level allocation statistics.
+pub struct PageStats {
+    pub value_page_count: usize,
+    pub slots_per_page: usize,
+    pub total_bumped_slots: usize,
+    pub total_live_slots: usize,
+    pub value_committed_bytes: usize,
+    pub data_page_count: usize,
+    pub data_committed_bytes: usize,
 }
 
 impl Default for SlabAllocator {
@@ -1680,6 +1731,45 @@ static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 /// one, wasting memory and CPU on redundant GC cycles.
 static GC_CYCLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+// ============================================================================
+// Session GC Statistics — counters for diagnosing memory growth
+// ============================================================================
+
+/// Total number of sessions released (incremented in release_session_with_surviving)
+static SESSION_RELEASES_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total values freed across all session releases
+static SESSION_VALUES_FREED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total values promoted (context_id → 0) across all session releases
+static SESSION_VALUES_PROMOTED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total values scanned during session releases
+static SESSION_VALUES_SCANNED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Size of the last surviving set (root trace result)
+static LAST_SURVIVING_SET_SIZE: AtomicU64 = AtomicU64::new(0);
+
+/// Public accessor for session GC stats (used by diagnostics module).
+pub fn session_gc_stats() -> SessionGcStats {
+    SessionGcStats {
+        releases_total: SESSION_RELEASES_TOTAL.load(Ordering::Relaxed),
+        values_freed_total: SESSION_VALUES_FREED_TOTAL.load(Ordering::Relaxed),
+        values_promoted_total: SESSION_VALUES_PROMOTED_TOTAL.load(Ordering::Relaxed),
+        values_scanned_total: SESSION_VALUES_SCANNED_TOTAL.load(Ordering::Relaxed),
+        last_surviving_set_size: LAST_SURVIVING_SET_SIZE.load(Ordering::Relaxed),
+    }
+}
+
+/// Session GC statistics snapshot.
+pub struct SessionGcStats {
+    pub releases_total: u64,
+    pub values_freed_total: u64,
+    pub values_promoted_total: u64,
+    pub values_scanned_total: u64,
+    pub last_surviving_set_size: u64,
+}
+
 /// RAII guard that tracks active evaluators for quiescent-state GC.
 ///
 /// When an `EvalGuard` is alive, GC snapshot building is inhibited (the guard
@@ -1698,6 +1788,9 @@ impl EvalGuard {
     /// snapshot is being built, backs off and parks on a condvar to prevent
     /// a TOCTOU race where a new eval starts between the quiescent check
     /// and snapshot capture.
+    ///
+    /// Also increments the thread-local `EVAL_GUARD_DEPTH` counter, used by
+    /// safepoint drop/reacquire to track guard nesting.
     #[inline]
     pub fn enter() -> Self {
         loop {
@@ -1715,6 +1808,7 @@ impl EvalGuard {
             }
             drop(lock);
         }
+        EVAL_GUARD_DEPTH.with(|d| d.set(d.get() + 1));
         EvalGuard
     }
 }
@@ -1722,6 +1816,12 @@ impl EvalGuard {
 impl Drop for EvalGuard {
     #[inline]
     fn drop(&mut self) {
+        EVAL_GUARD_DEPTH.with(|d| {
+            let depth = d.get();
+            if depth > 0 {
+                d.set(depth - 1);
+            }
+        });
         let prev = ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
             // Transitioned to quiescent state (0 active evaluators).
@@ -2137,7 +2237,253 @@ pub fn collect_all_roots() -> Vec<MettaValue> {
             false // Provider was dropped — remove from registry
         }
     });
+    // Also collect safepoint roots from trampoline state
+    collect_safepoint_roots(&mut roots);
     roots
+}
+
+// ============================================================================
+// Safepoint Root Registry — Temporary Roots for Intra-Evaluation GC
+// ============================================================================
+//
+// During intra-evaluation safepoints, the trampoline's work_stack and
+// continuations hold live MettaValue references that are invisible to the
+// GC root collector (they live on the Rust call stack, not in environments).
+// Before dropping the EvalGuard, the trampoline registers these values as
+// temporary roots so the GC can trace them and avoid freeing reachable objects.
+//
+// The registry is a global Mutex<Vec<Vec<MettaValue>>>. Each safepoint pushes
+// a root set and receives a SafepointRootHandle that clears it on drop.
+// collect_all_roots() drains these into the root set alongside environment roots.
+
+/// Global registry for safepoint temporary roots.
+///
+/// Each entry is a Vec<MettaValue> collected from one evaluator's trampoline
+/// state (work_stack + continuations). Entries are cleared (not removed) on
+/// drop to preserve indices for concurrent handles.
+static SAFEPOINT_ROOTS: OnceLock<Mutex<Vec<Vec<MettaValue>>>> = OnceLock::new();
+
+fn safepoint_registry() -> &'static Mutex<Vec<Vec<MettaValue>>> {
+    SAFEPOINT_ROOTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// RAII handle that unregisters safepoint roots when dropped.
+///
+/// Created by `register_temporary_roots()`. On drop, clears the root set
+/// at the stored index (the Vec slot is zeroed, not removed, to avoid
+/// invalidating other handles' indices).
+pub struct SafepointRootHandle {
+    /// Index into SAFEPOINT_ROOTS where this handle's roots are stored
+    idx: usize,
+}
+
+impl Drop for SafepointRootHandle {
+    fn drop(&mut self) {
+        let registry = safepoint_registry();
+        let mut guard = registry.lock();
+        if self.idx < guard.len() {
+            guard[self.idx].clear();
+        }
+    }
+}
+
+/// Register temporary roots for a GC safepoint.
+///
+/// The provided `MettaValue` roots will be included in `collect_all_roots()`
+/// until the returned `SafepointRootHandle` is dropped. This ensures the GC
+/// traces trampoline-resident values as live during intra-evaluation collection.
+///
+/// # Critical Ordering
+///
+/// This MUST be called BEFORE dropping the EvalGuard. Otherwise there is a
+/// window where `ACTIVE_EVALUATORS == 0` but roots aren't registered, and
+/// the GC would free reachable values (use-after-free).
+pub fn register_temporary_roots(roots: Vec<MettaValue>) -> SafepointRootHandle {
+    let registry = safepoint_registry();
+    let mut guard = registry.lock();
+    // Reuse an empty slot if available (from a previous handle that was dropped)
+    for (idx, slot) in guard.iter_mut().enumerate() {
+        if slot.is_empty() {
+            *slot = roots;
+            return SafepointRootHandle { idx };
+        }
+    }
+    // No empty slot — append
+    let idx = guard.len();
+    guard.push(roots);
+    SafepointRootHandle { idx }
+}
+
+/// Collect safepoint roots into the provided Vec.
+///
+/// Called from `collect_all_roots()` to include trampoline-resident values
+/// in the GC root set alongside environment roots.
+fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
+    if let Some(registry) = SAFEPOINT_ROOTS.get() {
+        let guard = registry.lock();
+        for root_set in guard.iter() {
+            roots.extend(root_set.iter().copied());
+        }
+    }
+}
+
+// ============================================================================
+// EvalGuard Drop/Reacquire — Safepoint Lifecycle
+// ============================================================================
+//
+// During a safepoint, the trampoline needs to temporarily release its EvalGuard
+// (decrement ACTIVE_EVALUATORS) to allow the quiescent GC to fire, then re-acquire
+// it to continue evaluation. These functions implement that protocol without
+// changing the EvalGuard RAII interface — the original EvalGuard in eval() still
+// handles final cleanup.
+
+thread_local! {
+    /// Tracks the depth of EvalGuard acquisitions on this thread.
+    /// Used by safepoint drop/reacquire to temporarily release without
+    /// conflicting with the outer EvalGuard's RAII drop.
+    static EVAL_GUARD_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Temporarily release the current thread's EvalGuard for a GC safepoint.
+///
+/// Decrements `ACTIVE_EVALUATORS` and notifies the quiescent condvar if
+/// transitioning to 0. The caller MUST have registered temporary roots
+/// before calling this function.
+///
+/// # Panics
+///
+/// Panics if called without an active EvalGuard (depth == 0).
+pub fn drop_eval_guard_for_safepoint() {
+    EVAL_GUARD_DEPTH.with(|d| {
+        let depth = d.get();
+        assert!(depth > 0, "drop_eval_guard_for_safepoint called without active guard");
+        d.set(depth - 1);
+    });
+
+    let prev = ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+    if prev == 1 {
+        // Transitioned to quiescent state — notify waiters
+        let _lock = QUIESCENT_MUTEX.lock();
+        QUIESCENT_CONDVAR.notify_all();
+    }
+}
+
+/// Re-acquire the EvalGuard after a GC safepoint completes.
+///
+/// Increments `ACTIVE_EVALUATORS`, blocking if `GC_IN_PROGRESS` is set
+/// (same protocol as `EvalGuard::enter()`).
+pub fn reacquire_eval_guard_after_safepoint() {
+    // Same entry protocol as EvalGuard::enter() — CAS loop with GC_IN_PROGRESS check
+    loop {
+        ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);
+        if !GC_IN_PROGRESS.load(Ordering::Acquire) {
+            break;
+        }
+        // GC snapshot in progress — back off and park
+        ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+        let mut lock = GC_PROGRESS_MUTEX.lock();
+        while GC_IN_PROGRESS.load(Ordering::Acquire) {
+            GC_PROGRESS_CONDVAR.wait(&mut lock);
+        }
+        drop(lock);
+    }
+
+    EVAL_GUARD_DEPTH.with(|d| d.set(d.get() + 1));
+}
+
+/// Get the committed bytes from the global allocator's atomic counter.
+///
+/// Used by `should_safepoint()` to check allocation growth since the last
+/// safepoint without acquiring locks.
+#[inline]
+pub fn committed_bytes_snapshot() -> usize {
+    global_allocator()
+        .committed_bytes_atomic()
+        .load(Ordering::Relaxed)
+}
+
+/// Read the global allocation count (number of MettaValueInner allocations).
+///
+/// This counter increments for EVERY value allocation — both bump-alloc (new
+/// pages) and free-list-reuse. Use this for safepoint triggering instead of
+/// `committed_bytes_snapshot()` which plateaus after initial page allocation.
+#[inline]
+pub fn alloc_count_snapshot() -> u64 {
+    global_allocator()
+        .alloc_count_atomic()
+        .load(Ordering::Relaxed)
+}
+
+/// Wait for quiescence during a safepoint (condvar-based, NOT spin/yield).
+///
+/// If `ACTIVE_EVALUATORS > 0` after this evaluator has dropped its guard,
+/// parks on `QUIESCENT_CONDVAR` with a 10ms timeout for other evaluators
+/// to also reach safepoints. Once quiescent (or timeout), attempts to
+/// trigger and process GC.
+///
+/// Uses condvar parking instead of `yield_now()` to avoid CPU spin and
+/// ensure instant wakeup when the last evaluator drops its guard.
+///
+/// ## GC Cycle Pipeline
+///
+/// Processing the previous response BEFORE triggering a new cycle ensures
+/// every safepoint can complete a full GC round-trip:
+/// 1. Process pending response (frees dead slots, clears GC_CYCLE_IN_FLIGHT)
+/// 2. Trigger new GC cycle (marks roots, sweeps)
+/// 3. Wait briefly for GC thread to complete
+/// 4. Process the new response (frees newly dead slots)
+///
+/// Without this ordering, the previous approach alternated between trigger
+/// and process, effectively halving GC throughput.
+pub fn safepoint_wait_for_quiescence() {
+    // Phase 1: Process any pending response from a previous GC cycle.
+    // This clears GC_CYCLE_IN_FLIGHT, enabling a new trigger below.
+    maybe_process_gc_response();
+
+    // Phase 2: Trigger a new GC cycle (if quiescent and requested)
+    maybe_quiescent_gc();
+
+    // Phase 3: If a GC cycle was just triggered, wait briefly for the
+    // GC thread to complete mark+sweep and send a response.
+    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+        // Brief spin-wait for GC response (mark+sweep is typically < 1ms
+        // for bounded live sets like PLN's task/belief queues)
+        let deadline = std::time::Instant::now() + Duration::from_millis(50);
+        while std::time::Instant::now() < deadline {
+            if maybe_process_gc_response() {
+                break; // Response processed, done
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    // If GC is still requested (quiescence not yet reached because other
+    // evaluators are active), park on condvar with timeout
+    if GC_REQUESTED.load(Ordering::Acquire)
+        && ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0
+    {
+        let mut lock = QUIESCENT_MUTEX.lock();
+        // Wait up to 10ms for other evaluators to reach safepoints.
+        // QUIESCENT_CONDVAR is notified by EvalGuard::drop() and
+        // drop_eval_guard_for_safepoint() when transitioning to 0.
+        let _result = QUIESCENT_CONDVAR.wait_for(&mut lock, Duration::from_millis(10));
+        drop(lock);
+
+        // Retry after wakeup (either quiescent or timeout)
+        maybe_process_gc_response();
+        maybe_quiescent_gc();
+
+        // Brief wait for the new GC response
+        if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+            let deadline = std::time::Instant::now() + Duration::from_millis(10);
+            while std::time::Instant::now() < deadline {
+                if maybe_process_gc_response() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }
+    }
 }
 
 /// Register an environment's shared state as a GC root provider.
@@ -2270,6 +2616,11 @@ pub struct PageSnapshot {
     pub data_ptr: *const u8,
     pub bump_count: usize,
     pub capacity: usize,
+    /// Snapshot of per-slot epochs at snapshot time.
+    /// Slots with epoch == u64::MAX are freed by a prior GC cycle and must
+    /// be skipped during sweep (their content is FreeNode data, not valid
+    /// MettaValueInner).
+    pub epochs: Vec<u64>,
 }
 
 /// Immutable snapshot sent to the GC thread for mark-sweep collection.
@@ -2381,22 +2732,24 @@ impl SlabAllocator {
         let slot_size = self.values.slot_size;
 
         let page_snapshots: Vec<PageSnapshot> = pages.iter().map(|page| {
+            let bump_count = page.bump_count.load(Ordering::Acquire);
+            // Snapshot per-slot epochs so the sweep can skip freed slots
+            // (epoch == u64::MAX sentinel). Only capture up to bump_count
+            // since slots beyond that haven't been allocated.
+            let epochs: Vec<u64> = (0..bump_count)
+                .map(|i| page.epochs[i].load(Ordering::Acquire))
+                .collect();
             PageSnapshot {
                 data_ptr: page.data.as_ptr(),
-                bump_count: page.bump_count.load(Ordering::Acquire),
+                bump_count,
                 capacity: page.capacity,
+                epochs,
             }
         }).collect();
 
-        // Build free set by scanning Treiber stack
-        // Since we can't iterate a lock-free stack safely, we build the free set
-        // from the value allocator's pages by checking which slots have been freed.
-        // For correctness, we use a simpler approach: mark all slots that are
-        // bump-allocated but have zero live_count contribution.
-        // Actually, the simplest correct approach is an empty free set — the sweep
-        // will just treat free-list slots as "unmarked allocated" = dead, which is
-        // fine since they're already dead. The only issue is double-freeing, which
-        // we prevent via epoch filtering.
+        // free_set is no longer needed — the sweep now uses epoch snapshots
+        // to skip freed slots (epoch == u64::MAX) instead of relying on a
+        // drain of the Treiber stack.
         let free_set = std::collections::HashSet::new();
 
         let marks: Vec<Vec<u64>> = page_snapshots.iter().map(|ps| {
@@ -2484,6 +2837,10 @@ impl SlabAllocator {
                 // Sentinel epoch: prevents double-free by future GC cycles.
                 page.set_slot_epoch(entry.slot_idx, u64::MAX);
                 // ASAN: poison the freed slot BEFORE push (skip FreeNode header).
+                // Under ASAN, pop() returns None (slot reuse disabled), so
+                // poisoning persists and use-after-free triggers ASAN reports.
+                // Push still works because asan_poison_slab_slot leaves the
+                // first 16 bytes (FreeNode header) unpoisoned.
                 unsafe { asan_poison_slab_slot(entry.ptr, self.values.slot_size); }
                 self.values.free_list.push(entry.ptr);
             }
@@ -2547,6 +2904,8 @@ impl SlabAllocator {
         let slot_size = self.values.slot_size;
         let mut non_filtered_dead: Vec<ResolvedDead> = Vec::new();
         let dead_data_to_free: Vec<(*mut u8, usize)>;
+        let mut promoted_count: u64 = 0;
+        let mut scanned_count: u64 = 0;
 
         {
             let pages = self.values.pages.read();
@@ -2559,6 +2918,8 @@ impl SlabAllocator {
                         continue;
                     }
 
+                    scanned_count += 1;
+
                     // Check if already freed (epoch sentinel)
                     if page.slot_epoch(slot_idx) == u64::MAX {
                         continue;
@@ -2569,6 +2930,7 @@ impl SlabAllocator {
                     if surviving.contains(&(ptr as *const u8)) {
                         // Promote: value is reachable from roots, make persistent
                         page.set_context_id(slot_idx, 0);
+                        promoted_count += 1;
                     } else {
                         // Dead: collect for freeing
                         non_filtered_dead.push(ResolvedDead {
@@ -2621,6 +2983,13 @@ impl SlabAllocator {
 
         // Phase 5: Update committed bytes
         self.committed_bytes_atomic.store(self.committed_bytes(), Ordering::Relaxed);
+
+        // Phase 6: Update session GC statistics
+        SESSION_RELEASES_TOTAL.fetch_add(1, Ordering::Relaxed);
+        SESSION_VALUES_FREED_TOTAL.fetch_add(non_filtered_dead.len() as u64, Ordering::Relaxed);
+        SESSION_VALUES_PROMOTED_TOTAL.fetch_add(promoted_count, Ordering::Relaxed);
+        SESSION_VALUES_SCANNED_TOTAL.fetch_add(scanned_count, Ordering::Relaxed);
+        LAST_SURVIVING_SET_SIZE.store(surviving.len() as u64, Ordering::Relaxed);
     }
 
     /// Trace the surviving set: DFS from all registered GC roots.
@@ -2905,11 +3274,17 @@ pub fn sweep_snapshot(snapshot: &GcSnapshot) -> GcResponse {
 
     for (page_idx, ps) in snapshot.page_snapshots.iter().enumerate() {
         for slot_idx in 0..ps.bump_count {
-            let ptr = unsafe { ps.data_ptr.add(slot_idx * slot_size) as *mut u8 };
-
-            if snapshot.free_set.contains(&(ptr as *const u8)) {
+            // Skip slots freed by a prior GC cycle (epoch sentinel u64::MAX).
+            // These slots have FreeNode.next overwriting their MettaValueInner
+            // header and must not be read as MettaValueInner (UB: invalid
+            // enum discriminant). Also skip slots allocated after the snapshot
+            // (epoch > snapshot_epoch) — they weren't visible at snapshot time.
+            let slot_epoch = ps.epochs[slot_idx];
+            if slot_epoch == u64::MAX || slot_epoch > snapshot.snapshot_epoch {
                 continue;
             }
+
+            let ptr = unsafe { ps.data_ptr.add(slot_idx * slot_size) as *mut u8 };
 
             if snapshot_is_marked(snapshot, page_idx, slot_idx) {
                 response.live_values += 1;
@@ -4292,5 +4667,142 @@ mod tests {
         // Should not crash
         let v = factory.long(88888);
         assert_eq!(v.as_long(), Some(88888));
+    }
+
+    // ================================================================
+    // Safepoint Root Registry Tests
+    // ================================================================
+
+    #[test]
+    fn test_register_temporary_roots_basic() {
+        let factory = global_factory();
+        let v1 = factory.long(111);
+        let v2 = factory.atom("safepoint_test");
+
+        let handle = register_temporary_roots(vec![v1, v2]);
+
+        // Roots should appear in collect_all_roots()
+        let roots = collect_all_roots();
+        let has_v1 = roots.iter().any(|r| r.as_long() == Some(111));
+        let has_v2 = roots.iter().any(|r| r.as_atom() == Some("safepoint_test"));
+        assert!(has_v1, "safepoint root v1 should be in collect_all_roots()");
+        assert!(has_v2, "safepoint root v2 should be in collect_all_roots()");
+
+        // Drop handle — roots should be cleared
+        drop(handle);
+
+        // After drop, roots should no longer include our values
+        // (other roots from environments may still be present)
+        let roots_after = collect_all_roots();
+        let still_has_v2 = roots_after.iter().any(|r| r.as_atom() == Some("safepoint_test"));
+        assert!(!still_has_v2, "safepoint roots should be cleared after handle drop");
+    }
+
+    #[test]
+    fn test_register_temporary_roots_multiple_handles() {
+        let factory = global_factory();
+
+        let handle1 = register_temporary_roots(vec![factory.long(1001)]);
+        let handle2 = register_temporary_roots(vec![factory.long(1002)]);
+
+        // Both should appear
+        let roots = collect_all_roots();
+        assert!(roots.iter().any(|r| r.as_long() == Some(1001)));
+        assert!(roots.iter().any(|r| r.as_long() == Some(1002)));
+
+        // Drop first handle
+        drop(handle1);
+        let roots = collect_all_roots();
+        assert!(!roots.iter().any(|r| r.as_long() == Some(1001)));
+        assert!(roots.iter().any(|r| r.as_long() == Some(1002)));
+
+        // Drop second handle
+        drop(handle2);
+        let roots = collect_all_roots();
+        assert!(!roots.iter().any(|r| r.as_long() == Some(1002)));
+    }
+
+    #[test]
+    fn test_register_temporary_roots_slot_reuse() {
+        let factory = global_factory();
+
+        // Register and drop to create an empty slot
+        let handle = register_temporary_roots(vec![factory.long(2001)]);
+        drop(handle);
+
+        // Next registration should reuse the empty slot
+        let handle2 = register_temporary_roots(vec![factory.long(2002)]);
+        let roots = collect_all_roots();
+        assert!(roots.iter().any(|r| r.as_long() == Some(2002)));
+        assert!(!roots.iter().any(|r| r.as_long() == Some(2001)));
+        drop(handle2);
+    }
+
+    // ================================================================
+    // EvalGuard Drop/Reacquire Tests
+    // ================================================================
+
+    #[test]
+    fn test_eval_guard_depth_tracking() {
+        let guard = EvalGuard::enter();
+        assert!(active_evaluator_count() >= 1);
+
+        // Depth should be at least 1
+        EVAL_GUARD_DEPTH.with(|d| assert!(d.get() >= 1));
+
+        drop(guard);
+    }
+
+    #[test]
+    fn test_safepoint_drop_reacquire_cycle() {
+        let _guard = EvalGuard::enter();
+        let before = active_evaluator_count();
+
+        // Drop for safepoint
+        drop_eval_guard_for_safepoint();
+        let during = active_evaluator_count();
+        assert_eq!(during, before - 1, "drop_eval_guard should decrement ACTIVE_EVALUATORS");
+
+        // Re-acquire
+        reacquire_eval_guard_after_safepoint();
+        let after = active_evaluator_count();
+        assert_eq!(after, before, "reacquire should restore ACTIVE_EVALUATORS");
+
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_safepoint_with_temporary_roots() {
+        let factory = global_factory();
+        let _guard = EvalGuard::enter();
+
+        // Simulate safepoint: register roots, drop guard, re-acquire
+        let roots = vec![factory.long(9999), factory.atom("safepoint_root")];
+        let root_handle = register_temporary_roots(roots);
+
+        drop_eval_guard_for_safepoint();
+
+        // Roots should be visible in collect_all_roots() while guard is dropped
+        let all_roots = collect_all_roots();
+        assert!(
+            all_roots.iter().any(|r| r.as_long() == Some(9999)),
+            "safepoint roots should be visible during safepoint"
+        );
+
+        reacquire_eval_guard_after_safepoint();
+        drop(root_handle);
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_committed_bytes_snapshot_returns_value() {
+        // Allocate something to ensure committed_bytes > 0
+        let factory = global_factory();
+        let _v = factory.long(12345);
+        // Just verify it returns without panic
+        let bytes = committed_bytes_snapshot();
+        // Can be 0 if counter hasn't updated yet (it updates every 1024 allocs),
+        // but should at least not panic
+        let _ = bytes;
     }
 }

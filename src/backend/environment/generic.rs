@@ -1750,6 +1750,18 @@ where
     /// - `apply_bindings_generic()` - template instantiation on V
     ///
     /// No intermediate `MettaValue` conversions occur in the hot path.
+    /// Check if there may be rules with the given head symbol and arity.
+    /// Uses bloom filter: O(1), no false negatives. False positives cause
+    /// harmless extra evaluation (data constructors evaluate to themselves).
+    #[inline]
+    pub fn may_have_rules_for(&self, head: &str, arity: usize) -> bool {
+        self.shared
+            .atom_space
+            .head_arity_bloom
+            .read()
+            .may_contain(head.as_bytes(), arity as u8)
+    }
+
     pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {

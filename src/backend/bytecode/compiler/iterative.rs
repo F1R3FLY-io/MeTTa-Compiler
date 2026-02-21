@@ -150,6 +150,8 @@ impl Compiler {
                 else_jump,
                 end_jump,
                 error_jump,
+                notbool_jump,
+                else_end_jump,
                 parent_tail_position,
                 state,
                 cont_id,
@@ -161,6 +163,8 @@ impl Compiler {
                     else_jump,
                     end_jump,
                     error_jump,
+                    notbool_jump,
+                    else_end_jump,
                     parent_tail_position,
                     state,
                     cont_id,
@@ -689,15 +693,37 @@ impl Compiler {
                 Ok(Some(()))
             }
             "-" => {
-                self.check_arity("-", args.len(), 2)?;
-                let folded = self.try_fold_binary_arith("-", &args[0], &args[1]);
-                work_stack.push(CompileWork::CompileBinaryOp {
-                    op: BinaryOp::Sub,
-                    left: args[0].clone(),
-                    right: args[1].clone(),
-                    folded,
-                    cont_id,
-                });
+                match args.len() {
+                    1 => {
+                        // Unary minus: (- x) => neg(x)
+                        let folded = self.try_fold_unary_arith("neg", &args[0]);
+                        work_stack.push(CompileWork::CompileUnaryOp {
+                            op: UnaryOp::Neg,
+                            arg: args[0].clone(),
+                            folded,
+                            cont_id,
+                        });
+                    }
+                    2 => {
+                        // Binary minus: (- a b) => a - b
+                        let folded = self.try_fold_binary_arith("-", &args[0], &args[1]);
+                        work_stack.push(CompileWork::CompileBinaryOp {
+                            op: BinaryOp::Sub,
+                            left: args[0].clone(),
+                            right: args[1].clone(),
+                            folded,
+                            cont_id,
+                        });
+                    }
+                    _ => {
+                        return Err(CompileError::InvalidArityRange {
+                            op: "-".to_string(),
+                            min: 1,
+                            max: 2,
+                            got: args.len(),
+                        });
+                    }
+                }
                 Ok(Some(()))
             }
             "*" => {
@@ -1126,6 +1152,8 @@ impl Compiler {
                     else_jump: None,
                     end_jump: None,
                     error_jump: None,
+                    notbool_jump: None,
+                    else_end_jump: None,
                     parent_tail_position: self.in_tail_position,
                     state: IfState::CompileCondition,
                     cont_id,
@@ -1755,6 +1783,8 @@ impl Compiler {
         else_jump: Option<JumpLabel>,
         end_jump: Option<JumpLabel>,
         error_jump: Option<JumpLabel>,
+        notbool_jump: Option<JumpLabel>,
+        else_end_jump: Option<JumpLabel>,
         parent_tail_position: bool,
         state: IfState,
         cont_id: usize,
@@ -1767,9 +1797,11 @@ impl Compiler {
                     condition: condition.clone(),
                     then_branch,
                     else_branch,
-                    else_jump: None, // Will be filled after condition
+                    else_jump: None,
                     end_jump: None,
-                    error_jump: None, // Will be filled after condition
+                    error_jump: None,
+                    notbool_jump: None,
+                    else_end_jump: None,
                     parent_tail_position,
                     state: IfState::CompileThen,
                     cont_id,
@@ -1782,9 +1814,12 @@ impl Compiler {
                 });
             }
             IfState::CompileThen => {
-                // First, emit JumpIfError to skip both branches if condition is error
+                // Emit JumpIfError to skip both branches if condition is error
                 // JumpIfError uses peek (not pop), so error stays on stack
                 let new_error_jump = self.builder.emit_jump(Opcode::JumpIfError);
+                // MeTTa HE: Emit JumpIfNotBool to handle non-boolean conditions
+                // JumpIfNotBool peeks (not pop), so condition stays on stack
+                let new_notbool_jump = self.builder.emit_jump(Opcode::JumpIfNotBool);
                 // Emit JumpIfFalse for else branch (pops condition)
                 let new_else_jump = self.builder.emit_jump(Opcode::JumpIfFalse);
 
@@ -1796,6 +1831,8 @@ impl Compiler {
                     else_jump: Some(new_else_jump),
                     end_jump: None,
                     error_jump: Some(new_error_jump),
+                    notbool_jump: Some(new_notbool_jump),
+                    else_end_jump: None,
                     parent_tail_position,
                     state: IfState::CompileElse,
                     cont_id,
@@ -1809,14 +1846,14 @@ impl Compiler {
                 });
             }
             IfState::CompileElse => {
-                // Emit jump over else branch
+                // Emit jump over else branch (and non-bool handler)
                 let new_end_jump = self.builder.emit_jump(Opcode::Jump);
-                // Patch else jump
+                // Patch else jump to here
                 if let Some(label) = else_jump {
                     self.builder.patch_jump(label);
                 }
 
-                // After else, we're done
+                // After else, transition to NonBoolHandler
                 work_stack.push(CompileWork::CompileIf {
                     condition,
                     then_branch,
@@ -1824,8 +1861,10 @@ impl Compiler {
                     else_jump,
                     end_jump: Some(new_end_jump),
                     error_jump,
+                    notbool_jump,
+                    else_end_jump: None,
                     parent_tail_position,
-                    state: IfState::Done,
+                    state: IfState::NonBoolHandler,
                     cont_id,
                 });
                 // Compile else branch (inherits tail position)
@@ -1836,12 +1875,48 @@ impl Compiler {
                     cont_id: 0,
                 });
             }
+            IfState::NonBoolHandler => {
+                // Emit jump from end of else branch past non-bool handler
+                let new_else_end_jump = self.builder.emit_jump(Opcode::Jump);
+                // Patch notbool_jump to here
+                if let Some(label) = notbool_jump {
+                    self.builder.patch_jump(label);
+                }
+                // Non-bool handler: construct unreduced (if cond then else)
+                // Stack has: [cond] (JumpIfNotBool peeked, didn't pop)
+                // Emit: PushAtom "if", Swap, PushConstant then, PushConstant else, MakeSExpr 4
+                let if_idx = self.builder.add_constant(MettaValue::Atom("if"));
+                self.builder.emit_u16(Opcode::PushAtom, if_idx);
+                self.builder.emit(Opcode::Swap);
+                self.builder.emit_constant(then_branch);
+                self.builder.emit_constant(else_branch);
+                self.builder.emit_byte(Opcode::MakeSExpr, 4);
+
+                // Transition to Done
+                work_stack.push(CompileWork::CompileIf {
+                    condition,
+                    then_branch: MettaValue::Unit(), // placeholders, not used in Done
+                    else_branch: MettaValue::Unit(),
+                    else_jump,
+                    end_jump,
+                    error_jump,
+                    notbool_jump,
+                    else_end_jump: Some(new_else_end_jump),
+                    parent_tail_position,
+                    state: IfState::Done,
+                    cont_id,
+                });
+            }
             IfState::Done => {
-                // Patch end jump
+                // Patch end jump (from end of then branch)
                 if let Some(label) = end_jump {
                     self.builder.patch_jump(label);
                 }
-                // Patch error jump (both go to the same end location)
+                // Patch else_end_jump (from end of else branch, past non-bool handler)
+                if let Some(label) = else_end_jump {
+                    self.builder.patch_jump(label);
+                }
+                // Patch error jump (jumps to end)
                 if let Some(label) = error_jump {
                     self.builder.patch_jump(label);
                 }

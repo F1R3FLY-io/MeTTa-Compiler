@@ -13,8 +13,9 @@ use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait
 
 #[allow(unused_imports)]
 use super::super::trampoline::{
-    apply_bindings_generic, pattern_specificity_generic, try_match_all_rules_generic,
+    apply_bindings_generic, try_match_all_rules_generic,
 };
+// NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
 use super::super::helpers::needs_special_form_redispatch;
 
 // ============================================================================
@@ -68,6 +69,12 @@ pub struct GenericCartesianProductIter<V> {
 }
 
 impl<V: Clone> GenericCartesianProductIter<V> {
+    /// Get a reference to the input vectors (for GC root collection).
+    #[inline]
+    pub fn inputs(&self) -> &[Vec<V>] {
+        &self.inputs
+    }
+
     /// Create a new Cartesian product iterator.
     pub fn new(inputs: Vec<Vec<V>>) -> Self {
         let exhausted = inputs.iter().any(|v| v.is_empty());

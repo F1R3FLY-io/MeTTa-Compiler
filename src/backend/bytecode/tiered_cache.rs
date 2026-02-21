@@ -30,7 +30,7 @@
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -98,6 +98,26 @@ use super::cache::hash_metta_value;
 use super::chunk::BytecodeChunk;
 use super::compiler::compile_arc;
 use super::jit::compiler::JitCompiler;
+
+/// Dedicated thread pool for background bytecode/JIT compilation.
+///
+/// Uses 2 threads instead of Rayon's default `num_cpus` (e.g. 36 on a 36-core
+/// machine). This avoids spawning dozens of threads that each trigger a 64 MB
+/// glibc malloc arena via `alloc_new_heap` during `pthread_getattr_np`.
+/// Background compilation is infrequent (only at tier promotion thresholds),
+/// so 2 threads is more than sufficient.
+static COMPILE_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    let num_threads = std::env::var("RAYON_NUM_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(2)
+        .max(1);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .thread_name(|i| format!("compile-worker-{}", i))
+        .build()
+        .expect("failed to create compilation thread pool")
+});
 
 /// Threshold to trigger bytecode compilation (eager: after 1st execution)
 /// Compilation is non-blocking (rayon background), so eager compilation
@@ -630,9 +650,9 @@ impl TieredCache {
         // Choose spawn method based on feature and execution mode
         #[cfg(feature = "hybrid-p2-priority-scheduler")]
         {
-            // Hybrid mode: Use Rayon for sequential, P2 scheduler for parallel
+            // Hybrid mode: Use dedicated pool for sequential, P2 scheduler for parallel
             if is_sequential_mode() {
-                rayon::spawn(compile_task);
+                COMPILE_POOL.spawn(compile_task);
             } else {
                 global_priority_eval_pool().spawn_with_priority(
                     compile_task,
@@ -644,8 +664,8 @@ impl TieredCache {
 
         #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
         {
-            // Default: Always use Rayon (compatible with Rholang shared schedulers)
-            rayon::spawn(compile_task);
+            // Default: Use dedicated 2-thread pool (avoids spawning num_cpus Rayon workers)
+            COMPILE_POOL.spawn(compile_task);
         }
     }
 
@@ -720,7 +740,7 @@ impl TieredCache {
         #[cfg(feature = "hybrid-p2-priority-scheduler")]
         {
             if is_sequential_mode() {
-                rayon::spawn(jit_compile);
+                COMPILE_POOL.spawn(jit_compile);
             } else {
                 global_priority_eval_pool().spawn_with_priority(
                     jit_compile,
@@ -732,7 +752,7 @@ impl TieredCache {
 
         #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
         {
-            rayon::spawn(jit_compile);
+            COMPILE_POOL.spawn(jit_compile);
         }
     }
 
@@ -808,7 +828,7 @@ impl TieredCache {
         #[cfg(feature = "hybrid-p2-priority-scheduler")]
         {
             if is_sequential_mode() {
-                rayon::spawn(jit_compile);
+                COMPILE_POOL.spawn(jit_compile);
             } else {
                 global_priority_eval_pool().spawn_with_priority(
                     jit_compile,
@@ -820,7 +840,7 @@ impl TieredCache {
 
         #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
         {
-            rayon::spawn(jit_compile);
+            COMPILE_POOL.spawn(jit_compile);
         }
     }
 

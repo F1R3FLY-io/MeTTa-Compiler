@@ -110,7 +110,7 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for AddOpGeneric
     }
 }
 
-/// Generic TCO Subtraction operation: (- a b)
+/// Generic TCO Subtraction/Negation operation: (- a b) or (- a)
 pub struct SubOpGeneric;
 
 impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for SubOpGeneric {
@@ -125,18 +125,53 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for SubOpGeneric
     ) -> GenericGroundedWork<V> {
         match state.step {
             0 => {
-                if state.args.len() != 2 {
-                    return GenericGroundedWork::Error(ExecError::IncorrectArgument(format!(
-                        "- requires 2 arguments, got {}",
+                match state.args.len() {
+                    1 => {
+                        // Unary minus: (- x) => negate x
+                        state.step = 10;
+                        GenericGroundedWork::EvalArg {
+                            arg_idx: 0,
+                            state: state.clone(),
+                        }
+                    }
+                    2 => {
+                        // Binary minus: (- a b) => a - b
+                        state.step = 1;
+                        GenericGroundedWork::EvalArg {
+                            arg_idx: 0,
+                            state: state.clone(),
+                        }
+                    }
+                    _ => GenericGroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "- requires 1 or 2 arguments, got {}",
                         state.args.len()
-                    )));
-                }
-                state.step = 1;
-                GenericGroundedWork::EvalArg {
-                    arg_idx: 0,
-                    state: state.clone(),
+                    ))),
                 }
             }
+            // --- Unary minus path ---
+            10 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                if let Some(err) = find_error_generic(a_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                let mut results = Vec::with_capacity(a_results.len());
+                for a in a_results {
+                    match (a.as_long(), a.as_float()) {
+                        (Some(x), _) => match x.checked_neg() {
+                            Some(neg) => results.push((factory.long(neg), None)),
+                            None => {
+                                return GenericGroundedWork::Error(ExecError::Runtime(
+                                    format!("Integer overflow: -({})", x),
+                                ))
+                            }
+                        },
+                        (_, Some(x)) => results.push((factory.float(-x), None)),
+                        _ => return GenericGroundedWork::Error(ExecError::NoReduce),
+                    }
+                }
+                GenericGroundedWork::Done(results)
+            }
+            // --- Binary minus path ---
             1 => {
                 let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
                 if let Some(err) = find_error_generic(a_results) {
@@ -723,6 +758,96 @@ mod tests {
             }
             _ => panic!("Expected Done"),
         }
+    }
+
+    // --- Unary minus tests ---
+
+    #[test]
+    fn test_sub_op_generic_unary() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("-".to_string(), vec![MettaValue::Long(5)]);
+        let op = SubOpGeneric;
+
+        // Step 0: should request arg 0 evaluation (unary path → step 10)
+        let work = op.execute_step_generic(&mut state, &factory);
+        assert!(matches!(work, GenericGroundedWork::EvalArg { arg_idx: 0, .. }));
+
+        // Simulate arg 0 evaluation
+        state.set_arg(0, vec![MettaValue::Long(5)]);
+        state.step = 10;
+
+        // Step 10: compute negation
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_long(), Some(-5));
+            }
+            _ => panic!("Expected Done, got {:?}", work),
+        }
+    }
+
+    #[test]
+    fn test_sub_op_generic_unary_float() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("-".to_string(), vec![MettaValue::Float(3.14)]);
+        let op = SubOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Float(3.14)]);
+        state.step = 10;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_float(), Some(-3.14));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_sub_op_generic_unary_zero() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("-".to_string(), vec![MettaValue::Long(0)]);
+        let op = SubOpGeneric;
+
+        op.execute_step_generic(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Long(0)]);
+        state.step = 10;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        match work {
+            GenericGroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_long(), Some(0));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_sub_op_generic_no_args() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new("-".to_string(), vec![]);
+        let op = SubOpGeneric;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        assert!(matches!(work, GenericGroundedWork::Error(ExecError::IncorrectArgument(_))));
+    }
+
+    #[test]
+    fn test_sub_op_generic_three_args() {
+        let factory = GcFactory::default();
+        let mut state = GenericGroundedState::new(
+            "-".to_string(),
+            vec![MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)],
+        );
+        let op = SubOpGeneric;
+
+        let work = op.execute_step_generic(&mut state, &factory);
+        assert!(matches!(work, GenericGroundedWork::Error(ExecError::IncorrectArgument(_))));
     }
 
     #[test]

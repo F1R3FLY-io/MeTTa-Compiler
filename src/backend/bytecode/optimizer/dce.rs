@@ -112,7 +112,8 @@ impl DeadCodeEliminator {
                 Opcode::JumpIfFalse
                 | Opcode::JumpIfTrue
                 | Opcode::JumpIfUnit
-                | Opcode::JumpIfError => {
+                | Opcode::JumpIfError
+                | Opcode::JumpIfNotBool => {
                     if let Some(target) = self.get_jump_target_i16(code, offset) {
                         if target < code.len() {
                             starts.insert(target);
@@ -246,7 +247,8 @@ impl DeadCodeEliminator {
                     Opcode::JumpIfFalse
                     | Opcode::JumpIfTrue
                     | Opcode::JumpIfUnit
-                    | Opcode::JumpIfError => {
+                    | Opcode::JumpIfError
+                    | Opcode::JumpIfNotBool => {
                         if let Some(target) = self.get_jump_target_i16(code, offset) {
                             successors.push(target);
                         }
@@ -372,7 +374,8 @@ impl DeadCodeEliminator {
                 | Opcode::JumpIfFalse
                 | Opcode::JumpIfTrue
                 | Opcode::JumpIfUnit
-                | Opcode::JumpIfError => {
+                | Opcode::JumpIfError
+                | Opcode::JumpIfNotBool => {
                     if offset + 2 < code.len() {
                         let old_jump_offset =
                             i16::from_be_bytes([code[offset + 1], code[offset + 2]]);

@@ -116,7 +116,8 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
 
             // Type-based jumps
             Opcode::JumpIfUnit
-            | Opcode::JumpIfError => {}
+            | Opcode::JumpIfError
+            | Opcode::JumpIfNotBool => {}
 
             // Type predicates
             Opcode::IsVariable
@@ -398,7 +399,8 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
 
             // Stage 5: Type-based jumps
             Opcode::JumpIfUnit
-            | Opcode::JumpIfError => {}
+            | Opcode::JumpIfError
+            | Opcode::JumpIfNotBool => {}
 
             // Stage 6: Type predicates
             Opcode::IsVariable
@@ -604,7 +606,8 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
             | Opcode::JumpIfFalse
             | Opcode::JumpIfTrue
             | Opcode::JumpIfUnit
-            | Opcode::JumpIfError => {
+            | Opcode::JumpIfError
+            | Opcode::JumpIfNotBool => {
                 // 2-byte signed offset, relative to next_ip
                 let rel_offset = chunk.read_i16(offset + 1).unwrap_or(0);
                 let target = (next_ip as isize + rel_offset as isize) as usize;
@@ -676,6 +679,7 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
                 | Opcode::JumpIfTrueShort
                 | Opcode::JumpIfUnit
                 | Opcode::JumpIfError
+                | Opcode::JumpIfNotBool
         );
         if has_fallthrough_to_next && next_ip < code.len() && targets.contains(&next_ip) {
             // This is a fallthrough edge

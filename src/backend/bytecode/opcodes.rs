@@ -132,6 +132,9 @@ pub enum Opcode {
     JumpIfFalseShort = 0x57,
     /// Short conditional jump if true
     JumpIfTrueShort = 0x58,
+    /// Jump if top of stack is NOT a boolean (peek, not pop), offset is next 2 bytes
+    /// Used for MeTTa HE `if` semantics: non-boolean conditions return unreduced.
+    JumpIfNotBool = 0x59,
     /// Call bytecode function, index is next 2 bytes
     Call = 0x60,
     /// Tail-optimized call
@@ -581,6 +584,7 @@ impl Opcode {
             | Self::JumpIfTrue
             | Self::JumpIfUnit
             | Self::JumpIfError
+            | Self::JumpIfNotBool
             | Self::JumpTable
             | Self::MatchGuard
             | Self::TryRule
@@ -654,6 +658,7 @@ impl Opcode {
             Self::JumpIfTrue => "jump_if_true",
             Self::JumpIfUnit => "jump_if_unit",
             Self::JumpIfError => "jump_if_error",
+            Self::JumpIfNotBool => "jump_if_not_bool",
             Self::JumpTable => "jump_table",
             Self::JumpShort => "jump_short",
             Self::JumpIfFalseShort => "jump_if_false_short",
@@ -792,6 +797,7 @@ impl Opcode {
                 | Self::JumpIfTrue
                 | Self::JumpIfUnit
                 | Self::JumpIfError
+                | Self::JumpIfNotBool
                 | Self::JumpTable
                 | Self::JumpShort
                 | Self::JumpIfFalseShort
@@ -899,6 +905,7 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x56] = Some(Opcode::JumpShort);
     table[0x57] = Some(Opcode::JumpIfFalseShort);
     table[0x58] = Some(Opcode::JumpIfTrueShort);
+    table[0x59] = Some(Opcode::JumpIfNotBool);
     table[0x60] = Some(Opcode::Call);
     table[0x61] = Some(Opcode::TailCall);
     table[0x62] = Some(Opcode::Return);

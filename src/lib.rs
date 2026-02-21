@@ -297,7 +297,7 @@ mod tests {
     fn test_if_lazy_evaluation_true_branch() {
         let input = r#"
             (= (boom) (error "should not evaluate" 0))
-            (if true success (boom))
+            (if True success (boom))
         "#;
 
         let state = compile(input).expect("compile failed");
@@ -321,7 +321,7 @@ mod tests {
     fn test_if_prevents_infinite_loop() {
         let input = r#"
             (= (loop) (loop))
-            (if true success (loop))
+            (if True success (loop))
         "#;
 
         let state = compile(input).expect("compile failed");
@@ -776,9 +776,10 @@ mod tests {
 
     #[test]
     fn test_simple_recursion() {
+        // Uses if-guard instead of overlapping base-case pattern because MeTTa HE
+        // fires all matching rules nondeterministically (no specificity filter).
         let input = r#"
-            (= (countdown 0) done)
-            (= (countdown $n) (countdown (- $n 1)))
+            (= (countdown $n) (if (== $n 0) done (countdown (- $n 1))))
             !(countdown 3)
         "#;
 
@@ -851,10 +852,10 @@ mod tests {
 
     #[test]
     fn test_recursive_fibonacci() {
+        // Uses if-guards instead of overlapping base-case patterns because MeTTa HE
+        // fires all matching rules nondeterministically (no specificity filter).
         let input = r#"
-            (= (fib 0) 0)
-            (= (fib 1) 1)
-            (= (fib $n) (+ (fib (- $n 1)) (fib (- $n 2))))
+            (= (fib $n) (if (== $n 0) 0 (if (== $n 1) 1 (+ (fib (- $n 1)) (fib (- $n 2))))))
             !(fib 6)
         "#;
 
@@ -1276,12 +1277,15 @@ mod tests {
 
     #[test]
     fn test_nondeterministic_nested_application() {
-        // Test lazy/call-by-name semantics with nondeterministic functions
+        // Test applicative evaluation with nondeterministic functions.
         // (f) -> [1, 2, 3]
         // (g $x) -> (* $x $x)
-        // With lazy evaluation: $x binds to (f) as an expression, not a value.
-        // (g (f)) -> (* (f) (f)) -> each (f) evaluates independently to [1,2,3]
-        // Result: 3x3 = 9 combinations (Cartesian product of both (f) evaluations)
+        //
+        // With bloom filter applicative eval:
+        // (g (f)) → (f) is pre-evaluated to {1, 2, 3} (nondeterministic)
+        // → (g 1), (g 2), (g 3) are evaluated independently
+        // → (* 1 1) = 1, (* 2 2) = 4, (* 3 3) = 9
+        // Result: {1, 4, 9} — 3 results (call-by-value semantics)
         let input = r#"
             (= (f) 1)
             (= (f) 2)
@@ -1304,18 +1308,13 @@ mod tests {
         }
 
         if let Some(results) = result {
-            // Lazy semantics: (f)*(f) gives 9 results (all combinations)
-            // 1*1, 1*2, 1*3, 2*1, 2*2, 2*3, 3*1, 3*2, 3*3
-            assert_eq!(results.len(), 9);
-            // All products of pairs from [1,2,3] x [1,2,3]
-            assert!(results_contain_long(&results, 1)); // 1*1
-            assert!(results_contain_long(&results, 2)); // 1*2, 2*1
-            assert!(results_contain_long(&results, 3)); // 1*3, 3*1
-            assert!(results_contain_long(&results, 4)); // 2*2
-            assert!(results_contain_long(&results, 6)); // 2*3, 3*2
-            assert!(results_contain_long(&results, 9)); // 3*3
+            // Applicative eval: (f) pre-evaluated to {1,2,3}, each fed to (g $x)
+            assert_eq!(results.len(), 3);
+            assert!(results_contain_long(&results, 1)); // g(1) = 1*1
+            assert!(results_contain_long(&results, 4)); // g(2) = 2*2
+            assert!(results_contain_long(&results, 9)); // g(3) = 3*3
         } else {
-            panic!("Expected 9 results from lazy nondeterministic evaluation");
+            panic!("Expected 3 results from applicative nondeterministic evaluation");
         }
     }
 

@@ -111,9 +111,11 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub var_names: Vec<String>,
     /// Indices of `_` wildcards (skip these in named bindings)
     pub wildcard_indices: SmallVec<[u8; 4]>,
-    /// Precomputed specificity: count of NewVar tags in LHS De Bruijn bytes
-    /// Lower = more specific (fewer variables)
-    pub specificity: usize,
+    // NOTE: The old `specificity` field (count of NewVar tags) was removed.
+    // MeTTa HE has NO specificity filter — all matching rules fire nondeterministically.
+    // The old filter dropped structurally-more-specific rules when a variable-only rule
+    // happened to have fewer NewVar tags (e.g. `(f ($c $tv) $y)` with 3 vars beat
+    // `(f ((Implication $A $B) $TV) $Y)` with 4 vars despite the latter being more specific).
     /// How many times this rule was added (synced with PathMap multiplicity)
     pub multiplicity: u64,
 }
@@ -637,8 +639,7 @@ where
                 }
 
                 // 3. Compute metadata from De Bruijn encoding
-                let specificity = count_newvar_tags(&lhs_debruijn);
-                let lhs_var_count = specificity; // each NewVar in LHS introduces a variable
+                let lhs_var_count = count_newvar_tags(&lhs_debruijn);
                 let (var_names, wildcard_indices) =
                     build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
 
@@ -649,7 +650,6 @@ where
                     lhs_debruijn,
                     var_names,
                     wildcard_indices,
-                    specificity,
                     multiplicity: 1,
                 };
                 self.shared.rule_index.write().add_rule(
@@ -704,9 +704,8 @@ where
     /// 2. **RuleIndex lookup** — O(1) HashMap lookup for `(head, arity) → Vec<RuleEntry>`
     /// 3. **Serialize expr ONCE** — `with_mork_bytes(expr)` → expr_bytes
     /// 4. **`extract_data()`** — O(n) byte-level pattern matching per candidate (no deserialization)
-    /// 5. **Specificity filter** — Keep only best (lowest) specificity matches
-    /// 6. **Deserialize bindings** — Only for successful matches
-    /// 7. **`apply_bindings_generic()`** — Apply bindings to cached RHS MettaValue
+    /// 5. **Extract bindings** — Only for successful matches (all matching rules fire nondeterministically)
+    /// 6. **`apply_bindings_generic()`** — Apply bindings to cached RHS MettaValue
     ///
     /// ## Performance
     ///
@@ -782,7 +781,6 @@ where
             // candidates Vec allocation (which can hold 1000s of entries for large programs).
             struct MatchHit<'a, V: MettaValueTrait + Clone> {
                 entry: &'a RuleEntry<V>,
-                specificity: usize,
             }
 
             let mut hits: Vec<MatchHit<'_, V>> = Vec::new();
@@ -820,7 +818,7 @@ where
 
                     // extract_data: template.extract_data(input) → Vec<Expr> or failure
                     if lhs_expr.extract_data(&mut input_zipper).is_ok() {
-                        hits.push(MatchHit { entry, specificity: entry.specificity });
+                        hits.push(MatchHit { entry });
                     }
                 };
             }
@@ -839,9 +837,10 @@ where
                 return Vec::new();
             }
 
-            // Phase 2: Specificity filtering — keep only best (lowest = most specific)
-            let best_specificity = hits.iter().map(|h| h.specificity).min().expect("hits is non-empty");
-            hits.retain(|h| h.specificity == best_specificity);
+            // Phase 2 (removed): The old specificity filter was removed because MeTTa HE
+            // has no specificity filter — all matching rules fire nondeterministically.
+            // The old filter incorrectly dropped structurally-more-specific rules when a
+            // variable-only rule happened to have fewer NewVar tags.
 
             // Phase 3: Extract bindings from original expression and build results.
             // Uses parallel tree walk instead of MORK deserialization to preserve
@@ -1285,8 +1284,7 @@ impl MettaEnvironment {
                         lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
                         lhs_debruijn.push(0x00);
 
-                        let specificity = count_newvar_tags(&lhs_debruijn);
-                        let lhs_var_count = specificity;
+                        let lhs_var_count = count_newvar_tags(&lhs_debruijn);
                         let (var_names, wildcard_indices) =
                             build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
 
@@ -1296,7 +1294,6 @@ impl MettaEnvironment {
                             lhs_debruijn,
                             var_names,
                             wildcard_indices,
-                            specificity,
                             multiplicity,
                         };
 

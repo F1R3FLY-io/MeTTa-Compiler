@@ -165,6 +165,61 @@ fn test_compile_sub_constant_folding() {
 }
 
 #[test]
+fn test_compile_unary_minus() {
+    // (- $x) should emit Neg opcode
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("-".to_string()),
+        MettaValue::Atom("$x".to_string()),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("neg"), "Expected 'neg' opcode in disassembly: {}", disasm);
+    assert!(!disasm.contains("sub"), "Should not contain 'sub' opcode: {}", disasm);
+}
+
+#[test]
+fn test_compile_unary_minus_constant() {
+    // (- 5) should constant-fold to -5
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("-".to_string()),
+        MettaValue::Long(5),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // Constant folding should produce push_long_small -5
+    assert!(
+        disasm.contains("push_long_small -5") || disasm.contains("neg"),
+        "Expected constant-folded -5 or neg opcode in disassembly: {}", disasm
+    );
+}
+
+#[test]
+fn test_compile_binary_minus_still_works() {
+    // (- $x $y) should still emit Sub opcode
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("-".to_string()),
+        MettaValue::Atom("$x".to_string()),
+        MettaValue::Atom("$y".to_string()),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("sub"), "Expected 'sub' opcode in disassembly: {}", disasm);
+}
+
+#[test]
+fn test_compile_minus_too_many_args() {
+    // (- 1 2 3) should produce an error
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("-".to_string()),
+        MettaValue::Long(1),
+        MettaValue::Long(2),
+        MettaValue::Long(3),
+    ]);
+    let result = compile("test", &expr);
+    assert!(result.is_err(), "Expected compile error for 3-arg minus");
+}
+
+#[test]
 fn test_compile_mul() {
     // Use variables to prevent constant folding
     let expr = MettaValue::SExpr(vec![

@@ -37,11 +37,11 @@ where
         if !elements.is_empty() {
             return vec![elements[0].clone()];
         }
-        // Empty sexpr
-        return vec![factory.error(
-            "car-atom expects a non-empty expression as argument",
-            expr.clone(),
-        )];
+        // Empty sexpr — nondeterministic failure (branch pruning).
+        // When both a base-case rule (fn () ...) and a general-case rule (fn $x ...)
+        // match (), the general case calls car-atom on (). Returning empty prunes this
+        // branch, leaving only the base-case result. Matches decons-atom's semantics.
+        return vec![];
     }
 
     // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
@@ -50,10 +50,8 @@ where
     }
 
     if expr.is_unit() {
-        return vec![factory.error(
-            "car-atom expects a non-empty expression as argument",
-            expr.clone(),
-        )];
+        // Unit — nondeterministic failure (same rationale as empty sexpr above)
+        return vec![];
     }
 
     // Not an expression
@@ -87,11 +85,9 @@ where
             let tail: Vec<V> = elements[1..].to_vec();
             return vec![factory.sexpr(tail)];
         }
-        // Empty sexpr
-        return vec![factory.error(
-            "cdr-atom expects a non-empty expression as argument",
-            expr.clone(),
-        )];
+        // Empty sexpr — nondeterministic failure (branch pruning).
+        // See car-atom rationale above.
+        return vec![];
     }
 
     // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
@@ -100,10 +96,8 @@ where
     }
 
     if expr.is_unit() {
-        return vec![factory.error(
-            "cdr-atom expects a non-empty expression as argument",
-            expr.clone(),
-        )];
+        // Unit — nondeterministic failure (same rationale as empty sexpr above)
+        return vec![];
     }
 
     // Not an expression

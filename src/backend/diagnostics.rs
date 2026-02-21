@@ -163,6 +163,41 @@ fn dump_gc_state() {
     eprintln!("  gc_disabled:        {:>12}", disabled);
     eprintln!("  gc_reachable_ctr:   {:>12}", reachable);
     eprintln!();
+
+    // Page statistics
+    let ps = alloc.page_stats();
+    let dead_slots = ps.total_bumped_slots.saturating_sub(ps.total_live_slots);
+    let occupancy = if ps.total_bumped_slots > 0 {
+        ps.total_live_slots as f64 / ps.total_bumped_slots as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    eprintln!("── Slab Pages ────────────────────────────────────────────────");
+    eprintln!("  value_pages:        {:>12}", ps.value_page_count);
+    eprintln!("  slots_per_page:     {:>12}", ps.slots_per_page);
+    eprintln!("  total_bumped:       {:>12}", ps.total_bumped_slots);
+    eprintln!("  total_live:         {:>12}", ps.total_live_slots);
+    eprintln!("  dead (bumped-live): {:>12}", dead_slots);
+    eprintln!("  occupancy:          {:>11.1}%", occupancy);
+    eprintln!("  value_committed:    {:>12} ({:.1} MB)", ps.value_committed_bytes, ps.value_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!("  data_pages:         {:>12}", ps.data_page_count);
+    eprintln!("  data_committed:     {:>12} ({:.1} MB)", ps.data_committed_bytes, ps.data_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!();
+
+    // Session GC statistics
+    let sgc = gc_allocator::session_gc_stats();
+    eprintln!("── Session GC ────────────────────────────────────────────────");
+    eprintln!("  sessions_released:  {:>12}", sgc.releases_total);
+    eprintln!("  values_freed:       {:>12}", sgc.values_freed_total);
+    eprintln!("  values_promoted:    {:>12}", sgc.values_promoted_total);
+    eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
+    eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
+    if sgc.releases_total > 0 {
+        eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
+        eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
+    }
+    eprintln!();
 }
 
 /// Dump evaluator state.

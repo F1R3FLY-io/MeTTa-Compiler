@@ -292,7 +292,10 @@ proptest! {
         prop_assert_eq!(outputs.len(), 1);
 
         if let Some((message, _)) = outputs[0].as_error() {
-            prop_assert!(message.contains("requires 2 arguments"),
+            // `-` accepts 1 or 2 args (unary negation + binary subtraction),
+            // all other arith ops require exactly 2 args.
+            prop_assert!(message.contains("requires 2 arguments")
+                || message.contains("requires 1 or 2 arguments"),
                 "expected arity error message, got: {}", message);
         } else {
             prop_assert!(false, "expected arity Error, got {:?}", outputs[0]);

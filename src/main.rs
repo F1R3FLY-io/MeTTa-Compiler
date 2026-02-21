@@ -411,6 +411,23 @@ fn run_repl(options: &Options) {
 }
 
 fn main() {
+    // Limit glibc per-thread malloc arenas. Since jemalloc is the global
+    // allocator (via PathMap), glibc's arenas are only used internally by
+    // pthread_getattr_np during thread creation. Without this limit, each
+    // new thread reserves 64 MB of virtual address space for a glibc arena,
+    // wasting ~2+ GB of virtual memory with many threads.
+    #[cfg(target_os = "linux")]
+    {
+        extern "C" {
+            fn mallopt(param: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+        }
+        const M_ARENA_MAX: std::ffi::c_int = -8;
+        // SAFETY: mallopt is thread-safe and called before any threads are spawned.
+        unsafe {
+            mallopt(M_ARENA_MAX, 2);
+        }
+    }
+
     // Install signal-triggered diagnostic handlers (SIGTERM/SIGUSR1) early.
     // Also auto-installed by global_allocator(), but explicit call ensures
     // coverage even if main() fails before first allocation.

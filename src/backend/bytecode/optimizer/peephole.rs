@@ -746,7 +746,8 @@ impl PeepholeOptimizer {
                 | Opcode::JumpIfFalse
                 | Opcode::JumpIfTrue
                 | Opcode::JumpIfUnit
-                | Opcode::JumpIfError => {
+                | Opcode::JumpIfError
+                | Opcode::JumpIfNotBool => {
                     if offset + 2 < code.len() {
                         let old_jump_offset =
                             i16::from_be_bytes([code[offset + 1], code[offset + 2]]);

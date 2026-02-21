@@ -1018,50 +1018,65 @@ impl Eq for MettaValueInner {}
 /// Long(2) == Float(2.0) -> true. Promotes Long->f64 when comparing
 /// mixed numeric types, using epsilon tolerance for float comparison.
 /// Non-numeric types fall back to structural PartialEq.
+#[inline]
 pub fn numeric_equal(a: &MettaValue, b: &MettaValue) -> bool {
-    match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
-        // Long == Long: exact integer comparison
-        (Some(x), _, Some(y), _) => x == y,
-        // Float == Float: epsilon tolerance
-        (_, Some(x), _, Some(y)) => float_equal(x, y),
-        // Long == Float: promote Long to f64
-        (Some(x), _, _, Some(y)) => float_equal(x as f64, y),
-        // Float == Long: promote Long to f64
-        (_, Some(x), Some(y), _) => float_equal(x, y as f64),
-        // Non-numeric: structural PartialEq
-        _ => a == b,
-    }
+    // Delegate to the generic version which handles S-expression recursion
+    numeric_equal_generic(a, b)
 }
 
 /// MeTTa HE-compatible numeric inequality.
+#[inline]
 pub fn numeric_not_equal(a: &MettaValue, b: &MettaValue) -> bool {
     !numeric_equal(a, b)
 }
 
 /// Generic numeric equality for use with MettaValueTrait.
+///
+/// Recurses into S-expressions so that structures containing floats
+/// (e.g. `(stv 0.519... 0.829...)`) use epsilon comparison on float leaves
+/// rather than exact `PartialEq`.
 pub fn numeric_equal_generic<V: MettaValueTrait + PartialEq>(a: &V, b: &V) -> bool {
     match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
         (Some(x), _, Some(y), _) => x == y,
         (_, Some(x), _, Some(y)) => float_equal(x, y),
         (Some(x), _, _, Some(y)) => float_equal(x as f64, y),
         (_, Some(x), Some(y), _) => float_equal(x, y as f64),
-        _ => a == b,
+        _ => {
+            // Recurse into S-expressions for deep float-epsilon comparison
+            match (a.as_sexpr(), b.as_sexpr()) {
+                (Some(items_a), Some(items_b)) => {
+                    items_a.len() == items_b.len()
+                        && items_a
+                            .iter()
+                            .zip(items_b.iter())
+                            .all(|(x, y)| numeric_equal_generic(x, y))
+                }
+                _ => a == b, // Non-numeric, non-sexpr: exact PartialEq
+            }
+        }
     }
 }
 
 /// IEEE 754-aware float comparison with epsilon tolerance.
 ///
-/// Special cases:
-/// - NaN != NaN (IEEE 754 semantics)
-/// - 0.0 == -0.0 (IEEE 754 semantics)
-/// - For non-NaN values, uses f64::EPSILON tolerance
+/// Uses combined absolute + relative tolerance:
+/// - Absolute: `f64::EPSILON` for near-zero values
+/// - Relative: 4 ULPs scaled by magnitude for non-zero values
+/// - NaN != NaN per IEEE 754
+/// - 0.0 == -0.0 per IEEE 754
 #[inline]
 fn float_equal(x: f64, y: f64) -> bool {
     // NaN != NaN per IEEE 754
     if x.is_nan() || y.is_nan() {
         return false;
     }
-    (x - y).abs() < f64::EPSILON
+    let diff = (x - y).abs();
+    if diff <= f64::EPSILON {
+        return true; // absolute tolerance for near-zero
+    }
+    // Relative tolerance: scale epsilon by magnitude (4 ULPs)
+    let max_abs = x.abs().max(y.abs());
+    diff <= max_abs * f64::EPSILON * 4.0
 }
 
 impl std::hash::Hash for MettaValue {

@@ -43,6 +43,30 @@
  *   This model VERIFIES this invariant (SnapshotCapturesAllRoots) rather
  *   than assuming it.
  *
+ * INTRA-EVALUATION GC SAFEPOINTS:
+ *
+ *   Long-running evaluations (e.g., PLN Robot) accumulate dead objects
+ *   because the GC can only run when ACTIVE_EVALUATORS == 0. A single
+ *   eval() call holds EvalGuard for its entire duration. Cooperative
+ *   safepoints allow an evaluator to temporarily pause, register its
+ *   trampoline state (work_stack + continuations) as temporary roots,
+ *   release the EvalGuard, allow the quiescent GC to fire, then
+ *   re-acquire the guard and unregister the temporary roots.
+ *
+ *   The safepoint protocol mirrors the EvalGuard enter/backoff pattern:
+ *     1. EvalSafepoint: register roots, decrement ACTIVE_EVALUATORS
+ *        -> threadPhase transitions from "eval" to "safepoint"
+ *     2. EvalSafepointResume_Increment: increment ACTIVE_EVALUATORS
+ *        -> threadPhase transitions from "safepoint" to "sp_entering"
+ *     3. EvalSafepointResume_Proceed: GC_IN_PROGRESS clear
+ *        -> restore roots, transition to "eval"
+ *     3b. EvalSafepointResume_BackOff: GC_IN_PROGRESS set
+ *        -> decrement, return to "safepoint"
+ *
+ *   Safepoint roots are visible to GC via collect_all_roots() ->
+ *   collect_safepoint_roots(). The snapshot includes both registered
+ *   roots and safepoint roots.
+ *
  * SESSION-BASED GC MODEL:
  *
  *   Each top-level eval creates a SessionGuard with a unique context ID
@@ -335,6 +359,12 @@ VARIABLES
                     \* These are values on the Rust call stack (work_stack,
                     \* continuations, locals) that are NOT registered as GC roots.
                     \* Empty when thread is not in "eval" phase.
+    safepointRoots, \* [Threads -> SUBSET(Slots)] — per-thread safepoint roots
+                    \* When a thread enters a cooperative GC safepoint during "eval",
+                    \* its stackRoots are moved here and become visible to GC via
+                    \* collect_all_roots() -> collect_safepoint_roots().
+                    \* Non-empty only during "safepoint" and "sp_entering" phases.
+                    \* Models SAFEPOINT_ROOTS registry in gc_allocator.rs.
 
     (*---------------------------------------------------------------*)
     (* Lock-Free Coordination Flags (shared atomics)                 *)
@@ -446,7 +476,7 @@ VARIABLES
     gcPhase,        \* "idle" | "marking" | "sweeping"
     gcMarked        \* SUBSET(Slots) — marked during tracing
 
-vars == <<threadPhase, threadExprs, stackRoots, activeEvaluators,
+vars == <<threadPhase, threadExprs, stackRoots, safepointRoots, activeEvaluators,
           gcInProgressFlag, gcRequested, slotState, bumpPtr, freeSet,
           registeredRoots, epoch, slotEpoch,
           slotContextId, threadContextId, nextContextId,
@@ -470,9 +500,12 @@ CanAllocate ==
     \/ freeSet /= {}
     \/ bumpPtr <= MaxSlots
 
-\* Total live roots (registered + all stack roots)
+\* Total safepoint roots across all threads
+AllSafepointRoots == UNION {safepointRoots[t] : t \in Threads}
+
+\* Total live roots (registered + all stack roots + all safepoint roots)
 AllLiveRoots ==
-    registeredRoots \union UNION {stackRoots[t] : t \in Threads}
+    registeredRoots \union UNION {stackRoots[t] : t \in Threads} \union AllSafepointRoots
 
 \* Number of committed slots (total bump-allocated, including freed)
 \* Models committed_bytes / SLOT_SIZE in the real system.
@@ -520,6 +553,7 @@ Init ==
     /\ threadPhase = [t \in Threads |-> "idle"]
     /\ threadExprs = [t \in Threads |-> 0]
     /\ stackRoots = [t \in Threads |-> {}]
+    /\ safepointRoots = [t \in Threads |-> {}]
     /\ activeEvaluators = 0
     /\ gcInProgressFlag = FALSE
     /\ gcRequested = FALSE
@@ -581,7 +615,7 @@ EvalGuardEnter_Increment(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* EvalGuardEnter_Proceed: Thread checks GC_IN_PROGRESS is clear.       *)
@@ -611,7 +645,7 @@ EvalGuardEnter_Proceed(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* EvalGuardEnter_BackOff: Thread sees GC_IN_PROGRESS is set.            *)
@@ -634,7 +668,7 @@ EvalGuardEnter_BackOff(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* EvalGuardDrop: Thread finishes eval, decrements ACTIVE_EVALUATORS.    *)
@@ -676,7 +710,7 @@ EvalGuardDrop(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*=======================================================================*)
 (* Eval Thread Actions During "eval" Phase                               *)
@@ -730,7 +764,7 @@ AllocateSlot(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* DropStackRoot: A stack root becomes unreachable during evaluation.     *)
@@ -752,7 +786,7 @@ DropStackRoot(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* PublishRoot: A stack value is stored in a registered root provider     *)
@@ -777,7 +811,7 @@ PublishRoot(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* DropRegisteredRoot: A registered root becomes unreachable.             *)
@@ -799,7 +833,137 @@ DropRegisteredRoot(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   safepointRoots, gcPhase, gcMarked>>
+
+(*=======================================================================*)
+(* Intra-Evaluation GC Safepoints                                        *)
+(*=======================================================================*)
+(*
+ * Cooperative GC safepoints allow an evaluator to temporarily pause
+ * mid-evaluation, register its trampoline roots, and release the
+ * EvalGuard. This enables the quiescent GC to fire during long-running
+ * evaluations (e.g., PLN Robot) that would otherwise hold the guard
+ * for minutes, preventing GC and accumulating dead objects.
+ *
+ * The protocol mirrors the EvalGuard enter/backoff pattern:
+ *   EvalSafepoint:                "eval"        -> "safepoint"
+ *   EvalSafepointResume_Increment: "safepoint"  -> "sp_entering"
+ *   EvalSafepointResume_Proceed:   "sp_entering" -> "eval"
+ *   EvalSafepointResume_BackOff:   "sp_entering" -> "safepoint"
+ *
+ * Models: register_temporary_roots(), drop_eval_guard_for_safepoint(),
+ *         reacquire_eval_guard_after_safepoint() in gc_allocator.rs
+ *)
+
+(*-----------------------------------------------------------------------*)
+(* EvalSafepoint: Thread enters cooperative GC safepoint.                *)
+(* Moves stack roots to safepoint roots (visible to GC via               *)
+(* collect_safepoint_roots()) and decrements ACTIVE_EVALUATORS.          *)
+(*                                                                        *)
+(* CRITICAL ORDERING: Roots are registered BEFORE dropping the guard.    *)
+(* This prevents a window where ACTIVE_EVALUATORS == 0 but roots are    *)
+(* not visible to GC (would cause use-after-free).                       *)
+(*                                                                        *)
+(* Models: register_temporary_roots(roots) then                           *)
+(*         drop_eval_guard_for_safepoint() in session_context.rs          *)
+(*-----------------------------------------------------------------------*)
+EvalSafepoint(t) ==
+    /\ threadPhase[t] = "eval"
+    \* Move stack roots to safepoint roots (visible to GC)
+    /\ safepointRoots' = [safepointRoots EXCEPT ![t] = stackRoots[t]]
+    /\ stackRoots' = [stackRoots EXCEPT ![t] = {}]
+    \* Decrement ACTIVE_EVALUATORS (may trigger quiescent state)
+    /\ activeEvaluators' = activeEvaluators - 1
+    /\ threadPhase' = [threadPhase EXCEPT ![t] = "safepoint"]
+    /\ UNCHANGED <<threadExprs, gcInProgressFlag, gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold, backpressureLevel,
+                   releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
+                   snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
                    gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* EvalSafepointResume_Increment: Thread starts re-acquiring EvalGuard.  *)
+(* Increments ACTIVE_EVALUATORS (same as EvalGuardEnter_Increment).      *)
+(*                                                                        *)
+(* Models: reacquire_eval_guard_after_safepoint() first step —            *)
+(*         ACTIVE_EVALUATORS.fetch_add(1) in gc_allocator.rs              *)
+(*-----------------------------------------------------------------------*)
+EvalSafepointResume_Increment(t) ==
+    /\ threadPhase[t] = "safepoint"
+    /\ activeEvaluators' = activeEvaluators + 1
+    /\ threadPhase' = [threadPhase EXCEPT ![t] = "sp_entering"]
+    /\ UNCHANGED <<threadExprs, stackRoots, safepointRoots,
+                   gcInProgressFlag, gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold, backpressureLevel,
+                   releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
+                   snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   safepointRoots, gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* EvalSafepointResume_Proceed: GC_IN_PROGRESS is clear, safe to resume. *)
+(* Moves safepoint roots back to stack roots and returns to "eval".      *)
+(*                                                                        *)
+(* Models: reacquire_eval_guard_after_safepoint() second step —           *)
+(*         check GC_IN_PROGRESS, proceed if clear. Then                   *)
+(*         SafepointRootHandle::drop() unregisters temporary roots.       *)
+(*-----------------------------------------------------------------------*)
+EvalSafepointResume_Proceed(t) ==
+    /\ threadPhase[t] = "sp_entering"
+    /\ ~gcInProgressFlag
+    \* Restore roots from safepoint to stack
+    /\ stackRoots' = [stackRoots EXCEPT ![t] = safepointRoots[t]]
+    /\ safepointRoots' = [safepointRoots EXCEPT ![t] = {}]
+    /\ threadPhase' = [threadPhase EXCEPT ![t] = "eval"]
+    /\ UNCHANGED <<threadExprs, activeEvaluators,
+                   gcInProgressFlag, gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold, backpressureLevel,
+                   releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
+                   snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   gcPhase, gcMarked>>
+
+(*-----------------------------------------------------------------------*)
+(* EvalSafepointResume_BackOff: GC_IN_PROGRESS is set.                   *)
+(* Back off: decrement counter, return to "safepoint" to retry.          *)
+(* Same pattern as EvalGuardEnter_BackOff.                               *)
+(*                                                                        *)
+(* Models: reacquire_eval_guard_after_safepoint() seeing GC_IN_PROGRESS, *)
+(*         decrementing and retrying.                                     *)
+(*-----------------------------------------------------------------------*)
+EvalSafepointResume_BackOff(t) ==
+    /\ threadPhase[t] = "sp_entering"
+    /\ gcInProgressFlag
+    /\ activeEvaluators' = activeEvaluators - 1
+    /\ threadPhase' = [threadPhase EXCEPT ![t] = "safepoint"]
+    /\ UNCHANGED <<threadExprs, stackRoots, safepointRoots,
+                   gcInProgressFlag, gcRequested,
+                   slotState, bumpPtr, freeSet, registeredRoots, epoch,
+                   slotEpoch, slotContextId, threadContextId, nextContextId,
+                   sessionReleaseQueue, sessionBatch, sessionGcPhase, sessionSurviving,
+                   gcReachableAdvanced,
+                   allocsSinceLastPoll, gcThreshold, backpressureLevel,
+                   releasedPages,
+                   hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
+                   snapRoots, snapEpoch,
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*=======================================================================*)
 (* Cron Monitor — Memory Pressure Detection + Backpressure Computation   *)
@@ -864,7 +1028,7 @@ CronMonitorPoll ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*=======================================================================*)
 (* Quiescent-Point Actions (thread in "between" phase)                   *)
@@ -914,16 +1078,19 @@ TryQuiescentGc_AcquireFlag(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* TryQuiescentGc_SnapshotOK: Double-check passes (no thread snuck in).  *)
 (* Build snapshot, send to GC thread, clear flag.                         *)
 (*                                                                        *)
-(* CRITICAL: snapRoots captures ONLY registeredRoots (what GC sees via   *)
-(* collect_all_roots()). Stack roots are NOT included because they are    *)
-(* not registered as root providers. The quiescent invariant ensures      *)
-(* stack roots are empty at this point (activeEvaluators == 0).           *)
+(* CRITICAL: snapRoots captures registeredRoots AND safepointRoots        *)
+(* (what GC sees via collect_all_roots() -> collect_safepoint_roots()).   *)
+(* Stack roots are NOT included because they are not registered as root  *)
+(* providers. The quiescent invariant ensures stack roots are empty at    *)
+(* this point (activeEvaluators == 0). Safepoint roots are visible       *)
+(* because threads at "safepoint" have registered them before dropping   *)
+(* their EvalGuard.                                                      *)
 (*-----------------------------------------------------------------------*)
 TryQuiescentGc_SnapshotOK(t) ==
     /\ threadPhase[t] = "gc_acquire"
@@ -933,7 +1100,7 @@ TryQuiescentGc_SnapshotOK(t) ==
     /\ snapSlotState' = slotState
     /\ snapBumpPtr' = bumpPtr
     /\ snapFreeSet' = freeSet
-    /\ snapRoots' = registeredRoots   \* ONLY registered roots — NOT stackRoots
+    /\ snapRoots' = registeredRoots \union AllSafepointRoots   \* registered + safepoint roots
     /\ snapEpoch' = epoch
     \* Clear flag and return to "between"
     /\ gcInProgressFlag' = FALSE
@@ -946,7 +1113,7 @@ TryQuiescentGc_SnapshotOK(t) ==
                    allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcResponse, respDeadSet, respLiveCount,
-                   respEpoch, gcPhase, gcMarked>>
+                   respEpoch, safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* TryQuiescentGc_Abort: Double-check fails (a thread snuck in).         *)
@@ -969,7 +1136,7 @@ TryQuiescentGc_Abort(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* ProcessGcResponse: Process pending GC response at quiescent point.    *)
@@ -1039,7 +1206,7 @@ ProcessGcResponse(t) ==
                    allocsSinceLastPoll,
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* ContinueEval: Thread resumes evaluation (re-enters via EvalGuard).    *)
@@ -1070,7 +1237,7 @@ ContinueEval(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* ThreadDone: Thread has evaluated all its expressions.                  *)
@@ -1090,7 +1257,7 @@ ThreadDone(t) ==
                    hasGcRequest, snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*=======================================================================*)
 (* GC Thread Actions (reads only snap* variables, runs concurrently)     *)
@@ -1112,7 +1279,8 @@ GcReceiveRequest ==
                    backpressureLevel, releasedPages,
                    snapSlotState, snapBumpPtr, snapFreeSet,
                    snapRoots, snapEpoch,
-                   hasGcResponse, respDeadSet, respLiveCount, respEpoch>>
+                   hasGcResponse, respDeadSet, respLiveCount, respEpoch,
+                   safepointRoots>>
 
 GcMarkStep ==
     /\ gcPhase = "marking"
@@ -1131,7 +1299,7 @@ GcMarkStep ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase>>
+                   safepointRoots, gcPhase>>
 
 GcMarkComplete ==
     /\ gcPhase = "marking"
@@ -1148,7 +1316,7 @@ GcMarkComplete ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcMarked>>
+                   safepointRoots, gcMarked>>
 
 GcSweep ==
     /\ gcPhase = "sweeping"
@@ -1175,6 +1343,7 @@ GcSweep ==
                    allocsSinceLastPoll, gcThreshold,
                    backpressureLevel, releasedPages,
                    hasGcRequest, snapSlotState, snapBumpPtr,
+                   safepointRoots,
                    snapFreeSet, snapRoots, snapEpoch>>
 
 (*=======================================================================*)
@@ -1229,7 +1398,7 @@ SessionGc_WaitQuiescent ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* SessionGc_AcquireFlag: CAS GC_IN_PROGRESS false→true (try_enter).    *)
@@ -1251,7 +1420,7 @@ SessionGc_AcquireFlag ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* SessionGc_AcquireFail: CAS fails (quiescent GC holds the flag).      *)
@@ -1273,7 +1442,7 @@ SessionGc_AcquireFail ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* SessionGc_TraceAndRelease: Double-check passes, trace roots, release  *)
@@ -1290,9 +1459,9 @@ SessionGc_AcquireFail ==
 SessionGc_TraceAndRelease ==
     /\ sessionGcPhase = "acquired"
     /\ activeEvaluators = 0                  \* Double-check: still quiescent
-    \* Trace surviving set = registered roots at quiescent point
+    \* Trace surviving set = registered roots + safepoint roots at quiescent point
     \* (stackRoots are empty at quiescence — verified by SnapshotCapturesAllRoots)
-    /\ sessionSurviving' = registeredRoots
+    /\ sessionSurviving' = registeredRoots \union AllSafepointRoots
     \* Release GC_IN_PROGRESS — evals can resume
     /\ gcInProgressFlag' = FALSE
     /\ sessionGcPhase' = "freeing"
@@ -1308,7 +1477,7 @@ SessionGc_TraceAndRelease ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* SessionGc_DoubleCheckFail: An eval snuck in between condvar wake      *)
@@ -1330,7 +1499,7 @@ SessionGc_DoubleCheckFail ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*-----------------------------------------------------------------------*)
 (* SessionGc_FreeSession: Free non-surviving values from one session.    *)
@@ -1400,7 +1569,7 @@ SessionGc_FreeSession ==
                    hasGcRequest, snapSlotState, snapBumpPtr,
                    snapFreeSet, snapRoots, snapEpoch,
                    hasGcResponse, respDeadSet, respLiveCount, respEpoch,
-                   gcPhase, gcMarked>>
+                   safepointRoots, gcPhase, gcMarked>>
 
 (*=======================================================================*)
 (* Termination                                                           *)
@@ -1427,6 +1596,10 @@ Next ==
         \/ DropStackRoot(t)
         \/ PublishRoot(t)
         \/ DropRegisteredRoot(t)
+        \/ EvalSafepoint(t)
+        \/ EvalSafepointResume_Increment(t)
+        \/ EvalSafepointResume_Proceed(t)
+        \/ EvalSafepointResume_BackOff(t)
         \/ TryQuiescentGc_AcquireFlag(t)
         \/ TryQuiescentGc_SnapshotOK(t)
         \/ TryQuiescentGc_Abort(t)
@@ -1459,6 +1632,13 @@ FairSpec == Spec
         /\ WF_vars(EvalGuardEnter_BackOff(t))
         /\ WF_vars(EvalGuardDrop(t))
         /\ WF_vars(AllocateSlot(t))
+        \* Safepoint resume actions: WF ensures threads eventually resume
+        \* after entering a safepoint. Same CAS pattern as EvalGuardEnter.
+        \* EvalSafepoint itself has NO fairness — safepoints are opportunistic
+        \* (the model non-deterministically chooses to enter one or not).
+        /\ WF_vars(EvalSafepointResume_Increment(t))
+        /\ WF_vars(EvalSafepointResume_Proceed(t))
+        /\ WF_vars(EvalSafepointResume_BackOff(t))
         \* Strong fairness for ContinueEval: may be repeatedly enabled at
         \* "between" then disabled when AcquireFlag transitions to "gc_acquire",
         \* or when Tier 2 backpressure blocks re-entry. SF ensures threads
@@ -1515,9 +1695,10 @@ MaxAllocsSinceLastPoll == MaxSlots * (MaxExprs + 1) * MaxRoots * NumEvalThreads
 MaxGcThreshold == MaxSlots * 2
 
 TypeOK ==
-    /\ threadPhase \in [Threads -> {"idle", "entering", "eval", "between", "gc_acquire", "done"}]
+    /\ threadPhase \in [Threads -> {"idle", "entering", "eval", "safepoint", "sp_entering", "between", "gc_acquire", "done"}]
     /\ threadExprs \in [Threads -> 0..MaxExprs]
     /\ stackRoots \in [Threads -> SUBSET Slots]
+    /\ safepointRoots \in [Threads -> SUBSET Slots]
     /\ activeEvaluators \in 0..NumEvalThreads
     /\ gcInProgressFlag \in BOOLEAN
     /\ gcRequested \in BOOLEAN
@@ -1588,9 +1769,11 @@ GcFlagConsistent ==
         \A t \in Threads : threadPhase[t] /= "eval"
 
 \* ACTIVE_EVALUATORS is consistent with actual thread count.
+\* Includes "sp_entering" — threads re-acquiring EvalGuard after safepoint
+\* have already incremented the counter (same as "entering").
 ActiveCountCorrect ==
     activeEvaluators = Cardinality({t \in Threads :
-        threadPhase[t] \in {"entering", "eval"}})
+        threadPhase[t] \in {"entering", "eval", "sp_entering"}})
 
 \* All registered roots are allocated
 RegisteredRootsAreAllocated ==
@@ -1617,11 +1800,31 @@ AtMostOneGcAcquire ==
     Cardinality({t \in Threads : threadPhase[t] = "gc_acquire"}) <= 1
 
 \* Stack roots are only non-empty for threads in "eval" phase
-\* (threads at "idle", "entering", "between", "gc_acquire", "done" have
-\* no trampoline call stack active)
+\* (threads at "idle", "entering", "safepoint", "sp_entering", "between",
+\* "gc_acquire", "done" have no trampoline call stack active — safepoint
+\* threads have moved their roots to safepointRoots)
 StackRootsOnlyDuringEval ==
     \A t \in Threads :
         threadPhase[t] /= "eval" => stackRoots[t] = {}
+
+\* Safepoint roots are only non-empty for threads in "safepoint" or
+\* "sp_entering" phase (roots registered during safepoint, moved back
+\* to stackRoots on resume)
+SafepointRootsOnlyDuringSafepoint ==
+    \A t \in Threads :
+        threadPhase[t] \notin {"safepoint", "sp_entering"} => safepointRoots[t] = {}
+
+\* All safepoint roots are allocated
+SafepointRootsAreAllocated ==
+    \A t \in Threads : \A s \in safepointRoots[t] : slotState[s] = "alloc"
+
+\* When ACTIVE_EVALUATORS == 0, all live values are reachable via
+\* registeredRoots ∪ safepointRoots (stack roots are empty at quiescence).
+\* This is the key invariant for safepoint correctness: GC sees all live
+\* values through registered and safepoint roots when it can fire.
+QuiescentRootsComplete ==
+    activeEvaluators = 0 =>
+        AllLiveRoots = registeredRoots \union AllSafepointRoots
 
 \* GC threshold is always at least MinGcThreshold
 GcThresholdPositive ==

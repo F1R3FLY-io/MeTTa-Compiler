@@ -57,6 +57,34 @@ pub trait EvalContext {
     fn maybe_gc(&self) {
         // no-op by default
     }
+
+    /// Check if a GC safepoint should be taken.
+    ///
+    /// Called every 256 trampoline iterations. Returns `true` if the evaluator
+    /// should pause, register trampoline roots, release the EvalGuard, and
+    /// allow the quiescent GC to fire.
+    ///
+    /// Default implementation returns `false` (no safepoints). Override in
+    /// production contexts to check allocation growth.
+    #[inline]
+    fn should_safepoint(&self) -> bool {
+        false
+    }
+
+    /// Perform a GC safepoint with the provided roots from trampoline state.
+    ///
+    /// The caller has already collected all `Self::Value` references from the
+    /// work stack and continuations into `roots`. This method:
+    /// 1. Registers roots as temporary GC roots
+    /// 2. Drops the EvalGuard (ACTIVE_EVALUATORS--)
+    /// 3. Triggers/processes quiescent GC if possible
+    /// 4. Re-acquires the EvalGuard (ACTIVE_EVALUATORS++)
+    /// 5. Unregisters temporary roots
+    ///
+    /// Default implementation is a no-op. Override in production contexts.
+    fn perform_safepoint(&self, _roots: Vec<Self::Value>) {
+        // no-op by default — non-production contexts don't safepoint
+    }
 }
 
 /// Type alias for the environment associated with an EvalContext.

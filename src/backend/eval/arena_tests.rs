@@ -26,7 +26,7 @@ mod tests {
         all_results
     }
 
-    /// Macro to test evaluation with expected results.
+    /// Macro to test evaluation with expected results (order-sensitive).
     macro_rules! eval_test {
         ($name:ident, $metta_src:expr, $expected:expr) => {
             #[test]
@@ -44,6 +44,27 @@ mod tests {
         };
     }
 
+    /// Macro to test evaluation with expected results (order-independent).
+    /// Sorts both actual and expected before comparing.
+    macro_rules! eval_test_unordered {
+        ($name:ident, $metta_src:expr, $expected:expr) => {
+            #[test]
+            fn $name() {
+                let mut results = run_eval($metta_src);
+                let expected_slice: &[&str] = $expected;
+                let mut expected: Vec<String> =
+                    expected_slice.iter().map(|s| s.to_string()).collect();
+                results.sort();
+                expected.sort();
+                assert_eq!(
+                    results, expected,
+                    "Eval failed (unordered) for: {}",
+                    $metta_src
+                );
+            }
+        };
+    }
+
     // =========================================================================
     // Basic Arithmetic
     // =========================================================================
@@ -54,8 +75,29 @@ mod tests {
     eval_test!(arithmetic_div, "!(/ 20 4)", &["5"]);
     eval_test!(arithmetic_mod, "!(% 17 5)", &["2"]);
     eval_test!(arithmetic_neg, "!(- 0 42)", &["-42"]);
+
+    // Unary minus (negation)
+    eval_test!(unary_minus_int, "!(- 5)", &["-5"]);
+    eval_test!(unary_minus_zero, "!(- 0)", &["0"]);
+    eval_test!(unary_minus_negative, "!(- -7)", &["7"]);
+    eval_test!(unary_minus_float, "!(- 3.14)", &["-3.14"]);
+    eval_test!(unary_minus_float_neg, "!(- -2.5)", &["2.5"]);
+
     eval_test!(arithmetic_nested, "!(+ (* 2 3) (- 10 4))", &["12"]);
     eval_test!(arithmetic_deeply_nested, "!(+ 1 (+ 2 (+ 3 4)))", &["10"]);
+
+    // =========================================================================
+    // Eval-before-match: args evaluated before rule matching (MeTTa HE semantics)
+    // =========================================================================
+
+    // User-defined function args evaluated before rule matching
+    eval_test!(eval_before_match_nested_call,
+        "(= (double $x) (+ $x $x)) !(double (+ 1 2))",
+        &["6"]);
+
+    eval_test!(eval_before_match_data_constructor,
+        "(= (wrap $x) (wrapped $x)) !(wrap (+ 2 3))",
+        &["(wrapped 5)"]);
 
     // =========================================================================
     // Comparisons
@@ -94,8 +136,9 @@ mod tests {
     eval_test!(if_nested_else, "!(if False 0 (+ 1 2))", &["3"]);
     eval_test!(if_deeply_nested, "!(if True (if True (if True deep outer) outer2) outer3)", &["deep"]);
     eval_test!(if_lazy_eval_true, "!(if True 1 (/ 1 0))", &["1"]);
-    eval_test!(if_non_bool_number, "!(if 1 yes no)", &["yes"]);
-    eval_test!(if_with_atom_condition, "!(if foo then else)", &["then"]);
+    // MeTTa HE: non-boolean conditions return unreduced (if cond then else)
+    eval_test!(if_non_bool_number, "!(if 1 yes no)", &["(if 1 yes no)"]);
+    eval_test!(if_with_atom_condition, "!(if foo then else)", &["(if foo then else)"]);
 
     // =========================================================================
     // Let Bindings
@@ -197,7 +240,8 @@ mod tests {
     eval_test!(case_basic_match, "!(case a ((a yes) (b no)))", &["yes"]);
     eval_test!(case_second_match, "!(case b ((a yes) (b no)))", &["no"]);
     eval_test!(case_default, "!(case c ((a yes) ($x default)))", &["default"]);
-    eval_test!(case_no_match, "!(case z ((a 1) (b 2)))", &["NotReducible"]);
+    // MeTTa HE: when no case matches, result is Empty (no results / branch pruned)
+    eval_test!(case_no_match, "!(case z ((a 1) (b 2)))", &[] as &[&str]);
     eval_test!(case_wildcard, "!(case z ((a 1) (_ default)))", &["default"]);
     eval_test!(case_multi, "!(case b ((a A) (b B) (c C)))", &["B"]);
     eval_test!(complex_case, "!(case (+ 1 1) ((1 one) (2 two) (3 three) ($x other)))", &["two"]);
@@ -335,16 +379,21 @@ mod tests {
         &["10"]
     );
 
+    // Uses if-guard instead of overlapping base-case pattern because without a specificity
+    // filter, both `(fact 0)` and `(fact $n)` match at n=0, causing divergence in the
+    // recursive branch. MeTTa HE fires all matching rules nondeterministically.
     eval_test!(
         rule_recursive_factorial,
-        "(= (fact 0) 1)\n(= (fact $n) (* $n (fact (- $n 1))))\n!(fact 5)",
+        "(= (fact $n) (if (== $n 0) 1 (* $n (fact (- $n 1)))))\n!(fact 5)",
         &["120"]
     );
 
-    eval_test!(
+    // Without specificity filter, both `(f 0)` and `(f $x)` match input `(f 0)`.
+    // MeTTa HE fires all matching rules nondeterministically.
+    eval_test_unordered!(
         rule_multiple_patterns,
         "(= (f 0) zero)\n(= (f $x) other)\n!(f 0)",
-        &["zero"]
+        &["zero", "other"]
     );
 
     eval_test!(
@@ -355,27 +404,22 @@ mod tests {
 
     eval_test!(
         recursive_factorial_10,
-        "(= (fact 0) 1)
-         (= (fact $n) (* $n (fact (- $n 1))))
+        "(= (fact $n) (if (== $n 0) 1 (* $n (fact (- $n 1)))))
          !(fact 10)",
         &["3628800"]
     );
 
     eval_test!(
         recursive_fib,
-        "(= (fib 0) 0)
-         (= (fib 1) 1)
-         (= (fib $n) (+ (fib (- $n 1)) (fib (- $n 2))))
+        "(= (fib $n) (if (== $n 0) 0 (if (== $n 1) 1 (+ (fib (- $n 1)) (fib (- $n 2))))))
          !(fib 10)",
         &["55"]
     );
 
     eval_test!(
         mutual_recursion,
-        "(= (even 0) True)
-         (= (even $n) (odd (- $n 1)))
-         (= (odd 0) False)
-         (= (odd $n) (even (- $n 1)))
+        "(= (even $n) (if (== $n 0) True (odd (- $n 1))))
+         (= (odd $n) (if (== $n 0) False (even (- $n 1))))
          !(even 4)",
         &["True"]
     );
@@ -388,12 +432,14 @@ mod tests {
         &["5"]
     );
 
-    eval_test!(
+    // Without specificity filter, both `(classify 0)` and `(classify $n)` match at input 0.
+    // MeTTa HE fires all matching rules nondeterministically.
+    eval_test_unordered!(
         overlapping_patterns,
         "(= (classify 0) zero)
          (= (classify $n) positive)
          !(classify 0)",
-        &["zero"]
+        &["zero", "positive"]
     );
 
     eval_test!(
@@ -403,6 +449,32 @@ mod tests {
          (= (choice) c)
          !(collapse (choice))",
         &["(a b c)"]
+    );
+
+    // =========================================================================
+    // PLN Regression: Overlapping nested patterns (specificity filter removal)
+    // =========================================================================
+
+    // Exact PLN reproduction: nested 3-element pattern vs variable-only pattern.
+    // Without the specificity filter, both rules fire nondeterministically.
+    // The specific rule produces a result; the general rule produces `Empty`
+    // (the `(empty)` sexpr evaluates to the built-in Empty atom).
+    eval_test_unordered!(
+        pln_nested_overlap_both_fire,
+        "(= (f ((tag $a $b) $tv) $y) (result-specific $a $b))
+         (= (f ($c $tv) $y) (empty))
+         !(f ((tag hello world) (stv 1)) 2)",
+        &["(result-specific hello world)", "Empty"]
+    );
+
+    // Constructor-discriminated rules: no overlap since `Nil` != `(Cons ...)`.
+    // Regression test ensuring mmverify-style patterns still work correctly.
+    eval_test!(
+        constructor_discriminated_no_overlap,
+        "(= (len Nil) 0)
+         (= (len (Cons $h $t)) (+ 1 (len $t)))
+         !(len (Cons a (Cons b Nil)))",
+        &["2"]
     );
 
     // =========================================================================

@@ -1091,11 +1091,12 @@ mod tests {
 
     #[test]
     fn test_run_state_recursive_function() {
+        // Uses if-guard instead of overlapping base-case pattern because MeTTa HE
+        // fires all matching rules nondeterministically (no specificity filter).
         let env = new_env();
         let state = compile(
             r#"
-            (= (factorial 0) 1)
-            (= (factorial $x) (* $x (factorial (- $x 1))))
+            (= (factorial $x) (if (== $x 0) 1 (* $x (factorial (- $x 1)))))
             !(factorial 5)
             "#,
         )

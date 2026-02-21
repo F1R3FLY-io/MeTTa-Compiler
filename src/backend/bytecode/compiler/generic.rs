@@ -264,10 +264,27 @@ where
                 Ok(Some(()))
             }
             "-" => {
-                self.check_arity("-", args.len(), 2)?;
-                self.compile(&args[0])?;
-                self.compile(&args[1])?;
-                self.builder.emit(Opcode::Sub);
+                match args.len() {
+                    1 => {
+                        // Unary minus: (- x) => neg(x)
+                        self.compile(&args[0])?;
+                        self.builder.emit(Opcode::Neg);
+                    }
+                    2 => {
+                        // Binary minus: (- a b) => a - b
+                        self.compile(&args[0])?;
+                        self.compile(&args[1])?;
+                        self.builder.emit(Opcode::Sub);
+                    }
+                    _ => {
+                        return Err(CompileError::InvalidArityRange {
+                            op: "-".to_string(),
+                            min: 1,
+                            max: 2,
+                            got: args.len(),
+                        });
+                    }
+                }
                 Ok(Some(()))
             }
             "*" => {

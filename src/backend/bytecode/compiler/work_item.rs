@@ -68,6 +68,10 @@ pub enum CompileWork {
         end_jump: Option<JumpLabel>,
         /// Jump label for error in condition (jumps to end)
         error_jump: Option<JumpLabel>,
+        /// Jump label for non-boolean condition (jumps to unreduced handler)
+        notbool_jump: Option<JumpLabel>,
+        /// Jump label from end of else branch past non-bool handler
+        else_end_jump: Option<JumpLabel>,
         parent_tail_position: bool,
         state: IfState,
         cont_id: usize,
@@ -407,6 +411,8 @@ pub enum IfState {
     CompileCondition,
     CompileThen,
     CompileElse,
+    /// Emit the non-boolean handler: constructs unreduced (if cond then else)
+    NonBoolHandler,
     Done,
 }
 

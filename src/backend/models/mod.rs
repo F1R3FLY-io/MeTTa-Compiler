@@ -11,14 +11,19 @@ pub mod space_handle;
 
 pub use metta_value::{numeric_equal, numeric_equal_generic, numeric_not_equal, MettaValue, MettaValueInner};
 pub use gc_allocator::{
-    active_evaluator_count, apply_backpressure_tier1, apply_backpressure_tier2,
-    backpressure_level, collect_all_roots, current_context_id, disable_gc,
-    gc_cycle_in_flight,
+    active_evaluator_count, alloc_count_snapshot,
+    apply_backpressure_tier1, apply_backpressure_tier2,
+    backpressure_level, collect_all_roots, committed_bytes_snapshot,
+    current_context_id, disable_gc,
+    drop_eval_guard_for_safepoint, gc_cycle_in_flight,
     global_allocator, global_factory, global_gc_cron, global_gc_thread,
     init_global_allocator, is_gc_disabled, is_gc_requested,
     maybe_process_gc_response, maybe_quiescent_gc,
-    register_root_provider, release_session, request_gc, set_backpressure_level,
-    trigger_gc_cycle, try_register_env_roots, EvalGuard, GcFactory, RootProvider,
+    reacquire_eval_guard_after_safepoint,
+    register_root_provider, register_temporary_roots, release_session,
+    request_gc, set_backpressure_level,
+    trigger_gc_cycle, try_register_env_roots,
+    EvalGuard, GcFactory, RootProvider, SafepointRootHandle,
     SessionGuard, SlabAllocator, MAX_BACKPRESSURE,
 };
 pub use gc_cron::{GcCronSingleton, CronHandle};

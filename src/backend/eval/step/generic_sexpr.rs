@@ -959,7 +959,7 @@ where
                 };
             }
 
-            // superpose - native generic implementation (zero conversion)
+            // superpose - HE-compatible: post-evaluate each element via StartAmb
             "superpose" => {
                 if items.len() != 2 {
                     let err = ctx.factory().error(
@@ -978,15 +978,23 @@ where
                         // Empty superpose returns empty (no results) - nondeterministic failure
                         return GenericEvalStep::Done((vec![], env));
                     }
-                    // Return each element as a separate result (nondeterministic)
-                    return GenericEvalStep::Done((elements.to_vec(), env));
+                    // Post-evaluate each element via StartAmb (HE-compatible)
+                    return GenericEvalStep::StartAmb {
+                        alternatives: elements.to_vec(),
+                        env,
+                        depth,
+                    };
                 }
                 if expr.is_unit() {
                     // Unit superposes to empty (no results)
                     return GenericEvalStep::Done((vec![], env));
                 }
-                // Single value superposes to itself
-                return GenericEvalStep::Done((vec![expr.clone()], env));
+                // Single non-tuple arg: evaluate it
+                return GenericEvalStep::StartAmb {
+                    alternatives: vec![expr.clone()],
+                    env,
+                    depth,
+                };
             }
 
             // Advanced nondeterminism

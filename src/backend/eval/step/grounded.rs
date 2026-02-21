@@ -23,7 +23,6 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: crate::backend::models::MettaValueFactory<V> + Clone,
 {
-    let _ = env; // env was previously used for TCO registry lookup, now unused
     let mut indices = Vec::new();
 
     // Skip the first item (operator) - we only check arguments
@@ -33,10 +32,17 @@ where
                 if let Some(op) = first.as_atom() {
                     // Check if this is a grounded operation or a special form
                     // that produces values and needs eager evaluation
-                    if is_grounded_op(op)
-                        || is_eager_special_form(op)
-                    {
-                        indices.push(i); // Store actual index in items
+                    if is_grounded_op(op) || is_eager_special_form(op) {
+                        indices.push(i);
+                    }
+                    // MeTTa HE alignment: pre-evaluate S-expr args whose head
+                    // has user-defined rules (function calls, not data constructors).
+                    // Bloom filter: O(1), no false negatives. ~1% false positives
+                    // cause harmless extra evaluation (data constructors eval to self).
+                    // Use sub_items.len() - 1 to match get_arity() convention
+                    // (arity excludes the head/operator itself).
+                    else if env.may_have_rules_for(op, sub_items.len() - 1) {
+                        indices.push(i);
                     }
                 }
             }

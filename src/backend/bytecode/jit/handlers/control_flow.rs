@@ -17,6 +17,7 @@ use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 use crate::backend::bytecode::jit::types::TAG_UNIT;
 
+use crate::backend::bytecode::jit::types::TAG_BOOL;
 use crate::backend::bytecode::jit::types::TAG_ERROR;
 
 /// Compile Return opcode
@@ -566,6 +567,95 @@ pub fn compile_jump_if_error<'a, 'b>(
     } else {
         Err(JitError::CompilationError(format!(
             "JumpIfError target {} not found in block map",
+            target
+        )))
+    }
+}
+
+/// Compile JumpIfNotBool opcode
+///
+/// MeTTa HE `if` semantics: jumps when TOS is not Bool(true) or Bool(false).
+/// Peeks (does NOT pop) so the non-bool condition stays on stack for
+/// unreduced (if cond then else) reconstruction.
+
+pub fn compile_jump_if_not_bool<'a, 'b>(
+    codegen: &mut CodegenContext<'a, 'b>,
+    chunk: &BytecodeChunk,
+    op: Opcode,
+    offset: usize,
+    offset_to_block: &HashMap<usize, Block>,
+    merge_blocks: &HashMap<usize, bool>,
+) -> JitResult<()> {
+    // Conditional jump if top of stack is NOT a boolean (peeks - does NOT pop)
+    let val = codegen.peek()?;
+    let instr_size = 1 + op.immediate_size();
+    let next_ip = offset + instr_size;
+    let rel_offset = chunk.read_i16(offset + 1).unwrap_or(0);
+    let target = (next_ip as isize + rel_offset as isize) as usize;
+
+    // Check if value is NOT bool: (tag & TAG_MASK) != TAG_BOOL
+    // If not bool, jump to target (non-bool handler)
+    let tag = codegen.extract_tag(val);
+    let bool_tag = codegen
+        .builder
+        .ins()
+        .iconst(types::I64, TAG_BOOL as i64);
+    // is_bool = (tag == TAG_BOOL), we want to jump if NOT bool
+    let is_bool_i8 = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, tag, bool_tag);
+    // is_not_bool = !is_bool (for brif: true branch = first arg)
+    // brif jumps to first if nonzero, second if zero
+    // We want: if is_bool → fallthrough, if not_bool → target
+    // So use is_bool_i8: true → fallthrough, false → target
+
+    // Get stack value for merge blocks (use val since we didn't pop)
+    let stack_top = val;
+
+    let target_is_merge = merge_blocks.contains_key(&target);
+    let fallthrough_is_merge = merge_blocks.contains_key(&next_ip);
+
+    if let (Some(&target_block), Some(&fallthrough_block)) =
+        (offset_to_block.get(&target), offset_to_block.get(&next_ip))
+    {
+        let target_args: &[BlockArg] = if target_is_merge {
+            &[BlockArg::Value(stack_top)]
+        } else {
+            &[]
+        };
+        let fallthrough_args: &[BlockArg] = if fallthrough_is_merge {
+            &[BlockArg::Value(stack_top)]
+        } else {
+            &[]
+        };
+        // brif: if is_bool → fallthrough (continue), else → target (non-bool handler)
+        codegen.builder.ins().brif(
+            is_bool_i8,
+            fallthrough_block,
+            fallthrough_args,
+            target_block,
+            target_args,
+        );
+        codegen.mark_terminated();
+        Ok(())
+    } else if let Some(&target_block) = offset_to_block.get(&target) {
+        let cont_block = codegen.builder.create_block();
+        let target_args: &[BlockArg] = if target_is_merge {
+            &[BlockArg::Value(stack_top)]
+        } else {
+            &[]
+        };
+        codegen
+            .builder
+            .ins()
+            .brif(is_bool_i8, cont_block, &[], target_block, target_args);
+        codegen.builder.switch_to_block(cont_block);
+        codegen.builder.seal_block(cont_block);
+        Ok(())
+    } else {
+        Err(JitError::CompilationError(format!(
+            "JumpIfNotBool target {} not found in block map",
             target
         )))
     }

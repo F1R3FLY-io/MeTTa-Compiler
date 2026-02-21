@@ -17,9 +17,28 @@
 //! when an `MettaState` is provided. It implements `EvalContext` to route all
 //! allocations through the global slab factory.
 
-use crate::backend::models::{global_factory, MettaState, MettaValue, GcFactory};
+use std::cell::Cell;
+
+use crate::backend::models::{
+    alloc_count_snapshot, drop_eval_guard_for_safepoint, global_factory,
+    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc,
+    MettaState, MettaValue, GcFactory,
+};
+use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 
 use super::context::EvalContext;
+
+/// Safepoint allocation count threshold.
+///
+/// When the global alloc count grows by this amount since the last safepoint,
+/// the trampoline pauses for GC. Uses alloc count (not committed bytes)
+/// because free-list reuse doesn't grow committed bytes, but dead objects
+/// still accumulate in the environment (PathMap, rules, etc.).
+///
+/// 500K allocations at ~48-80 bytes each ≈ 24-40 MB of new objects per
+/// safepoint. At Robot's ~1 GB/5s allocation rate (~4M allocs/s), this
+/// fires roughly every ~0.12 seconds.
+const SAFEPOINT_ALLOC_THRESHOLD: u64 = 500_000;
 
 // ============================================================================
 // SessionContext
@@ -37,13 +56,26 @@ use super::context::EvalContext;
 /// the slab's snapshot-based mark-sweep GC handles reclamation. Both
 /// `eval_factory()` and `storage_factory()` return the same `GcFactory` for
 /// backward compatibility.
-#[derive(Debug)]
 pub struct SessionContext<'s> {
     /// Reference to the MettaState coordinating GC
     state: &'s MettaState,
 
     /// Factory backed by the global SlabAllocator
     factory: GcFactory,
+
+    /// Alloc count at the last safepoint check.
+    /// Cell for interior mutability (should_safepoint takes &self).
+    last_safepoint_allocs: Cell<u64>,
+}
+
+// Manual Debug impl to skip last_safepoint_bytes (Cell is not Debug in all contexts)
+impl<'s> std::fmt::Debug for SessionContext<'s> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionContext")
+            .field("state", &self.state)
+            .field("factory", &self.factory)
+            .finish()
+    }
 }
 
 impl<'s> SessionContext<'s> {
@@ -56,6 +88,7 @@ impl<'s> SessionContext<'s> {
         Self {
             state,
             factory: global_factory(),
+            last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
         }
     }
 
@@ -107,6 +140,68 @@ impl<'s> EvalContext for SessionContext<'s> {
         // Session-based GC: all reclamation is triggered by SessionGuard::drop()
         // which enqueues the session's context_id for async bulk release on a
         // dedicated background thread. No polling or backpressure needed here.
+    }
+
+    /// Check if a GC safepoint should be taken based on allocation count.
+    ///
+    /// Returns `true` when the global alloc count has grown by
+    /// `SAFEPOINT_ALLOC_THRESHOLD` since the last safepoint. Uses alloc
+    /// count instead of committed bytes because free-list reuse doesn't
+    /// grow committed bytes — after initial page allocation, committed
+    /// bytes plateau even as new objects are allocated from the free list.
+    #[inline]
+    fn should_safepoint(&self) -> bool {
+        let current = alloc_count_snapshot();
+        let last = self.last_safepoint_allocs.get();
+        if current.wrapping_sub(last) >= SAFEPOINT_ALLOC_THRESHOLD {
+            self.last_safepoint_allocs.set(current);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Perform a GC safepoint: register trampoline roots, release EvalGuard,
+    /// trigger GC, re-acquire EvalGuard, unregister roots.
+    ///
+    /// # Critical Ordering Invariant
+    ///
+    /// 1. Register roots BEFORE dropping EvalGuard (prevents use-after-free)
+    /// 2. Drop EvalGuard → ACTIVE_EVALUATORS-- (may reach quiescent state)
+    /// 3. Trigger/process GC (collects safepoint roots + environment roots)
+    /// 4. Re-acquire EvalGuard → ACTIVE_EVALUATORS++ (blocks if GC in progress)
+    /// 5. Unregister roots (SafepointRootHandle drop)
+    ///
+    /// # Multi-Evaluator Coordination
+    ///
+    /// When multiple evaluators run concurrently, one evaluator reaching a
+    /// safepoint doesn't achieve quiescence if others are still active. This
+    /// method waits briefly (up to 10ms) for other evaluators to also reach
+    /// safepoints. If quiescence isn't achieved within the timeout, we
+    /// re-acquire the guard and continue — we'll try again next safepoint.
+    fn perform_safepoint(&self, roots: Vec<MettaValue>) {
+        // 1. Register roots BEFORE dropping guard
+        let _root_handle = register_temporary_roots(roots);
+
+        // 2. Drop EvalGuard → ACTIVE_EVALUATORS--
+        drop_eval_guard_for_safepoint();
+
+        // 3. Ensure GC_REQUESTED is set so maybe_quiescent_gc() will fire.
+        //    The cron manager sets this periodically, but on the FIRST safepoint
+        //    the cron hasn't been spawned yet (it's lazily created inside
+        //    safepoint_wait_for_quiescence → maybe_process_gc_response).
+        request_gc();
+
+        // 4. Wait for quiescence and trigger/process GC.
+        //    Uses condvar parking (NOT spin/yield) for instant wakeup
+        //    when other evaluators drop their guards. Times out after 10ms
+        //    if quiescence isn't reached.
+        safepoint_wait_for_quiescence();
+
+        // 4. Re-acquire EvalGuard → ACTIVE_EVALUATORS++
+        reacquire_eval_guard_after_safepoint();
+
+        // 5. _root_handle drops here → unregisters temporary roots
     }
 }
 

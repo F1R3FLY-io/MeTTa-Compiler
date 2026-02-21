@@ -16,7 +16,7 @@
 //!
 //! - `apply_bindings_generic` - Apply bindings to a value (zero-conversion)
 //! - `pattern_match_generic` - Pattern matching returning native bindings
-//! - `pattern_specificity_generic` - Compute pattern specificity for rule ordering
+//! - `pattern_specificity_generic` - REMOVED: MeTTa HE has no specificity filter
 //! - `try_match_all_rules_generic` - Match all rules against an expression
 //! - `eval_switch_generic` - Generic switch/case evaluation
 //! - `is_boolean_check_pattern` - Detect boolean check optimization patterns
@@ -30,7 +30,7 @@
 //! 4. Rule matching deserializes rules directly to the target type V
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 // MettaValue only used in tests
 #[cfg(test)]
@@ -70,6 +70,14 @@ where
         // as_atom()/as_sexpr()/etc. see through Spanned, so we can let the
         // rest of the function process the value normally, then re-wrap.
         let result = apply_bindings_generic_inner(value, bindings, factory);
+        // Avoid double-Spanned: if the result already carries a span (e.g.,
+        // a variable was substituted with a value that has its own span),
+        // use the result as-is rather than wrapping it in another Spanned layer.
+        // Double-Spanned values cause incorrect behavior in condition checks
+        // (e.g., `if` only strips one span layer).
+        if result.span().is_some() {
+            return result;
+        }
         return factory.spanned(result, span);
     }
 
@@ -335,84 +343,15 @@ where
 // Generic Rule Matching
 // ============================================================================
 
-/// Compute the specificity of a generic pattern (lower is more specific).
-///
-/// More specific patterns have fewer variables. This enables prioritizing
-/// more specific rule matches over general ones.
-///
-/// # Specificity Scoring
-///
-/// - Variables ($x, &y, 'z, _): +1000 each (except standalone "&")
-/// - Literals (atoms, numbers, bools, strings): +0 each
-/// - Compound types: sum of children's specificities
-///
-/// # Example
-///
-/// ```ignore
-/// // Pattern ($x $y) has specificity 2000
-/// // Pattern (foo $x) has specificity 1000
-/// // Pattern (foo bar) has specificity 0 (most specific)
-/// ```
-pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize {
-    let mut work_stack: Vec<&V> = Vec::with_capacity(16);
-    work_stack.push(pattern);
-    let mut total: usize = 0;
-
-    while let Some(val) = work_stack.pop() {
-        // Check if it's an atom variable
-        if let Some(name) = val.as_atom() {
-            // Variables are least specific
-            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            if (name.starts_with('$')
-                || name.starts_with('&')
-                || name.starts_with('\'')
-                || name == "_")
-                && name != "&"
-            {
-                total += 1000;
-            }
-            // Literals contribute 0 (most specific)
-            continue;
-        }
-
-        // Ground types contribute 0
-        if matches!(val.inner_raw(),
-            MettaValueInner::Bool(_) | MettaValueInner::Long(_) | MettaValueInner::Float(_)
-            | MettaValueInner::String(_) | MettaValueInner::Unit)
-        {
-            continue;
-        }
-
-        // Compound types: push children onto work stack
-        if let Some(items) = val.as_sexpr() {
-            for item in items {
-                work_stack.push(item);
-            }
-            continue;
-        }
-
-        if let Some(goals) = val.as_conjunction() {
-            for goal in goals {
-                work_stack.push(goal);
-            }
-            continue;
-        }
-
-        if let Some((_, details)) = val.as_error() {
-            work_stack.push(details);
-            continue;
-        }
-
-        if let Some(inner) = val.as_type() {
-            work_stack.push(inner);
-            continue;
-        }
-
-        // Other types (space, state, unit, memo, empty) contribute 0
-    }
-
-    total
-}
+// DEAD CODE: pattern_specificity_generic was removed because MeTTa HE has no
+// specificity filter — all matching rules fire nondeterministically. The specificity
+// filter in rule_management.rs was the only consumer, and it has been removed.
+// The function incorrectly dropped structurally-more-specific rules when a variable-only
+// rule happened to have fewer NewVar tags (e.g. PLN's `(f ($c $tv) $y)` with 3 vars
+// beat `(f ((Implication $A $B) $TV) $Y)` with 4 vars despite the latter being more
+// specific due to the `(Implication ...)` constructor constraint).
+//
+// pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize { ... }
 
 /// Try to match all rules against a generic expression.
 ///

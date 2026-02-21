@@ -663,6 +663,15 @@ where
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
+            Opcode::JumpIfNotBool => {
+                // MeTTa HE: if condition is not Bool, jump to non-bool handler
+                // to return unreduced (if cond then else). Peek, not pop.
+                let offset = self.read_i16()?;
+                let value = self.peek()?;
+                if !matches!(value.inner_raw(), MettaValueInner::Bool(_)) {
+                    self.ip = (self.ip as isize + offset as isize) as usize;
+                }
+            }
             Opcode::JumpShort => {
                 let offset = self.read_i8()?;
                 self.ip = (self.ip as isize + offset as isize) as usize;

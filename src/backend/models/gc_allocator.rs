@@ -36,7 +36,6 @@ use std::cell::Cell;
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, OnceLock, Weak};
 use std::thread;
 use std::time::Duration;
@@ -48,6 +47,48 @@ use super::metta_value::read_varint;
 use super::metta_value::serialize_tags::*;
 use super::metta_value::{MettaValue, MettaValueInner};
 use super::metta_value_trait::MettaValueFactory;
+
+// ============================================================================
+// GC Trace Flag (METTA_GC_TRACE environment variable)
+// ============================================================================
+
+/// Returns `true` if `METTA_GC_TRACE` env var is set. Cached after first check.
+fn gc_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("METTA_GC_TRACE").is_ok())
+}
+
+/// Returns `true` if `METTA_GC_QUARANTINE` env var is set. Cached after first check.
+/// When enabled, freed value slots go to a quarantine list (fully ASAN-poisoned)
+/// instead of the Treiber free list, preventing slot reuse and enabling ASAN to
+/// report full use-after-free with allocation/deallocation stacks.
+fn gc_quarantine_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("METTA_GC_QUARANTINE").is_ok())
+}
+
+/// Return a human-readable discriminant name for a MettaValueInner variant.
+/// Used only for GC trace logging — not on any hot path.
+fn discriminant_name(inner: &MettaValueInner) -> &'static str {
+    match inner {
+        MettaValueInner::Atom(_) => "Atom",
+        MettaValueInner::Bool(_) => "Bool",
+        MettaValueInner::Long(_) => "Long",
+        MettaValueInner::Float(_) => "Float",
+        MettaValueInner::String(_) => "String",
+        MettaValueInner::Unit => "Unit",
+        MettaValueInner::SExpr(_) => "SExpr",
+        MettaValueInner::Error(_, _) => "Error",
+        MettaValueInner::Type(_) => "Type",
+        MettaValueInner::Quoted(_) => "Quoted",
+        MettaValueInner::Conjunction(_) => "Conjunction",
+        MettaValueInner::Space(_) => "Space",
+        MettaValueInner::State(_) => "State",
+        MettaValueInner::Memo(_) => "Memo",
+        MettaValueInner::Empty => "Empty",
+        MettaValueInner::Spanned(_, _) => "Spanned",
+    }
+}
 
 // ============================================================================
 // Constants
@@ -381,10 +422,16 @@ fn treiber_unpack_counter(packed: u128) -> u64 {
 /// Free-list node stored at the beginning of a freed slot.
 /// The slot must be at least 16 bytes to hold this u128 next pointer.
 /// `MettaValueInner` slots are >= 48 bytes; the smallest data class is 16 bytes.
+///
+/// Uses `AtomicU128` for the `next` field because the Treiber stack `pop()`
+/// speculatively reads `next` from a node that may have already been popped
+/// by another thread and is being overwritten (e.g., zeroed by `alloc_value`).
+/// The CAS will reject the stale read, but the act of reading must be atomic
+/// to avoid undefined behavior from a data race.
 #[repr(C)]
 struct FreeNode {
     /// Packed [64-bit counter | 64-bit pointer] to the next free node.
-    next: u128,
+    next: AtomicU128,
 }
 
 /// Lock-free Treiber stack for free slot management.
@@ -399,16 +446,48 @@ impl TreiberStack {
         }
     }
 
+    /// Validate that a packed Treiber value has a properly aligned pointer part.
+    /// Returns true for TREIBER_NULL or valid 16-byte-aligned pointers.
+    #[inline]
+    fn validate_packed(packed: u128, label: &str) {
+        if packed == TREIBER_NULL {
+            return;
+        }
+        let ptr = treiber_unpack_ptr(packed);
+        let addr = ptr as usize;
+        debug_assert!(
+            addr % SLOT_ALIGN == 0,
+            "TreiberStack::{label}: misaligned pointer 0x{addr:x} in packed \
+             0x{packed:032x} (counter={})",
+            treiber_unpack_counter(packed),
+        );
+        debug_assert!(
+            addr < 0x0000_8000_0000_0000, // must be in userspace
+            "TreiberStack::{label}: non-userspace pointer 0x{addr:x} in packed \
+             0x{packed:032x}",
+        );
+    }
+
     /// Push a freed slot onto the stack (lock-free).
     fn push(&self, ptr: *mut u8) {
+        debug_assert!(
+            !ptr.is_null() && (ptr as usize) % SLOT_ALIGN == 0,
+            "TreiberStack::push: invalid pointer {:?}",
+            ptr,
+        );
         loop {
             let old_head = self.head.load(Ordering::Acquire);
-            // Write the current head as this node's next pointer
-            let node = ptr as *mut FreeNode;
-            unsafe { (*node).next = old_head; }
+            Self::validate_packed(old_head, "push(old_head)");
+            // Write the current head as this node's next pointer (atomic store
+            // to match the atomic load in pop() — prevents TSan data race reports
+            // even though this store is not yet visible to other threads until
+            // the CAS below publishes it).
+            let node = ptr as *const FreeNode;
+            unsafe { (*node).next.store(old_head, Ordering::Release); }
             // Pack with incremented counter for ABA prevention
             let old_counter = treiber_unpack_counter(old_head);
             let new_head = treiber_pack(ptr, old_counter.wrapping_add(1));
+            Self::validate_packed(new_head, "push(new_head)");
             match self.head.compare_exchange_weak(
                 old_head,
                 new_head,
@@ -422,25 +501,23 @@ impl TreiberStack {
     }
 
     /// Pop a free slot from the stack (lock-free). Returns None if empty.
-    ///
-    /// Under ASAN, always returns None to prevent slot reuse. Freed slots
-    /// remain poisoned so any stale `MettaValue` dereference triggers an
-    /// ASAN report. The free list is still populated by `push()` (the
-    /// FreeNode header stays unpoisoned) so `drain()` and snapshot
-    /// `free_set` filtering work correctly.
     fn pop(&self) -> Option<*mut u8> {
-        #[cfg(sanitize = "address")]
-        { return None; }
         loop {
             let old_head = self.head.load(Ordering::Acquire);
             if old_head == TREIBER_NULL {
                 return None;
             }
+            Self::validate_packed(old_head, "pop(old_head)");
             let ptr = treiber_unpack_ptr(old_head);
             let old_counter = treiber_unpack_counter(old_head);
-            // Read the next pointer from the node
-            let next = unsafe { (*(ptr as *const FreeNode)).next };
-            // Pack with incremented counter
+            // Read the next pointer from the node. This is a SPECULATIVE read:
+            // another thread may have already popped this slot and started
+            // overwriting it via write_slot_bytes(), so `next` may contain
+            // MettaValueInner data rather than a valid Treiber-packed pointer.
+            // The CAS below rejects stale reads; we only validate after success.
+            let next = unsafe { (*(ptr as *const FreeNode)).next.load(Ordering::Acquire) };
+            // Pack with incremented counter (may be garbage if `next` is stale —
+            // the CAS will reject it).
             let new_head = if next == TREIBER_NULL {
                 TREIBER_NULL
             } else {
@@ -452,7 +529,14 @@ impl TreiberStack {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Some(ptr),
+                Ok(_) => {
+                    // CAS succeeded — old_head was still the head, so no
+                    // concurrent pop/write_slot_bytes touched this node.
+                    // `next` and `new_head` are guaranteed valid.
+                    Self::validate_packed(next, "pop(next)");
+                    Self::validate_packed(new_head, "pop(new_head)");
+                    return Some(ptr);
+                }
                 Err(_) => continue,
             }
         }
@@ -522,6 +606,70 @@ unsafe fn asan_unpoison_slab_slot(ptr: *mut u8, slot_size: usize) {
         __asan_unpoison_memory_region(ptr as *const std::ffi::c_void, slot_size);
     }
 }
+
+/// Poison the ENTIRE slab slot, including the FreeNode header.
+/// Used only by quarantine mode — slots in quarantine are never on the Treiber
+/// stack, so the FreeNode header doesn't need to stay accessible.
+#[inline(always)]
+#[allow(unused_variables)]
+unsafe fn asan_poison_slab_slot_full(ptr: *mut u8, slot_size: usize) {
+    #[cfg(sanitize = "address")]
+    {
+        extern "C" {
+            fn __asan_poison_memory_region(addr: *const std::ffi::c_void, size: usize);
+        }
+        __asan_poison_memory_region(ptr as *const std::ffi::c_void, slot_size);
+    }
+}
+
+// ============================================================================
+// GC Slot Quarantine (METTA_GC_QUARANTINE environment variable)
+// ============================================================================
+//
+// When METTA_GC_QUARANTINE is enabled, freed value slots are diverted to a
+// quarantine list instead of the Treiber free list. The entire slot (including
+// the FreeNode header area) is ASAN-poisoned, so any stale MettaValue reference
+// that reads the discriminant byte triggers an immediate ASAN heap-use-after-free
+// report with full allocation/deallocation/use stacks.
+//
+// Without quarantine, asan_poison_slab_slot() leaves the first 16 bytes
+// (FreeNode header) unpoisoned because the Treiber stack needs to read/write
+// the FreeNode.next field. The MettaValueInner discriminant lives in the first
+// byte — exactly within this unpoisoned region — so stale reads go undetected.
+
+/// Metadata for a quarantined (freed but not yet reusable) value slot.
+/// When METTA_GC_QUARANTINE is enabled, freed slots are added here instead
+/// of the Treiber free list. The full slot is ASAN-poisoned, so any stale
+/// reference triggers an ASAN heap-use-after-free report.
+#[allow(dead_code)] // Fields are diagnostic metadata — read during ASAN analysis
+struct QuarantineEntry {
+    /// Pointer to the freed slot (in slab page).
+    ptr: *mut u8,
+    /// Slot size (for unpoisoning when eventually released to free list).
+    slot_size: usize,
+    /// Which page this slot belongs to (for diagnostic output).
+    page_idx: usize,
+    /// Slot index within the page (for diagnostic output).
+    slot_idx: usize,
+    /// The variant name at time of free (for diagnostic output).
+    variant: &'static str,
+    /// GC cycle number that freed this slot.
+    gc_cycle: u64,
+}
+
+// SAFETY: QuarantineEntry holds raw pointer but is only accessed under Mutex.
+unsafe impl Send for QuarantineEntry {}
+
+/// Global quarantine list for freed value slots.
+/// Protected by Mutex — only accessed during GC (not on hot alloc path).
+static GC_QUARANTINE: OnceLock<Mutex<Vec<QuarantineEntry>>> = OnceLock::new();
+
+fn gc_quarantine() -> &'static Mutex<Vec<QuarantineEntry>> {
+    GC_QUARANTINE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Global GC cycle counter (incremented each time process_gc_response runs).
+static GC_CYCLE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // ============================================================================
 // DataClassAllocator — Per-Size-Class Allocator (Thread-Safe)
@@ -718,8 +866,9 @@ impl DataClassAllocator {
         let mut current = old_head;
         while current != TREIBER_NULL {
             let ptr = treiber_unpack_ptr(current);
-            // Read next BEFORE any munmap — slot memory is still mapped here
-            let next = unsafe { (*(ptr as *const FreeNode)).next };
+            // Read next BEFORE any munmap — slot memory is still mapped here.
+            // Relaxed is sufficient: chain is exclusively owned after drain().
+            let next = unsafe { (*(ptr as *const FreeNode)).next.load(Ordering::Relaxed) };
 
             let addr = ptr as usize;
             let in_released = {
@@ -961,8 +1110,9 @@ impl ValueAllocator {
         let mut current = old_head;
         while current != TREIBER_NULL {
             let ptr = treiber_unpack_ptr(current);
-            // Read next BEFORE any munmap — slot memory is still mapped here
-            let next = unsafe { (*(ptr as *const FreeNode)).next };
+            // Read next BEFORE any munmap — slot memory is still mapped here.
+            // Relaxed is sufficient: chain is exclusively owned after drain().
+            let next = unsafe { (*(ptr as *const FreeNode)).next.load(Ordering::Relaxed) };
 
             let addr = ptr as usize;
             let in_released = {
@@ -1061,6 +1211,61 @@ impl SlabAllocator {
         Arc::clone(&self.gc_threshold)
     }
 
+    /// Atomically write the first 16 bytes (FreeNode header area) of a
+    /// freshly-allocated slot, then non-atomically copy any remaining bytes.
+    ///
+    /// This prevents a data race with `TreiberStack::pop()`'s speculative
+    /// `AtomicU128::load` of `FreeNode::next`: a concurrent `pop()` may still
+    /// hold a stale `old_head` pointing at this slot. Its CAS will reject the
+    /// stale value, but the speculative read must be paired with an atomic
+    /// write to avoid undefined behavior (non-atomic write + atomic read on
+    /// the same memory = data race = UB in the Rust/C++ memory model).
+    ///
+    /// # Invariant: push() and write_slot_bytes() must NEVER race on the same slot
+    ///
+    /// `AtomicU128::store` on x86_64 compiles to a CMPXCHG16B CAS loop (no
+    /// native 128-bit store). If GC's `push()` and `write_slot_bytes()` both
+    /// target the same slot, their CAS loops contend — `write_slot_bytes`
+    /// retries until it wins, overwriting `push()`'s chain pointer and
+    /// corrupting the free list. The quiescent GC protocol prevents this:
+    /// GC only frees unreachable slots (during quiescence, no evaluators
+    /// are allocating), so a slot being written by `write_slot_bytes` is
+    /// always live and never freed concurrently.
+    ///
+    /// # Safety
+    /// - `dst` must be a valid slab-allocated slot pointer (16-byte aligned)
+    /// - `src` and `len` must describe a valid byte range
+    /// - The slot must already be exclusively owned by this thread (popped
+    ///   from the free list or bump-allocated)
+    /// - GC must not free (push) this slot while it is being written
+    #[inline]
+    unsafe fn write_slot_bytes(dst: *mut u8, src: *const u8, len: usize) {
+        let header_size = mem::size_of::<FreeNode>(); // 16
+        if len >= header_size {
+            // Read first 16 bytes from source, store atomically
+            let first_chunk: u128 = ptr::read_unaligned(src as *const u128);
+            (*(dst as *const FreeNode)).next.store(first_chunk, Ordering::Release);
+            // Non-atomically copy remaining bytes
+            let remaining = len - header_size;
+            if remaining > 0 {
+                ptr::copy_nonoverlapping(
+                    src.add(header_size),
+                    dst.add(header_size),
+                    remaining,
+                );
+            }
+        } else if len > 0 {
+            // Source is < 16 bytes: zero-pad to 16, store atomically
+            let mut buf = [0u8; 16];
+            ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), len);
+            let chunk: u128 = u128::from_ne_bytes(buf);
+            (*(dst as *const FreeNode)).next.store(chunk, Ordering::Release);
+        } else {
+            // len == 0: just atomically zero the header
+            (*(dst as *const FreeNode)).next.store(0, Ordering::Release);
+        }
+    }
+
     /// Allocate an `MettaValueInner` and return a reference.
     ///
     /// Lock-free hot path. The slot is zero-initialized before writing.
@@ -1083,10 +1288,20 @@ impl SlabAllocator {
         }
 
         unsafe {
-            // Zero the slot to eliminate stale padding bytes
-            ptr::write_bytes(ptr, 0, self.values.slot_size);
-            // Write the value
-            ptr::write(ptr as *mut MettaValueInner, val);
+            let val_size = mem::size_of::<MettaValueInner>();
+            let val_bytes = &val as *const MettaValueInner as *const u8;
+
+            // Write value bytes with atomic header to prevent Treiber stack race
+            Self::write_slot_bytes(ptr, val_bytes, val_size);
+
+            // Zero any trailing slot padding beyond MettaValueInner
+            if self.values.slot_size > val_size {
+                ptr::write_bytes(ptr.add(val_size), 0, self.values.slot_size - val_size);
+            }
+
+            // We manually wrote the bytes — prevent drop of the original
+            mem::forget(val);
+
             &*(ptr as *const MettaValueInner)
         }
     }
@@ -1100,7 +1315,8 @@ impl SlabAllocator {
         let bytes = s.as_bytes();
         let ptr = self.alloc_data(bytes.len());
         unsafe {
-            ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+            // Atomic header write to prevent Treiber stack race
+            Self::write_slot_bytes(ptr, bytes.as_ptr(), bytes.len());
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, bytes.len()))
         }
     }
@@ -1110,10 +1326,13 @@ impl SlabAllocator {
     /// The Span (48 bytes on 64-bit) is allocated via `alloc_data` and copied in.
     pub fn alloc_span(&self, span: crate::ir::Span) -> &'static crate::ir::Span {
         let size = mem::size_of::<crate::ir::Span>();
-        let ptr = self.alloc_data(size) as *mut crate::ir::Span;
+        let ptr = self.alloc_data(size);
         unsafe {
-            ptr::write(ptr, span);
-            &*ptr
+            // Atomic header write to prevent Treiber stack race
+            let span_bytes = &span as *const crate::ir::Span as *const u8;
+            Self::write_slot_bytes(ptr, span_bytes, size);
+            // No mem::forget needed — Span is Copy (no drop glue)
+            &*(ptr as *const crate::ir::Span)
         }
     }
 
@@ -1130,11 +1349,11 @@ impl SlabAllocator {
         let byte_len = len * mem::size_of::<MettaValue>();
         let ptr = self.alloc_data(byte_len);
         unsafe {
-            let slot = ptr as *mut MettaValue;
-            for (i, item) in items.into_iter().enumerate() {
-                ptr::write(slot.add(i), item);
-            }
-            std::slice::from_raw_parts(slot as *const MettaValue, len)
+            // Atomic header write to prevent Treiber stack race.
+            // MettaValue is Copy, so the Vec buffer is a contiguous byte range.
+            let src = items.as_ptr() as *const u8;
+            Self::write_slot_bytes(ptr, src, byte_len);
+            std::slice::from_raw_parts(ptr as *const MettaValue, len)
         }
     }
 
@@ -1146,9 +1365,10 @@ impl SlabAllocator {
         let byte_len = items.len() * mem::size_of::<MettaValue>();
         let ptr = self.alloc_data(byte_len);
         unsafe {
-            let slot = ptr as *mut MettaValue;
-            ptr::copy_nonoverlapping(items.as_ptr(), slot, items.len());
-            std::slice::from_raw_parts(slot as *const MettaValue, items.len())
+            // Atomic header write to prevent Treiber stack race
+            let src = items.as_ptr() as *const u8;
+            Self::write_slot_bytes(ptr, src, byte_len);
+            std::slice::from_raw_parts(ptr as *const MettaValue, items.len())
         }
     }
 
@@ -1255,6 +1475,26 @@ impl SlabAllocator {
     /// Get the current epoch counter.
     pub fn epoch(&self) -> u64 {
         self.values.epoch.load(Ordering::Acquire)
+    }
+
+    /// Check if a value pointer is valid (not freed, within a known page).
+    ///
+    /// Returns `true` if `ptr`:
+    /// 1. Falls within a known value page
+    /// 2. Is within the bump-allocated range for that page
+    /// 3. Has not been freed (epoch != u64::MAX sentinel)
+    ///
+    /// Used for diagnostic instrumentation (METTA_GC_TRACE mode) to detect
+    /// dangling pointers before dereferencing them.
+    pub fn is_value_ptr_valid(&self, ptr: *const u8) -> bool {
+        let pages = self.values.pages.read();
+        for page in pages.iter() {
+            if let Some(idx) = page.slot_index(ptr, self.values.slot_size) {
+                // Slot exists in a valid page — check if it's been freed
+                return page.slot_epoch(idx) != u64::MAX;
+            }
+        }
+        false
     }
 
     /// Check if a slot was re-allocated after a given epoch.
@@ -1396,19 +1636,13 @@ pub fn global_factory() -> GcFactory {
 // Global GC Thread + Coordination
 // ============================================================================
 
-/// Global GC thread singleton. Lazily spawned on first use.
-/// Wrapped in `Mutex` because `GcThread` contains `mpsc::Receiver` which is `!Sync`.
-static GLOBAL_GC_THREAD: OnceLock<Mutex<super::gc_thread::GcThread>> = OnceLock::new();
+// GLOBAL_GC_THREAD removed — replaced by AdaptiveGcPool (gc_pool.rs).
+// GcThread is still available for direct use in tests.
 
 /// Flag set by the cron manager or allocation pressure to request a GC cycle.
 /// Checked by `maybe_gc()` in the trampoline loop (every 256 iterations).
 /// `pub(crate)` for test observability (clearing between tests).
 pub(crate) static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// Get the global GC thread (locked), spawning it if needed.
-pub fn global_gc_thread() -> &'static Mutex<super::gc_thread::GcThread> {
-    GLOBAL_GC_THREAD.get_or_init(|| Mutex::new(super::gc_thread::GcThread::spawn()))
-}
 
 /// Request a GC cycle. Sets the `gc_requested` flag which will be picked up
 /// by the next `maybe_gc()` call from the trampoline loop.
@@ -1559,123 +1793,25 @@ impl Drop for SessionGuard {
 //
 // The thread is lazily spawned on the first session release request.
 
-/// Channel sender for session release requests. Lazily initialized.
-static SESSION_RELEASE_TX: OnceLock<mpsc::Sender<u32>> = OnceLock::new();
-
-/// Handle to the session release thread (for join on shutdown).
-static SESSION_RELEASE_THREAD: OnceLock<Mutex<Option<thread::JoinHandle<()>>>> = OnceLock::new();
-
-/// Enqueue a session context ID for async release.
+/// Enqueue a session context ID for async release via the adaptive GC pool.
 ///
-/// Cost: one channel send (~50ns). The background thread performs the actual
-/// root tracing and sweep.
+/// Cost: one channel send (~50ns). A GC pool worker performs the actual
+/// quiescence waiting, root tracing, and sweep.
 fn enqueue_session_release(context_id: u32) {
     if context_id == 0 {
         return; // Never release persistent values
     }
 
-    let tx = SESSION_RELEASE_TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<u32>();
-
-        let handle = thread::Builder::new()
-            .name("mettatron-session-gc".to_string())
-            .spawn(move || {
-                session_release_thread_main(rx);
-            })
-            .expect("failed to spawn session release thread");
-
-        SESSION_RELEASE_THREAD.get_or_init(|| Mutex::new(Some(handle)));
-        tx
+    let pool = super::gc_pool::global_gc_pool();
+    pool.submit_low(super::gc_pool::GcWorkItem::SessionRelease {
+        context_ids: vec![context_id],
     });
-
-    // Best-effort send: if the thread has shut down, silently drop
-    let _ = tx.send(context_id);
-}
-
-/// Main loop for the session release background thread.
-///
-/// Receives context IDs and calls `release_session()` on the global allocator.
-/// Batches multiple pending releases to reduce root-tracing overhead.
-fn session_release_thread_main(rx: mpsc::Receiver<u32>) {
-    loop {
-        // Block waiting for the first request
-        match rx.recv() {
-            Ok(first_id) => {
-                // Drain any additional pending releases (batching)
-                let mut ids = vec![first_id];
-                while let Ok(id) = rx.try_recv() {
-                    ids.push(id);
-                }
-
-                // Retry loop: wait for quiescence, acquire GC_IN_PROGRESS,
-                // double-check, trace roots, release sessions.
-                'quiescence: loop {
-                    // === Wait for quiescent state ===
-                    // The trampoline's work_stack and continuations hold
-                    // MettaValues NOT registered as GC roots. Root tracing
-                    // must happen when no evaluator is active.
-                    {
-                        let mut lock = QUIESCENT_MUTEX.lock();
-                        while ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
-                            QUIESCENT_CONDVAR.wait(&mut lock);
-                        }
-                    }
-
-                    // === Acquire GC_IN_PROGRESS (CAS) ===
-                    // Prevents new evals from starting during root tracing.
-                    // CAS-based for mutual exclusion with maybe_quiescent_gc()
-                    // (currently unwired, but future-proof).
-                    let gc_guard = loop {
-                        if let Some(guard) = GcInProgressGuard::try_enter() {
-                            break guard;
-                        }
-                        // Another thread holds GC_IN_PROGRESS — park
-                        let mut lock = GC_PROGRESS_MUTEX.lock();
-                        while GC_IN_PROGRESS.load(Ordering::Acquire) {
-                            GC_PROGRESS_CONDVAR.wait(&mut lock);
-                        }
-                    };
-
-                    // Double-check: no eval snuck in between condvar wake
-                    // and GC_IN_PROGRESS acquisition (same pattern as
-                    // maybe_quiescent_gc).
-                    if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
-                        drop(gc_guard);
-                        continue 'quiescence;
-                    }
-
-                    // === Safe: trace roots at quiescent point ===
-                    let alloc = global_allocator();
-                    let surviving = alloc.trace_surviving_set();
-
-                    // Release GC_IN_PROGRESS — evals can resume.
-                    // Freeing below is safe because:
-                    // - Surviving values promoted to context_id=0 (persistent)
-                    // - Freed values have the released session's context_id
-                    // - release_empty_pages() only frees live_count=0 pages
-                    // - alloc() validates free-list pointers (race fix)
-                    drop(gc_guard);
-
-                    for context_id in &ids {
-                        alloc.release_session_with_surviving(
-                            *context_id, &surviving,
-                        );
-                    }
-                    break 'quiescence;
-                }
-            }
-            Err(_) => {
-                // Channel closed — shut down
-                break;
-            }
-        }
-    }
 }
 
 /// Release all values allocated during a session, except those reachable from roots.
 ///
 /// Public free function for use by external callers. Enqueues an async release
-/// on the background session release thread.
+/// on the adaptive GC pool's LOW priority channel.
 pub fn release_session(context_id: u32) {
     enqueue_session_release(context_id);
 }
@@ -1701,26 +1837,25 @@ pub fn release_session(context_id: u32) {
 
 /// Number of concurrently active eval() / eval_trampoline() calls.
 /// GC triggers ONLY when this reaches 0 (quiescent state).
-static ACTIVE_EVALUATORS: AtomicU32 = AtomicU32::new(0);
+pub(super) static ACTIVE_EVALUATORS: AtomicU32 = AtomicU32::new(0);
 
 /// Set by `maybe_quiescent_gc()` during snapshot building (sub-millisecond).
 /// `EvalGuard::enter()` parks on condvar until this is false.
 /// NOT stop-the-world: only guards the brief snapshot capture, not mark-sweep.
-static GC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+pub(super) static GC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Mutex + Condvar pair for parking evaluator threads while GC snapshot is in
 /// progress. The mutex protects against lost wakeups: `GcInProgressGuard::drop()`
 /// holds the mutex when clearing `GC_IN_PROGRESS`, ensuring threads that checked
 /// the flag and are about to `wait()` cannot miss the notification.
-static GC_PROGRESS_MUTEX: Mutex<()> = Mutex::new(());
-static GC_PROGRESS_CONDVAR: Condvar = Condvar::new();
+pub(super) static GC_PROGRESS_MUTEX: Mutex<()> = Mutex::new(());
+pub(super) static GC_PROGRESS_CONDVAR: Condvar = Condvar::new();
 
 /// Mutex + Condvar pair for notifying threads waiting for quiescent state
 /// (ACTIVE_EVALUATORS == 0). EvalGuard::drop() notifies when transitioning
-/// from 1→0. Used by session_release_thread_main() to wait for safe root
-/// tracing points.
-static QUIESCENT_MUTEX: Mutex<()> = Mutex::new(());
-static QUIESCENT_CONDVAR: Condvar = Condvar::new();
+/// from 1→0. Used by gc_pool workers to wait for safe root tracing points.
+pub(super) static QUIESCENT_MUTEX: Mutex<()> = Mutex::new(());
+pub(super) static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 
 /// Set when a GC snapshot is sent to the GC thread, cleared when the response
 /// is processed. Prevents queueing multiple snapshots in the mpsc channel.
@@ -1793,6 +1928,11 @@ impl EvalGuard {
     /// safepoint drop/reacquire to track guard nesting.
     #[inline]
     pub fn enter() -> Self {
+        /// Maximum time to wait for GC_IN_PROGRESS to clear before retrying.
+        /// Prevents permanent deadlock if the GC guard is never dropped
+        /// (e.g., thread killed, panic in non-unwind context).
+        const GC_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
         loop {
             ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);
             if !GC_IN_PROGRESS.load(Ordering::Acquire) {
@@ -1804,7 +1944,14 @@ impl EvalGuard {
             // The mutex prevents lost wakeups (see GcInProgressGuard::drop).
             let mut lock = GC_PROGRESS_MUTEX.lock();
             while GC_IN_PROGRESS.load(Ordering::Acquire) {
-                GC_PROGRESS_CONDVAR.wait(&mut lock);
+                let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
+                if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
+                    tracing::warn!(
+                        "EvalGuard::enter(): GC_IN_PROGRESS still set after {:?} wait — retrying",
+                        GC_WAIT_TIMEOUT,
+                    );
+                    break; // Break inner loop to retry outer loop
+                }
             }
             drop(lock);
         }
@@ -1841,10 +1988,11 @@ pub fn active_evaluator_count() -> u32 {
 
 /// RAII guard that sets `GC_IN_PROGRESS = true` on creation and clears it on drop.
 /// Ensures the flag is always cleared, even if the GC snapshot path panics.
-struct GcInProgressGuard;
+pub(super) struct GcInProgressGuard;
 
 impl GcInProgressGuard {
-    fn enter() -> Self {
+    #[allow(dead_code)]
+    pub(super) fn enter() -> Self {
         GC_IN_PROGRESS.store(true, Ordering::Release);
         GcInProgressGuard
     }
@@ -1852,7 +2000,7 @@ impl GcInProgressGuard {
     /// Try to enter GC-in-progress state. Returns None if another thread
     /// already holds the guard (e.g., maybe_quiescent_gc() or another
     /// session release cycle).
-    fn try_enter() -> Option<Self> {
+    pub(super) fn try_enter() -> Option<Self> {
         if GC_IN_PROGRESS
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
@@ -1963,6 +2111,22 @@ fn bump_gc_reachable() {
 #[inline]
 pub fn gc_reachable_counter() -> u64 {
     GC_REACHABLE_COUNTER.load(Ordering::Relaxed)
+}
+
+/// Cumulative count of values freed by GC (mark-sweep + session release).
+///
+/// Incremented in `process_gc_response()` by the number of non-filtered
+/// dead values. Used by the GC scaling monitor in `gc_cron.rs` to compute
+/// the alloc/free rate ratio for adaptive pool sizing.
+static GC_VALUES_FREED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Get the total number of values freed by GC across all cycles.
+///
+/// Read by the GC cron hill climber to compute free rate for
+/// alloc_rate / free_rate adaptive scaling.
+#[inline]
+pub fn gc_values_freed_total() -> u64 {
+    GC_VALUES_FREED_TOTAL.load(Ordering::Relaxed)
 }
 
 /// Tier 1 backpressure: graduated yield/sleep during eval.
@@ -2096,9 +2260,8 @@ pub fn maybe_quiescent_gc() -> bool {
         return false;
     }
 
-    // Safe: no evaluators active, build snapshot and trigger GC.
-    let gc = global_gc_thread().lock();
-    let result = trigger_gc_cycle_locked(&gc);
+    // Safe: no evaluators active, build snapshot and submit to GC pool.
+    let result = trigger_gc_cycle_via_pool();
 
     drop(_gc_guard);
     result
@@ -2115,6 +2278,13 @@ pub fn maybe_quiescent_gc() -> bool {
 /// New GC cycles are triggered exclusively by `maybe_quiescent_gc()` at
 /// quiescent points between top-level expressions.
 ///
+/// **Mutual exclusion**: Acquires `GcInProgressGuard` before consuming the
+/// response channel, ensuring mutual exclusion with
+/// `release_session_with_surviving()` on GC pool worker threads. Both paths
+/// free/poison value slots; concurrent execution is a TOCTOU race on slot
+/// epoch/content (FlyingRaven ASAN finding: use-after-poison in
+/// `collect_dead_data`).
+///
 /// Returns `true` if a GC response was processed.
 pub fn maybe_process_gc_response() -> bool {
     // Signal that the GC lifecycle is reachable (for cron backpressure gating)
@@ -2123,11 +2293,25 @@ pub fn maybe_process_gc_response() -> bool {
     // Lazily spawn the GC cron manager (idempotent via OnceLock)
     let _ = global_gc_cron();
 
-    let gc = global_gc_thread().lock();
+    // Acquire GC_IN_PROGRESS for mutual exclusion with
+    // release_session_with_surviving() on GC pool worker threads.
+    // Both paths free/poison value slots — concurrent execution is a
+    // TOCTOU race on slot epoch/content (FlyingRaven ASAN finding).
+    //
+    // try_enter() is non-blocking: if session release holds the guard,
+    // we skip — the response stays on the channel for the next call.
+    // Must acquire BEFORE try_recv_response() so we don't consume a
+    // response we can't safely process.
+    let _gc_guard = match GcInProgressGuard::try_enter() {
+        Some(guard) => guard,
+        None => return false,
+    };
+
+    let pool = super::gc_pool::global_gc_pool();
     let alloc = global_allocator();
 
-    match gc.try_recv_response() {
-        super::gc_thread::TryRecvGcResponse::Response(response) => {
+    match pool.try_recv_response() {
+        Some(response) => {
             alloc.process_gc_response(&response);
             // Page release is handled inside process_gc_response() (Phase 5).
 
@@ -2159,17 +2343,7 @@ pub fn maybe_process_gc_response() -> bool {
 
             return true;
         }
-        super::gc_thread::TryRecvGcResponse::Disconnected => {
-            // GC thread crashed or shut down — clear in-flight flag to prevent
-            // indefinite blocking in apply_backpressure_tier2().
-            if gc_cycle_in_flight() {
-                GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
-                // Wake blocked threads since in-flight was cleared
-                GC_CYCLE_CONDVAR.notify_all();
-                set_backpressure_level(0);
-            }
-        }
-        super::gc_thread::TryRecvGcResponse::Empty => {}
+        None => {}
     }
     false
 }
@@ -2226,17 +2400,42 @@ pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {
 /// and other root sources across all threads.
 ///
 /// Dead (dropped) providers are automatically pruned during collection.
+///
+/// # Lock Protocol
+///
+/// Splits into two phases to minimize `ROOT_REGISTRY` hold time and prevent
+/// writer starvation (which previously deadlocked when many test threads
+/// tried to register new environments concurrently with GC root collection):
+///
+/// 1. **Snapshot phase** — Briefly acquires `ROOT_REGISTRY.write()` to upgrade
+///    all `Weak` refs to `Arc`, prune dead entries, and release the lock.
+/// 2. **Collection phase** — Iterates the local `Vec<Arc>` without holding any
+///    registry lock, calling `collect_roots()` on each provider.
 pub fn collect_all_roots() -> Vec<MettaValue> {
-    let mut registry = root_registry().write();
-    let mut roots = Vec::with_capacity(registry.len() * 64); // heuristic pre-alloc
-    registry.retain(|weak| {
-        if let Some(strong) = weak.upgrade() {
-            strong.collect_roots(&mut roots);
-            true
-        } else {
-            false // Provider was dropped — remove from registry
-        }
-    });
+    // Phase 1: Snapshot — briefly hold write lock to upgrade Weak refs and prune dead entries.
+    // This takes O(N * weak_upgrade) time, NOT O(N * collect_roots) time.
+    let providers: Vec<Arc<dyn RootProvider>> = {
+        let mut registry = root_registry().write();
+        let mut live = Vec::with_capacity(registry.len());
+        registry.retain(|weak| {
+            if let Some(strong) = weak.upgrade() {
+                live.push(strong);
+                true
+            } else {
+                false // Provider was dropped — remove from registry
+            }
+        });
+        live
+        // ROOT_REGISTRY write lock released here
+    };
+
+    // Phase 2: Collect roots from each provider WITHOUT holding ROOT_REGISTRY.
+    // New environments can register freely during this phase.
+    let mut roots = Vec::with_capacity(providers.len() * 64); // heuristic pre-alloc
+    for provider in &providers {
+        provider.collect_roots(&mut roots);
+    }
+
     // Also collect safepoint roots from trampoline state
     collect_safepoint_roots(&mut roots);
     roots
@@ -2327,6 +2526,128 @@ fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
     }
 }
 
+/// Build the transitive closure of all currently registered safepoint roots.
+///
+/// Returns `Some(HashSet)` if safepoint roots exist (i.e., at least one
+/// evaluator is paused at a safepoint with registered temporary roots).
+/// Returns `None` if no safepoint roots are registered (fast path — no
+/// filtering needed).
+///
+/// This is used by `process_gc_response()` to guard against freeing values
+/// that are dead per a **previous** GC cycle's mark-sweep but are now live
+/// in a concurrent evaluator's trampoline state. The previous cycle's roots
+/// (R_prev) may differ from the current safepoint roots (R_current), so a
+/// value can be:
+/// - Dead per R_prev (not reachable from the snapshot's root set)
+/// - Live per R_current (reachable from the current trampoline state)
+///
+/// Without this check, `process_gc_response()` frees such values during the
+/// safepoint pause, and the trampoline crashes with use-after-poison when it
+/// resumes and accesses them (FlyingRaven ASAN finding: `MettaValue::is_error`
+/// in `process_collected_sexpr_generic`).
+///
+/// The DFS traversal matches `trace_surviving_set()` but operates only on
+/// safepoint roots (not all environment roots), keeping cost proportional
+/// to the trampoline's working set rather than the entire live heap.
+fn trace_safepoint_live_set() -> Option<std::collections::HashSet<*const u8>> {
+    let registry_ref = SAFEPOINT_ROOTS.get()?;
+    let safepoint_roots: Vec<MettaValue> = {
+        let guard = registry_ref.lock();
+        let total: usize = guard.iter().map(|s| s.len()).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut roots = Vec::with_capacity(total);
+        for root_set in guard.iter() {
+            roots.extend(root_set.iter().copied());
+        }
+        roots
+    };
+
+    let mut live_set = std::collections::HashSet::with_capacity(safepoint_roots.len() * 2);
+    let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(safepoint_roots.len());
+
+    // Seed worklist with safepoint root inner pointers
+    for root in &safepoint_roots {
+        let ptr = root.inner_ptr();
+        if live_set.insert(ptr as *const u8) {
+            worklist.push(ptr);
+        }
+    }
+
+    // DFS traversal — same variant matching as trace_surviving_set()
+    while let Some(ptr) = worklist.pop() {
+        // SAFETY: ptr points to a live MettaValueInner in a slab page.
+        // Safepoint roots were registered BEFORE dropping EvalGuard, so
+        // these slots are guaranteed to not have been freed yet.
+        match unsafe { &*ptr } {
+            MettaValueInner::SExpr(children) => {
+                for child in children.iter() {
+                    let child_ptr = child.inner_ptr();
+                    if live_set.insert(child_ptr as *const u8) {
+                        worklist.push(child_ptr);
+                    }
+                }
+            }
+            MettaValueInner::Conjunction(goals) => {
+                for goal in goals.iter() {
+                    let goal_ptr = goal.inner_ptr();
+                    if live_set.insert(goal_ptr as *const u8) {
+                        worklist.push(goal_ptr);
+                    }
+                }
+            }
+            MettaValueInner::Error(_, details) => {
+                let details_ptr = details.inner_ptr();
+                if live_set.insert(details_ptr as *const u8) {
+                    worklist.push(details_ptr);
+                }
+            }
+            MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
+                let inner_ptr = inner.inner_ptr();
+                if live_set.insert(inner_ptr as *const u8) {
+                    worklist.push(inner_ptr);
+                }
+            }
+            MettaValueInner::Space(handle) => {
+                let mut space_values = Vec::new();
+                handle.collect_gc_values(&mut space_values);
+                for val in &space_values {
+                    let val_ptr = val.inner_ptr();
+                    if live_set.insert(val_ptr as *const u8) {
+                        worklist.push(val_ptr);
+                    }
+                }
+            }
+            MettaValueInner::Spanned(v, _) => {
+                let inner_ptr = v.inner_ptr();
+                if live_set.insert(inner_ptr as *const u8) {
+                    worklist.push(inner_ptr);
+                }
+            }
+            MettaValueInner::Atom(_)
+            | MettaValueInner::Bool(_)
+            | MettaValueInner::Long(_)
+            | MettaValueInner::Float(_)
+            | MettaValueInner::String(_)
+            | MettaValueInner::Unit
+            | MettaValueInner::Empty
+            | MettaValueInner::State(_)
+            | MettaValueInner::Memo(_) => {}
+        }
+    }
+
+    if gc_trace_enabled() {
+        eprintln!(
+            "[GC-SAFEPOINT-LIVE] traced {} safepoint root values → {} transitive live pointers",
+            safepoint_roots.len(),
+            live_set.len(),
+        );
+    }
+
+    Some(live_set)
+}
+
 // ============================================================================
 // EvalGuard Drop/Reacquire — Safepoint Lifecycle
 // ============================================================================
@@ -2373,6 +2694,9 @@ pub fn drop_eval_guard_for_safepoint() {
 /// Increments `ACTIVE_EVALUATORS`, blocking if `GC_IN_PROGRESS` is set
 /// (same protocol as `EvalGuard::enter()`).
 pub fn reacquire_eval_guard_after_safepoint() {
+    /// Maximum time to wait for GC_IN_PROGRESS to clear before retrying.
+    const GC_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
     // Same entry protocol as EvalGuard::enter() — CAS loop with GC_IN_PROGRESS check
     loop {
         ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);
@@ -2383,7 +2707,14 @@ pub fn reacquire_eval_guard_after_safepoint() {
         ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
         let mut lock = GC_PROGRESS_MUTEX.lock();
         while GC_IN_PROGRESS.load(Ordering::Acquire) {
-            GC_PROGRESS_CONDVAR.wait(&mut lock);
+            let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
+            if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
+                tracing::warn!(
+                    "reacquire_eval_guard_after_safepoint(): GC_IN_PROGRESS still set after {:?} wait — retrying",
+                    GC_WAIT_TIMEOUT,
+                );
+                break; // Break inner loop to retry outer loop
+            }
         }
         drop(lock);
     }
@@ -2502,12 +2833,12 @@ where
     if is_gc_disabled() {
         return;
     }
-    // NOTE: We intentionally do NOT check GLOBAL_GC_THREAD.get().is_none() here.
-    // The session release thread (session_release_thread_main) calls
-    // collect_all_roots() → trace_surviving_set() independently of the GC thread.
-    // If environments are not registered, the surviving set is empty and ALL
-    // session-allocated values (including RuleEntry.lhs/rhs) are freed, causing
-    // use-after-free when match_rules_native() dereferences freed slab slots.
+    // NOTE: Environments must always be registered regardless of GC pool state.
+    // The GC pool's session release workers call collect_all_roots() →
+    // trace_surviving_set(). If environments are not registered, the surviving
+    // set is empty and ALL session-allocated values (including RuleEntry.lhs/rhs)
+    // are freed, causing use-after-free when match_rules_native() dereferences
+    // freed slab slots.
 
     // Clone the Arc and try to downcast to the concrete MettaValue type
     let any: Arc<dyn Any + Send + Sync> = shared.clone();
@@ -2518,32 +2849,37 @@ where
     }
 }
 
-/// Trigger a GC cycle using the global allocator and root registry.
+/// Trigger a GC cycle using the global allocator, root registry, and GC pool.
 ///
 /// This is the primary GC entry point. It:
 /// 1. Processes any pending GC response from a previous cycle
 /// 2. Collects roots from all registered providers
 /// 3. Builds a snapshot from the global allocator
-/// 4. Sends the snapshot to the GC thread
+/// 4. Submits the snapshot to the adaptive GC pool (HIGH priority)
 ///
 /// Returns `true` if a GC cycle was initiated.
-pub fn trigger_gc_cycle(gc_thread: &super::gc_thread::GcThread) -> bool {
+pub fn trigger_gc_cycle() -> bool {
+    let pool = super::gc_pool::global_gc_pool();
     let alloc = global_allocator();
 
-    // First, process any pending GC response from previous cycle
-    match gc_thread.try_recv_response() {
-        super::gc_thread::TryRecvGcResponse::Response(response) => {
-            alloc.process_gc_response(&response);
-            // Page release is handled inside process_gc_response() (Phase 5).
-            GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+    // Process pending response only if we can acquire mutual exclusion
+    // with release_session_with_surviving() on GC pool worker threads.
+    // Both paths free/poison value slots — concurrent execution is a
+    // TOCTOU race (FlyingRaven ASAN finding).
+    //
+    // Check GC_IN_PROGRESS before try_recv_response() so we don't
+    // consume a response we can't safely process.
+    if !GC_IN_PROGRESS.load(Ordering::Acquire) {
+        if let Some(response) = pool.try_recv_response() {
+            if let Some(_gc_guard) = GcInProgressGuard::try_enter() {
+                alloc.process_gc_response(&response);
+                // Page release is handled inside process_gc_response() (Phase 5).
+                GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+                // _gc_guard drops here → clears GC_IN_PROGRESS
+            }
+            // If guard fails after consuming: response is lost, but dead slots
+            // will be re-discovered in the next GC cycle (conservative, safe).
         }
-        super::gc_thread::TryRecvGcResponse::Disconnected => {
-            // GC thread crashed or shut down — can't trigger GC.
-            GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
-            set_backpressure_level(0);
-            return false;
-        }
-        super::gc_thread::TryRecvGcResponse::Empty => {}
     }
 
     // Don't queue another cycle if one is already in flight
@@ -2554,25 +2890,28 @@ pub fn trigger_gc_cycle(gc_thread: &super::gc_thread::GcThread) -> bool {
     // Collect roots from all registered providers
     let roots = collect_all_roots();
 
-    // Build snapshot and send to GC thread
+    // Build snapshot and submit to GC pool (HIGH priority channel)
     let snapshot = alloc.build_snapshot(roots);
     GC_CYCLE_IN_FLIGHT.store(true, Ordering::Release);
-    gc_thread.request_gc(snapshot);
+    pool.submit_high(super::gc_pool::GcWorkItem::Collect(snapshot));
     true
 }
 
-/// Same as `trigger_gc_cycle` but takes an already-locked GcThread mutex guard.
-/// Used by `maybe_quiescent_gc()` to avoid double-locking.
+/// Trigger a GC cycle via the pool without processing pending responses.
 ///
-/// Sets `GC_CYCLE_IN_FLIGHT` before sending the snapshot to prevent queueing
-/// multiple snapshots. Aligns with TLA+ `hasGcRequest' = TRUE` in
-/// `TryQuiescentGc_SnapshotOK`.
-fn trigger_gc_cycle_locked(gc_thread: &super::gc_thread::GcThread) -> bool {
+/// Used by `maybe_quiescent_gc()` where responses are processed separately
+/// by `maybe_process_gc_response()`.
+///
+/// Sets `GC_CYCLE_IN_FLIGHT` before submitting the snapshot to prevent
+/// queueing multiple snapshots. Aligns with TLA+ `hasGcRequest' = TRUE`
+/// in `TryQuiescentGc_SnapshotOK`.
+fn trigger_gc_cycle_via_pool() -> bool {
+    let pool = super::gc_pool::global_gc_pool();
     let alloc = global_allocator();
     let roots = collect_all_roots();
     let snapshot = alloc.build_snapshot(roots);
     GC_CYCLE_IN_FLIGHT.store(true, Ordering::Release);
-    gc_thread.request_gc(snapshot);
+    pool.submit_high(super::gc_pool::GcWorkItem::Collect(snapshot));
     true
 }
 
@@ -2640,7 +2979,6 @@ unsafe impl Send for GcSnapshot {}
 #[derive(Debug)]
 pub struct GcResponse {
     pub dead_values: Vec<*mut u8>,
-    pub dead_data: Vec<(*mut u8, usize)>,
     pub snapshot_epoch: u64,
     pub live_bytes: usize,
     pub live_values: usize,
@@ -2779,12 +3117,31 @@ impl SlabAllocator {
     ///
     /// Phases 1-3 share a single read lock on the page array.
     pub fn process_gc_response(&self, response: &GcResponse) {
-        let mut filtered_count = 0usize;
         let mut non_filtered_dead: Vec<ResolvedDead> = Vec::with_capacity(response.dead_values.len());
 
         // Declare outside the block so it outlives the read lock.
         // It's an owned Vec<(*mut u8, usize)> — no borrows on pages.
         let dead_data_to_free: Vec<(*mut u8, usize)>;
+
+        // === Phase 0: Build safepoint live set (if any safepoint roots exist) ===
+        //
+        // When an evaluator is paused at a GC safepoint, its trampoline state
+        // (work_stack + continuations) holds live values that were registered as
+        // temporary roots. These roots may differ from the roots used by the
+        // PREVIOUS GC cycle's mark-sweep (which produced `response.dead_values`).
+        //
+        // A value can be:
+        // - Dead per the previous cycle's roots (in `response.dead_values`)
+        // - Live per the current safepoint roots (reachable from trampoline state)
+        //
+        // Without this filter, we'd free such values and the trampoline would
+        // crash with use-after-poison when it resumes (FlyingRaven ASAN finding:
+        // `MettaValue::is_error` in `process_collected_sexpr_generic`, thread T0).
+        //
+        // The epoch filter (Phase 1) catches values allocated AFTER the snapshot,
+        // but not values that became reachable through DIFFERENT root sets between
+        // GC cycles. This safepoint filter is the safety net for that case.
+        let safepoint_live = trace_safepoint_live_set();
 
         // Single read lock across Phases 1-3. Safe because:
         // - No pages added (alloc_new_page takes write lock)
@@ -2795,15 +3152,23 @@ impl SlabAllocator {
             let pages = self.values.pages.read();
             let page_index = PageIndex::new(&pages);
 
-            // === Phase 1: Epoch filtering — O(D log P) ===
-            // Separate dead values into filtered (re-allocated after snapshot) and
-            // non-filtered (genuinely dead, safe to reclaim).
+            // === Phase 1: Epoch + safepoint filtering — O(D log P) ===
+            // Separate dead values into filtered (re-allocated after snapshot OR
+            // currently reachable from safepoint roots) and non-filtered (genuinely
+            // dead, safe to reclaim).
+            let mut safepoint_rescued = 0u64;
             for &ptr in &response.dead_values {
                 if let Some((page_idx, slot_idx)) = page_index.find(
                     &pages, ptr as *const u8, self.values.slot_size,
                 ) {
                     if pages[page_idx].slot_epoch(slot_idx) > response.snapshot_epoch {
-                        filtered_count += 1;
+                        // Slot re-allocated after snapshot — skip (not genuinely dead)
+                    } else if safepoint_live.as_ref()
+                        .is_some_and(|live| live.contains(&(ptr as *const u8)))
+                    {
+                        // Value is dead per previous cycle but live in current
+                        // safepoint roots — skip to prevent use-after-poison.
+                        safepoint_rescued += 1;
                     } else {
                         non_filtered_dead.push(ResolvedDead { ptr, page_idx, slot_idx });
                     }
@@ -2811,40 +3176,81 @@ impl SlabAllocator {
                 // else: ptr not in any page (released in prior cycle) — skip
             }
 
+            if safepoint_rescued > 0 && gc_trace_enabled() {
+                eprintln!(
+                    "[GC-SAFEPOINT-RESCUE] rescued {} values from previous cycle's dead list \
+                     (dead per R_prev, live per R_current)",
+                    safepoint_rescued,
+                );
+            }
+
             // === Phase 2: Collect dead data BEFORE freeing value slots ===
             // The slot content is still valid here — we haven't pushed to the free list yet.
             // This fixes a bug in the previous code where the filtered-values branch read
             // from slots that had already been pushed to the free list (use-after-free).
-            dead_data_to_free = if filtered_count == 0 {
-                // No filtering needed — use the pre-computed dead_data from the GC response
-                response.dead_data.clone()
-            } else {
-                // Filtering needed — re-derive dead data from non-filtered values only
-                let mut data = Vec::new();
+            // Always derive dead data here (under GcInProgressGuard), not in
+            // sweep_snapshot(). sweep_snapshot() runs on a GC pool worker without
+            // mutual exclusion — reading dead slot content there races with
+            // release_session_with_surviving() / process_gc_response() which may
+            // concurrently poison those slots (FlyingRaven ASAN finding).
+            dead_data_to_free = {
+                let mut data = Vec::with_capacity(non_filtered_dead.len());
                 for entry in &non_filtered_dead {
                     let inner_val = unsafe { &*(entry.ptr as *const MettaValueInner) };
-                    let mut data_entries = Vec::new();
-                    collect_dead_data(inner_val, &mut data_entries);
-                    data.extend(data_entries);
+                    collect_dead_data(inner_val, &mut data);
                 }
                 data
             };
 
             // === Phase 3: Free value slots — O(D'), zero page lookups ===
+            let trace = gc_trace_enabled();
+            let quarantine = gc_quarantine_enabled();
+            let cycle = GC_CYCLE_COUNT.fetch_add(1, Ordering::Relaxed);
+
             for entry in &non_filtered_dead {
+                // SAFETY: slot content is still valid — not yet pushed to free list.
+                let variant = if trace || quarantine {
+                    let inner_val = unsafe { &*(entry.ptr as *const MettaValueInner) };
+                    let v = discriminant_name(inner_val);
+                    if trace {
+                        eprintln!(
+                            "[GC-FREE] ptr={:p} variant={} page={} slot={} cycle={}",
+                            entry.ptr, v, entry.page_idx, entry.slot_idx, cycle
+                        );
+                    }
+                    v
+                } else {
+                    ""
+                };
                 let page = &pages[entry.page_idx];
                 page.live_count.fetch_sub(1, Ordering::Relaxed);
                 // Sentinel epoch: prevents double-free by future GC cycles.
                 page.set_slot_epoch(entry.slot_idx, u64::MAX);
-                // ASAN: poison the freed slot BEFORE push (skip FreeNode header).
-                // Under ASAN, pop() returns None (slot reuse disabled), so
-                // poisoning persists and use-after-free triggers ASAN reports.
-                // Push still works because asan_poison_slab_slot leaves the
-                // first 16 bytes (FreeNode header) unpoisoned.
-                unsafe { asan_poison_slab_slot(entry.ptr, self.values.slot_size); }
-                self.values.free_list.push(entry.ptr);
+
+                if quarantine {
+                    // Quarantine mode: fully poison the slot (including FreeNode header)
+                    // and add to quarantine list instead of free list. Any stale
+                    // MettaValue reference reading the discriminant byte will trigger
+                    // an ASAN heap-use-after-free report.
+                    unsafe { asan_poison_slab_slot_full(entry.ptr, self.values.slot_size); }
+                    gc_quarantine().lock().push(QuarantineEntry {
+                        ptr: entry.ptr,
+                        slot_size: self.values.slot_size,
+                        page_idx: entry.page_idx,
+                        slot_idx: entry.slot_idx,
+                        variant,
+                        gc_cycle: cycle,
+                    });
+                } else {
+                    // Standard mode: poison after FreeNode header, push to free list.
+                    unsafe { asan_poison_slab_slot(entry.ptr, self.values.slot_size); }
+                    self.values.free_list.push(entry.ptr);
+                }
             }
         } // read lock released
+
+        // Track freed values for GC scaling monitor
+        GC_VALUES_FREED_TOTAL.fetch_add(non_filtered_dead.len() as u64, Ordering::Relaxed);
 
         // === Phase 4: Free dead data slots — O(D_data log P_data) ===
         // Batch by size class, build sorted page index once per class.
@@ -2860,6 +3266,45 @@ impl SlabAllocator {
 
         // Update committed bytes
         self.committed_bytes_atomic.store(self.committed_bytes(), Ordering::Relaxed);
+
+        // Drain quarantine entries older than max_age cycles back to free list.
+        // For FlyingRaven diagnosis: use u64::MAX (never drain) since the
+        // program runs for bounded time. For production: 3-5 cycles.
+        self.drain_quarantine(u64::MAX);
+    }
+
+    /// Drain quarantine entries older than `max_age` GC cycles back to the free list.
+    /// Called at end of process_gc_response() to prevent unbounded quarantine growth
+    /// in long-running programs.
+    fn drain_quarantine(&self, max_age: u64) {
+        if !gc_quarantine_enabled() {
+            return;
+        }
+        let current_cycle = GC_CYCLE_COUNT.load(Ordering::Relaxed);
+        let mut quarantine = gc_quarantine().lock();
+        let initial_len = quarantine.len();
+        let mut drained = 0usize;
+        let mut i = 0;
+        while i < quarantine.len() {
+            if current_cycle.saturating_sub(quarantine[i].gc_cycle) >= max_age {
+                let entry = quarantine.swap_remove(i);
+                // Unpoison entire slot, then re-poison with FreeNode header accessible.
+                unsafe {
+                    asan_unpoison_slab_slot(entry.ptr, entry.slot_size);
+                    asan_poison_slab_slot(entry.ptr, entry.slot_size);
+                }
+                self.values.free_list.push(entry.ptr);
+                drained += 1;
+            } else {
+                i += 1;
+            }
+        }
+        if gc_trace_enabled() && drained > 0 {
+            eprintln!(
+                "[GC-QUARANTINE] drained {}/{} entries (max_age={}, current_cycle={})",
+                drained, initial_len, max_age, current_cycle
+            );
+        }
     }
 
     // ========================================================================
@@ -2955,14 +3400,45 @@ impl SlabAllocator {
             };
 
             // Free value slots — O(D'), zero page lookups (indices cached)
+            let trace = gc_trace_enabled();
+            let quarantine = gc_quarantine_enabled();
+            let cycle = GC_CYCLE_COUNT.fetch_add(1, Ordering::Relaxed);
+
             for entry in &non_filtered_dead {
+                let variant = if trace || quarantine {
+                    let inner_val = unsafe { &*(entry.ptr as *const MettaValueInner) };
+                    let v = discriminant_name(inner_val);
+                    if trace {
+                        eprintln!(
+                            "[GC-SESSION-FREE] ptr={:p} variant={} page={} slot={} ctx={} cycle={}",
+                            entry.ptr, v, entry.page_idx, entry.slot_idx, context_id, cycle
+                        );
+                    }
+                    v
+                } else {
+                    ""
+                };
                 let page = &pages[entry.page_idx];
                 page.live_count.fetch_sub(1, Ordering::Relaxed);
                 // Sentinel epoch: prevents double-free by future GC cycles
                 page.set_slot_epoch(entry.slot_idx, u64::MAX);
-                // ASAN: poison the freed slot BEFORE push
-                unsafe { asan_poison_slab_slot(entry.ptr, slot_size); }
-                self.values.free_list.push(entry.ptr);
+
+                if quarantine {
+                    // Quarantine mode: fully poison the slot (including FreeNode header)
+                    unsafe { asan_poison_slab_slot_full(entry.ptr, slot_size); }
+                    gc_quarantine().lock().push(QuarantineEntry {
+                        ptr: entry.ptr,
+                        slot_size,
+                        page_idx: entry.page_idx,
+                        slot_idx: entry.slot_idx,
+                        variant,
+                        gc_cycle: cycle,
+                    });
+                } else {
+                    // Standard mode: poison after FreeNode header, push to free list
+                    unsafe { asan_poison_slab_slot(entry.ptr, slot_size); }
+                    self.values.free_list.push(entry.ptr);
+                }
             }
         } // read lock released
 
@@ -3001,7 +3477,11 @@ impl SlabAllocator {
     /// Public because the async session release thread calls this to batch
     /// multiple session releases with a single root trace.
     pub fn trace_surviving_set(&self) -> std::collections::HashSet<*const u8> {
+        let trace = gc_trace_enabled();
         let roots = collect_all_roots();
+        if trace {
+            eprintln!("[GC-TRACE] trace_surviving_set: {} root values collected", roots.len());
+        }
         let mut surviving = std::collections::HashSet::with_capacity(roots.len() * 4);
         let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
 
@@ -3070,6 +3550,10 @@ impl SlabAllocator {
                 | MettaValueInner::State(_)
                 | MettaValueInner::Memo(_) => {}
             }
+        }
+
+        if trace {
+            eprintln!("[GC-SURVIVING] count={}", surviving.len());
         }
 
         surviving
@@ -3236,12 +3720,26 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
 }
 
 /// Mark a value in the snapshot's mark bitmaps.
+///
+/// Skips freed slots (epoch == u64::MAX) and slots allocated after the
+/// snapshot epoch — their content is FreeNode data or post-snapshot values,
+/// not valid MettaValueInner for this GC cycle. Dereferencing them as
+/// MettaValueInner would be UB (invalid enum discriminant from FreeNode
+/// data), potentially corrupting the mark bitmaps and causing live values
+/// to be swept.
 fn snapshot_mark_value(snapshot: &mut GcSnapshot, ptr: *const u8, slot_size: usize) -> bool {
     for (page_idx, ps) in snapshot.page_snapshots.iter().enumerate() {
         let offset = (ptr as usize).wrapping_sub(ps.data_ptr as usize);
         if offset < ps.capacity * slot_size {
             let idx = offset / slot_size;
             if idx < ps.bump_count {
+                // Skip slots freed by a prior GC cycle (epoch == u64::MAX)
+                // or allocated after the snapshot (epoch > snapshot_epoch).
+                // These slots contain FreeNode data, not valid MettaValueInner.
+                let slot_epoch = ps.epochs[idx];
+                if slot_epoch == u64::MAX || slot_epoch > snapshot.snapshot_epoch {
+                    return false;
+                }
                 let word = idx / 64;
                 let bit = idx % 64;
                 if (snapshot.marks[page_idx][word] & (1u64 << bit)) != 0 {
@@ -3266,7 +3764,6 @@ pub fn sweep_snapshot(snapshot: &GcSnapshot) -> GcResponse {
     let slot_size = snapshot.slot_size;
     let mut response = GcResponse {
         dead_values: Vec::new(),
-        dead_data: Vec::new(),
         snapshot_epoch: snapshot.snapshot_epoch,
         live_bytes: 0,
         live_values: 0,
@@ -3293,8 +3790,10 @@ pub fn sweep_snapshot(snapshot: &GcSnapshot) -> GcResponse {
                 response.live_bytes += data_size_of(inner_val);
             } else {
                 response.dead_values.push(ptr);
-                let inner_val = unsafe { &*(ptr as *const MettaValueInner) };
-                collect_dead_data(inner_val, &mut response.dead_data);
+                // Dead data collection deferred to process_gc_response() which
+                // runs under GcInProgressGuard — reading dead slot content here
+                // races with release_session_with_surviving() / process_gc_response()
+                // which may concurrently poison these slots (FlyingRaven ASAN finding).
             }
         }
     }
@@ -4757,18 +5256,24 @@ mod tests {
     fn test_safepoint_drop_reacquire_cycle() {
         let _guard = EvalGuard::enter();
         let before = active_evaluator_count();
+        assert!(before >= 1, "should have at least our own guard");
 
         // Drop for safepoint
         drop_eval_guard_for_safepoint();
         let during = active_evaluator_count();
-        assert_eq!(during, before - 1, "drop_eval_guard should decrement ACTIVE_EVALUATORS");
+        // Use relative check: other parallel tests may concurrently change
+        // ACTIVE_EVALUATORS, so we can only assert our decrement was observed.
+        assert!(during < before, "drop_eval_guard should decrement ACTIVE_EVALUATORS");
 
         // Re-acquire
         reacquire_eval_guard_after_safepoint();
         let after = active_evaluator_count();
-        assert_eq!(after, before, "reacquire should restore ACTIVE_EVALUATORS");
+        assert!(after > during, "reacquire should increment ACTIVE_EVALUATORS");
 
-        drop(_guard);
+        // _guard drops here. Since drop_eval_guard_for_safepoint() +
+        // reacquire_eval_guard_after_safepoint() is a balanced pair (restores both
+        // EVAL_GUARD_DEPTH and ACTIVE_EVALUATORS), the guard's Drop will correctly
+        // decrement both depth and ACTIVE_EVALUATORS exactly once.
     }
 
     #[test]

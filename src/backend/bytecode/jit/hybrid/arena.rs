@@ -31,7 +31,7 @@ use crate::backend::bytecode::jit::runtime::arithmetic::check_and_clear_jit_type
 use crate::backend::models::{MettaValue, MettaValueInner, GcFactory, MettaValueFactory, SlabAllocator};
 
 use super::super::{
-    JitBindingFrame, JitChoicePoint, JitContext, JitValue,
+    JitBindingFrame, JitChoicePoint, JitContext, JitValue, TypeSignatureRegistry,
     MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE,
     PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_PTR, TAG_LONG, TAG_MASK, TAG_UNIT,
     TAG_VAR,
@@ -270,6 +270,13 @@ impl HybridExecutor {
         // This allows JIT runtime functions to access and modify the environment.
         // SAFETY: The environment reference is valid for the duration of JIT execution.
         ctx.env_ptr = &mut env as *mut MettaEnvironment as *mut ();
+
+        // Build type registry from environment's type assertions (MeTTa HE parity).
+        // This pre-computes per-function type classifications (Evaluate vs PassThrough)
+        // for O(1) lookup during jit_runtime_call_typed.
+        // Stack-allocated; outlives JIT execution since it lives in this function's frame.
+        let type_registry = TypeSignatureRegistry::from_env(&env);
+        ctx.type_registry_ptr = &type_registry as *const TypeSignatureRegistry;
 
         if self.config.trace {
             trace!(target: "mettatron::jit::hybrid::arena", native_ptr = ?native_ptr, "Executing JIT code in arena mode with environment");

@@ -1,0 +1,6 @@
+-Q theories WorkPoolStability
+theories/Prelude.v
+theories/USL.v
+theories/ObjectiveFunction.v
+theories/LyapunovConvergence.v
+theories/WeightDominance.v

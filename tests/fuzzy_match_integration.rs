@@ -515,7 +515,10 @@ fn test_compile_multiple_expressions() {
 fn test_eval_arithmetic() {
     let state = compile("(+ 1 2)").expect("compile failed");
     let env = new_env();
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     assert!(!results.is_empty(), "Should have results");
     if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
@@ -532,7 +535,10 @@ fn test_eval_arithmetic() {
 fn test_eval_if_true() {
     let state = compile("(if True 1 2)").expect("compile failed");
     let env = new_env();
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     assert!(!results.is_empty(), "Should have results");
     if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
@@ -549,7 +555,10 @@ fn test_eval_if_true() {
 fn test_eval_if_false() {
     let state = compile("(if False 1 2)").expect("compile failed");
     let env = new_env();
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     assert!(!results.is_empty(), "Should have results");
     if let MettaValueInner::Long(n) = results.first().expect("results").inner() {

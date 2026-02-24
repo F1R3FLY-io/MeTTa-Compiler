@@ -32,7 +32,10 @@ fn test_include_basic_file() {
     let code = format!(r#"(include "{}")"#, fixture_path.display());
     let state = compile(&code).expect("compilation should succeed");
 
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     // Include should return Unit on success
     assert_eq!(results.len(), 1);
@@ -52,12 +55,18 @@ fn test_include_defines_rules() {
     // Include the module
     let include_code = format!(r#"(include "{}")"#, fixture_path.display());
     let state = compile(&include_code).expect("compilation should succeed");
-    let (_, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (_, env) = eval(expr, env, &state);
 
     // Now test that the defined functions work
     let test_code = "!(test-add 2 3)";
     let state = compile(test_code).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     // Should evaluate to 5
     assert_eq!(results.len(), 1);
@@ -77,12 +86,18 @@ fn test_include_idempotent() {
     // Include the same module twice
     let include_code = format!(r#"(include "{}")"#, fixture_path.display());
     let state = compile(&include_code).expect("compilation should succeed");
-    let (_, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (_, env) = eval(expr, env, &state);
 
     // Verify rules are available after first include
     let test_code = "!(test-add 2 3)";
     let state2 = compile(test_code).expect("compilation should succeed");
-    let (results, env) = eval(state2.source()[0], env, &state2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state2.source()[0];
+    let (results, env) = eval(expr, env, &state2);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(5)),
@@ -92,9 +107,15 @@ fn test_include_idempotent() {
 
     // Include again -- rules should still work (may produce duplicate results due to
     // the generic include path adding rules unconditionally without deduplication)
-    let (_, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (_, env) = eval(expr, env, &state);
 
-    let (results, _) = eval(state2.source()[0], env, &state2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state2.source()[0];
+    let (results, _) = eval(expr, env, &state2);
     assert!(
         !results.is_empty(),
         "Expected at least one result after second include"
@@ -124,7 +145,10 @@ fn test_import_via_include() {
     // Use include (which import! internally calls with &self)
     let code = format!(r#"(include "{}")"#, fixture_path.display());
     let state = compile(&code).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
 
     // Include should return Unit on success (all expressions are rule/type defs)
     assert_eq!(results.len(), 1);
@@ -137,7 +161,10 @@ fn test_import_via_include() {
     // Verify rules from the module are actually loaded
     let test_code = "!(test-add 10 20)";
     let state2 = compile(test_code).expect("compilation should succeed");
-    let (results, _) = eval(state2.source()[0], env, &state2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state2.source()[0];
+    let (results, _) = eval(expr, env, &state2);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(30)),
@@ -163,7 +190,10 @@ fn test_bind_creates_token() {
     // Using token without & prefix due to parser limitation with &-prefixed tokens
     let code = r#"(bind! my-value 42)"#;
     let state = compile(code).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
 
     // bind! returns Unit
     assert_eq!(results.len(), 1);
@@ -191,7 +221,10 @@ fn test_bind_with_expression() {
     // Bind to a computed value
     let code = r#"(bind! sum-value (+ 10 20))"#;
     let state = compile(code).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
 
     assert_eq!(results.len(), 1);
     assert!(
@@ -217,13 +250,19 @@ fn test_bind_token_resolution() {
     // First bind a value
     let bind_code = r#"(bind! x-val 100)"#;
     let state = compile(bind_code).expect("compilation should succeed");
-    let (_, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (_, env) = eval(expr, env, &state);
 
     // Then use the bound token in an expression
     // Use ! to force evaluation and get the result
     let use_code = r#"!(+ x-val 5)"#;
     let state = compile(use_code).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     // Should resolve x-val to 100, then add 5
     assert_eq!(results.len(), 1);
@@ -617,12 +656,18 @@ fn test_full_module_workflow() {
     // 1. Include the module
     let include_code = format!(r#"(include "{}")"#, fixture_path.display());
     let state = compile(&include_code).expect("compilation should succeed");
-    let (_, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (_, env) = eval(expr, env, &state);
 
     // 2. Test that functions work
     let test_code = "!(test-nested 8)";
     let state = compile(test_code).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     // test-nested(8) = test-add(8, test-value()) = test-add(8, 42) = 50
     assert_eq!(results.len(), 1);
@@ -644,12 +689,18 @@ fn test_transitive_imports() {
     let fixture_b = fixtures_dir().join("test_import_b.metta");
     let include_b = format!(r#"(include "{}")"#, fixture_b.display());
     let state_b = compile(&include_b).expect("compilation should succeed");
-    let (_, env) = eval(state_b.source()[0], env, &state_b);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state_b.source()[0];
+    let (_, env) = eval(expr, env, &state_b);
 
     // Test function from module B that depends on module A
     let test_code = "!(add-from-b 5)";
     let state = compile(test_code).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
 
     // add-from-b(5) = add-from-a(5) + 5 = (5 + 10) + 5 = 20
     assert_eq!(results.len(), 1);
@@ -676,7 +727,10 @@ fn test_import_force_eval_in_module() {
     let fixture = fixtures_dir().join("force_eval_module.metta");
     let import_code = format!(r#"(import! &self "{}")"#, fixture.display());
     let state = compile(&import_code).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
 
     // Import returns unit
     assert_eq!(results.len(), 1);
@@ -689,7 +743,10 @@ fn test_import_force_eval_in_module() {
     // Verify static rule works
     let test_static = "!(static-rule)";
     let state = compile(test_static).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(42)),
@@ -700,7 +757,10 @@ fn test_import_force_eval_in_module() {
     // Verify dynamically added rule (via force-eval of add-atom) also works
     let test_dynamic = "!(dynamic-rule)";
     let state = compile(test_dynamic).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(99)),
@@ -724,7 +784,10 @@ fn test_import_cycle_detection() {
     let fixture_a = fixtures_dir().join("cycle_a.metta");
     let import_code = format!(r#"(import! &self "{}")"#, fixture_a.display());
     let state = compile(&import_code).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
 
     // Import completes without hanging
     assert_eq!(results.len(), 1);
@@ -737,7 +800,10 @@ fn test_import_cycle_detection() {
     // Verify rules from both modules are accessible
     let test_a = "!(from-a)";
     let state = compile(test_a).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(42)),
@@ -747,7 +813,10 @@ fn test_import_cycle_detection() {
 
     let test_b = "!(from-b)";
     let state = compile(test_b).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(99)),
@@ -783,11 +852,17 @@ fn test_path_resolution_directory_module() {
 
     let import_code = format!(r#"(import! &self "{}")"#, expected.display());
     let state = compile(&import_code).expect("compilation should succeed");
-    let (_, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (_, env) = eval(expr, env, &state);
 
     let test_code = "!(dirmod-fn)";
     let state = compile(test_code).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(777)),
@@ -838,12 +913,18 @@ fn test_transitive_import_via_force_eval() {
     let fixture_mid = fixtures_dir().join("transitive_mid.metta");
     let import_code = format!(r#"(import! &self "{}")"#, fixture_mid.display());
     let state = compile(&import_code).expect("compilation should succeed");
-    let (_, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (_, env) = eval(expr, env, &state);
 
     // Verify base-add is available (transitively imported)
     let test_base = "!(base-add 7)";
     let state = compile(test_base).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(107)),
@@ -854,7 +935,10 @@ fn test_transitive_import_via_force_eval() {
     // Verify mid-add uses base-add correctly
     let test_mid = "!(mid-add 7)";
     let state = compile(test_mid).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(157)),
@@ -876,7 +960,10 @@ fn test_import_3arg_form() {
     let fixture = fixtures_dir().join("test_module.metta");
     let import_code = format!(r#"(import! &self "{}")"#, fixture.display());
     let state = compile(&import_code).expect("compilation should succeed");
-    let (results, env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, env) = eval(expr, env, &state);
 
     // Import returns unit
     assert_eq!(results.len(), 1);
@@ -889,7 +976,10 @@ fn test_import_3arg_form() {
     // Verify imported rules work
     let test_code = "!(test-add 10 20)";
     let state = compile(test_code).expect("compilation should succeed");
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
     assert!(
         matches!(results[0].inner(), MettaValueInner::Long(30)),

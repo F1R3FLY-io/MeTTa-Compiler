@@ -10,7 +10,8 @@
 
 use super::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitAlternative, JitBailoutReason, JitContext, JitValue, MAX_ALTERNATIVES_INLINE, PAYLOAD_MASK,
+    JitAlternative, JitBailoutReason, JitContext, JitValue, TypeClassification,
+    TypeSignatureRegistry, MAX_ALTERNATIVES_INLINE, PAYLOAD_MASK,
     TAG_PTR, TAG_UNIT,
 };
 use crate::backend::bytecode::mork_bridge::MorkBridge;
@@ -136,6 +137,60 @@ unsafe fn try_grounded_fast_path(head: &str, args_ptr: *const u64, arity: usize)
     None
 }
 
+/// Pre-evaluate a single S-expression argument using the trampoline evaluator.
+///
+/// Used by type-driven applicative evaluation (MeTTa HE parity): when a function
+/// has an arrow type `(-> T1 T2 ... Tret)`, non-meta-typed arguments are
+/// pre-evaluated before rule dispatch.
+///
+/// Returns `Some(evaluated)` if evaluation produced a result different from the
+/// input, `None` if no environment is available or evaluation returned the
+/// same expression (fixpoint).
+///
+/// # Safety
+/// `ctx_ref.env_ptr` must point to a valid `MettaEnvironment` (or be null).
+unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<MettaValue> {
+    if ctx_ref.env_ptr.is_null() {
+        return None;
+    }
+
+    // Reconstruct the environment reference from the raw pointer.
+    let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+
+    // Use a lightweight EvalContext adapter for the trampoline.
+    use crate::backend::eval::trampoline::{eval_trampoline_generic, EvalContext};
+    use crate::backend::models::{GcFactory, global_factory};
+
+    struct JitEvalContext {
+        factory: GcFactory,
+    }
+
+    impl EvalContext for JitEvalContext {
+        type Value = MettaValue;
+        type Factory = GcFactory;
+
+        #[inline]
+        fn factory(&self) -> &GcFactory {
+            &self.factory
+        }
+    }
+
+    let ctx = JitEvalContext {
+        factory: global_factory(),
+    };
+
+    let (results, _) = eval_trampoline_generic(arg.clone(), env.clone(), &ctx);
+
+    // Take the first result. If it differs from the original, use it.
+    if let Some(first) = results.into_iter().next() {
+        if first != *arg {
+            return Some(first);
+        }
+    }
+
+    None
+}
+
 /// Dispatch a call expression with native rule lookup.
 ///
 /// Stage 2 implementation with native rule dispatch:
@@ -205,15 +260,41 @@ pub unsafe extern "C" fn jit_runtime_call(
         }
     }
 
-    // Build argument list
+    // Build argument list, with optional type-driven pre-evaluation.
+    // If the type registry is available and the head has an arrow type signature,
+    // pre-evaluate non-meta-typed S-expression arguments via the trampoline.
     let mut items = Vec::with_capacity(arity + 1);
     items.push(MettaValue::Atom(head));
 
-    // Add arguments
+    let has_type_info = !ctx_ref.type_registry_ptr.is_null();
+    let type_info = if has_type_info {
+        let registry = &*(ctx_ref.type_registry_ptr as *const TypeSignatureRegistry);
+        registry.get(head)
+    } else {
+        None
+    };
+
     for i in 0..arity {
         let arg_raw = *args_ptr.add(i);
         let arg_jit = JitValue::from_raw(arg_raw);
-        items.push(arg_jit.to_metta());
+        let arg_metta = arg_jit.to_metta();
+
+        // Type-driven applicative evaluation: if the head has an arrow type,
+        // pre-evaluate S-expression arguments whose formal type is NOT a meta-type.
+        if let Some(info) = type_info {
+            if i < info.arg_types.len()
+                && info.arg_types[i] == TypeClassification::Evaluate
+                && arg_metta.as_sexpr().is_some()
+            {
+                // Pre-evaluate this argument via the trampoline evaluator.
+                if let Some(evaluated) = jit_pre_eval_arg(ctx_ref, &arg_metta) {
+                    items.push(evaluated);
+                    continue;
+                }
+            }
+        }
+
+        items.push(arg_metta);
     }
 
     // Create the call expression
@@ -395,15 +476,38 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
         }
     }
 
-    // Build argument list
+    // Build argument list, with optional type-driven pre-evaluation (MeTTa HE parity).
     let mut items = Vec::with_capacity(arity + 1);
     items.push(MettaValue::Atom(head));
 
-    // Add arguments
+    let has_type_info = !ctx_ref.type_registry_ptr.is_null();
+    let type_info = if has_type_info {
+        let registry = &*(ctx_ref.type_registry_ptr as *const TypeSignatureRegistry);
+        registry.get(head)
+    } else {
+        None
+    };
+
     for i in 0..arity {
         let arg_raw = *args_ptr.add(i);
         let arg_jit = JitValue::from_raw(arg_raw);
-        items.push(arg_jit.to_metta());
+        let arg_metta = arg_jit.to_metta();
+
+        // Type-driven applicative evaluation: pre-evaluate S-expression arguments
+        // whose formal type is NOT a meta-type.
+        if let Some(info) = type_info {
+            if i < info.arg_types.len()
+                && info.arg_types[i] == TypeClassification::Evaluate
+                && arg_metta.as_sexpr().is_some()
+            {
+                if let Some(evaluated) = jit_pre_eval_arg(ctx_ref, &arg_metta) {
+                    items.push(evaluated);
+                    continue;
+                }
+            }
+        }
+
+        items.push(arg_metta);
     }
 
     // Create the call expression

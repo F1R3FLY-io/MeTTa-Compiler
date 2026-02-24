@@ -98,6 +98,10 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for AddOpGeneric
                                 results.push((factory.float(x + y as f64), None));
                             }
                             _ => {
+                                // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
                                 return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
@@ -166,7 +170,11 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for SubOpGeneric
                             }
                         },
                         (_, Some(x)) => results.push((factory.float(-x), None)),
-                        _ => return GenericGroundedWork::Error(ExecError::NoReduce),
+                        _ => {
+                            // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                            if a.is_empty() { continue; }
+                            return GenericGroundedWork::Error(ExecError::NoReduce);
+                        }
                     }
                 }
                 GenericGroundedWork::Done(results)
@@ -215,6 +223,10 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for SubOpGeneric
                                 results.push((factory.float(x - y as f64), None));
                             }
                             _ => {
+                                // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
                                 return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
@@ -297,6 +309,10 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for MulOpGeneric
                                 results.push((factory.float(x * y as f64), None));
                             }
                             _ => {
+                                // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
                                 return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
@@ -392,6 +408,10 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for DivOpGeneric
                                 results.push((factory.float(x / y as f64), None));
                             }
                             _ => {
+                                // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
                                 return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
@@ -498,6 +518,10 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for ModOpGeneric
                                 results.push((factory.float(x % y as f64), None));
                             }
                             _ => {
+                                // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
                                 return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
@@ -577,6 +601,10 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for MinOpGeneric
                                 results.push((factory.float(x.min(y as f64)), None));
                             }
                             _ => {
+                                // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
                                 return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }
@@ -656,6 +684,10 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for MaxOpGeneric
                                 results.push((factory.float(x.max(y as f64)), None));
                             }
                             _ => {
+                                // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
                                 return GenericGroundedWork::Error(ExecError::NoReduce)
                             }
                         }

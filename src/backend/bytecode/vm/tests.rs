@@ -1984,7 +1984,9 @@ fn test_vm_call_cached() {
 
 #[test]
 fn test_vm_call_cached_cache_hit() {
-    // Test that CallCached uses the cache on second call
+    // Test that CallCached uses the cache on second call.
+    // Uses an isolated memo cache (not the global singleton) to ensure
+    // predictable cache entry counts across parallel tests.
     let mut builder = ChunkBuilder::new("test_call_cached_hit");
 
     // Add head constant "bar"
@@ -2004,7 +2006,20 @@ fn test_vm_call_cached_cache_hit() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::new(chunk);
+    let factory = crate::backend::models::global_factory();
+    let env = GenericEnvironment::new(factory);
+    let isolated_cache = Arc::new(
+        crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+    );
+    let native_registry = Arc::new(
+        crate::backend::bytecode::native_registry::GenericNativeRegistry::new(),
+    );
+    let ext_registry = Arc::new(
+        crate::backend::bytecode::external_registry::GenericExternalRegistry::new(),
+    );
+    let mut vm = BytecodeVM::with_registries(
+        chunk, env, factory, native_registry, ext_registry, isolated_cache,
+    );
     let results = vm.run().expect("VM should succeed");
 
     let expected = MettaValue::SExpr(vec![
@@ -2024,7 +2039,8 @@ fn test_vm_call_cached_cache_hit() {
 
 #[test]
 fn test_vm_call_cached_different_args() {
-    // Test that different args result in different cache entries
+    // Test that different args result in different cache entries.
+    // Uses an isolated memo cache to ensure predictable counts.
     let mut builder = ChunkBuilder::new("test_call_cached_diff_args");
 
     // Add head constant "baz"
@@ -2044,7 +2060,20 @@ fn test_vm_call_cached_different_args() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::new(chunk);
+    let factory = crate::backend::models::global_factory();
+    let env = GenericEnvironment::new(factory);
+    let isolated_cache = Arc::new(
+        crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+    );
+    let native_registry = Arc::new(
+        crate::backend::bytecode::native_registry::GenericNativeRegistry::new(),
+    );
+    let ext_registry = Arc::new(
+        crate::backend::bytecode::external_registry::GenericExternalRegistry::new(),
+    );
+    let mut vm = BytecodeVM::with_registries(
+        chunk, env, factory, native_registry, ext_registry, isolated_cache,
+    );
     let results = vm.run().expect("VM should succeed");
 
     let expected = MettaValue::SExpr(vec![
@@ -6883,15 +6912,14 @@ fn test_vm_jump_if_false_bool_false() {
     assert_eq!(results[0], MettaValue::Long(2)); // else branch
 }
 
-/// Test that Unit takes the else-branch in JumpIfFalse (Unit is falsy).
-/// This validates the Bug #2 fix: Unit should be treated as falsy, consistent
-/// with tree-walker and JIT behavior.
+/// Test that Unit does NOT take the else-branch in JumpIfFalse (Unit is NOT falsy).
+/// MeTTa HE: only Bool(false) is falsy. Unit falls through (no jump).
 #[test]
-fn test_vm_jump_if_false_unit_is_falsy() {
+fn test_vm_jump_if_false_unit_is_not_falsy() {
     let mut builder = ChunkBuilder::new("test");
     builder.emit(Opcode::PushUnit);
     let else_label = builder.emit_jump(Opcode::JumpIfFalse);
-    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then (fallthrough)
     let end_label = builder.emit_jump(Opcode::Jump);
     builder.patch_jump(else_label);
     builder.emit_byte(Opcode::PushLongSmall, 2); // else
@@ -6901,10 +6929,10 @@ fn test_vm_jump_if_false_unit_is_falsy() {
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
-    assert_eq!(results[0], MettaValue::Long(2)); // else branch (Unit is falsy)
+    assert_eq!(results[0], MettaValue::Long(1)); // then branch (Unit is NOT falsy — falls through)
 }
 
-/// Test that Long(0) takes the then-branch (truthy — only Bool(false) and Unit are falsy).
+/// Test that Long(0) takes the then-branch (truthy — only Bool(false) is falsy).
 #[test]
 fn test_vm_jump_if_false_long_zero_is_truthy() {
     let mut builder = ChunkBuilder::new("test");
@@ -6962,13 +6990,13 @@ fn test_vm_jump_if_false_atom_is_truthy() {
     assert_eq!(results[0], MettaValue::Long(1)); // then branch
 }
 
-/// Test JumpIfFalseShort with Unit (falsy).
+/// Test JumpIfFalseShort with Unit (NOT falsy — falls through).
 #[test]
-fn test_vm_jump_if_false_short_unit_is_falsy() {
+fn test_vm_jump_if_false_short_unit_is_not_falsy() {
     let mut builder = ChunkBuilder::new("test");
     builder.emit(Opcode::PushUnit);
     let else_label = builder.emit_jump_short(Opcode::JumpIfFalseShort);
-    builder.emit_byte(Opcode::PushLongSmall, 1); // then
+    builder.emit_byte(Opcode::PushLongSmall, 1); // then (fallthrough)
     let end_label = builder.emit_jump_short(Opcode::JumpShort);
     builder.patch_jump_short(else_label);
     builder.emit_byte(Opcode::PushLongSmall, 2); // else
@@ -6978,7 +7006,7 @@ fn test_vm_jump_if_false_short_unit_is_falsy() {
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
-    assert_eq!(results[0], MettaValue::Long(2)); // else branch (Unit is falsy)
+    assert_eq!(results[0], MettaValue::Long(1)); // then branch (Unit is NOT falsy)
 }
 
 // =============================================================================

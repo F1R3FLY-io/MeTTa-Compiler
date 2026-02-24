@@ -1,76 +1,32 @@
-//! Lock-free reactive state machine scheduler for GC cron tasks.
+//! GC-Specific Cron Tasks
 //!
-//! Ported from libgrammstein's `CronStateMachine` — a proper lock-free reactive
-//! state machine with MPSC channel-based dynamic task scheduling via `CronHandle`.
-//!
-//! ## Design Goals
-//!
-//! 1. **Explicit states with clear transitions** - States and events are enumerated
-//! 2. **Event-driven architecture** - No polling loops with scattered conditionals
-//! 3. **Lock-free task submission** - MPSC channel for concurrent task submission
-//! 4. **Thread-local min-heap** - Priority queue owned by the scheduler thread
-//! 5. **Graceful shutdown** - Termination signal checked at every state transition
-//!
-//! ## State Machine Design
-//!
-//! ```text
-//!                               ┌─────────────────────────────────────────┐
-//!                               │                                         │
-//!                               ▼                                         │
-//!     ┌─────────┐  channel has  ┌──────────────┐  task due    ┌──────────────────┐
-//!     │  Idle   │ ────────────▶ │ DrainChannel │ ───────────▶ │ ExecutingTask    │
-//!     └─────────┘   messages    └──────────────┘              └──────────────────┘
-//!          │                          │                              │
-//!          │                          │ channel empty                │ task complete
-//!          │                          │ & no tasks due               │ (requeue if
-//!          │                          ▼                              │  recurring)
-//!          │                    ┌──────────────┐                     │
-//!          │                    │   Sleeping   │◀────────────────────┘
-//!          │                    └──────────────┘
-//!          │                          │
-//!          │                          │ timer expired
-//!          │                          ▼
-//!          │                    ┌──────────────┐
-//!          └───────────────────▶│ CheckEvents  │◀──── (loop back)
-//!                               └──────────────┘
-//!                                     │
-//!                                     │ terminating == true
-//!                                     ▼
-//!                               ┌──────────────┐
-//!                               │  Terminated  │
-//!                               └──────────────┘
-//! ```
-//!
-//! ## Lock-Free Guarantees
-//!
-//! | Component           | Synchronization            | Lock-Free? |
-//! |---------------------|----------------------------|------------|
-//! | Task submission     | crossbeam-channel (MPSC)   | ✅ Yes     |
-//! | Termination flag    | AtomicBool                 | ✅ Yes     |
-//! | State machine       | Thread-local, no sharing   | ✅ Yes     |
-//! | Task queue          | BinaryHeap (thread-local)  | ✅ Yes     |
+//! Wraps the generic `task_scheduler::CronStateMachine` with GC-specific
+//! monitoring and task scheduling.
 //!
 //! ## GC Integration
 //!
-//! The `GcCronSingleton` wraps the generic `CronStateMachine` with GC-specific
+//! The `GcCronSingleton` wraps the generic `TaskSchedulerSingleton` with GC-specific
 //! tasks:
 //!
 //! **Memory monitor** (100ms interval): Reads atomics, computes allocation
 //! rate (allocs/s), calls `request_gc()` if rate exceeds threshold OR
 //! committed bytes exceed `gc_threshold`.
 
-use std::cmp::{Ord, Ordering, PartialOrd};
-use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
-use parking_lot::Mutex;
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
-use tracing::{error, warn};
+use super::adaptive_pool::{Ema, HillClimber, ScaleAction};
+use super::gc_allocator::{gc_values_freed_total, request_gc};
+use super::gc_pool::global_gc_pool;
+use super::task_scheduler::TaskSchedulerSingleton;
 
-use super::gc_allocator::request_gc;
+// Re-export generic types that external code depends on
+pub use super::task_scheduler::{
+    CronHandle, CronState, CronStateMachine, CronEvent,
+    TaskMetadata, ScheduledTask, UnixTimestampMs, now_ms,
+    spawn_cron_with_interval,
+};
 
 // ============================================================================
 // GC-specific constants
@@ -84,627 +40,16 @@ const MONITOR_INTERVAL_MS: u64 = 100;
 /// triggers a GC cycle at the next check.
 const ALLOC_RATE_THRESHOLD: u64 = 100_000;
 
-// ============================================================================
-// Time utilities
-// ============================================================================
+// --- GC Pool Hill Climbing Constants ---
 
-/// Unix timestamp in milliseconds for scheduling precision.
-pub type UnixTimestampMs = u64;
+/// EMA smoothing factor for GC alloc/free rate ratio (half-life ~3.1 samples = ~310ms).
+const GC_EMA_ALPHA: f64 = 0.2;
 
-/// Get current Unix timestamp in milliseconds.
-#[inline]
-pub fn now_ms() -> UnixTimestampMs {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("System time went backwards")
-        .as_millis() as u64
-}
+/// Cooldown period for GC hill climber (7 ticks = ~700ms settling time).
+const GC_COOLDOWN_PERIOD: u32 = 7;
 
-// ============================================================================
-// CronState — Reactive State Machine States
-// ============================================================================
-
-/// State machine states for the cron scheduler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CronState {
-    /// Initial state - evaluate event sources.
-    CheckEvents,
-    /// Draining incoming tasks from the channel.
-    DrainChannel,
-    /// Executing a task that is due.
-    ExecutingTask,
-    /// Sleeping until next task or poll interval.
-    Sleeping,
-    /// Terminal state - graceful shutdown complete.
-    Terminated,
-}
-
-// ============================================================================
-// CronEvent — Events that drive state transitions
-// ============================================================================
-
-/// Events that drive state transitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CronEvent {
-    /// New task(s) available in channel.
-    TaskReceived,
-    /// Sleep timer expired.
-    TimerExpired,
-    /// A task in the queue is past its deadline.
-    TaskDue,
-    /// Task execution completed (with success flag).
-    TaskCompleted {
-        /// Whether the task returned true (success).
-        success: bool,
-        /// Whether the task should be requeued (recurring).
-        should_requeue: bool,
-    },
-    /// External termination signal.
-    TerminationRequested,
-    /// All senders dropped, channel closed.
-    ChannelDisconnected,
-    /// No events pending (idle).
-    NoEvents,
-}
-
-// ============================================================================
-// TaskMetadata — Metadata for scheduled tasks
-// ============================================================================
-
-/// Metadata for a scheduled task.
-#[derive(Clone, Debug)]
-pub enum TaskMetadata {
-    /// One-shot task - executed once and discarded.
-    OneShot,
-
-    /// Recurring task - re-queued after completion.
-    Recurring {
-        /// Interval in milliseconds between executions.
-        interval_ms: u64,
-    },
-
-    /// Named task with custom metadata.
-    Named {
-        /// Task name for logging/debugging.
-        name: String,
-        /// Recurrence interval (None = one-shot).
-        recurring_interval_ms: Option<u64>,
-    },
-}
-
-impl TaskMetadata {
-    /// Get the recurrence interval if this task recurs.
-    #[inline]
-    pub fn recurrence_interval(&self) -> Option<u64> {
-        match self {
-            TaskMetadata::OneShot => None,
-            TaskMetadata::Recurring { interval_ms } => Some(*interval_ms),
-            TaskMetadata::Named {
-                recurring_interval_ms,
-                ..
-            } => *recurring_interval_ms,
-        }
-    }
-
-    /// Get the task name for logging.
-    pub fn name(&self) -> &str {
-        match self {
-            TaskMetadata::OneShot => "one-shot",
-            TaskMetadata::Recurring { .. } => "recurring",
-            TaskMetadata::Named { name, .. } => name,
-        }
-    }
-}
-
-// ============================================================================
-// ScheduledTask — Task entry in the priority queue
-// ============================================================================
-
-/// A scheduled task with execution time and callback.
-pub struct ScheduledTask {
-    /// Unix timestamp (ms) when task should execute.
-    pub scheduled_time_ms: UnixTimestampMs,
-
-    /// Task metadata (one-shot, recurring, etc.).
-    pub metadata: TaskMetadata,
-
-    /// The task to execute. Returns `true` if successful.
-    pub task: Box<dyn FnMut() -> bool + Send>,
-}
-
-impl std::fmt::Debug for ScheduledTask {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ScheduledTask")
-            .field("scheduled_time_ms", &self.scheduled_time_ms)
-            .field("metadata", &self.metadata)
-            .field("task", &"<fn>")
-            .finish()
-    }
-}
-
-// Implement ordering for min-heap (earliest timestamp first)
-impl Ord for ScheduledTask {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse for min-heap (BinaryHeap is max-heap by default)
-        other.scheduled_time_ms.cmp(&self.scheduled_time_ms)
-    }
-}
-
-impl PartialOrd for ScheduledTask {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for ScheduledTask {
-    fn eq(&self, other: &Self) -> bool {
-        self.scheduled_time_ms == other.scheduled_time_ms
-    }
-}
-
-impl Eq for ScheduledTask {}
-
-// ============================================================================
-// CronStateMachine — Lock-free reactive state machine scheduler
-// ============================================================================
-
-/// Lock-free reactive state machine scheduler.
-///
-/// Explicit states and transitions make control flow clear:
-/// - No scattered termination checks
-/// - No nested conditionals
-/// - Easy to reason about and test
-///
-/// Uses only lock-free primitives:
-/// - AtomicBool for termination
-/// - Lock-free MPSC channel for task submission
-/// - Thread-local BinaryHeap (no sharing)
-pub struct CronStateMachine {
-    /// Current state.
-    state: CronState,
-
-    /// Task queue (owned by this thread - no sharing).
-    queue: BinaryHeap<ScheduledTask>,
-
-    /// Receiver for new tasks (lock-free MPSC).
-    task_rx: Receiver<ScheduledTask>,
-
-    /// Poll interval in milliseconds.
-    poll_interval_ms: u64,
-
-    /// Termination flag (atomic - no lock).
-    terminating: Arc<AtomicBool>,
-
-    /// Channel disconnected flag (set once, never cleared).
-    channel_disconnected: bool,
-
-    /// One-shot ready signal sender (sent at start of run()).
-    ready_tx: Option<Sender<()>>,
-}
-
-impl CronStateMachine {
-    /// Default poll interval: 100ms
-    pub const DEFAULT_POLL_INTERVAL_MS: u64 = 100;
-
-    /// Create a new CronStateMachine.
-    ///
-    /// # Arguments
-    /// * `task_rx` - Receiver for new tasks from the channel
-    /// * `terminating` - Atomic flag for graceful shutdown
-    /// * `poll_interval_ms` - Maximum sleep duration between polls
-    /// * `ready_tx` - Optional one-shot channel to signal when event loop starts
-    pub fn new(
-        task_rx: Receiver<ScheduledTask>,
-        terminating: Arc<AtomicBool>,
-        poll_interval_ms: u64,
-        ready_tx: Option<Sender<()>>,
-    ) -> Self {
-        Self {
-            state: CronState::CheckEvents,
-            queue: BinaryHeap::new(),
-            task_rx,
-            poll_interval_ms,
-            terminating,
-            channel_disconnected: false,
-            ready_tx,
-        }
-    }
-
-    /// Run the state machine until termination (call from dedicated thread).
-    ///
-    /// This is the main entry point - drives the state machine to completion.
-    ///
-    /// **Important**: The ready signal is sent at the START of this method,
-    /// INSIDE the event loop, ensuring that any tasks scheduled after the
-    /// caller receives the ready signal will be processed by this event loop.
-    pub fn run(&mut self) {
-        // Signal ready INSIDE the event loop (not before it starts).
-        // This ensures tasks scheduled after receiving the ready signal
-        // will be processed by this event loop iteration.
-        if let Some(tx) = self.ready_tx.take() {
-            let _ = tx.send(());
-        }
-
-        // Drive state machine until terminal state
-        while self.state != CronState::Terminated {
-            let event = self.poll_event();
-            self.transition(event);
-        }
-    }
-
-    /// Poll for the next event based on current state.
-    ///
-    /// This is the "sense" phase of the reactive loop.
-    ///
-    /// **Important**: Due tasks are checked BEFORE termination to ensure
-    /// that tasks which are already due get executed even if termination
-    /// is requested while the scheduler was sleeping.
-    fn poll_event(&mut self) -> CronEvent {
-        // Check for due tasks FIRST - they have priority over termination
-        // This ensures tasks that became due while sleeping get executed
-        if let Some(task) = self.queue.peek() {
-            if task.scheduled_time_ms <= now_ms() {
-                return CronEvent::TaskDue;
-            }
-        }
-
-        // Now check termination (atomic load)
-        if self.terminating.load(AtomicOrdering::Acquire) {
-            return CronEvent::TerminationRequested;
-        }
-
-        match self.state {
-            CronState::CheckEvents => self.poll_check_events(),
-            CronState::DrainChannel => self.poll_drain_channel(),
-            CronState::ExecutingTask => unreachable!("ExecutingTask polls internally"),
-            CronState::Sleeping => CronEvent::TimerExpired, // Just woke up
-            CronState::Terminated => unreachable!("Cannot poll from Terminated"),
-        }
-    }
-
-    /// Poll events in CheckEvents state.
-    fn poll_check_events(&mut self) -> CronEvent {
-        // Priority: termination > channel messages > due tasks > sleep
-        if self.terminating.load(AtomicOrdering::Acquire) {
-            return CronEvent::TerminationRequested;
-        }
-
-        // Check channel (non-blocking)
-        match self.task_rx.try_recv() {
-            Ok(task) => {
-                self.queue.push(task);
-                return CronEvent::TaskReceived;
-            }
-            Err(TryRecvError::Disconnected) if !self.channel_disconnected => {
-                self.channel_disconnected = true;
-                return CronEvent::ChannelDisconnected;
-            }
-            _ => {}
-        }
-
-        // Check for due tasks
-        if let Some(task) = self.queue.peek() {
-            if task.scheduled_time_ms <= now_ms() {
-                return CronEvent::TaskDue;
-            }
-        }
-
-        // Nothing to do
-        CronEvent::NoEvents
-    }
-
-    /// Poll in DrainChannel state - continue draining or signal done.
-    fn poll_drain_channel(&mut self) -> CronEvent {
-        match self.task_rx.try_recv() {
-            Ok(task) => {
-                self.queue.push(task);
-                CronEvent::TaskReceived
-            }
-            Err(TryRecvError::Empty) => {
-                // Done draining, check for due tasks
-                if let Some(task) = self.queue.peek() {
-                    if task.scheduled_time_ms <= now_ms() {
-                        return CronEvent::TaskDue;
-                    }
-                }
-                CronEvent::NoEvents
-            }
-            Err(TryRecvError::Disconnected) => {
-                self.channel_disconnected = true;
-                CronEvent::ChannelDisconnected
-            }
-        }
-    }
-
-    /// State transition function: (State, Event) -> State
-    ///
-    /// This is the core of the reactive design - a pure function
-    /// from (state, event) to new state with side effects.
-    fn transition(&mut self, event: CronEvent) {
-        self.state = match (self.state, event) {
-            // === Termination (highest priority, from any state) ===
-            (_, CronEvent::TerminationRequested) => {
-                CronState::Terminated
-            }
-
-            // === CheckEvents transitions ===
-            (CronState::CheckEvents, CronEvent::TaskReceived) => {
-                CronState::DrainChannel
-            }
-            (CronState::CheckEvents, CronEvent::TaskDue) => {
-                self.execute_one_task();
-                CronState::CheckEvents // Re-check after execution
-            }
-            (CronState::CheckEvents, CronEvent::NoEvents) => CronState::Sleeping,
-            (CronState::CheckEvents, CronEvent::ChannelDisconnected) => {
-                if self.queue.is_empty() {
-                    CronState::Terminated
-                } else {
-                    CronState::CheckEvents
-                }
-            }
-
-            // === DrainChannel transitions ===
-            (CronState::DrainChannel, CronEvent::TaskReceived) => {
-                // Stay in drain state until channel is empty
-                CronState::DrainChannel
-            }
-            (CronState::DrainChannel, CronEvent::TaskDue) => {
-                self.execute_one_task();
-                CronState::CheckEvents
-            }
-            (CronState::DrainChannel, CronEvent::NoEvents) => CronState::Sleeping,
-            (CronState::DrainChannel, CronEvent::ChannelDisconnected) => {
-                CronState::CheckEvents
-            }
-
-            // === Sleeping transitions ===
-            (CronState::Sleeping, CronEvent::TimerExpired) => CronState::CheckEvents,
-            (CronState::Sleeping, CronEvent::TaskDue) => {
-                // Task became due while sleeping - execute it
-                self.execute_one_task();
-                CronState::CheckEvents
-            }
-
-            // === ExecutingTask transitions ===
-            (CronState::ExecutingTask, CronEvent::TaskCompleted { .. }) => {
-                // Requeuing handled in execute_one_task
-                CronState::CheckEvents
-            }
-
-            // === Invalid transitions ===
-            (CronState::Terminated, _) => {
-                unreachable!("Cannot transition from Terminated")
-            }
-
-            // Catch-all for unexpected combinations
-            (state, event) => {
-                warn!(?state, ?event, "Unexpected transition");
-                CronState::CheckEvents
-            }
-        };
-
-        // Handle sleeping state entry (side effect)
-        if self.state == CronState::Sleeping {
-            self.do_sleep();
-        }
-    }
-
-    /// Execute one due task (exception-safe).
-    fn execute_one_task(&mut self) {
-        let Some(mut task) = self.queue.pop() else {
-            return;
-        };
-
-        // Execute with panic catching
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task.task)()));
-
-        match result {
-            Ok(true) => {
-                // Re-queue if recurring
-                if let Some(interval) = task.metadata.recurrence_interval() {
-                    task.scheduled_time_ms = now_ms() + interval;
-                    self.queue.push(task);
-                }
-            }
-            Ok(false) => {
-                // Task returned false — not re-queuing
-            }
-            Err(e) => {
-                error!(task_name = task.metadata.name(), panic = ?e, "Task panicked");
-            }
-        }
-    }
-
-    /// Sleep for the poll interval.
-    fn do_sleep(&self) {
-        // Calculate sleep duration: min(poll_interval, time_to_next_task)
-        let sleep_ms = if let Some(task) = self.queue.peek() {
-            let now = now_ms();
-            if task.scheduled_time_ms <= now {
-                0 // Task already due
-            } else {
-                (task.scheduled_time_ms - now).min(self.poll_interval_ms)
-            }
-        } else {
-            self.poll_interval_ms
-        };
-
-        if sleep_ms > 0 {
-            thread::sleep(Duration::from_millis(sleep_ms));
-        }
-    }
-
-    /// Get number of pending tasks.
-    pub fn pending_count(&self) -> usize {
-        self.queue.len()
-    }
-
-    /// Get current state (for testing/debugging).
-    pub fn current_state(&self) -> CronState {
-        self.state
-    }
-}
-
-// ============================================================================
-// CronHandle — Lock-free task submission handle
-// ============================================================================
-
-/// Handle for submitting tasks to a CronStateMachine (thread-safe, lock-free).
-///
-/// Uses a lock-free MPSC channel - no mutexes or locks.
-/// Clone this handle to submit tasks from multiple threads.
-#[derive(Clone)]
-pub struct CronHandle {
-    /// Sender end of lock-free task channel.
-    task_tx: Sender<ScheduledTask>,
-
-    /// Reference to termination flag for shutdown coordination.
-    terminating: Arc<AtomicBool>,
-}
-
-impl CronHandle {
-    /// Schedule a task at a specific Unix timestamp (ms).
-    ///
-    /// This is a lock-free operation using crossbeam-channel.
-    /// Returns `true` if the task was submitted, `false` if channel disconnected.
-    pub fn schedule_at<F>(&self, time_ms: UnixTimestampMs, metadata: TaskMetadata, task: F) -> bool
-    where
-        F: FnMut() -> bool + Send + 'static,
-    {
-        let scheduled_task = ScheduledTask {
-            scheduled_time_ms: time_ms,
-            metadata,
-            task: Box::new(task),
-        };
-        self.task_tx.send(scheduled_task).is_ok()
-    }
-
-    /// Schedule a task after a delay (ms).
-    pub fn schedule_after<F>(&self, delay_ms: u64, metadata: TaskMetadata, task: F) -> bool
-    where
-        F: FnMut() -> bool + Send + 'static,
-    {
-        self.schedule_at(now_ms() + delay_ms, metadata, task)
-    }
-
-    /// Schedule a recurring task.
-    ///
-    /// The task will execute after `initial_delay_ms` and then every `interval_ms`
-    /// as long as it returns `true`. If the task returns `false`, it will not be
-    /// rescheduled.
-    pub fn schedule_recurring<F>(
-        &self,
-        initial_delay_ms: u64,
-        interval_ms: u64,
-        name: &str,
-        task: F,
-    ) -> bool
-    where
-        F: FnMut() -> bool + Send + 'static,
-    {
-        let metadata = TaskMetadata::Named {
-            name: name.to_string(),
-            recurring_interval_ms: Some(interval_ms),
-        };
-        self.schedule_after(initial_delay_ms, metadata, task)
-    }
-
-    /// Schedule a one-shot task after a delay.
-    pub fn schedule_once<F>(&self, delay_ms: u64, name: &str, task: F) -> bool
-    where
-        F: FnMut() -> bool + Send + 'static,
-    {
-        let metadata = TaskMetadata::Named {
-            name: name.to_string(),
-            recurring_interval_ms: None,
-        };
-        self.schedule_after(delay_ms, metadata, task)
-    }
-
-    /// Request graceful shutdown of the state machine.
-    ///
-    /// This is a lock-free atomic store.
-    pub fn request_shutdown(&self) {
-        self.terminating.store(true, AtomicOrdering::Release);
-    }
-
-    /// Check if shutdown has been requested.
-    pub fn is_shutting_down(&self) -> bool {
-        self.terminating.load(AtomicOrdering::Acquire)
-    }
-}
-
-// ============================================================================
-// spawn_cron / spawn_cron_with_interval — Generic spawning
-// ============================================================================
-
-/// Spawn the cron state machine on a dedicated thread.
-///
-/// Returns:
-/// - `CronHandle` for submitting tasks (clone-able, thread-safe, lock-free)
-/// - `JoinHandle` for the cron thread
-/// - `Receiver<()>` that signals when the scheduler is ready
-pub fn spawn_cron(
-    terminating: Arc<AtomicBool>,
-) -> (
-    CronHandle,
-    JoinHandle<()>,
-    Receiver<()>,
-) {
-    spawn_cron_with_interval(terminating, CronStateMachine::DEFAULT_POLL_INTERVAL_MS)
-}
-
-/// Spawn with custom poll interval.
-///
-/// Returns:
-/// - `CronHandle` for submitting tasks (clone-able, thread-safe, lock-free)
-/// - `JoinHandle` for the cron thread
-/// - `Receiver<()>` that signals when the scheduler is ready
-///
-/// # Ready Signal
-///
-/// The returned `Receiver<()>` provides a one-shot signal that the scheduler is ready.
-/// Call `ready_rx.recv()` to block until the cron thread has entered its event loop.
-/// This prevents race conditions where tasks are scheduled before the scheduler is ready.
-pub fn spawn_cron_with_interval(
-    terminating: Arc<AtomicBool>,
-    poll_interval_ms: u64,
-) -> (
-    CronHandle,
-    JoinHandle<()>,
-    Receiver<()>,
-) {
-    // Lock-free unbounded MPSC channel for tasks
-    let (task_tx, task_rx) = unbounded::<ScheduledTask>();
-
-    // One-shot channel to signal when the scheduler is ready
-    let (ready_tx, ready_rx) = unbounded::<()>();
-
-    let terminating_clone = Arc::clone(&terminating);
-
-    let thread_handle = thread::Builder::new()
-        .name("mettatron-gc-cron".to_string())
-        .spawn(move || {
-            // Pass ready_tx to state machine - signal will be sent inside run()
-            let mut sm = CronStateMachine::new(
-                task_rx,
-                terminating_clone,
-                poll_interval_ms,
-                Some(ready_tx),
-            );
-
-            sm.run();
-        })
-        .expect("Failed to spawn cron state machine thread");
-
-    let handle = CronHandle {
-        task_tx,
-        terminating,
-    };
-
-    (handle, thread_handle, ready_rx)
-}
+/// Minimum improvement required for GC hill climber to accept a perturbation.
+const GC_IMPROVEMENT_THRESHOLD: f64 = 0.05;
 
 // ============================================================================
 // MonitorState — Per-Poll Tracking for Memory Monitor
@@ -720,15 +65,42 @@ struct MonitorState {
     /// If this hasn't advanced, GC lifecycle is unreachable and backpressure
     /// must not be escalated (would cause permanent throttling).
     prev_reachable_counter: u64,
+    /// Previous GC freed count for delta computation.
+    prev_freed_count: u64,
+    /// EMA of the alloc/free rate ratio.
+    /// Ratio > 1.0 means allocation outpaces GC → need more workers.
+    /// Ratio < 1.0 means GC is keeping up → may reduce workers.
+    ema_alloc_free_ratio: Ema,
+    /// Hill climber for GC pool adaptive sizing.
+    gc_climber: HillClimber,
 }
 
 impl MonitorState {
-    fn new() -> Self {
+    /// Create a new MonitorState with explicit pool parameters.
+    ///
+    /// Production code reads from `global_gc_pool()` and passes values.
+    /// Tests pass hardcoded values without initializing the global pool.
+    fn with_params(min_workers: usize, max_workers: usize, active_workers: usize) -> Self {
         Self {
             prev_alloc_count: 0,
             prev_poll_time: Instant::now(),
             prev_reachable_counter: 0,
+            prev_freed_count: 0,
+            ema_alloc_free_ratio: Ema::new(GC_EMA_ALPHA),
+            gc_climber: HillClimber::new(
+                GC_COOLDOWN_PERIOD,
+                GC_IMPROVEMENT_THRESHOLD,
+                min_workers,
+                max_workers,
+                active_workers,
+            ),
         }
+    }
+
+    /// Create a new MonitorState from the global GC pool.
+    fn new() -> Self {
+        let pool = global_gc_pool();
+        Self::with_params(pool.min_workers(), pool.max_workers(), pool.active_workers())
     }
 }
 
@@ -736,33 +108,11 @@ impl MonitorState {
 // GcCronSingleton — GC-specific wrapper
 // ============================================================================
 
-/// GC cron manager singleton wrapping `CronStateMachine` with GC-specific tasks.
+/// GC cron manager singleton wrapping `TaskSchedulerSingleton` with GC-specific tasks.
 ///
-/// Immutable after initialization — `CronHandle` is `Clone + Send`,
-/// so no `Mutex` is needed.
-pub struct GcCronSingleton {
-    /// Handle for dynamic task scheduling (Clone + Send, lock-free).
-    pub handle: CronHandle,
-    /// Thread join handle (for graceful shutdown).
-    thread_handle: Mutex<Option<JoinHandle<()>>>,
-}
-
-impl GcCronSingleton {
-    /// Request graceful shutdown and join the cron thread.
-    pub fn shutdown(&self) {
-        self.handle.request_shutdown();
-        let mut guard = self.thread_handle.lock();
-        if let Some(handle) = guard.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for GcCronSingleton {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
-}
+/// This is a type alias — the underlying `TaskSchedulerSingleton` handles
+/// lifetime management, and `CronHandle` provides lock-free task submission.
+pub type GcCronSingleton = TaskSchedulerSingleton;
 
 // ============================================================================
 // spawn_gc_cron — GC-specific entry point
@@ -786,30 +136,41 @@ pub fn spawn_gc_cron(
     alloc_count: Arc<AtomicU64>,
     gc_threshold: Arc<AtomicUsize>,
 ) -> GcCronSingleton {
+    use std::sync::atomic::AtomicBool;
+    use super::task_scheduler::spawn_cron_with_interval_and_name;
+
     let terminating = Arc::new(AtomicBool::new(false));
-    let (handle, thread_handle, ready_rx) = spawn_cron(Arc::clone(&terminating));
+    let (handle, thread_handle, ready_rx) = spawn_cron_with_interval_and_name(
+        Arc::clone(&terminating),
+        CronStateMachine::DEFAULT_POLL_INTERVAL_MS,
+        "mettatron-gc-cron",
+    );
 
     // Wait for the event loop to start before scheduling tasks.
     // This prevents a race where tasks are submitted before the receiver is live.
-    ready_rx.recv().expect("Cron thread failed to start");
+    // Use recv_timeout to avoid blocking forever if the cron thread panics during startup.
+    match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(()) => {}
+        Err(_) => {
+            tracing::warn!("GC cron thread did not signal ready within 5s — continuing without cron scheduling");
+        }
+    }
 
     // Schedule memory monitor (recurring, 100ms)
     let committed_clone = Arc::clone(&committed_bytes);
     let alloc_clone = Arc::clone(&alloc_count);
     let threshold_clone = Arc::clone(&gc_threshold);
     let mut monitor = MonitorState::new();
+    let gc_pool = global_gc_pool();
 
     // Initial delay matches the interval so the first poll has a meaningful
     // baseline (prev_alloc_count / prev_poll_time are set at construction).
     handle.schedule_recurring(MONITOR_INTERVAL_MS, MONITOR_INTERVAL_MS, "memory-monitor", move || {
-        execute_memory_monitor(&committed_clone, &alloc_clone, &threshold_clone, &mut monitor);
+        execute_memory_monitor(&committed_clone, &alloc_clone, &threshold_clone, &mut monitor, gc_pool);
         true // always reschedule
     });
 
-    GcCronSingleton {
-        handle,
-        thread_handle: Mutex::new(Some(thread_handle)),
-    }
+    TaskSchedulerSingleton::new(handle, thread_handle)
 }
 
 // ============================================================================
@@ -827,6 +188,7 @@ fn execute_memory_monitor(
     alloc_count: &AtomicU64,
     gc_threshold: &AtomicUsize,
     monitor: &mut MonitorState,
+    gc_pool: &super::gc_pool::AdaptiveGcPool,
 ) {
     let now = Instant::now();
     let current_alloc_count = alloc_count.load(AtomicOrdering::Relaxed);
@@ -883,8 +245,53 @@ fn execute_memory_monitor(
         request_gc();
     }
 
+    // --- GC Pool Hill Climbing ---
+    // Compute alloc rate and free rate, then feed the alloc/free ratio
+    // (clamped to [0, 10]) into the EMA → HillClimber for adaptive sizing.
+    if elapsed.as_nanos() > 0 {
+        let elapsed_secs = elapsed.as_secs_f64();
+        let alloc_delta = current_alloc_count.saturating_sub(monitor.prev_alloc_count);
+        let alloc_rate = alloc_delta as f64 / elapsed_secs;
+
+        let current_freed = gc_values_freed_total();
+        let freed_delta = current_freed.saturating_sub(monitor.prev_freed_count);
+        let free_rate = freed_delta as f64 / elapsed_secs;
+        monitor.prev_freed_count = current_freed;
+
+        // Compute ratio (alloc / free). Guard against division by zero:
+        // if free_rate == 0 but alloc_rate > 0, ratio = 10 (max pressure).
+        // if both are 0, ratio = 1.0 (neutral — no scaling action needed).
+        let ratio = if free_rate > 0.0 {
+            (alloc_rate / free_rate).min(10.0)
+        } else if alloc_rate > 0.0 {
+            10.0 // GC not freeing but allocation happening → max pressure
+        } else {
+            1.0 // Idle — neutral
+        };
+
+        // Feed ratio as objective to hill climber (higher ratio = worse,
+        // hill climber minimizes objective).
+        let smoothed = monitor.ema_alloc_free_ratio.update(ratio);
+        let action = monitor.gc_climber.step(smoothed);
+
+        match action {
+            ScaleAction::Unpark => { gc_pool.unpark_one(); }
+            ScaleAction::Park => { gc_pool.park_one(); }
+            ScaleAction::Hold => {}
+        }
+    }
+
     monitor.prev_alloc_count = current_alloc_count;
     monitor.prev_poll_time = now;
+
+    // Check for and respawn dead GC workers
+    let respawned = gc_pool.check_and_respawn_workers();
+    if respawned > 0 {
+        tracing::warn!(
+            respawned,
+            "GC memory monitor: respawned dead GC workers"
+        );
+    }
 }
 
 
@@ -896,378 +303,10 @@ fn execute_memory_monitor(
 mod tests {
     use super::*;
     use super::super::gc_allocator::is_gc_requested;
-    use std::sync::atomic::{AtomicU64 as StdAtomicU64, Ordering};
-
-    // ========================================================================
-    // Ported from libgrammstein CronStateMachine tests
-    // ========================================================================
-
-    /// Test that state transitions work correctly.
-    #[test]
-    fn test_state_transitions() {
-        let (_, rx) = unbounded::<ScheduledTask>();
-        let terminating = Arc::new(AtomicBool::new(false));
-
-        let sm = CronStateMachine::new(rx, terminating.clone(), 100, None);
-
-        // Initial state is CheckEvents
-        assert_eq!(sm.current_state(), CronState::CheckEvents);
-    }
-
-    /// Test that termination signal works from any state.
-    #[test]
-    fn test_termination_from_any_state() {
-        let (_, rx) = unbounded::<ScheduledTask>();
-        let terminating = Arc::new(AtomicBool::new(false));
-
-        let mut sm = CronStateMachine::new(rx, terminating.clone(), 100, None);
-
-        // Request termination
-        terminating.store(true, AtomicOrdering::Release);
-
-        // Should immediately transition to Terminated
-        sm.run();
-        assert_eq!(sm.current_state(), CronState::Terminated);
-    }
-
-    /// Test concurrent task submission from multiple threads.
-    #[test]
-    fn test_concurrent_task_submission() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) = spawn_cron(Arc::clone(&terminating));
-
-        let counter = Arc::new(StdAtomicU64::new(0));
-
-        // Submit tasks from multiple threads concurrently (lock-free)
-        let handles: Vec<_> = (0..10)
-            .map(|_| {
-                let h = handle.clone();
-                let c = Arc::clone(&counter);
-                thread::spawn(move || {
-                    for _ in 0..100 {
-                        h.schedule_after(
-                            0,
-                            TaskMetadata::OneShot,
-                            {
-                                let c = Arc::clone(&c);
-                                move || {
-                                    c.fetch_add(1, Ordering::Relaxed);
-                                    true
-                                }
-                            },
-                        );
-                    }
-                })
-            })
-            .collect();
-
-        for h in handles {
-            h.join().expect("Thread panicked");
-        }
-
-        // Wait for tasks to execute
-        thread::sleep(Duration::from_millis(500));
-
-        handle.request_shutdown();
-        thread.join().expect("Cron thread panicked");
-
-        // All 1000 tasks should have executed
-        assert_eq!(counter.load(Ordering::Relaxed), 1000);
-    }
-
-    /// Test that recurring tasks are requeued.
-    #[test]
-    fn test_recurring_task() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
-
-        let counter = Arc::new(StdAtomicU64::new(0));
-        let c = Arc::clone(&counter);
-
-        // Schedule recurring task every 50ms
-        handle.schedule_recurring(0, 50, "counter", move || {
-            c.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-
-        // Wait ~275ms - should execute ~5-6 times
-        thread::sleep(Duration::from_millis(275));
-
-        handle.request_shutdown();
-        thread.join().expect("Cron thread panicked");
-
-        let count = counter.load(Ordering::Relaxed);
-        assert!(
-            count >= 4 && count <= 7,
-            "Expected 4-7 executions, got {}",
-            count
-        );
-    }
-
-    /// Test that recurring tasks stop when returning false.
-    #[test]
-    fn test_recurring_task_stops_on_false() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
-
-        let counter = Arc::new(StdAtomicU64::new(0));
-        let c = Arc::clone(&counter);
-
-        // Schedule recurring task that stops after 3 executions
-        handle.schedule_recurring(0, 20, "limited-counter", move || {
-            let count = c.fetch_add(1, Ordering::Relaxed) + 1;
-            count < 3 // Return false on 3rd execution
-        });
-
-        // Wait longer than needed for all executions
-        thread::sleep(Duration::from_millis(200));
-
-        handle.request_shutdown();
-        thread.join().expect("Cron thread panicked");
-
-        let count = counter.load(Ordering::Relaxed);
-        assert_eq!(count, 3, "Expected exactly 3 executions, got {}", count);
-    }
-
-    /// Test that one-shot tasks execute exactly once.
-    #[test]
-    fn test_one_shot_task() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
-
-        let counter = Arc::new(StdAtomicU64::new(0));
-        let c = Arc::clone(&counter);
-
-        // Schedule one-shot task
-        handle.schedule_once(0, "one-shot", move || {
-            c.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-
-        // Wait for execution
-        thread::sleep(Duration::from_millis(100));
-
-        handle.request_shutdown();
-        thread.join().expect("Cron thread panicked");
-
-        let count = counter.load(Ordering::Relaxed);
-        assert_eq!(count, 1, "Expected exactly 1 execution, got {}", count);
-    }
-
-    /// Test that panicking tasks are caught and don't crash the scheduler.
-    #[test]
-    fn test_panic_safety() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, ready_rx) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
-
-        // Wait for scheduler to be ready (prevents race condition where tasks are
-        // scheduled before the cron thread has entered its event loop)
-        ready_rx.recv().expect("Cron thread failed to start");
-
-        let counter = Arc::new(StdAtomicU64::new(0));
-        let c = Arc::clone(&counter);
-
-        // Schedule a task that panics
-        handle.schedule_once(0, "panicking", || {
-            panic!("This task intentionally panics");
-        });
-
-        // Schedule a normal task after the panicking one
-        handle.schedule_once(50, "normal", move || {
-            c.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-
-        // Poll until normal task executes (with timeout)
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while counter.load(Ordering::Relaxed) == 0 {
-            if Instant::now() > deadline {
-                panic!("Timeout waiting for normal task to execute");
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-
-        handle.request_shutdown();
-        thread
-            .join()
-            .expect("Cron thread should not panic from task panic");
-
-        // Normal task should have executed despite the panic
-        let count = counter.load(Ordering::Relaxed);
-        assert_eq!(count, 1, "Normal task should have executed");
-    }
-
-    /// Test that channel disconnection terminates the scheduler when queue is empty.
-    #[test]
-    fn test_channel_disconnect_empty_queue() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
-
-        // Don't schedule any tasks, just drop the handle
-        drop(handle);
-
-        // Scheduler should terminate since queue is empty and channel is disconnected
-        thread.join().expect("Cron thread panicked");
-    }
-
-    /// Test that channel disconnection keeps scheduler running when tasks remain.
-    #[test]
-    fn test_channel_disconnect_with_tasks() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
-
-        let counter = Arc::new(StdAtomicU64::new(0));
-        let c = Arc::clone(&counter);
-
-        // Schedule a delayed task
-        handle.schedule_once(100, "delayed", move || {
-            c.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-
-        // Drop handle immediately (disconnects channel)
-        drop(handle);
-
-        // Wait for the delayed task to execute
-        thread::sleep(Duration::from_millis(200));
-
-        // Scheduler should terminate after task completes
-        terminating.store(true, AtomicOrdering::Release);
-        thread.join().expect("Cron thread panicked");
-
-        let count = counter.load(Ordering::Relaxed);
-        assert_eq!(count, 1, "Delayed task should have executed");
-    }
-
-    /// Test task metadata types.
-    #[test]
-    fn test_task_metadata() {
-        // OneShot
-        let one_shot = TaskMetadata::OneShot;
-        assert_eq!(one_shot.name(), "one-shot");
-        assert_eq!(one_shot.recurrence_interval(), None);
-
-        // Recurring
-        let recurring = TaskMetadata::Recurring { interval_ms: 1000 };
-        assert_eq!(recurring.name(), "recurring");
-        assert_eq!(recurring.recurrence_interval(), Some(1000));
-
-        // Named one-shot
-        let named = TaskMetadata::Named {
-            name: "custom".to_string(),
-            recurring_interval_ms: None,
-        };
-        assert_eq!(named.name(), "custom");
-        assert_eq!(named.recurrence_interval(), None);
-
-        // Named recurring
-        let named_recurring = TaskMetadata::Named {
-            name: "checkpoint".to_string(),
-            recurring_interval_ms: Some(5000),
-        };
-        assert_eq!(named_recurring.name(), "checkpoint");
-        assert_eq!(named_recurring.recurrence_interval(), Some(5000));
-    }
-
-    /// Test scheduled task ordering (min-heap behavior).
-    #[test]
-    fn test_task_ordering() {
-        let mut heap = BinaryHeap::new();
-
-        // Add tasks in random order
-        heap.push(ScheduledTask {
-            scheduled_time_ms: 300,
-            metadata: TaskMetadata::OneShot,
-            task: Box::new(|| true),
-        });
-        heap.push(ScheduledTask {
-            scheduled_time_ms: 100,
-            metadata: TaskMetadata::OneShot,
-            task: Box::new(|| true),
-        });
-        heap.push(ScheduledTask {
-            scheduled_time_ms: 200,
-            metadata: TaskMetadata::OneShot,
-            task: Box::new(|| true),
-        });
-
-        // Should pop in ascending order (earliest first)
-        assert_eq!(heap.pop().expect("should have task").scheduled_time_ms, 100);
-        assert_eq!(heap.pop().expect("should have task").scheduled_time_ms, 200);
-        assert_eq!(heap.pop().expect("should have task").scheduled_time_ms, 300);
-    }
-
-    /// Test handle cloning and concurrent use.
-    #[test]
-    fn test_handle_cloning() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, ready_rx) = spawn_cron(Arc::clone(&terminating));
-
-        // Wait for the scheduler to be ready before scheduling tasks.
-        // Without this, tasks may be submitted before the cron thread
-        // enters its event loop, causing them to be missed.
-        ready_rx.recv().expect("Cron thread failed to start");
-
-        let counter = Arc::new(StdAtomicU64::new(0));
-
-        // Clone handle multiple times
-        let handle1 = handle.clone();
-        let handle2 = handle.clone();
-
-        let c1 = Arc::clone(&counter);
-        let c2 = Arc::clone(&counter);
-
-        // Submit from different handles
-        handle1.schedule_once(0, "from-handle1", move || {
-            c1.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-        handle2.schedule_once(0, "from-handle2", move || {
-            c2.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-
-        // Poll until both tasks execute (with timeout)
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while counter.load(Ordering::Relaxed) < 2 {
-            if Instant::now() > deadline {
-                panic!(
-                    "Timeout waiting for tasks: {} of 2 executed",
-                    counter.load(Ordering::Relaxed)
-                );
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-
-        handle.request_shutdown();
-        thread.join().expect("Cron thread panicked");
-
-        assert_eq!(counter.load(Ordering::Relaxed), 2);
-    }
-
-    /// Test shutdown flag propagation.
-    #[test]
-    fn test_shutdown_flag() {
-        let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) = spawn_cron(Arc::clone(&terminating));
-
-        // Initially not shutting down
-        assert!(!handle.is_shutting_down());
-
-        // Request shutdown
-        handle.request_shutdown();
-
-        // Should now be shutting down
-        assert!(handle.is_shutting_down());
-
-        thread.join().expect("Cron thread panicked");
-    }
+    use super::super::gc_pool::AdaptiveGcPool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::thread;
 
     // ========================================================================
     // GC-specific integration tests
@@ -1339,19 +378,21 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
-        let mut monitor = MonitorState::new();
+        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // First poll: set baseline
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor);
+        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         // Simulate time passing and allocations
         monitor.prev_poll_time = Instant::now() - Duration::from_millis(100);
         alloc_count.store(50_000, Ordering::Relaxed);
 
         // Second poll: rate = 50k / 0.1s = 500k/s > threshold
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor);
+        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         assert!(is_gc_requested(), "should request GC at 500k allocs/s");
+        pool.shutdown();
     }
 
     /// Unit test: low rate does NOT trigger GC.
@@ -1363,22 +404,28 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
-        let mut monitor = MonitorState::new();
+        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // First poll: set baseline
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor);
+        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+
+        // Clear again after first poll — parallel tests may set GC_REQUESTED
+        // between our initial clear and the first poll.
+        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
 
         // Simulate time passing and low allocations
         monitor.prev_poll_time = Instant::now() - Duration::from_millis(100);
         alloc_count.store(100, Ordering::Relaxed); // 100 / 0.1s = 1000/s < 100k threshold
 
         // Second poll
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor);
+        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         assert!(
             !is_gc_requested(),
             "should NOT request GC at 1000 allocs/s"
         );
+        pool.shutdown();
     }
 
     /// Unit test: committed bytes >= threshold triggers GC.
@@ -1390,16 +437,18 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(8 * 1024 * 1024); // 8 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
-        let mut monitor = MonitorState::new();
+        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // First poll: set baseline
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor);
+        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         // committed (8 MB) >= gc_threshold (4 MB) should trigger
         assert!(
             is_gc_requested(),
             "should request GC when committed bytes exceed threshold"
         );
+        pool.shutdown();
     }
 
     /// Unit test: committed bytes < threshold does NOT trigger GC.
@@ -1411,15 +460,29 @@ mod tests {
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(2 * 1024 * 1024); // 2 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
-        let mut monitor = MonitorState::new();
+        let mut monitor = MonitorState::with_params(1, 2, 1);
+        let pool = AdaptiveGcPool::with_workers(1, 2);
 
-        // First poll: set baseline
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor);
+        // Clear immediately before poll — minimize race window with parallel tests
+        // that may set GC_REQUESTED via their own cron monitors.
+        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
+
+        // First poll: set baseline (should NOT set GC_REQUESTED since committed < threshold)
+        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+
+        // Clear again and re-poll to get a clean read.
+        // This double-poll pattern isolates us from parallel tests: the first poll
+        // sets baselines, the second poll computes rates from zero delta + checks
+        // committed < threshold. We clear right before the second poll.
+        monitor.prev_poll_time = Instant::now() - Duration::from_millis(100);
+        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::SeqCst);
+        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         // committed (2 MB) < gc_threshold (4 MB) should NOT trigger
         assert!(
             !is_gc_requested(),
             "should NOT request GC when committed bytes below threshold"
         );
+        pool.shutdown();
     }
 }

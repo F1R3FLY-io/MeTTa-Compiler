@@ -418,8 +418,11 @@ mod tests {
             "(= (fibonacci $n) (if (< $n 2) $n (+ (fibonacci (- $n 1)) (fibonacci (- $n 2)))))";
         let state = compile(code).unwrap();
 
-        // IMPORTANT: Rules are added to environment during evaluation
-        for &expr in state.source().iter() {
+        // IMPORTANT: Rules are added to environment during evaluation.
+        // SAFE: Snapshot source to drop MutexGuard before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let source_exprs: Vec<_> = state.source().iter().copied().collect();
+        for &expr in source_exprs.iter() {
             let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }
@@ -447,8 +450,11 @@ mod tests {
         let code = "(= (my-func $x) (* 2 $x))";
         let state = compile(code).unwrap();
 
-        // Evaluate to add rules to environment
-        for &expr in state.source().iter() {
+        // Evaluate to add rules to environment.
+        // SAFE: Snapshot source to drop MutexGuard before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let source_exprs: Vec<_> = state.source().iter().copied().collect();
+        for &expr in source_exprs.iter() {
             let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }
@@ -474,8 +480,11 @@ mod tests {
         let code = "(= my-const 42)";
         let state = compile(code).unwrap();
 
-        // Evaluate to add rules to environment
-        for &expr in state.source().iter() {
+        // Evaluate to add rules to environment.
+        // SAFE: Snapshot source to drop MutexGuard before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let source_exprs: Vec<_> = state.source().iter().copied().collect();
+        for &expr in source_exprs.iter() {
             let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }

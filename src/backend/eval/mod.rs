@@ -5,6 +5,7 @@
 // tree-walker fallback via eval_trampoline().
 
 pub(crate) mod bindings_generic;
+pub(crate) mod frame_chain;
 pub(crate) mod freshening;
 mod helpers;
 pub(crate) mod space_match;
@@ -17,7 +18,7 @@ pub(crate) mod mork_forms_generic;
 mod pattern;
 pub mod priority;
 mod processing;
-mod step;
+pub(crate) mod step;
 pub mod trampoline;
 pub(crate) mod types_generic;
 

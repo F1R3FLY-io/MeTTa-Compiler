@@ -30,7 +30,9 @@
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+use crate::backend::models::{register_root_provider, RootProvider};
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -40,87 +42,19 @@ thread_local! {
     static THREAD_LOCAL_COUNTER: Cell<u64> = const { Cell::new(0) };
 }
 
-// Sequential mode detection - only needed with hybrid-p2-priority-scheduler
-#[cfg(feature = "hybrid-p2-priority-scheduler")]
-mod sequential_mode {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// Global counter for concurrent eval operations
-    ///
-    /// Tracks how many eval operations are currently in-flight across all threads.
-    /// When count is low (< SEQUENTIAL_THRESHOLD), we use Rayon's lightweight spawn
-    /// instead of the P2 priority scheduler to avoid scheduler overhead (~500-1000ns per spawn).
-    static CONCURRENT_EVALS: AtomicUsize = AtomicUsize::new(0);
-
-    /// Threshold for detecting sequential execution mode
-    ///
-    /// If fewer than this many evals are in-flight, we're likely running sequentially
-    /// and should use Rayon's spawn instead of P2 scheduler for lower overhead.
-    const SEQUENTIAL_THRESHOLD: usize = 2;
-
-    /// Check if we're in sequential execution mode
-    ///
-    /// Returns true if fewer than SEQUENTIAL_THRESHOLD evals are in-flight,
-    /// indicating we should use Rayon's lightweight spawn for background work.
-    #[inline]
-    pub fn is_sequential_mode() -> bool {
-        CONCURRENT_EVALS.load(Ordering::Relaxed) < SEQUENTIAL_THRESHOLD
-    }
-
-    /// Enter an eval operation (increment concurrent counter)
-    ///
-    /// Call this at the start of eval() to track concurrent evaluations.
-    #[inline]
-    pub fn enter_eval() {
-        CONCURRENT_EVALS.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Exit an eval operation (decrement concurrent counter)
-    ///
-    /// Call this at the end of eval() to track concurrent evaluations.
-    #[inline]
-    pub fn exit_eval() {
-        CONCURRENT_EVALS.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-#[cfg(feature = "hybrid-p2-priority-scheduler")]
-pub use sequential_mode::{enter_eval, exit_eval, is_sequential_mode};
-
 use dashmap::DashMap;
 
 use crate::backend::models::{MettaValue, MettaValueInner};
-
-#[cfg(feature = "hybrid-p2-priority-scheduler")]
-use crate::backend::priority_scheduler::{global_priority_eval_pool, priority_levels, TaskTypeId};
+use crate::backend::models::work_pool::global_work_pool;
+use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
 use super::cache::hash_metta_value;
 use super::chunk::BytecodeChunk;
 use super::compiler::compile_arc;
 use super::jit::compiler::JitCompiler;
 
-/// Dedicated thread pool for background bytecode/JIT compilation.
-///
-/// Uses 2 threads instead of Rayon's default `num_cpus` (e.g. 36 on a 36-core
-/// machine). This avoids spawning dozens of threads that each trigger a 64 MB
-/// glibc malloc arena via `alloc_new_heap` during `pthread_getattr_np`.
-/// Background compilation is infrequent (only at tier promotion thresholds),
-/// so 2 threads is more than sufficient.
-static COMPILE_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
-    let num_threads = std::env::var("RAYON_NUM_THREADS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(2)
-        .max(1);
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .thread_name(|i| format!("compile-worker-{}", i))
-        .build()
-        .expect("failed to create compilation thread pool")
-});
-
 /// Threshold to trigger bytecode compilation (eager: after 1st execution)
-/// Compilation is non-blocking (rayon background), so eager compilation
+/// Compilation is non-blocking (WorkPool background), so eager compilation
 /// provides faster VM execution with minimal overhead.
 pub const BYTECODE_THRESHOLD: u32 = 1;
 
@@ -382,6 +316,45 @@ impl ExprCompilationState {
         self.jit2_status
             .store(TierStatusKind::Failed as u8, Ordering::Release);
     }
+
+    /// Revert bytecode compilation status from Compiling back to NotStarted.
+    ///
+    /// Used when the compilation task is dropped due to backpressure,
+    /// allowing a future execution to re-trigger compilation.
+    pub fn revert_bytecode_to_not_started(&self) {
+        self.bytecode_status
+            .compare_exchange(
+                TierStatusKind::Compiling as u8,
+                TierStatusKind::NotStarted as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .ok(); // Ignore if already transitioned (race with concurrent set_*_ready/failed)
+    }
+
+    /// Revert JIT Stage 1 compilation status from Compiling back to NotStarted.
+    pub fn revert_jit1_to_not_started(&self) {
+        self.jit1_status
+            .compare_exchange(
+                TierStatusKind::Compiling as u8,
+                TierStatusKind::NotStarted as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .ok();
+    }
+
+    /// Revert JIT Stage 2 compilation status from Compiling back to NotStarted.
+    pub fn revert_jit2_to_not_started(&self) {
+        self.jit2_status
+            .compare_exchange(
+                TierStatusKind::Compiling as u8,
+                TierStatusKind::NotStarted as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .ok();
+    }
 }
 
 impl std::fmt::Debug for ExprCompilationState {
@@ -584,6 +557,9 @@ impl TieredCache {
     /// Returns the compilation state for dispatch decisions.
     /// Every execution is tracked and triggers bytecode compilation at threshold.
     pub fn record_execution(&self, expr: &MettaValue) -> Arc<ExprCompilationState> {
+        // Ensure tiered cache roots are registered with GC (idempotent, OnceLock-guarded)
+        ensure_tiered_cache_roots_registered();
+
         // Get or create state for this expression
         let state = self.get_or_create_state(expr);
 
@@ -641,31 +617,30 @@ impl TieredCache {
         let compile_task = move || match compile_arc("tiered", &expr_clone) {
             Ok(chunk) => {
                 state_clone.set_bytecode_ready(chunk);
+                global_tiered_cache()
+                    .bytecode_compilations_completed
+                    .fetch_add(1, Ordering::Relaxed);
             }
             Err(_) => {
                 state_clone.set_bytecode_failed();
+                global_tiered_cache()
+                    .bytecode_compilations_failed
+                    .fetch_add(1, Ordering::Relaxed);
             }
         };
 
-        // Choose spawn method based on feature and execution mode
-        #[cfg(feature = "hybrid-p2-priority-scheduler")]
-        {
-            // Hybrid mode: Use dedicated pool for sequential, P2 scheduler for parallel
-            if is_sequential_mode() {
-                COMPILE_POOL.spawn(compile_task);
-            } else {
-                global_priority_eval_pool().spawn_with_priority(
-                    compile_task,
-                    priority_levels::BACKGROUND_COMPILE,
-                    TaskTypeId::BytecodeCompile,
-                );
-            }
-        }
-
-        #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
-        {
-            // Default: Use dedicated 2-thread pool (avoids spawning num_cpus Rayon workers)
-            COMPILE_POOL.spawn(compile_task);
+        // Dispatch to unified work pool at BACKGROUND_COMPILE priority
+        let enqueued = global_work_pool().spawn_compile(
+            compile_task,
+            TaskTypeId::BytecodeCompile,
+            priority_levels::BACKGROUND_COMPILE,
+        );
+        if !enqueued {
+            // Task dropped due to backpressure — revert state so future
+            // executions can re-trigger compilation
+            state.revert_bytecode_to_not_started();
+            self.bytecode_compilations_triggered
+                .fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -700,6 +675,9 @@ impl TieredCache {
             Some(c) => c,
             None => {
                 state.set_jit1_failed();
+                global_tiered_cache()
+                    .jit1_compilations_failed
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
         };
@@ -713,6 +691,9 @@ impl TieredCache {
             // Check if chunk can be JIT compiled
             if !JitCompiler::can_compile_stage1(&chunk) {
                 state_clone.set_jit1_failed();
+                global_tiered_cache()
+                    .jit1_compilations_failed
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
 
@@ -725,34 +706,37 @@ impl TieredCache {
                             code_size: chunk.len() * 8, // Rough estimate
                         };
                         state_clone.set_jit1_ready(Arc::new(code));
+                        global_tiered_cache()
+                            .jit1_compilations_completed
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     Err(_) => {
                         state_clone.set_jit1_failed();
+                        global_tiered_cache()
+                            .jit1_compilations_failed
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 },
                 Err(_) => {
                     state_clone.set_jit1_failed();
+                    global_tiered_cache()
+                        .jit1_compilations_failed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         };
 
         // Choose spawn method based on feature and execution mode
-        #[cfg(feature = "hybrid-p2-priority-scheduler")]
-        {
-            if is_sequential_mode() {
-                COMPILE_POOL.spawn(jit_compile);
-            } else {
-                global_priority_eval_pool().spawn_with_priority(
-                    jit_compile,
-                    priority_levels::BACKGROUND_COMPILE,
-                    TaskTypeId::JitCompile,
-                );
-            }
-        }
-
-        #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
-        {
-            COMPILE_POOL.spawn(jit_compile);
+        // Dispatch to unified work pool at BACKGROUND_COMPILE priority
+        let enqueued = global_work_pool().spawn_compile(
+            jit_compile,
+            TaskTypeId::JitCompile,
+            priority_levels::BACKGROUND_COMPILE,
+        );
+        if !enqueued {
+            state.revert_jit1_to_not_started();
+            self.jit1_compilations_triggered
+                .fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -787,6 +771,9 @@ impl TieredCache {
             Some(c) => c,
             None => {
                 state.set_jit2_failed();
+                global_tiered_cache()
+                    .jit2_compilations_failed
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
         };
@@ -800,6 +787,9 @@ impl TieredCache {
             // Stage 2 uses same compilability check as Stage 1 for now
             if !JitCompiler::can_compile_stage1(&chunk) {
                 state_clone.set_jit2_failed();
+                global_tiered_cache()
+                    .jit2_compilations_failed
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
 
@@ -813,34 +803,36 @@ impl TieredCache {
                             code_size: chunk.len() * 10, // Stage 2 generates more code
                         };
                         state_clone.set_jit2_ready(Arc::new(code));
+                        global_tiered_cache()
+                            .jit2_compilations_completed
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     Err(_) => {
                         state_clone.set_jit2_failed();
+                        global_tiered_cache()
+                            .jit2_compilations_failed
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 },
                 Err(_) => {
                     state_clone.set_jit2_failed();
+                    global_tiered_cache()
+                        .jit2_compilations_failed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         };
 
-        // Choose spawn method based on feature and execution mode
-        #[cfg(feature = "hybrid-p2-priority-scheduler")]
-        {
-            if is_sequential_mode() {
-                COMPILE_POOL.spawn(jit_compile);
-            } else {
-                global_priority_eval_pool().spawn_with_priority(
-                    jit_compile,
-                    priority_levels::BACKGROUND_COMPILE,
-                    TaskTypeId::JitCompile,
-                );
-            }
-        }
-
-        #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
-        {
-            COMPILE_POOL.spawn(jit_compile);
+        // Dispatch to unified work pool at BACKGROUND_COMPILE priority
+        let enqueued = global_work_pool().spawn_compile(
+            jit_compile,
+            TaskTypeId::JitCompile,
+            priority_levels::BACKGROUND_COMPILE,
+        );
+        if !enqueued {
+            state.revert_jit2_to_not_started();
+            self.jit2_compilations_triggered
+                .fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -972,6 +964,44 @@ static GLOBAL_TIERED_CACHE: std::sync::LazyLock<TieredCache> =
 /// Get a reference to the global tiered compilation cache.
 pub fn global_tiered_cache() -> &'static TieredCache {
     &GLOBAL_TIERED_CACHE
+}
+
+// =============================================================================
+// GC Root Provider for GLOBAL_TIERED_CACHE
+// =============================================================================
+
+/// GC root provider that exposes all MettaValue constants stored in the
+/// tiered compilation cache's bytecode chunks to the garbage collector.
+///
+/// Without this, constants in cached bytecode chunks are invisible to GC and
+/// may be freed while still reachable from the cache, causing use-after-free.
+struct TieredCacheRoots;
+
+impl RootProvider for TieredCacheRoots {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        let cache = global_tiered_cache();
+        for entry in cache.entries.iter() {
+            if let Some(chunk) = entry.value().bytecode_chunk() {
+                super::cache::collect_chunk_constants(&chunk, roots);
+            }
+        }
+    }
+}
+
+/// Keeps the Arc<dyn RootProvider> alive for the lifetime of the process so
+/// the Weak reference in ROOT_REGISTRY remains valid.
+static TIERED_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
+
+/// Ensure the tiered cache is registered as a GC root provider.
+///
+/// Called lazily on first `record_execution`. Idempotent — OnceLock
+/// guarantees single initialization.
+pub fn ensure_tiered_cache_roots_registered() {
+    TIERED_CACHE_ROOT_PROVIDER.get_or_init(|| {
+        let provider = Arc::new(TieredCacheRoots) as Arc<dyn RootProvider>;
+        register_root_provider(&provider);
+        provider
+    });
 }
 
 // =============================================================================
@@ -1172,7 +1202,7 @@ mod tests {
 
         // After executions, compilation is spawned in the background.
         // The best tier is either Interpreter (if async compile hasn't finished)
-        // or Bytecode (if the rayon task completed before we check).
+        // or Bytecode (if the background compile task completed before we check).
         for _ in 0..10 {
             let _ = cache.record_execution(&expr);
         }

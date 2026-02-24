@@ -196,6 +196,10 @@ fn dump_gc_state() {
     if sgc.releases_total > 0 {
         eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
         eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
+        if sgc.values_freed_total == 0 {
+            eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
+            eprintln!("        all values remain reachable from the live environment.");
+        }
     }
     eprintln!();
 }
@@ -313,4 +317,181 @@ fn reraise_sigterm() {
         // Re-raise so the process exits with the expected signal status
         libc::raise(libc::SIGTERM);
     }
+}
+
+// ── User-facing stats printing (all platforms) ─────────────────────────
+
+/// Print GC statistics to stderr.
+///
+/// Uses the same data sources as the signal-triggered diagnostic dump,
+/// but formatted for post-run analysis rather than livelock debugging.
+pub fn print_gc_stats() {
+    use crate::backend::models::gc_allocator;
+
+    let alloc = gc_allocator::global_allocator();
+    let committed = alloc.committed_bytes();
+    let threshold = alloc.gc_threshold();
+    let total_allocs = gc_allocator::alloc_count_snapshot();
+    let bp_level = gc_allocator::backpressure_level();
+    let in_flight = gc_allocator::gc_cycle_in_flight();
+    let requested = gc_allocator::is_gc_requested();
+    let disabled = gc_allocator::is_gc_disabled();
+
+    let ratio = if threshold > 0 {
+        committed as f64 / threshold as f64
+    } else {
+        0.0
+    };
+
+    eprintln!();
+    eprintln!("── GC Statistics ─────────────────────────────────────────────");
+    eprintln!("  total_allocations:  {:>12}", total_allocs);
+    eprintln!("  committed_bytes:    {:>12} ({:.1} MB)", committed, committed as f64 / (1024.0 * 1024.0));
+    eprintln!("  gc_threshold:       {:>12} ({:.1} MB)", threshold, threshold as f64 / (1024.0 * 1024.0));
+    eprintln!("  commit/threshold:   {:>12.2}", ratio);
+    eprintln!("  backpressure_level: {:>12} (max={})", bp_level, gc_allocator::MAX_BACKPRESSURE);
+    eprintln!("  gc_cycle_in_flight: {:>12}", in_flight);
+    eprintln!("  gc_requested:       {:>12}", requested);
+    eprintln!("  gc_disabled:        {:>12}", disabled);
+    eprintln!();
+
+    // Page statistics
+    let ps = alloc.page_stats();
+    let dead_slots = ps.total_bumped_slots.saturating_sub(ps.total_live_slots);
+    let occupancy = if ps.total_bumped_slots > 0 {
+        ps.total_live_slots as f64 / ps.total_bumped_slots as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    eprintln!("── Slab Pages ────────────────────────────────────────────────");
+    eprintln!("  value_pages:        {:>12}", ps.value_page_count);
+    eprintln!("  slots_per_page:     {:>12}", ps.slots_per_page);
+    eprintln!("  total_bumped:       {:>12}", ps.total_bumped_slots);
+    eprintln!("  total_live:         {:>12}", ps.total_live_slots);
+    eprintln!("  dead (bumped-live): {:>12}", dead_slots);
+    eprintln!("  occupancy:          {:>11.1}%", occupancy);
+    eprintln!("  value_committed:    {:>12} ({:.1} MB)", ps.value_committed_bytes, ps.value_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!("  data_pages:         {:>12}", ps.data_page_count);
+    eprintln!("  data_committed:     {:>12} ({:.1} MB)", ps.data_committed_bytes, ps.data_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!();
+
+    // Session GC statistics
+    let sgc = gc_allocator::session_gc_stats();
+    eprintln!("── Session GC ────────────────────────────────────────────────");
+    eprintln!("  sessions_released:  {:>12}", sgc.releases_total);
+    eprintln!("  values_freed:       {:>12}", sgc.values_freed_total);
+    eprintln!("  values_promoted:    {:>12}", sgc.values_promoted_total);
+    eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
+    eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
+    if sgc.releases_total > 0 {
+        eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
+        eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
+        if sgc.values_freed_total == 0 {
+            eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
+            eprintln!("        all values remain reachable from the live environment.");
+        }
+    }
+    eprintln!();
+}
+
+/// Print tiered compilation statistics to stderr.
+///
+/// Shows execution distribution across interpreter/bytecode/JIT tiers
+/// and compilation trigger/completion/failure counts.
+pub fn print_tier_stats() {
+    let stats = crate::backend::bytecode::tiered_cache::global_tiered_cache().stats();
+
+    eprintln!();
+    eprintln!("── Tiered Compilation Statistics ──────────────────────────────");
+    eprintln!("  expressions_tracked: {:>12}", stats.expressions_tracked);
+    eprintln!("  total_executions:    {:>12}", stats.total_executions);
+    eprintln!();
+
+    // Execution distribution with percentages
+    let total_dispatched = stats.interpreter_executions
+        + stats.bytecode_executions
+        + stats.jit1_executions
+        + stats.jit2_executions;
+
+    let pct = |n: u64| -> f64 {
+        if total_dispatched > 0 {
+            n as f64 / total_dispatched as f64 * 100.0
+        } else {
+            0.0
+        }
+    };
+
+    eprintln!("── Execution Distribution ────────────────────────────────────");
+    eprintln!("  interpreter:         {:>12} ({:>5.1}%)", stats.interpreter_executions, pct(stats.interpreter_executions));
+    eprintln!("  bytecode VM:         {:>12} ({:>5.1}%)", stats.bytecode_executions, pct(stats.bytecode_executions));
+    eprintln!("  JIT stage 1:         {:>12} ({:>5.1}%)", stats.jit1_executions, pct(stats.jit1_executions));
+    eprintln!("  JIT stage 2:         {:>12} ({:>5.1}%)", stats.jit2_executions, pct(stats.jit2_executions));
+    eprintln!("  total dispatched:    {:>12}", total_dispatched);
+    eprintln!();
+
+    // Compilation counts in a tabular grid
+    eprintln!("── Compilation Counts ────────────────────────────────────────");
+    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "", "triggered", "completed", "failed");
+    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "────────────────", "──────────", "──────────", "──────────");
+    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "bytecode",
+        stats.bytecode_compilations_triggered,
+        stats.bytecode_compilations_completed,
+        stats.bytecode_compilations_failed);
+    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "JIT stage 1",
+        stats.jit1_compilations_triggered,
+        stats.jit1_compilations_completed,
+        stats.jit1_compilations_failed);
+    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "JIT stage 2",
+        stats.jit2_compilations_triggered,
+        stats.jit2_compilations_completed,
+        stats.jit2_compilations_failed);
+    eprintln!();
+}
+
+/// Print thread pool statistics to stderr.
+///
+/// Shows worker counts, queue depths, and throughput metrics for all
+/// thread pool subsystems (WorkPool, GcPool).
+pub fn print_pool_stats() {
+    use crate::backend::models::work_pool::{global_work_pool, work_eval_count};
+    use crate::backend::models::gc_pool::global_gc_pool;
+
+    // ── Work Pool ──
+    let wp = global_work_pool();
+    let wp_min = wp.min_threads();
+    let wp_max = wp.max_threads();
+    let wp_active = wp.active_workers();
+    let wp_parked = wp_max.saturating_sub(wp_active);
+    let wp_queue = wp.queue_len();
+    let wp_evals = work_eval_count();
+    let wp_median_ns = wp.runtime_tracker().global_median();
+    let wp_median_ms = wp_median_ns / 1_000_000.0;
+
+    eprintln!();
+    eprintln!("── Work Pool (Eval + Compile) ─────────────────────────────────");
+    eprintln!("  min_threads:        {:>12}", wp_min);
+    eprintln!("  max_threads:        {:>12}", wp_max);
+    eprintln!("  active_workers:     {:>12}", wp_active);
+    eprintln!("  parked_workers:     {:>12}", wp_parked);
+    eprintln!("  queue_depth:        {:>12}", wp_queue);
+    eprintln!("  total_evals:        {:>12}", wp_evals);
+    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", wp_median_ns, wp_median_ms);
+    eprintln!();
+
+    // ── GC Pool ──
+    let gp = global_gc_pool();
+    let gp_min = gp.min_workers();
+    let gp_max = gp.max_workers();
+    let gp_active = gp.active_workers();
+    let gp_parked = gp_max.saturating_sub(gp_active);
+    let gp_releases = gp.session_release_count();
+
+    eprintln!("── GC Pool (Mark-Sweep + Session Release) ─────────────────────");
+    eprintln!("  min_workers:        {:>12}", gp_min);
+    eprintln!("  max_workers:        {:>12}", gp_max);
+    eprintln!("  active_workers:     {:>12}", gp_active);
+    eprintln!("  parked_workers:     {:>12}", gp_parked);
+    eprintln!("  session_releases:   {:>12}", gp_releases);
+    eprintln!();
 }

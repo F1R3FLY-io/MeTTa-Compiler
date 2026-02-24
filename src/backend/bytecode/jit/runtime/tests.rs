@@ -1432,8 +1432,11 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_if_nil() {
-        let condition = TAG_UNIT; // Unit is falsy
+    fn test_eval_if_unit_conservative_fallback() {
+        // In the full JIT pipeline, Unit is intercepted by JumpIfNotBool
+        // before reaching eval_if. If it somehow reaches here, the
+        // conservative fallback returns else_val.
+        let condition = TAG_UNIT;
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
 
@@ -1443,15 +1446,17 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_if_truthy_non_bool() {
-        // Non-boolean values are truthy
-        let condition = JitValue::from_long(100).to_bits(); // Number is truthy
+    fn test_eval_if_non_bool_conservative_fallback() {
+        // In the full JIT pipeline, non-booleans are intercepted by JumpIfNotBool
+        // before reaching eval_if. If they somehow reach here, conservative
+        // fallback returns else_val.
+        let condition = JitValue::from_long(100).to_bits();
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
 
         let result = unsafe { jit_runtime_eval_if(std::ptr::null_mut(), condition, then_val, else_val, 0) };
         let jv = JitValue::from_raw(result);
-        assert_eq!(jv.as_long(), 42); // Non-bool is truthy
+        assert_eq!(jv.as_long(), 99); // Conservative fallback: else_val
     }
 
     #[test]
@@ -2442,14 +2447,17 @@ mod tests {
     }
 
     #[test]
-    fn test_jit_eval_if_nil_falsy() {
+    fn test_jit_eval_if_unit_conservative_fallback() {
+        // In the full JIT pipeline, Unit is intercepted by JumpIfNotBool
+        // before reaching eval_if. If it somehow reaches here, the
+        // conservative fallback returns else_val.
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
-        let condition = TAG_UNIT; // Unit is falsy
+        let condition = TAG_UNIT;
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
 
@@ -2458,20 +2466,21 @@ mod tests {
     }
 
     #[test]
-    fn test_jit_eval_if_truthy_non_bool() {
+    fn test_jit_eval_if_non_bool_conservative_fallback() {
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
-        // A number is truthy (not bool false or nil)
+        // In the full JIT pipeline, non-booleans are intercepted by JumpIfNotBool.
+        // If they reach eval_if, conservative fallback returns else_val.
         let condition = JitValue::from_long(1).to_bits();
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
 
         let result = unsafe { jit_runtime_eval_if(&mut ctx, condition, then_val, else_val, 0) };
-        assert_eq!(result, then_val);
+        assert_eq!(result, else_val);
     }
 
     #[test]

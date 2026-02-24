@@ -3,6 +3,7 @@
 //! This module defines [`JitContext`], the runtime context passed to
 //! JIT-compiled code for managing execution state.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use super::binding::JitBindingFrame;
@@ -13,6 +14,101 @@ use super::constants::{
 use super::nondet::{JitBailoutReason, JitChoicePoint};
 use super::value::JitValue;
 use crate::backend::models::MettaValue;
+
+// =============================================================================
+// TypeSignatureRegistry - Pre-computed type info for JIT call sites
+// =============================================================================
+
+/// Classification of how a function argument should be handled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeClassification {
+    /// Value type — pre-evaluate this argument before rule dispatch
+    Evaluate,
+    /// Meta-type (Atom, Expression, Symbol, Variable, Grounded, Pattern) — pass unevaluated
+    PassThrough,
+}
+
+/// Pre-computed type information for a function with an arrow type.
+#[derive(Clone, Debug)]
+pub struct FunctionTypeInfo {
+    /// Number of formal arguments
+    pub arity: usize,
+    /// Per-argument classification: Evaluate or PassThrough
+    pub arg_types: Vec<TypeClassification>,
+}
+
+/// Registry of function type signatures, built from the environment at JIT entry.
+///
+/// This enables O(1) lookup of type-driven applicative evaluation decisions
+/// at JIT call sites. The registry is populated once from
+/// `GenericEnvironment::get_type_generic()` and remains valid for the
+/// duration of JIT execution.
+#[derive(Clone, Debug, Default)]
+pub struct TypeSignatureRegistry {
+    /// Maps head symbol name → FunctionTypeInfo
+    entries: HashMap<String, FunctionTypeInfo>,
+}
+
+impl TypeSignatureRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Insert a function's type info.
+    pub fn insert(&mut self, name: String, info: FunctionTypeInfo) {
+        self.entries.insert(name, info);
+    }
+
+    /// Look up a function's type info by name.
+    pub fn get(&self, name: &str) -> Option<&FunctionTypeInfo> {
+        self.entries.get(name)
+    }
+
+    /// Check if the registry has any entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Build a TypeSignatureRegistry from environment type assertions.
+    ///
+    /// Iterates the environment's `types` HashMap, identifies arrow types
+    /// `(-> T1 T2 ... Tret)`, and classifies each argument as `Evaluate`
+    /// (value type) or `PassThrough` (meta-type like Atom, Expression, etc.).
+    pub fn from_env(env: &crate::backend::eval::trampoline::MettaEnvironment) -> Self {
+        use crate::backend::eval::step::{extract_arg_types, is_meta_type};
+
+        let mut registry = Self::new();
+        let types_guard = env.shared.types.read();
+
+        for (name, typ) in types_guard.iter() {
+            // Check if this type is an arrow type (-> T1 T2 ... Tret)
+            if let Some(arg_types) = extract_arg_types(typ) {
+                let classifications: Vec<TypeClassification> = arg_types
+                    .iter()
+                    .map(|t| {
+                        if is_meta_type(t) {
+                            TypeClassification::PassThrough
+                        } else {
+                            TypeClassification::Evaluate
+                        }
+                    })
+                    .collect();
+                registry.insert(
+                    name.clone(),
+                    FunctionTypeInfo {
+                        arity: classifications.len(),
+                        arg_types: classifications,
+                    },
+                );
+            }
+        }
+
+        registry
+    }
+}
 
 // =============================================================================
 // JitContext - Runtime Context
@@ -231,6 +327,14 @@ pub struct JitContext {
     /// When `value_mode == Arena`, this points to `&'static Bump`.
     /// Runtime functions use this to allocate new values.
     pub arena: *const (),
+
+    // -------------------------------------------------------------------------
+    // Type-driven applicative evaluation (MeTTa HE parity)
+    // -------------------------------------------------------------------------
+    /// Pointer to TypeSignatureRegistry for function type lookups at call sites.
+    /// Built at JIT entry from environment type assertions.
+    /// Null if no type signatures are available.
+    pub type_registry_ptr: *const TypeSignatureRegistry,
 }
 
 impl JitContext {
@@ -311,6 +415,8 @@ impl JitContext {
             arena_constants: std::ptr::null(),
             arena_constants_len: 0,
             arena: std::ptr::null(),
+            // Type-driven applicative evaluation
+            type_registry_ptr: std::ptr::null(),
         }
     }
 
@@ -393,6 +499,8 @@ impl JitContext {
             arena_constants: std::ptr::null(),
             arena_constants_len: 0,
             arena: std::ptr::null(),
+            // Type-driven applicative evaluation
+            type_registry_ptr: std::ptr::null(),
         }
     }
 
@@ -741,6 +849,30 @@ impl JitContext {
     #[inline]
     pub fn has_env(&self) -> bool {
         !self.env_ptr.is_null()
+    }
+
+    // -------------------------------------------------------------------------
+    // Type-Driven Applicative Evaluation (MeTTa HE Parity)
+    // -------------------------------------------------------------------------
+
+    /// Set the type signature registry for type-driven applicative evaluation.
+    ///
+    /// The registry must outlive the JIT execution. Typically it is allocated
+    /// on the stack or in a `Box` by the `HybridExecutor` and freed after
+    /// execution completes.
+    ///
+    /// # Safety
+    /// The pointer must point to a valid `TypeSignatureRegistry` that will
+    /// outlive the JIT execution.
+    #[inline]
+    pub unsafe fn set_type_registry(&mut self, registry: *const TypeSignatureRegistry) {
+        self.type_registry_ptr = registry;
+    }
+
+    /// Check if type registry is available for type-driven evaluation
+    #[inline]
+    pub fn has_type_registry(&self) -> bool {
+        !self.type_registry_ptr.is_null()
     }
 
     // -------------------------------------------------------------------------

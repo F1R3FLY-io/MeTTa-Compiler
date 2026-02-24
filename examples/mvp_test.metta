@@ -6,9 +6,9 @@
 (= (triple $x) (+ $x (+ $x $x)))
 
 ; Test 2: Pattern matching with variables
-(= (fib 0) 1)
-(= (fib 1) 1)
-(= (fib $n) (+ (fib (- $n 1)) (fib (- $n 2))))
+; Note: Uses a single guarded rule to prevent divergence when multiple
+; rules match nondeterministically (MeTTa HE has no specificity filter).
+(= (fib $n) (if (== $n 0) 1 (if (== $n 1) 1 (+ (fib (- $n 1)) (fib (- $n 2))))))
 
 ; Test 3: Grounded arithmetic operations
 (+ 2 3)

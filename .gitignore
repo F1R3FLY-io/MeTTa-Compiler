@@ -21,3 +21,19 @@ heaptrack.*
 tla/states/*
 
 tests/proptest/eval/arithmetics/mod.proptest-regressions
+
+*.svg
+*.png
+
+.claude/projects/*
+
+# Rocq/Coq build artifacts
+*.vo
+*.vos
+*.vok
+*.glob
+.*.aux
+.lia.cache
+.nra.cache
+.Makefile.d
+Makefile.conf

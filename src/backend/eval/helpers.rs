@@ -53,13 +53,13 @@ static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
     // Higher-order list operations (iterate over elements)
     "map-atom", "filter-atom", "foldl-atom",
     // Control flow (lazy branch evaluation)
-    "if", "if-equal", "case", "switch", "switch-minimal", "switch-internal",
+    "if", "if-equal", "if-reducible", "case", "switch", "switch-minimal", "switch-internal",
     // Binding forms (special scoping)
     "let", "let*", "unify",
     // Sequencing/continuation forms
     "chain", "function", "return",
     // Pattern/substitution forms
-    "sealed", "atom-subst", "match",
+    "sealed", "atom-subst", "match", "match-or",
     // Error handling (special flow)
     "catch", "is-error",
     // Evaluation control

@@ -1,8 +1,9 @@
 //! Generic Memoization Cache for Bytecode VM
 //!
 //! This module provides a thread-safe memoization cache that works with any
-//! value type implementing `MettaValueTrait`. It mirrors `MemoCache` but uses
-//! `v.hash_value()` instead of requiring `Hash` trait bounds.
+//! value type implementing `MettaValueTrait`. Uses `v.hash_value()` instead of
+//! requiring `Hash` trait bounds. Includes GC root registration via a global
+//! singleton for the `MettaValue` monomorphization.
 //!
 //! # Design
 //!
@@ -10,9 +11,11 @@
 //! - Lock-free reads and writes via DashMap and atomics
 //! - Content-addressed via `MettaValueTrait::hash_value()`
 //! - Configurable maximum entries
+//! - Global singleton for `MettaValue` with GC root registration
 
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -177,6 +180,17 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> GenericMemoCache<V> {
     pub fn is_empty(&self) -> bool {
         self.cache.is_empty()
     }
+
+    /// Collect all cached result values into the provided vector.
+    ///
+    /// Used by the GC root provider to expose all cached MettaValue entries
+    /// to the garbage collector's root set.
+    pub fn collect_all_values(&self, out: &mut Vec<V>) {
+        out.reserve(self.cache.len());
+        for entry in self.cache.iter() {
+            out.push(entry.value().result.clone());
+        }
+    }
 }
 
 /// Generic cache statistics
@@ -192,6 +206,63 @@ pub struct GenericCacheStats {
     pub misses: u64,
     /// Hit rate (0.0 - 1.0)
     pub hit_rate: f64,
+}
+
+// =============================================================================
+// Global Singleton Memo Cache + GC Root Provider
+// =============================================================================
+
+use crate::backend::models::gc_allocator::{register_root_provider, RootProvider};
+use crate::backend::models::MettaValue;
+
+/// Global singleton `GenericMemoCache<MettaValue>` shared across all VM instances.
+///
+/// Uses `LazyLock` for zero-cost lazy initialization. Cache size is configurable
+/// via `METTA_MEMO_CACHE_SIZE` environment variable (default: 4096).
+static GLOBAL_MEMO_CACHE: LazyLock<Arc<GenericMemoCache<MettaValue>>> = LazyLock::new(|| {
+    let max_entries = std::env::var("METTA_MEMO_CACHE_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4096);
+    Arc::new(GenericMemoCache::new(max_entries))
+});
+
+/// GC root provider that exposes all MettaValue entries stored in the global
+/// memo cache to the garbage collector's root set.
+///
+/// Without this, cached function results are invisible to GC and may be freed
+/// while still reachable from the cache, causing use-after-free.
+struct MemoCacheRoots;
+
+impl RootProvider for MemoCacheRoots {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        GLOBAL_MEMO_CACHE.collect_all_values(roots);
+    }
+}
+
+/// Keeps the `Arc<dyn RootProvider>` alive for the lifetime of the process so
+/// the `Weak` reference in `ROOT_REGISTRY` remains valid.
+static MEMO_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
+
+/// Ensure the global memo cache is registered as a GC root provider.
+///
+/// Called lazily on first access to the global cache. Idempotent —
+/// `OnceLock` guarantees single initialization.
+pub fn ensure_memo_cache_roots_registered() {
+    MEMO_CACHE_ROOT_PROVIDER.get_or_init(|| {
+        let provider = Arc::new(MemoCacheRoots) as Arc<dyn RootProvider>;
+        register_root_provider(&provider);
+        provider
+    });
+}
+
+/// Get a reference to the global `GenericMemoCache<MettaValue>`.
+///
+/// On first call, this also registers the cache as a GC root provider
+/// (idempotent). All subsequent calls return the same `Arc`.
+pub fn global_memo_cache() -> &'static Arc<GenericMemoCache<MettaValue>> {
+    ensure_memo_cache_roots_registered();
+    &GLOBAL_MEMO_CACHE
 }
 
 #[cfg(test)]
@@ -257,5 +328,45 @@ mod tests {
         assert_eq!(stats.hits, 2);
         assert_eq!(stats.misses, 1);
         assert!((stats.hit_rate - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_global_memo_cache_returns_same_arc() {
+        let cache1 = global_memo_cache();
+        let cache2 = global_memo_cache();
+        assert!(Arc::ptr_eq(cache1, cache2), "global_memo_cache() must return the same Arc");
+    }
+
+    #[test]
+    fn test_collect_all_values() {
+        let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(100);
+        let factory = GcFactory::default();
+
+        cache.insert("a", &[factory.long(1)], factory.long(10));
+        cache.insert("b", &[factory.long(2)], factory.long(20));
+        cache.insert("c", &[factory.long(3)], factory.long(30));
+
+        let mut roots = Vec::new();
+        cache.collect_all_values(&mut roots);
+        assert_eq!(roots.len(), 3);
+
+        // Check that all results are present (order not guaranteed)
+        let mut values: Vec<i64> = roots
+            .iter()
+            .map(|v| match v.inner() {
+                crate::backend::models::MettaValueInner::Long(n) => *n,
+                _ => panic!("expected Long"),
+            })
+            .collect();
+        values.sort();
+        assert_eq!(values, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_ensure_memo_cache_roots_registered_is_idempotent() {
+        // Should not panic when called multiple times
+        ensure_memo_cache_roots_registered();
+        ensure_memo_cache_roots_registered();
+        ensure_memo_cache_roots_registered();
     }
 }

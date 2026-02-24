@@ -326,11 +326,14 @@ fn bench_evaluation(c: &mut Criterion) {
     let simple_text = "(+ 40 2)";
     let simple_state = compile(simple_text).expect("Failed to compile");
 
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let simple_expr = simple_state.source()[0];
     group.bench_function("simple_arithmetic", |b| {
         b.iter(|| {
             let env = new_env();
             let (result, _) = eval(
-                black_box(simple_state.source()[0]),
+                black_box(simple_expr),
                 black_box(env),
                 black_box(&simple_state),
             );
@@ -347,10 +350,13 @@ fn bench_evaluation(c: &mut Criterion) {
             BenchmarkId::new("nested_arithmetic", depth),
             depth,
             |b, _| {
+                // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+                // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+                let nested_expr = nested_state.source()[0];
                 b.iter(|| {
                     let env = new_env();
                     let (result, _) = eval(
-                        black_box(nested_state.source()[0]),
+                        black_box(nested_expr),
                         black_box(env),
                         black_box(&nested_state),
                     );

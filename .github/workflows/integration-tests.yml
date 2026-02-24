@@ -186,6 +186,11 @@ jobs:
         # --no-deps: Don't lint dependencies (avoids failing on upstream warnings)
         cargo clippy --no-deps -- -D warnings
 
+    - name: Run GC root audit
+      run: |
+        cargo build --release --manifest-path tools/gc-root-audit/Cargo.toml
+        ./tools/gc-root-audit/target/release/gc-root-audit src/
+
   test-report:
     name: Test Report Summary
     runs-on: ubuntu-latest

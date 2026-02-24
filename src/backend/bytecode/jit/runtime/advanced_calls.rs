@@ -219,7 +219,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     arg_count: u64,
     ip: u64,
 ) -> u64 {
-    use crate::backend::bytecode::memo_cache::MemoCache;
+    use crate::backend::bytecode::generic_memo_cache::GenericMemoCache;
 
     if ctx.is_null() {
         return JitValue::unit().to_bits();
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
 
     // Check if memo cache is available
     if !ctx_ref.memo_cache.is_null() {
-        let cache = &*(ctx_ref.memo_cache as *const MemoCache);
+        let cache = &*(ctx_ref.memo_cache as *const GenericMemoCache<MettaValue>);
 
         // Check cache for existing result
         if let Some(cached_result) = cache.get(&func_head, &args) {
@@ -319,7 +319,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
 
                 // Cache the result if memo cache is available
                 if !ctx_ref.memo_cache.is_null() {
-                    let cache = &*(ctx_ref.memo_cache as *const MemoCache);
+                    let cache = &*(ctx_ref.memo_cache as *const GenericMemoCache<MettaValue>);
                     cache.insert(&func_head, &args, result.clone());
                 }
 

@@ -20,3 +20,5 @@ pub use generic_step::eval_step_generic;
 pub use generic_types::{GenericEvalStep, MemoOpType};
 #[allow(unused_imports)]
 pub use grounded::find_grounded_arg_indices_generic;
+#[allow(unused_imports)]
+pub use grounded::{extract_arg_types, is_meta_type};

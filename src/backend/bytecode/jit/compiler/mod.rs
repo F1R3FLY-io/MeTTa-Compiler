@@ -2366,6 +2366,15 @@ impl JitCompiler {
             Opcode::Halt => {
                 return handlers::compile_halt(codegen);
             }
+
+            // =====================================================================
+            // If-Reducible & Match-Or: not yet JIT-compiled, fall back to interpreter
+            // =====================================================================
+            Opcode::EvalIfReducible | Opcode::EvalMatchOr => {
+                return Err(JitError::NotCompilable(
+                    format!("Opcode {:?} requires trampoline fallback (not yet JIT-compiled)", op),
+                ));
+            }
         }
         // Note: all Opcode variants are handled above with early returns
     }

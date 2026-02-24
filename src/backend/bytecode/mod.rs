@@ -101,7 +101,6 @@ pub mod chunk;
 pub mod compiler;
 pub mod external_registry;
 pub mod generic_memo_cache;
-pub mod memo_cache;
 pub mod mork_bridge;
 pub mod native_registry;
 pub mod opcodes;
@@ -134,8 +133,10 @@ pub use external_registry::{
     // Generic external registry for zero-conversion support
     GenericExternalContext, GenericExternalFn, GenericExternalRegistry, GenericExternalResult,
 };
-pub use generic_memo_cache::{GenericCacheStats, GenericMemoCache};
-pub use memo_cache::{CacheStats as MemoCacheStats, MemoCache};
+pub use generic_memo_cache::{
+    GenericCacheStats, GenericMemoCache,
+    global_memo_cache, ensure_memo_cache_roots_registered,
+};
 pub use mork_bridge::{BridgeStats, CompiledRule, MorkBridge};
 pub use native_registry::{
     NativeContext, NativeError, NativeFn, NativeRegistry, NativeResult,
@@ -208,15 +209,12 @@ pub use tiered_cache::{
     hash_value,
 };
 
-// Sequential mode detection (only with hybrid-p2-priority-scheduler feature)
-#[cfg(feature = "hybrid-p2-priority-scheduler")]
-pub use tiered_cache::{enter_eval, exit_eval, is_sequential_mode};
 
 /// Bytecode VM is always enabled with tiered compilation
 ///
 /// The evaluator will attempt to compile and execute expressions via
 /// bytecode before falling back to tree-walking. Background compilation
-/// via Rayon ensures no blocking on first execution.
+/// via the WorkPool ensures no blocking on first execution.
 ///
 /// # Note
 /// This constant is always `true` since tiered compilation is unconditionally
@@ -235,8 +233,12 @@ pub const BYTECODE_ENABLED: bool = true;
 static GLOBAL_SPACE_REGISTRY: std::sync::LazyLock<SpaceRegistry> =
     std::sync::LazyLock::new(SpaceRegistry::new);
 
-/// Get a reference to the global space registry
+/// Get a reference to the global space registry.
+///
+/// On first access, registers the space registry as a GC root provider so that
+/// atoms stored in JIT-created spaces are visible to the garbage collector.
 pub fn global_space_registry() -> &'static SpaceRegistry {
+    space_registry::ensure_space_registry_roots_registered();
     &GLOBAL_SPACE_REGISTRY
 }
 
@@ -963,7 +965,7 @@ pub fn execute_generic<V, F>(
 ) -> VmResult<(Vec<V>, GenericEnvironment<V, F>)>
 where
     V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
 {
     let factory = env.factory().clone();
     let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
@@ -992,7 +994,7 @@ pub fn execute_generic_simple<V, F>(
 ) -> VmResult<Vec<V>>
 where
     V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
 {
     let mut vm = GenericBytecodeVM::with_factory(chunk, factory);
     vm.run()

@@ -29,7 +29,10 @@ fn print_usage() {
     eprintln!("    --repl                  Start interactive REPL");
     eprintln!("    --eval                  Evaluate and print results (default)");
     eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
-    eprintln!("    --no-gc                 Disable garbage collection");
+    eprintln!("    --no-gc                 Disable garbage collection
+    --gc-stats              Print GC statistics to stderr on exit
+    --tier-stats            Print tiered compilation stats to stderr on exit
+    --pool-stats            Print thread pool statistics to stderr on exit");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
@@ -52,6 +55,9 @@ struct Options {
     repl_mode: bool,
     strict_mode: bool,
     no_gc: bool,
+    gc_stats: bool,
+    tier_stats: bool,
+    pool_stats: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -63,6 +69,9 @@ fn parse_args() -> Result<Options, String> {
     let mut repl_mode = false;
     let mut strict_mode = false;
     let mut no_gc = false;
+    let mut gc_stats = false;
+    let mut tier_stats = false;
+    let mut pool_stats = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -97,6 +106,15 @@ fn parse_args() -> Result<Options, String> {
             "--no-gc" => {
                 no_gc = true;
             }
+            "--gc-stats" => {
+                gc_stats = true;
+            }
+            "--tier-stats" => {
+                tier_stats = true;
+            }
+            "--pool-stats" => {
+                pool_stats = true;
+            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -117,6 +135,9 @@ fn parse_args() -> Result<Options, String> {
         repl_mode,
         strict_mode,
         no_gc,
+        gc_stats,
+        tier_stats,
+        pool_stats,
     })
 }
 
@@ -451,6 +472,15 @@ fn main() {
     // REPL mode
     if options.repl_mode {
         run_repl(&options);
+        if options.gc_stats {
+            mettatron::backend::diagnostics::print_gc_stats();
+        }
+        if options.tier_stats {
+            mettatron::backend::diagnostics::print_tier_stats();
+        }
+        if options.pool_stats {
+            mettatron::backend::diagnostics::print_pool_stats();
+        }
         return;
     }
 
@@ -482,5 +512,15 @@ fn main() {
     if let Err(e) = write_output(options.output.as_deref(), &output) {
         eprintln!("Error: {}", e);
         process::exit(1);
+    }
+
+    if options.gc_stats {
+        mettatron::backend::diagnostics::print_gc_stats();
+    }
+    if options.tier_stats {
+        mettatron::backend::diagnostics::print_tier_stats();
+    }
+    if options.pool_stats {
+        mettatron::backend::diagnostics::print_pool_stats();
     }
 }

@@ -90,11 +90,14 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     // Pre-compile query
     let simple_query_state = compile(simple_query).expect("Failed to compile");
 
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let simple_query_expr = simple_query_state.source()[0];
     group.bench_function("simple_variable", |b| {
         b.iter(|| {
             // Only measure query performance, not compilation or rule insertion
             let (result, _) = eval(
-                black_box(simple_query_state.source()[0]),
+                black_box(simple_query_expr),
                 simple_env.clone(),
                 black_box(&simple_query_state),
             );
@@ -118,10 +121,13 @@ fn bench_pattern_complexity(c: &mut Criterion) {
 
     let nested_query_state = compile(nested_query).expect("Failed to compile");
 
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let nested_query_expr = nested_query_state.source()[0];
     group.bench_function("nested_destructuring", |b| {
         b.iter(|| {
             let (result, _) = eval(
-                black_box(nested_query_state.source()[0]),
+                black_box(nested_query_expr),
                 nested_env.clone(),
                 black_box(&nested_query_state),
             );
@@ -145,10 +151,13 @@ fn bench_pattern_complexity(c: &mut Criterion) {
 
     let multi_query_state = compile(multi_arg_query).expect("Failed to compile");
 
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let multi_query_expr = multi_query_state.source()[0];
     group.bench_function("multi_argument", |b| {
         b.iter(|| {
             let (result, _) = eval(
-                black_box(multi_query_state.source()[0]),
+                black_box(multi_query_expr),
                 multi_env.clone(),
                 black_box(&multi_query_state),
             );
@@ -197,7 +206,10 @@ fn bench_full_evaluation(c: &mut Criterion) {
         b.iter(|| {
             let state = compile(let_program).expect("Failed to compile");
             let env = new_env();
-            let (result, _) = eval(black_box(state.source()[0]), env, &state);
+            // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+            // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+            let expr = state.source()[0];
+            let (result, _) = eval(black_box(expr), env, &state);
             black_box(result)
         });
     });

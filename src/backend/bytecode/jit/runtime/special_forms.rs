@@ -58,20 +58,24 @@ pub unsafe extern "C" fn jit_runtime_eval_if(
     else_val: u64,
     _ip: u64,
 ) -> u64 {
-    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
+    use crate::backend::bytecode::jit::types::TAG_BOOL;
 
     // True is TAG_BOOL | 1, False is TAG_BOOL | 0
     let tag_bool_true = TAG_BOOL | 1;
     let tag_bool_false = TAG_BOOL;
 
-    // Check condition - True returns then_val, False/Unit returns else_val
+    // MeTTa HE: only True → then, False → else. Everything else is non-boolean.
+    // Non-boolean conditions (including Unit) should return unreduced, but the
+    // JIT `if` compilation emits JumpIfNotBool BEFORE this handler, so only
+    // True/False values reach here. Return else_val for safety on non-bool.
     if condition == tag_bool_true {
         then_val
-    } else if condition == tag_bool_false || condition == TAG_UNIT {
+    } else if condition == tag_bool_false {
         else_val
     } else {
-        // Non-boolean truthy - return then branch
-        then_val
+        // Non-boolean reached eval_if — return else_val as conservative fallback.
+        // In practice, JumpIfNotBool intercepts non-booleans before this point.
+        else_val
     }
 }
 

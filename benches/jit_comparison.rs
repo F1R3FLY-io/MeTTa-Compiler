@@ -32,7 +32,10 @@ fn eval_tree_walker(expr: &MettaValue) -> Vec<String> {
     let src = format!("{}", expr);
     let state = compile(&src).expect("Failed to compile");
     let env = new_env();
-    let (results, _env) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let compiled_expr = state.source()[0];
+    let (results, _env) = eval(compiled_expr, env, &state);
     results.iter().map(|v| format!("{}", v)).collect()
 }
 

@@ -25,11 +25,17 @@ fn test_variable_binding() {
 
     // Define rule: (= (double $x) (* $x 2))
     let rule_state = compile("(= (double $x) (* $x 2))").expect("compile failed");
-    let (_, env) = eval(rule_state.source()[0], env, &rule_state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = rule_state.source()[0];
+    let (_, env) = eval(expr, env, &rule_state);
 
     // Evaluate: !(double (+ 3 4))
     let expr_state = compile("!(double (+ 3 4))").expect("compile failed");
-    let (result, _) = eval(expr_state.source()[0], env, &expr_state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = expr_state.source()[0];
+    let (result, _) = eval(expr, env, &expr_state);
 
     println!("(double (+ 3 4)) = {}", result[0]);
     match result[0].inner() {
@@ -47,13 +53,22 @@ fn test_multivalued_results() {
 
     // Multiple rules with same head
     let rule1 = compile("(= (color $x) red)").expect("compile failed");
-    let (_, env) = eval(rule1.source()[0], env, &rule1);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = rule1.source()[0];
+    let (_, env) = eval(expr, env, &rule1);
     let rule2 = compile("(= (color $x) blue)").expect("compile failed");
-    let (_, env) = eval(rule2.source()[0], env, &rule2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = rule2.source()[0];
+    let (_, env) = eval(expr, env, &rule2);
 
     // Query
     let query = compile("!(color sky)").expect("compile failed");
-    let (result, _) = eval(query.source()[0], env, &query);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = query.source()[0];
+    let (result, _) = eval(expr, env, &query);
     println!("(color sky) = {}", result[0]);
     println!("Multivalued results supported (returns first match)\n");
 }
@@ -66,7 +81,10 @@ fn test_control_flow() {
 
     // (if (< 5 10) "less" "greater")
     let state = compile("!(if (< 5 10) \"less\" \"greater\")").expect("compile failed");
-    let (result, _) = eval(state.source()[0], env.clone(), &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (result, _) = eval(expr, env.clone(), &state);
     println!("(if (< 5 10) \"less\" \"greater\") = {}", result[0]);
     match result[0].inner() {
         MettaValueInner::String(s) => assert_eq!(*s, "less"),
@@ -75,7 +93,10 @@ fn test_control_flow() {
 
     // Test that unused branch is not evaluated
     let state2 = compile("!(if True 1 (error \"should not evaluate\" unused))").expect("compile failed");
-    let (result2, _) = eval(state2.source()[0], env, &state2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state2.source()[0];
+    let (result2, _) = eval(expr, env, &state2);
     println!("(if True 1 (error ...)) = {}", result2[0]);
     match result2[0].inner() {
         MettaValueInner::Long(1) => {}
@@ -92,7 +113,10 @@ fn test_grounded_functions() {
 
     // Arithmetic
     let state = compile("!(+ 10 5)").expect("compile failed");
-    let (result, _) = eval(state.source()[0], env.clone(), &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (result, _) = eval(expr, env.clone(), &state);
     println!("(+ 10 5) = {}", result[0]);
     match result[0].inner() {
         MettaValueInner::Long(15) => {}
@@ -101,7 +125,10 @@ fn test_grounded_functions() {
 
     // Comparison
     let state2 = compile("!(< 3 7)").expect("compile failed");
-    let (result2, _) = eval(state2.source()[0], env, &state2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state2.source()[0];
+    let (result2, _) = eval(expr, env, &state2);
     println!("(< 3 7) = {}", result2[0]);
     match result2[0].inner() {
         MettaValueInner::Bool(true) => {}
@@ -119,7 +146,10 @@ fn test_evaluation_order() {
 
     // Quote prevents evaluation
     let state = compile("!(quote (+ 1 2))").expect("compile failed");
-    let (result, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (result, _) = eval(expr, env, &state);
     println!("(quote (+ 1 2)) = {}", result[0]);
 
     match result[0].inner() {
@@ -139,13 +169,22 @@ fn test_equality_operator() {
 
     // Define factorial base cases
     let r1 = compile("(= (factorial 0) 1)").expect("compile failed");
-    let (_, env) = eval(r1.source()[0], env, &r1);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = r1.source()[0];
+    let (_, env) = eval(expr, env, &r1);
     let r2 = compile("(= (factorial 1) 1)").expect("compile failed");
-    let (_, env) = eval(r2.source()[0], env, &r2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = r2.source()[0];
+    let (_, env) = eval(expr, env, &r2);
 
     // Evaluate
     let query = compile("!(factorial 1)").expect("compile failed");
-    let (result, _) = eval(query.source()[0], env, &query);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = query.source()[0];
+    let (result, _) = eval(expr, env, &query);
     println!("(factorial 1) = {}", result[0]);
     match result[0].inner() {
         MettaValueInner::Long(1) => {}
@@ -165,11 +204,17 @@ fn test_error_termination() {
         "(= (safe-div $x $y) (if (== $y 0) (error \"division by zero\" $y) (/ $x $y)))",
     )
     .expect("compile failed");
-    let (_, env) = eval(rule.source()[0], env, &rule);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let rule_expr = rule.source()[0];
+    let (_, env) = eval(rule_expr, env, &rule);
 
     // Test error case
     let expr = compile("!(safe-div 10 0)").expect("compile failed");
-    let (result, _) = eval(expr.source()[0], env.clone(), &expr);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let safe_div_expr = expr.source()[0];
+    let (result, _) = eval(safe_div_expr, env.clone(), &expr);
     match result[0].inner() {
         MettaValueInner::Error(msg, _) => {
             println!("(safe-div 10 0) = Error: {}", msg);
@@ -180,7 +225,10 @@ fn test_error_termination() {
 
     // Test that error propagates in compound expressions
     let expr2 = compile("!(+ (safe-div 10 0) 5)").expect("compile failed");
-    let (result2, _) = eval(expr2.source()[0], env, &expr2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let propagate_expr = expr2.source()[0];
+    let (result2, _) = eval(propagate_expr, env, &expr2);
     match result2[0].inner() {
         MettaValueInner::Error(msg, _) => {
             println!("(+ (safe-div 10 0) 5) = Error: {}", msg);

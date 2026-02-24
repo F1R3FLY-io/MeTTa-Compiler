@@ -19,6 +19,7 @@
 //! on every serialization call. Backward-compatible wrappers are provided for callers
 //! that need owned `Vec<u8>`.
 
+use super::models::gc_allocator::global_allocator;
 use super::models::{Bindings, MettaValue, MettaValueInner, MettaValueTrait};
 use mork::space::{ParDataParser, Space};
 use mork_expr::{Expr, ExprEnv, ExprZipper};
@@ -26,7 +27,14 @@ use mork_frontend::bytestring_parser::Parser;
 use mork_interning::SharedMappingHandle;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tracing::{debug, trace, warn};
+
+/// Returns `true` if `METTA_GC_TRACE` env var is set. Cached after first check.
+fn gc_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("METTA_GC_TRACE").is_ok())
+}
 
 // ============================================================================
 // Unified Thread-Local Conversion State
@@ -234,6 +242,30 @@ fn write_metta_value_inner(
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
 ) -> Result<(), String> {
+    // Pre-bounds-check: detect buffer overrun before any write.
+    // ExprZipper writes may advance loc past MAX_MORK_BUFFER in deeply nested
+    // expressions (e.g., PLN's 15-deep S-expression trees). Without this check,
+    // the write would corrupt stack memory and cause a SEGFAULT.
+    if ez.loc >= MAX_MORK_BUFFER {
+        return Err(format!(
+            "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
+            ez.loc, MAX_MORK_BUFFER
+        ));
+    }
+    // GC trace mode: validate that inner ptr hasn't been freed by GC.
+    // This catches use-after-free immediately with a diagnostic message
+    // instead of a cryptic SIGSEGV deep in the match arms.
+    if gc_trace_enabled() {
+        let ptr = inner as *const MettaValueInner as *const u8;
+        if !global_allocator().is_value_ptr_valid(ptr) {
+            panic!(
+                "write_metta_value_inner: DANGLING POINTER {:p} — value was freed by GC \
+                 (slot epoch = u64::MAX or ptr not in any page). \
+                 Run with ASAN for allocation/deallocation stacks.",
+                ptr
+            );
+        }
+    }
     match inner {
         MettaValueInner::Atom(name) => {
             // All atoms (including variables like $x and wildcards _) are written as symbols.
@@ -399,6 +431,25 @@ fn write_metta_value_debruijn_inner(
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
 ) -> Result<(), String> {
+    // Pre-bounds-check: detect buffer overrun before any write.
+    if ez.loc >= MAX_MORK_BUFFER {
+        return Err(format!(
+            "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
+            ez.loc, MAX_MORK_BUFFER
+        ));
+    }
+    // GC trace mode: validate that inner ptr hasn't been freed by GC.
+    if gc_trace_enabled() {
+        let ptr = inner as *const MettaValueInner as *const u8;
+        if !global_allocator().is_value_ptr_valid(ptr) {
+            panic!(
+                "write_metta_value_debruijn_inner: DANGLING POINTER {:p} — value was freed by GC \
+                 (slot epoch = u64::MAX or ptr not in any page). \
+                 Run with ASAN for allocation/deallocation stacks.",
+                ptr
+            );
+        }
+    }
     match inner {
         MettaValueInner::Atom(name) => {
             if *name == "&" || *name == "&self" || *name == "&kb" || *name == "&stack" {

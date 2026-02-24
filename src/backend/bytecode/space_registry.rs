@@ -24,10 +24,11 @@
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 
-use crate::backend::models::SpaceHandle;
+use crate::backend::models::{register_root_provider, MettaValue, RootProvider, SpaceHandle};
 
 /// Global counter for unique space IDs
 static SPACE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -137,6 +138,51 @@ impl SpaceRegistry {
     pub fn clear(&self) {
         self.spaces.clear();
     }
+
+    /// Collect all GC-reachable MettaValues from every registered space.
+    ///
+    /// Called by `SpaceRegistryRoots::collect_roots` to make atoms in
+    /// JIT-created spaces visible to the garbage collector.
+    pub(crate) fn collect_all_gc_values(&self, roots: &mut Vec<MettaValue>) {
+        for entry in self.spaces.iter() {
+            entry.value().collect_gc_values(roots);
+        }
+    }
+}
+
+// =============================================================================
+// GC Root Provider for GLOBAL_SPACE_REGISTRY
+// =============================================================================
+
+/// GC root provider that exposes all MettaValues stored in the global space
+/// registry's SpaceHandles to the garbage collector.
+///
+/// Without this, atoms in JIT-created spaces (via `jit_runtime_eval_new`,
+/// `jit_runtime_load_space`) are invisible to GC and may be freed while still
+/// reachable, causing use-after-free / SEGV on unmapped pages.
+struct SpaceRegistryRoots;
+
+impl RootProvider for SpaceRegistryRoots {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        crate::backend::bytecode::global_space_registry()
+            .collect_all_gc_values(roots);
+    }
+}
+
+/// Keeps the Arc<dyn RootProvider> alive for the lifetime of the process so
+/// the Weak reference in ROOT_REGISTRY remains valid.
+static SPACE_REGISTRY_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
+
+/// Ensure the space registry is registered as a GC root provider.
+///
+/// Called from `global_space_registry()` on first access. Idempotent — OnceLock
+/// guarantees single initialization.
+pub fn ensure_space_registry_roots_registered() {
+    SPACE_REGISTRY_ROOT_PROVIDER.get_or_init(|| {
+        let provider = Arc::new(SpaceRegistryRoots) as Arc<dyn RootProvider>;
+        register_root_provider(&provider);
+        provider
+    });
 }
 
 #[cfg(test)]

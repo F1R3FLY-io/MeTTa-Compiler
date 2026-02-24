@@ -2180,7 +2180,6 @@ dependencies = [
  "phf",
  "portable-atomic",
  "proptest",
- "rayon",
  "regex",
  "ropey",
  "rustyline",

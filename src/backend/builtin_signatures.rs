@@ -515,12 +515,12 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             max_arity: 1,
             type_sig: arrow(vec![Var("a")], Unit),
         },
-        // trace!: (-> $a $a)
+        // trace!: (-> Undefined Atom Undefined) per MeTTa HE
         BuiltinSignature {
             name: "trace!",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Var("a")),
+            min_arity: 2,
+            max_arity: 2,
+            type_sig: arrow(vec![Any, Any], Any),
         },
         // repr: (-> $a String)
         BuiltinSignature {

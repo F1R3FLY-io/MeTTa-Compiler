@@ -17,18 +17,18 @@ use crate::backend::eval::trampoline::{new_env, MettaEnvironment};
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{
     EvalGuard, MettaState, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
-    SessionGuard,
+    SessionGuard, global_factory,
 };
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
-#[cfg(all(feature = "async", not(feature = "hybrid-p2-priority-scheduler")))]
-use rayon::prelude::*;
-
-#[cfg(all(feature = "async", feature = "hybrid-p2-priority-scheduler"))]
-use crate::backend::priority_scheduler::global_priority_eval_pool;
-
 #[cfg(feature = "async")]
 use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
+
+#[cfg(feature = "async")]
+use crate::backend::models::work_pool::global_work_pool;
+
+#[cfg(feature = "async")]
+use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -113,15 +113,15 @@ pub fn compile_safe(src: &str) -> MettaState {
             // Improve error message with additional context
             let improved_msg = improve_error_message(&error);
 
-            // Create error s-expression in storage arena: (error "message")
-            let state = MettaState::new();
-            let factory = state.factory();
+            // Create error s-expression: (error "message")
+            // Use global factory first, then create MettaState with
+            // fully-populated source — no contention with GC during population.
+            let factory = global_factory();
             let error_sexpr = factory.sexpr(vec![
                 factory.atom("error"),
                 factory.string(&improved_msg),
             ]);
-            state.source_mut().push(error_sexpr);
-            state
+            MettaState::new_compiled(vec![error_sexpr])
         }
     }
 }
@@ -390,7 +390,7 @@ pub fn run_state(
 /// - Output ordering is preserved
 /// - Environment updates are atomic per batch
 ///
-/// **Threading Model:** Uses Rayon for parallel evaluation
+/// **Threading Model:** Uses unified WorkPool with P2 priority scheduling
 #[instrument(level = "info", skip(env, compiled_state))]
 #[cfg(feature = "async")]
 pub async fn run_state_async(
@@ -469,91 +469,94 @@ pub async fn run_state_async(
 /// Helper function to evaluate a batch of arena expressions in parallel.
 /// Returns results in original order with their indices.
 ///
-/// Uses Rayon by default for compatibility with Rholang's shared scheduler.
-/// When `hybrid-p2-priority-scheduler` feature is enabled, uses the P2 priority
-/// scheduler with P² runtime estimation for intelligent task scheduling.
-#[cfg(all(feature = "async", feature = "hybrid-p2-priority-scheduler"))]
+/// Uses the unified WorkPool with P2 priority scheduling. Each expression is
+/// spawned as an eval task (priority=NORMAL). Results are collected via a
+/// scatter-gather pattern with AtomicU32 barrier + Condvar for completion
+/// notification.
+#[cfg(feature = "async")]
 async fn evaluate_batch_parallel_arena(
     batch: Vec<(usize, MettaValue, bool)>,
     env: MettaEnvironment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
+    use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Condvar, Mutex};
+
     debug!(
         batch_size = batch.len(),
-        "Evaluate batch parallel arena (P2 scheduler)"
+        "Evaluate batch parallel arena (WorkPool)"
     );
 
-    let pool = global_priority_eval_pool();
+    let num_tasks = batch.len();
+    if num_tasks == 0 {
+        return Vec::new();
+    }
 
-    // MettaValue is Copy+Send, MettaEnvironment is Clone+Send
-    // StaticEvalContext uses thread-local leaked Bump arenas (one per thread),
-    // so each task gets its own independent arena without sharing &MettaState.
-    let receivers: Vec<_> = batch
-        .into_iter()
-        .map(|(idx, expr, should_output)| {
-            let env = env.clone();
-            pool.spawn(move || {
+    // Scatter-gather: shared results vec + atomic barrier + condvar
+    let results: Arc<Mutex<Vec<Option<(usize, Vec<MettaValue>, bool)>>>> =
+        Arc::new(Mutex::new(vec![None; num_tasks]));
+    let remaining = Arc::new(AtomicU32::new(num_tasks as u32));
+    let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
+
+    let pool = global_work_pool();
+
+    for (slot, (idx, expr, should_output)) in batch.into_iter().enumerate() {
+        let env = env.clone();
+        let results = Arc::clone(&results);
+        let remaining = Arc::clone(&remaining);
+        let done_pair = Arc::clone(&done_pair);
+
+        pool.spawn_eval(
+            move || {
                 // Track this parallel eval as active (prevents GC during evaluation)
                 let _guard = EvalGuard::enter();
                 // For parallel evaluation, use StaticEvalContext which provides
                 // a thread-local leaked Bump arena per thread (Copy, Send-safe)
                 let ctx = StaticEvalContext::get();
-                let (results, _new_env) = eval_trampoline_generic(expr, env, &ctx);
-                (idx, results, should_output)
-            })
-        })
-        .collect();
+                let (eval_results, _new_env) = eval_trampoline_generic(expr, env, &ctx);
+
+                // Store result in pre-allocated slot (no contention — each task writes its own slot)
+                {
+                    let mut guard = results.lock().expect("results mutex poisoned");
+                    guard[slot] = Some((idx, eval_results, should_output));
+                }
+
+                // Decrement barrier; if last task, notify waiter
+                if remaining.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+                    let (lock, cvar) = &*done_pair;
+                    let mut done = lock.lock().expect("done mutex poisoned");
+                    *done = true;
+                    cvar.notify_one();
+                }
+            },
+            TaskTypeId::Eval(0), // hash not needed for batch eval
+            priority_levels::NORMAL,
+        );
+    }
 
     trace!(
-        num_tasks = receivers.len(),
-        "Tasks spawned on priority pool"
+        num_tasks,
+        "Tasks spawned on work pool"
     );
 
-    let mut results = Vec::with_capacity(receivers.len());
-    for receiver in receivers {
-        match receiver.recv() {
-            Ok(result) => results.push(result),
-            Err(e) => {
-                error!(
-                    text = %e,
-                    "Parallel evaluation task failed"
-                );
-            }
+    // Wait for all tasks to complete
+    {
+        let (lock, cvar) = &*done_pair;
+        let mut done = lock.lock().expect("done mutex poisoned");
+        while !*done {
+            done = cvar.wait(done).expect("done condvar wait failed");
         }
     }
 
-    results.sort_by_key(|(idx, _, _)| *idx);
-    results
-}
-
-/// Helper function to evaluate a batch of arena expressions in parallel.
-/// Returns results in original order with their indices.
-///
-/// Uses Rayon's work-stealing thread pool for parallel evaluation.
-#[cfg(all(feature = "async", not(feature = "hybrid-p2-priority-scheduler")))]
-async fn evaluate_batch_parallel_arena(
-    batch: Vec<(usize, MettaValue, bool)>,
-    env: MettaEnvironment,
-) -> Vec<(usize, Vec<MettaValue>, bool)> {
-    debug!(
-        batch_size = batch.len(),
-        "Evaluate batch parallel arena (Rayon)"
-    );
-
-    let mut results: Vec<_> = batch
-        .into_par_iter()
-        .map(|(idx, expr, should_output)| {
-            // Track this parallel eval as active (prevents GC during evaluation)
-            let _guard = EvalGuard::enter();
-            // For parallel evaluation, use StaticEvalContext which provides
-            // a thread-local leaked Bump arena per thread (Copy, Send-safe)
-            let ctx = StaticEvalContext::get();
-            let (results, _new_env) = eval_trampoline_generic(expr, env.clone(), &ctx);
-            (idx, results, should_output)
-        })
+    // Collect results, unwrap Options, sort by original index
+    let mut collected: Vec<(usize, Vec<MettaValue>, bool)> = results
+        .lock()
+        .expect("results mutex poisoned")
+        .drain(..)
+        .map(|opt| opt.expect("task result missing"))
         .collect();
 
-    results.sort_by_key(|(idx, _, _)| *idx);
-    results
+    collected.sort_by_key(|(idx, _, _)| *idx);
+    collected
 }
 
 // ============================================================================

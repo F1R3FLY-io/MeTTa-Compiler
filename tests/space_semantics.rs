@@ -16,8 +16,10 @@ fn eval_metta(source: &str) -> Vec<MettaValue> {
     let state = compile(source).expect("compilation should succeed");
     let mut env = new_env();
     let mut all_results = Vec::new();
-    let src = state.source();
-    for &expr in &*src {
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let src: Vec<MettaValue> = state.source().iter().copied().collect();
+    for &expr in &src {
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
         all_results.extend(results);
@@ -30,8 +32,10 @@ fn eval_metta_last(source: &str) -> Vec<MettaValue> {
     let state = compile(source).expect("compilation should succeed");
     let mut env = new_env();
     let mut last_results = Vec::new();
-    let src = state.source();
-    for &expr in &*src {
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let src: Vec<MettaValue> = state.source().iter().copied().collect();
+    for &expr in &src {
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
         last_results = results;

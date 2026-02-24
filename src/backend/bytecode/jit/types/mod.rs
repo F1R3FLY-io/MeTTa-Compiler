@@ -54,8 +54,10 @@ pub use binding::{JitBindingEntry, JitBindingFrame};
 // Re-export closure type
 pub use closure::JitClosure;
 
-// Re-export context
-pub use context::JitContext;
+// Re-export context and type registry
+pub use context::{
+    FunctionTypeInfo, JitContext, TypeClassification, TypeSignatureRegistry,
+};
 
 // Re-export error types
 pub use error::{JitError, JitResult};

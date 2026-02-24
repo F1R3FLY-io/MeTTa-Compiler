@@ -273,6 +273,12 @@ pub enum Opcode {
     IntersectionAtom = 0xB6,
     /// Subtraction-atom: multiset subtraction [left, right] -> [difference]
     SubtractionAtom = 0xB7,
+    /// If-reducible: evaluate expr, check if reduced, branch accordingly
+    /// [expr, then, else] -> [result]
+    EvalIfReducible = 0xB8,
+    /// Match-or: match with default fallback
+    /// [space, pattern, default, template] -> [result]
+    EvalMatchOr = 0xB9,
 
     // === Grounded Arithmetic (0xC0-0xCF) ===
     /// Addition: [a, b] -> [a + b]
@@ -533,6 +539,8 @@ impl Opcode {
             | Self::UnionAtom
             | Self::IntersectionAtom
             | Self::SubtractionAtom
+            | Self::EvalIfReducible
+            | Self::EvalMatchOr
             | Self::MorkLookup
             | Self::MorkMatch
             | Self::MorkInsert
@@ -729,6 +737,8 @@ impl Opcode {
             Self::UnionAtom => "union_atom",
             Self::IntersectionAtom => "intersection_atom",
             Self::SubtractionAtom => "subtraction_atom",
+            Self::EvalIfReducible => "eval_if_reducible",
+            Self::EvalMatchOr => "eval_match_or",
             Self::Add => "add",
             Self::Sub => "sub",
             Self::Mul => "mul",
@@ -978,6 +988,8 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xB5] = Some(Opcode::UnionAtom);
     table[0xB6] = Some(Opcode::IntersectionAtom);
     table[0xB7] = Some(Opcode::SubtractionAtom);
+    table[0xB8] = Some(Opcode::EvalIfReducible);
+    table[0xB9] = Some(Opcode::EvalMatchOr);
 
     // Grounded arithmetic
     table[0xC0] = Some(Opcode::Add);

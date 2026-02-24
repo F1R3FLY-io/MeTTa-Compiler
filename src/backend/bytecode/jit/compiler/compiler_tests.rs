@@ -6309,9 +6309,13 @@ fn test_jit_swap_single_value_is_noop() {
 // JIT if/branching tests for Unit truthiness and nested conditions
 // =============================================================================
 
-/// Test JIT: if Unit then 42 else 99 → should take else (Unit is falsy in JIT).
+/// Test JIT: JumpIfFalse with Unit condition.
+/// JIT extract_bool extracts the low bit — for Unit (tag 0x7FFB...) this is 0,
+/// so JumpIfFalse treats it the same as Bool(false). This is only correct when
+/// JumpIfNotBool intercepts non-booleans before they reach JumpIfFalse.
+/// In the full `if` pipeline, Unit would be caught by JumpIfNotBool first.
 #[test]
-fn test_jit_execute_if_unit_takes_else() {
+fn test_jit_execute_jump_if_false_unit_extracts_zero() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Layout:
@@ -6336,7 +6340,9 @@ fn test_jit_execute_if_unit_takes_else() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 99, "Unit is falsy — should take else branch");
+    // JIT extract_bool gives 0 for Unit (low bit of TAG_UNIT is 0), so jumps to else.
+    // This is fine — in real code, JumpIfNotBool intercepts non-booleans first.
+    assert_eq!(result.as_long(), 99, "JIT extract_bool(Unit) = 0 → takes else branch");
 }
 
 /// Test JIT: nested if with comparison in condition.

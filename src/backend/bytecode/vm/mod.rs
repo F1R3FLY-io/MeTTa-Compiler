@@ -20,6 +20,7 @@
 //! - `types`: Core type definitions (VmError, VmConfig, CallFrame, etc.)
 //! - `pattern`: Pattern matching helpers
 
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
 use std::marker::Unpin;
@@ -60,6 +61,70 @@ pub use types::{
     Alternative, BindingFrame, CallFrame, ChoicePoint,
 };
 
+// ============================================================================
+// VmEvalContext — Lightweight EvalContext Adapter for Trampoline Calls
+// ============================================================================
+
+use crate::backend::eval::trampoline::EvalContext;
+
+/// Lightweight `EvalContext` adapter for calling `eval_trampoline_generic`
+/// from within the bytecode VM.
+///
+/// The bytecode VM needs to evaluate sub-expressions during type-driven
+/// applicative pre-evaluation (Phase 5). Rather than one-step rule matching,
+/// this adapter enables full trampolined, TCO, CPS-based evaluation via the
+/// canonical `eval_trampoline_generic` engine.
+///
+/// # Why not `StaticEvalContext`?
+///
+/// `StaticEvalContext` is concrete (`MettaValue`, `GcFactory`), but the VM
+/// is generic over `V` and `F`. This adapter bridges the gap, allowing the
+/// generic VM to use the generic trampoline.
+struct VmEvalContext<V, F> {
+    factory: F,
+    _phantom: std::marker::PhantomData<V>,
+}
+
+impl<V, F> EvalContext for VmEvalContext<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Copy + Clone,
+{
+    type Value = V;
+    type Factory = F;
+
+    #[inline]
+    fn factory(&self) -> &F {
+        &self.factory
+    }
+}
+
+/// Get or create a memo cache for a generic VM instance.
+///
+/// When `V` is `MettaValue`, returns the global singleton memo cache (which is
+/// registered as a GC root provider). For other value types, returns a fresh
+/// per-VM cache (no GC registration needed since non-MettaValue types are not
+/// slab-allocated).
+fn get_or_create_memo_cache<V, F>() -> Arc<super::generic_memo_cache::GenericMemoCache<V>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
+{
+    if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
+        // V is MettaValue — use the global singleton (GC-root-registered)
+        let global = super::generic_memo_cache::global_memo_cache();
+        // SAFETY: We've verified V == MettaValue via TypeId. Arc<GenericMemoCache<MettaValue>>
+        // and Arc<GenericMemoCache<V>> have identical layouts when V = MettaValue.
+        let global_ref: &Arc<super::generic_memo_cache::GenericMemoCache<MettaValue>> = global;
+        let ptr = global_ref as *const Arc<super::generic_memo_cache::GenericMemoCache<MettaValue>>
+            as *const Arc<super::generic_memo_cache::GenericMemoCache<V>>;
+        unsafe { (*ptr).clone() }
+    } else {
+        // V is some other type — create a fresh per-VM cache
+        Arc::new(super::generic_memo_cache::GenericMemoCache::default())
+    }
+}
+
 /// Generic bytecode virtual machine that works with any value type.
 ///
 /// This is the generic version of `BytecodeVM` that enables zero-conversion
@@ -84,7 +149,7 @@ pub use types::{
 pub struct GenericBytecodeVM<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
 {
     /// Value stack for operands and results
     pub(crate) value_stack: Vec<V>,
@@ -129,7 +194,7 @@ where
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + fmt::Debug + 'static,
-    F: MettaValueFactory<V> + Clone + Send + Sync + fmt::Debug + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + fmt::Debug + 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GenericBytecodeVM")
@@ -148,7 +213,7 @@ where
 impl<V, F> GenericBytecodeVM<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
 {
     /// Create a new generic VM with the given chunk and explicit factory.
     pub fn with_factory(chunk: Arc<GenericBytecodeChunk<V>>, factory: F) -> Self {
@@ -168,7 +233,7 @@ where
             config,
             native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(factory.clone())),
             external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
-            memo_cache: Arc::new(super::generic_memo_cache::GenericMemoCache::default()),
+            memo_cache: get_or_create_memo_cache::<V, F>(),
             factory,
             env: None,
         }
@@ -191,7 +256,7 @@ where
             config: VmConfig::default(),
             native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(factory.clone())),
             external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
-            memo_cache: Arc::new(super::generic_memo_cache::GenericMemoCache::default()),
+            memo_cache: get_or_create_memo_cache::<V, F>(),
             factory,
             env: Some(env),
         }
@@ -635,10 +700,9 @@ where
             Opcode::JumpIfFalse => {
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
-                // Both Bool(false) and Unit are falsy, aligning with
-                // tree-walker (generic_trampoline.rs:1891) and JIT
-                // (special_forms.rs:60) where Unit is also falsy.
-                if matches!(cond.inner_raw(), MettaValueInner::Bool(false) | MettaValueInner::Unit) {
+                // MeTTa HE: only Bool(false) is falsy. Unit is NOT falsy —
+                // it falls through to JumpIfNotBool which returns unreduced.
+                if matches!(cond.inner_raw(), MettaValueInner::Bool(false)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -679,8 +743,8 @@ where
             Opcode::JumpIfFalseShort => {
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
-                // Both Bool(false) and Unit are falsy (consistent with JumpIfFalse).
-                if matches!(cond.inner_raw(), MettaValueInner::Bool(false) | MettaValueInner::Unit) {
+                // MeTTa HE: only Bool(false) is falsy (consistent with JumpIfFalse).
+                if matches!(cond.inner_raw(), MettaValueInner::Bool(false)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1131,6 +1195,10 @@ where
             Opcode::NewState => self.op_new_state()?,
             Opcode::GetState => self.op_get_state()?,
             Opcode::ChangeState => self.op_change_state()?,
+
+            // === If-Reducible & Match-Or (trampoline fallback) ===
+            Opcode::EvalIfReducible => self.op_eval_if_reducible()?,
+            Opcode::EvalMatchOr => self.op_eval_match_or()?,
 
             // === Set Operations & Alpha-Equivalence ===
             Opcode::EvalIfEqual => self.op_eval_if_equal()?,
@@ -2165,6 +2233,56 @@ where
         Ok(())
     }
 
+    // === If-Reducible & Match-Or (trampoline fallback) ===
+
+    /// if-reducible: evaluate expr, check if reduced, branch accordingly.
+    /// Falls back to full trampoline evaluation since this requires recursive eval.
+    /// Stack: [expr, then, else] -> [result]
+    fn op_eval_if_reducible(&mut self) -> VmResult<()> {
+        let else_branch = self.pop()?;
+        let then_branch = self.pop()?;
+        let expr = self.pop()?;
+
+        // Construct (if-reducible expr then else) and delegate to trampoline
+        let sexpr = self.factory.sexpr(vec![
+            self.factory.atom("if-reducible"),
+            expr,
+            then_branch,
+            else_branch,
+        ]);
+        let env = self.env.clone().ok_or_else(|| {
+            VmError::Runtime("if-reducible: no environment available".to_string())
+        })?;
+        let result = self.eval_sub_expr_vm(sexpr, env)?;
+        self.push(result);
+        Ok(())
+    }
+
+    /// match-or: match with default fallback.
+    /// Falls back to full trampoline evaluation since this requires space matching.
+    /// Stack: [space, pattern, default, template] -> [result]
+    fn op_eval_match_or(&mut self) -> VmResult<()> {
+        let template = self.pop()?;
+        let default = self.pop()?;
+        let pattern = self.pop()?;
+        let space = self.pop()?;
+
+        // Construct (match-or space pattern default template) and delegate to trampoline
+        let sexpr = self.factory.sexpr(vec![
+            self.factory.atom("match-or"),
+            space,
+            pattern,
+            default,
+            template,
+        ]);
+        let env = self.env.clone().ok_or_else(|| {
+            VmError::Runtime("match-or: no environment available".to_string())
+        })?;
+        let result = self.eval_sub_expr_vm(sexpr, env)?;
+        self.push(result);
+        Ok(())
+    }
+
     // === Set Operations & Alpha-Equivalence ===
 
     /// if-equal: alpha-equivalence conditional
@@ -2879,6 +2997,11 @@ where
             return Ok(());
         }
 
+        // Type-driven applicative evaluation (MeTTa HE parity):
+        // If the head has an arrow type `(-> T1 T2 ... Tret)`, pre-evaluate
+        // non-meta-typed S-expr arguments before rule matching.
+        let expr = self.vm_type_driven_pre_eval(expr)?;
+
         // Get environment reference
         let env = match &self.env {
             Some(e) => e,
@@ -2952,6 +3075,117 @@ where
         }
 
         Ok(())
+    }
+
+    /// Type-driven applicative pre-evaluation for rule dispatch.
+    ///
+    /// If the expression head has an arrow type `(-> T1 T2 ... Tret)`,
+    /// pre-evaluate non-meta-typed S-expr arguments. Meta-typed args
+    /// (`Atom`, `Expression`, `Symbol`, `Variable`, `Grounded`, `Pattern`)
+    /// are passed unevaluated per MeTTa HE semantics.
+    ///
+    /// Returns the expression unchanged if:
+    /// - No environment is available
+    /// - Head has no arrow type
+    /// - No args changed after pre-evaluation (fixpoint)
+    fn vm_type_driven_pre_eval(&mut self, expr: V) -> VmResult<V> {
+        use crate::backend::eval::step::{extract_arg_types, is_meta_type};
+
+        let items = match expr.as_sexpr() {
+            Some(items) => items,
+            None => return Ok(expr),
+        };
+
+        let head = match items.first().and_then(|v| v.as_atom()) {
+            Some(h) => h,
+            None => return Ok(expr),
+        };
+
+        let env = match &self.env {
+            Some(e) => e,
+            None => return Ok(expr),
+        };
+
+        // Look up the operator's type signature
+        let op_type = match env.get_type_generic(head) {
+            Some(t) => t,
+            None => return Ok(expr),
+        };
+
+        let arg_types = match extract_arg_types(&op_type) {
+            Some(at) => at,
+            None => return Ok(expr), // Not an arrow type
+        };
+
+        // Pre-evaluate non-meta-typed S-expr arguments
+        let mut evaluated_items: Vec<V> = items.to_vec();
+        let mut changed = false;
+
+        for (i, item) in items.iter().enumerate().skip(1) {
+            let arg_idx = i - 1; // 0-based arg index
+
+            // Skip meta-typed args (pass unevaluated)
+            if arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx]) {
+                continue;
+            }
+
+            // Only pre-evaluate S-expression arguments
+            if item.as_sexpr().is_none() {
+                continue;
+            }
+
+            // Evaluate sub-expression using a recursive VM invocation.
+            // Clone the environment (CoW — O(1) ref-count increment) so the
+            // sub-VM can access rules without borrowing self.
+            let sub_env = self.env.as_ref().expect("env checked above").clone();
+            let sub_result = self.eval_sub_expr_vm(item.clone(), sub_env)?;
+
+            if sub_result != *item {
+                evaluated_items[i] = sub_result;
+                changed = true;
+            }
+        }
+
+        if changed {
+            Ok(self.factory.sexpr(evaluated_items))
+        } else {
+            Ok(expr)
+        }
+    }
+
+    /// Evaluate a sub-expression using the full trampoline evaluator.
+    ///
+    /// Uses `eval_trampoline_generic` for proper recursive evaluation with
+    /// TCO (tail-call optimization) and CPS (continuation-passing style).
+    /// This ensures sub-expression evaluation is lazy, handles nondeterminism
+    /// correctly, and doesn't stack-overflow on deeply nested expressions.
+    ///
+    /// Returns the first result from the trampoline (deterministic selection
+    /// for applicative pre-evaluation). Data constructors are returned unchanged
+    /// since the trampoline returns them as-is when no rules match.
+    fn eval_sub_expr_vm(
+        &self,
+        sub_expr: V,
+        env: GenericEnvironment<V, F>,
+    ) -> VmResult<V> {
+        use crate::backend::eval::trampoline::eval_trampoline_generic;
+
+        // Create a lightweight EvalContext adapter for the trampoline.
+        let ctx = VmEvalContext {
+            factory: self.factory,
+            _phantom: std::marker::PhantomData::<V>,
+        };
+
+        // Full trampoline evaluation: trampolined, TCO, CPS-based.
+        // Returns (Vec<results>, final_env).
+        let (results, _final_env) = eval_trampoline_generic(sub_expr.clone(), env, &ctx);
+
+        if let Some(first) = results.into_iter().next() {
+            Ok(first)
+        } else {
+            // No results — return expression unchanged (data constructor)
+            Ok(sub_expr)
+        }
     }
 
     // === Space Operations ===
@@ -3281,7 +3515,7 @@ where
 impl<V, F> GenericBytecodeVM<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone + Send + Sync + Default + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + Default + 'static,
 {
     /// Create a new VM with the given chunk, using the default factory.
     pub fn new(chunk: Arc<GenericBytecodeChunk<V>>) -> Self {

@@ -70,6 +70,10 @@ pub use types::{
     TAG_MASK,
     TAG_UNIT,
     TAG_VAR,
+    // Type-driven applicative evaluation (MeTTa HE parity)
+    TypeClassification,
+    TypeSignatureRegistry,
+    FunctionTypeInfo,
 };
 // Space Ops Phase 4: Binding forking for nondeterminism
 pub use compiler::JitCompiler;

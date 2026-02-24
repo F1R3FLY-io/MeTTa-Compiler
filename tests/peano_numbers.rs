@@ -17,7 +17,10 @@ fn test_peano_zero_literal() {
     assert_eq!(state.source().len(), 1);
 
     // Evaluate Z (should return itself)
-    let (results, _) = eval(state.source()[0], env, &state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = state.source()[0];
+    let (results, _) = eval(expr, env, &state);
     assert_eq!(results.len(), 1);
 }
 
@@ -39,13 +42,22 @@ fn test_peano_successor_literals() {
     assert_eq!(state3.source().len(), 1);
 
     // Evaluate (should return themselves as they're ground)
-    let (results1, _) = eval(state1.source()[0], env.clone(), &state1);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr1 = state1.source()[0];
+    let (results1, _) = eval(expr1, env.clone(), &state1);
     assert_eq!(results1.len(), 1);
 
-    let (results2, _) = eval(state2.source()[0], env.clone(), &state2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr2 = state2.source()[0];
+    let (results2, _) = eval(expr2, env.clone(), &state2);
     assert_eq!(results2.len(), 1);
 
-    let (results3, _) = eval(state3.source()[0], env.clone(), &state3);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr3 = state3.source()[0];
+    let (results3, _) = eval(expr3, env.clone(), &state3);
     assert_eq!(results3.len(), 1);
 }
 
@@ -61,7 +73,10 @@ fn test_peano_pattern_matching_zero() {
     // Query for Z
     let query_source = "(match &self (number Z) (number Z))";
     let query_state = compile(query_source).expect("compile failed");
-    let (results, _) = eval(query_state.source()[0], env, &query_state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = query_state.source()[0];
+    let (results, _) = eval(expr, env, &query_state);
 
     assert_eq!(results.len(), 1, "Should match Peano zero");
 }
@@ -79,12 +94,18 @@ fn test_peano_pattern_matching_successor() {
 
     // Query for exact match
     let query1 = compile("(match &self (number (S Z)) (number (S Z)))").expect("compile failed");
-    let (results1, _) = eval(query1.source()[0], env.clone(), &query1);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr1 = query1.source()[0];
+    let (results1, _) = eval(expr1, env.clone(), &query1);
     assert_eq!(results1.len(), 1, "Should match (S Z)");
 
     // Query for pattern with variable
     let query2 = compile("(match &self (number (S $x)) (S $x))").expect("compile failed");
-    let (results2, _) = eval(query2.source()[0], env, &query2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr2 = query2.source()[0];
+    let (results2, _) = eval(expr2, env, &query2);
     assert_eq!(
         results2.len(),
         2,
@@ -104,12 +125,18 @@ fn test_peano_nested_pattern_matching() {
     let query1 =
         compile("(match &self (generation (S (S Z)) Alice Bob) (generation (S (S Z)) Alice Bob))")
             .expect("compile failed");
-    let (results1, _) = eval(query1.source()[0], env.clone(), &query1);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr1 = query1.source()[0];
+    let (results1, _) = eval(expr1, env.clone(), &query1);
     assert_eq!(results1.len(), 1, "Should match exact Peano structure");
 
     // Query with variable in Peano
     let query2 = compile("(match &self (generation $n Alice Bob) $n)").expect("compile failed");
-    let (results2, _) = eval(query2.source()[0], env, &query2);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr2 = query2.source()[0];
+    let (results2, _) = eval(expr2, env, &query2);
     assert_eq!(
         results2.len(),
         1,
@@ -124,11 +151,17 @@ fn test_peano_in_rules() {
     // Define a rule using Peano numbers
     let rule_source = "(= (next Z) (S Z))";
     let rule_state = compile(rule_source).expect("compile failed");
-    let (_, env) = eval(rule_state.source()[0], env, &rule_state);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let rule_expr = rule_state.source()[0];
+    let (_, env) = eval(rule_expr, env, &rule_state);
 
     // Query the rule
     let query = compile("!(next Z)").expect("compile failed");
-    let (results, _) = eval(query.source()[0], env, &query);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let query_expr = query.source()[0];
+    let (results, _) = eval(query_expr, env, &query);
 
     // Should get (S Z) as result
     assert_eq!(results.len(), 1, "Rule should produce successor");
@@ -148,7 +181,10 @@ fn test_peano_pattern_destructuring() {
 
     // Match pattern (S $x) to get the predecessor
     let query = compile("(match &self (num (S $x)) $x)").expect("compile failed");
-    let (results, _) = eval(query.source()[0], env, &query);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = query.source()[0];
+    let (results, _) = eval(expr, env, &query);
 
     // Should match all three and bind Z, (S Z), (S (S Z))
     assert_eq!(
@@ -168,13 +204,19 @@ fn test_peano_in_space_operations() {
 
     // Verify it exists
     let query = compile("(match &self (count (S (S (S Z)))) (count (S (S (S Z)))))").expect("compile failed");
-    let (results, _) = eval(query.source()[0], env.clone(), &query);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = query.source()[0];
+    let (results, _) = eval(expr, env.clone(), &query);
     assert_eq!(results.len(), 1, "Peano fact should be in space");
 
     // Remove it
     env.remove_from_space(&peano_fact.source()[0]);
 
     // Verify it's gone
-    let (results_after, _) = eval(query.source()[0], env, &query);
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let expr = query.source()[0];
+    let (results_after, _) = eval(expr, env, &query);
     assert_eq!(results_after.len(), 0, "Peano fact should be removed");
 }

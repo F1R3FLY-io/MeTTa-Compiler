@@ -994,8 +994,10 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                         Vec::new()
                     };
 
-                    let state = MettaState::new_accumulated(environment, output);
-                    *state.source_mut() = source;
+                    // Pass source directly to from_parts — no mutex contention
+                    // during population, and GC registration happens once with
+                    // the fully-populated Vec.
+                    let state = MettaState::from_parts(source, environment, output);
                     Ok(state)
                 } else {
                     debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "expected ETupleBody in PathMap");

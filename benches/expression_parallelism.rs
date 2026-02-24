@@ -64,11 +64,14 @@ fn bench_simple_arithmetic(c: &mut Criterion) {
         let text = generate_arithmetic_text(*num_ops);
         let state = compile(&text).expect("Failed to compile");
 
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
                 let (result, _) = eval(
-                    black_box(state.source()[0]),
+                    black_box(expr),
                     black_box(env),
                     black_box(&state),
                 );
@@ -89,11 +92,14 @@ fn bench_nested_expressions(c: &mut Criterion) {
         let text = generate_nested_text(*depth);
         let state = compile(&text).expect("Failed to compile");
 
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("eval_depth", depth), depth, |b, _| {
             b.iter(|| {
                 let env = new_env();
                 let (result, _) = eval(
-                    black_box(state.source()[0]),
+                    black_box(expr),
                     black_box(env),
                     black_box(&state),
                 );
@@ -113,11 +119,14 @@ fn bench_mixed_complexity(c: &mut Criterion) {
         let text = generate_mixed_text(*num_ops);
         let state = compile(&text).expect("Failed to compile");
 
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
                 let (result, _) = eval(
-                    black_box(state.source()[0]),
+                    black_box(expr),
                     black_box(env),
                     black_box(&state),
                 );
@@ -145,11 +154,14 @@ fn bench_threshold_tuning(c: &mut Criterion) {
         let text = generate_arithmetic_text(*num_ops);
         let state = compile(&text).expect("Failed to compile");
 
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("operations", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
                 let (result, _) = eval(
-                    black_box(state.source()[0]),
+                    black_box(expr),
                     black_box(env),
                     black_box(&state),
                 );
@@ -170,11 +182,14 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     let financial_text = "(+ 10000 (* 10000 (/ 5 100)) (- 100 25))";
     let financial_state = compile(financial_text).expect("Failed to compile");
 
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let financial_expr = financial_state.source()[0];
     group.bench_function("financial_calc", |b| {
         b.iter(|| {
             let env = new_env();
             let (result, _) = eval(
-                black_box(financial_state.source()[0]),
+                black_box(financial_expr),
                 black_box(env),
                 black_box(&financial_state),
             );
@@ -187,11 +202,14 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     let vector_text = format!("(+ {})", vector_parts.join(" "));
     let vector_state = compile(&vector_text).expect("Failed to compile");
 
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let vector_expr = vector_state.source()[0];
     group.bench_function("vector_dot_product", |b| {
         b.iter(|| {
             let env = new_env();
             let (result, _) = eval(
-                black_box(vector_state.source()[0]),
+                black_box(vector_expr),
                 black_box(env),
                 black_box(&vector_state),
             );
@@ -206,11 +224,14 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     let complex_text = format!("(+ {})", complex_parts.join(" "));
     let complex_state = compile(&complex_text).expect("Failed to compile");
 
+    // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+    // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+    let complex_expr = complex_state.source()[0];
     group.bench_function("complex_formula", |b| {
         b.iter(|| {
             let env = new_env();
             let (result, _) = eval(
-                black_box(complex_state.source()[0]),
+                black_box(complex_expr),
                 black_box(env),
                 black_box(&complex_state),
             );
@@ -233,11 +254,14 @@ fn bench_parallel_overhead(c: &mut Criterion) {
         let text = format!("(+ {})", items.join(" "));
         let state = compile(&text).expect("Failed to compile");
 
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("trivial_ops", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
                 let (result, _) = eval(
-                    black_box(state.source()[0]),
+                    black_box(expr),
                     black_box(env),
                     black_box(&state),
                 );
@@ -258,11 +282,14 @@ fn bench_scalability(c: &mut Criterion) {
         let text = generate_arithmetic_text(*num_ops);
         let state = compile(&text).expect("Failed to compile");
 
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("scale", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
                 let (result, _) = eval(
-                    black_box(state.source()[0]),
+                    black_box(expr),
                     black_box(env),
                     black_box(&state),
                 );

@@ -522,6 +522,39 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         /// Evaluation depth
         depth: usize,
     },
+
+    /// Evaluate if-reducible: evaluates expr, checks if it reduced, then evaluates appropriate branch.
+    /// `(if-reducible expr then-branch else-branch)` — if expr changes through evaluation,
+    /// evaluate then-branch; if expr is irreducible (returns itself), evaluate else-branch.
+    EvalIfReducible {
+        /// Expression to evaluate and check for reducibility
+        expr: V,
+        /// Branch evaluated if expr reduces (changes from original)
+        then_branch: V,
+        /// Branch evaluated if expr is irreducible (unchanged)
+        else_branch: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
+    /// Start match-or evaluation (4-arg: match-or space pattern default template).
+    /// Like `match` but returns `default` when no match is found instead of empty.
+    StartMatchOr {
+        /// Space argument to evaluate
+        space_arg: V,
+        /// Pattern to match against atoms in space
+        pattern: V,
+        /// Default expression to evaluate if no matches
+        default: V,
+        /// Template to instantiate with bindings from matches
+        template: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
 }
 
 

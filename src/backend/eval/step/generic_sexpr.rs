@@ -17,7 +17,7 @@
 use tracing::trace;
 
 use super::generic_types::GenericEvalStep;
-use super::grounded::find_grounded_arg_indices_generic;
+use super::grounded::{find_grounded_arg_indices_generic, find_typed_arg_indices_generic};
 
 use crate::backend::eval::bindings_generic::{eval_atom_subst_generic, eval_sealed_generic};
 use crate::backend::eval::list_ops::generic::{
@@ -167,6 +167,27 @@ where
                 }
                 return GenericEvalStep::EvalIfCondition {
                     condition: items[1].clone(),
+                    then_branch: items[2].clone(),
+                    else_branch: items[3].clone(),
+                    env,
+                    depth,
+                };
+            }
+
+            // if-reducible - evaluates expr, checks if it reduced, branches accordingly
+            "if-reducible" => {
+                if items.len() != 4 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "if-reducible requires exactly 3 arguments, got {}. Usage: (if-reducible expr then else)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                return GenericEvalStep::EvalIfReducible {
+                    expr: items[1].clone(),
                     then_branch: items[2].clone(),
                     else_branch: items[3].clone(),
                     env,
@@ -365,6 +386,28 @@ where
                     );
                     return GenericEvalStep::Done((vec![err], env));
                 }
+            }
+
+            // match-or - like match but with a default fallback when no match found
+            "match-or" => {
+                if items.len() != 5 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "match-or requires exactly 4 arguments, got {}. Usage: (match-or space pattern default template)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                return GenericEvalStep::StartMatchOr {
+                    space_arg: items[1].clone(),
+                    pattern: items[2].clone(),
+                    default: items[3].clone(),
+                    template: items[4].clone(),
+                    env,
+                    depth,
+                };
             }
 
             // case - defers atom evaluation to trampoline
@@ -1300,10 +1343,13 @@ where
                 };
             }
 
-            // empty - native generic implementation (zero conversion)
-            // Returns the Empty sentinel atom - will be filtered at result collection
+            // empty - MeTTa HE semantics: zero results (branch annihilation)
+            // In MeTTa HE, (empty) produces zero results, causing Cartesian product
+            // collapse in parent grounded ops. This enables clean branch death when
+            // e.g. `/safe` division guards hit zero divisors, where `/safe` is
+            // defined as `(= (/safe $A $B) (if (> $B 0.0) (/ $A $B) (empty)))`
             "empty" => {
-                return GenericEvalStep::Done((vec![ctx.factory().empty()], env));
+                return GenericEvalStep::Done((vec![], env));
             }
 
             "get-metatype" => {
@@ -1435,27 +1481,56 @@ where
         // Custom operations should be added to GenericGroundedRegistry.
     }
 
-    // Step 2: Check for grounded args that need evaluation BEFORE rule matching
-    // Use generic version to avoid heap conversion
-    let grounded_indices = find_grounded_arg_indices_generic(&items, &env);
-    if !grounded_indices.is_empty() {
-        return GenericEvalStep::EvalGroundedArgs {
-            items,
-            grounded_indices,
-            env,
-            depth,
-        };
+    // Step 2: Applicative pre-evaluation of S-expression arguments.
+    //
+    // Two sources of pre-eval indices:
+    // (a) Type-driven: operator has an arrow type `(-> T1 T2 ... Tret)`,
+    //     meta-typed args are passed unevaluated, value-typed S-expr args
+    //     are pre-evaluated (MeTTa HE's `interpret_function` path).
+    //     If the type system was consulted (returns Some), we use ONLY its
+    //     result — do NOT fall through to bloom filter even if the index
+    //     list is empty (all args are meta-typed → no pre-eval needed).
+    // (b) Bloom filter: operator has NO type; S-expr args whose head has
+    //     rules are pre-evaluated (call-by-value). Fixpoint detection in
+    //     `CollectGroundedArg` prevents infinite loops on false positives.
+    //
+    // This MUST fire BEFORE rule matching (Step 3). Otherwise, rules match
+    // with unevaluated args (e.g., `(g (f))` matches `(g $x)` binding
+    // `$x = (f)` instead of pre-evaluating `(f)` → {1,2,3} first).
+    match find_typed_arg_indices_generic(&items, &env) {
+        Some(typed_indices) => {
+            // Type system was consulted. Use only its result.
+            if !typed_indices.is_empty() {
+                return GenericEvalStep::EvalGroundedArgs {
+                    items,
+                    grounded_indices: typed_indices,
+                    env,
+                    depth,
+                };
+            }
+            // All args are meta-typed — skip pre-eval, fall through to rule matching.
+        }
+        None => {
+            // No type info — use bloom filter fallback.
+            let bloom_indices = find_grounded_arg_indices_generic(&items, &env);
+            if !bloom_indices.is_empty() {
+                return GenericEvalStep::EvalGroundedArgs {
+                    items,
+                    grounded_indices: bloom_indices,
+                    env,
+                    depth,
+                };
+            }
+        }
     }
 
-    // Step 3: No grounded args - proceed with rule matching directly
-    // Skip token resolution for now - not required with GenericEnvironment.
-    // Items are typically already resolved in the evaluation context.
+    // Step 3: Rule matching with unevaluated arguments (lazy evaluation).
+    // Only reached when Step 2 found no args to pre-evaluate.
     let resolved_sexpr = ctx.factory().sexpr(items.clone());
     let all_matches = crate::backend::eval::trampoline::try_match_all_rules_generic(&resolved_sexpr, &env, *ctx.factory());
 
     if !all_matches.is_empty() {
-        // User rules matched - evaluate RHS with bindings from pattern match
-        // Already generic types - no conversion needed!
+        // User rules matched — evaluate RHS with bindings from pattern match
         return GenericEvalStep::EvalRuleMatchesLazy {
             matches: all_matches,
             env,
@@ -1463,7 +1538,8 @@ where
         };
     }
 
-    // Step 4: No lazy rules matched - expression is irreducible (data constructor)
+    // Step 4: No rules matched, no pre-eval needed — data constructor / tuple path.
+    // Evaluates sub-elements independently (MeTTa HE's `interpret_tuple` path).
     GenericEvalStep::EvalSExpr { items, env, depth }
 }
 

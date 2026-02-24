@@ -12,6 +12,8 @@
 //! - Uses `MettaValueTrait` methods for type checking
 //! - Uses `MettaValueFactory` for constructing new values
 
+use std::collections::HashMap;
+
 use crate::backend::builtin_signatures::{get_return_type, get_signature, TypeExpr};
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
@@ -215,6 +217,63 @@ fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool {
     false
 }
 
+/// Bidirectional type matching with variable binding.
+///
+/// Returns `true` if the pattern type unifies with the actual type,
+/// recording variable bindings in the `bindings` map.
+///
+/// This supports polymorphic functions like `(: map (-> (-> $t $u) (List $t) (List $u)))`:
+/// - Concrete type equality: `Number == Number`
+/// - Type variables: `$t` matches anything, records binding
+/// - Structural matching: `(List $t)` matches `(List Number)` with `{$t: Number}`
+/// - Arrow types: `(-> $t $u)` matches `(-> Number Bool)` with `{$t: Number, $u: Bool}`
+/// - Consistency: if `$t` is already bound to `Number`, it only matches `Number`
+pub fn match_types_with_bindings<V: MettaValueTrait + Clone>(
+    pattern: &V,
+    actual: &V,
+    bindings: &mut HashMap<String, V>,
+) -> bool {
+    // Type variable in pattern — bind or check consistency
+    if let Some(name) = pattern.as_atom() {
+        if name.starts_with('$') {
+            if let Some(existing) = bindings.get(name) {
+                return types_match_generic(actual, existing);
+            } else {
+                bindings.insert(name.to_string(), actual.clone());
+                return true;
+            }
+        }
+    }
+
+    // Type variable in actual — symmetric (free variable matches anything)
+    if let Some(name) = actual.as_atom() {
+        if name.starts_with('$') {
+            return true;
+        }
+    }
+
+    // Atom equality
+    if let (Some(p), Some(a)) = (pattern.as_atom(), actual.as_atom()) {
+        return p == a;
+    }
+
+    // Structural S-expr matching (covers (-> ...), (List ...), etc.)
+    if let (Some(p_items), Some(a_items)) = (pattern.as_sexpr(), actual.as_sexpr()) {
+        if p_items.len() != a_items.len() {
+            return false;
+        }
+        for (p, a) in p_items.iter().zip(a_items.iter()) {
+            if !match_types_with_bindings(p, a, bindings) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Ground type equality
+    pattern == actual
+}
+
 /// get-type: Return the type of an expression (generic version)
 /// (get-type expr) -> Type
 pub fn eval_get_type_generic<V, F>(items: &[V], factory: &F, env: &GenericEnvironment<V, F>) -> Vec<V>
@@ -344,5 +403,100 @@ mod tests {
         let result = eval_check_type_generic(&items, &factory, &env);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_match_types_with_bindings_concrete() {
+        let factory = GcFactory::default();
+        let mut bindings = HashMap::new();
+
+        let number = factory.atom("Number");
+        assert!(match_types_with_bindings(&number, &number, &mut bindings));
+        assert!(bindings.is_empty());
+
+        let string = factory.atom("String");
+        assert!(!match_types_with_bindings(&number, &string, &mut bindings));
+    }
+
+    #[test]
+    fn test_match_types_with_bindings_variable() {
+        let factory = GcFactory::default();
+        let mut bindings = HashMap::new();
+
+        let pattern = factory.atom("$t");
+        let actual = factory.atom("Number");
+
+        assert!(match_types_with_bindings(&pattern, &actual, &mut bindings));
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings["$t"].as_atom(), Some("Number"));
+    }
+
+    #[test]
+    fn test_match_types_with_bindings_consistent() {
+        let factory = GcFactory::default();
+        let mut bindings = HashMap::new();
+
+        // First binding: $t = Number
+        let pattern = factory.atom("$t");
+        let number = factory.atom("Number");
+        assert!(match_types_with_bindings(&pattern, &number, &mut bindings));
+
+        // Same variable must match same type
+        assert!(match_types_with_bindings(&pattern, &number, &mut bindings));
+
+        // Different type fails consistency
+        let string = factory.atom("String");
+        assert!(!match_types_with_bindings(&pattern, &string, &mut bindings));
+    }
+
+    #[test]
+    fn test_match_types_with_bindings_structural() {
+        let factory = GcFactory::default();
+        let mut bindings = HashMap::new();
+
+        // (List $t) vs (List Number) → {$t: Number}
+        let pattern = factory.sexpr(vec![factory.atom("List"), factory.atom("$t")]);
+        let actual = factory.sexpr(vec![factory.atom("List"), factory.atom("Number")]);
+
+        assert!(match_types_with_bindings(&pattern, &actual, &mut bindings));
+        assert_eq!(bindings["$t"].as_atom(), Some("Number"));
+    }
+
+    #[test]
+    fn test_match_types_with_bindings_arrow() {
+        let factory = GcFactory::default();
+        let mut bindings = HashMap::new();
+
+        // (-> $t $u) vs (-> Number Bool) → {$t: Number, $u: Bool}
+        let pattern = factory.sexpr(vec![
+            factory.atom("->"),
+            factory.atom("$t"),
+            factory.atom("$u"),
+        ]);
+        let actual = factory.sexpr(vec![
+            factory.atom("->"),
+            factory.atom("Number"),
+            factory.atom("Bool"),
+        ]);
+
+        assert!(match_types_with_bindings(&pattern, &actual, &mut bindings));
+        assert_eq!(bindings["$t"].as_atom(), Some("Number"));
+        assert_eq!(bindings["$u"].as_atom(), Some("Bool"));
+    }
+
+    #[test]
+    fn test_match_types_with_bindings_length_mismatch() {
+        let factory = GcFactory::default();
+        let mut bindings = HashMap::new();
+
+        // (-> $t) vs (-> Number Bool) → fail (different lengths)
+        let pattern = factory.sexpr(vec![factory.atom("->"), factory.atom("$t")]);
+        let actual = factory.sexpr(vec![
+            factory.atom("->"),
+            factory.atom("Number"),
+            factory.atom("Bool"),
+        ]);
+
+        assert!(!match_types_with_bindings(&pattern, &actual, &mut bindings));
     }
 }

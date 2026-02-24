@@ -180,10 +180,13 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
         let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*width as u64));
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("wide_arithmetic", width), width, |b, _| {
             let env = new_env();
             b.iter(|| {
-                eval(black_box(state.source()[0]), env.clone(), &state)
+                eval(black_box(expr), env.clone(), &state)
             });
         });
     }
@@ -194,10 +197,13 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
         let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*depth as u64));
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("deep_arithmetic", depth), depth, |b, _| {
             let env = new_env();
             b.iter(|| {
-                eval(black_box(state.source()[0]), env.clone(), &state)
+                eval(black_box(expr), env.clone(), &state)
             });
         });
     }
@@ -274,12 +280,15 @@ fn bench_grounded_tco(c: &mut Criterion) {
         let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*chain_len as u64));
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(
             BenchmarkId::new("add_chain", chain_len),
             chain_len,
             |b, _| {
                 let env = new_env();
-                b.iter(|| eval(black_box(state.source()[0]), env.clone(), &state));
+                b.iter(|| eval(black_box(expr), env.clone(), &state));
             },
         );
     }
@@ -295,12 +304,15 @@ fn bench_grounded_tco(c: &mut Criterion) {
         let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*chain_len as u64));
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
         group.bench_with_input(
             BenchmarkId::new("comparison_chain", chain_len),
             chain_len,
             |b, _| {
                 let env = new_env();
-                b.iter(|| eval(black_box(state.source()[0]), env.clone(), &state));
+                b.iter(|| eval(black_box(expr), env.clone(), &state));
             },
         );
     }

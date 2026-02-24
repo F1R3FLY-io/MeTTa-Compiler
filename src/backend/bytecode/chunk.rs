@@ -240,6 +240,12 @@ where
         self.sub_chunks.get(index as usize).cloned()
     }
 
+    /// Get all sub-chunks
+    #[inline]
+    pub fn sub_chunks(&self) -> &[Arc<GenericBytecodeChunk<V>>] {
+        &self.sub_chunks
+    }
+
     /// Get the number of sub-chunks
     #[inline]
     pub fn sub_chunk_count(&self) -> usize {

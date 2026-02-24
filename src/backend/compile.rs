@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::models::{MettaState, MettaValue, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaState, MettaValue, MettaValueFactory, MettaValueTrait, global_factory};
 use crate::ir::MettaExpr;
 use crate::parser::{MettaParser, ValueEmitter};
 use crate::tree_sitter_parser::SyntaxError;
@@ -203,11 +203,9 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         "Compiling MeTTa source to MettaState"
     );
 
-    // Create MettaState (acquires storage arena from pool)
-    let state = MettaState::new();
-
-    // Get factory for value allocation
-    let factory = state.factory();
+    // Parse first using global factory — no GC root provider yet, so no
+    // contention with GC thread's collect_roots() during population.
+    let factory = global_factory();
 
     // Parse directly to MettaValue using the custom parser with ValueEmitter.
     // This eliminates the tree-sitter C FFI, CST allocation, IR intermediate,
@@ -224,11 +222,11 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         e
     })?;
 
-    for value in values {
-        state.source_mut().push(value);
-    }
+    info!(expr_count = values.len(), "MettaState compilation successful");
 
-    info!(expr_count = state.source().len(), "MettaState compilation successful");
+    // Create MettaState with fully-populated source — GC registration happens
+    // once with the complete Vec, never contended during population.
+    let state = MettaState::new_compiled(values);
 
     Ok(state)
 }

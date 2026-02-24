@@ -20,6 +20,7 @@
 use std::hash::{Hash, Hasher};
 
 use crate::backend::compile::compile_generic;
+use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
 use crate::backend::eval::trampoline::{eval_trampoline_generic, ContextEnv, EvalContext};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::resolve_module_path;
@@ -122,10 +123,19 @@ where
         env.set_current_module_path(Some(parent.to_path_buf()));
     }
 
-    // Process expressions: extract rules, evaluate force-eval expressions
+    // Push a frame guard protecting compiled expressions from GC during nested eval.
+    // This ensures that when a nested trampoline (e.g., !(import! ...)) fires a GC
+    // safepoint, the remaining expressions in this Vec are visible as roots.
+    // SAFETY: `expressions` outlives `_frame_guard` (both are locals in this scope).
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::Include, &expressions)
+    };
+
+    // Process expressions: extract rules, evaluate force-eval expressions.
+    // Iterate by reference so the Vec stays alive for the frame guard.
     let mut last_result = factory.unit();
 
-    for expr in expressions {
+    for expr in expressions.iter() {
         if let Some(sexpr_items) = expr.as_sexpr() {
             // Force-eval: (! inner) → evaluate inner via trampoline
             if sexpr_items.len() == 2 {
@@ -160,9 +170,12 @@ where
         }
 
         // For other expressions, add to space as facts
-        env.add_to_space(&expr);
-        last_result = expr;
+        env.add_to_space(expr);
+        last_result = expr.clone();
     }
+
+    // Drop frame guard before restoring state (explicit for clarity; also drops at scope end)
+    drop(_frame_guard);
 
     // Restore previous module dir and unmark loading
     env.set_current_module_path(prev_module_dir);
@@ -278,8 +291,15 @@ where
         }
     };
 
-    // Process expressions: extract rules, type declarations, evaluate force-eval
-    for expr in expressions {
+    // Push a frame guard protecting compiled expressions from GC during nested eval.
+    // SAFETY: `expressions` outlives `_frame_guard` (both are locals in this scope).
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::Import, &expressions)
+    };
+
+    // Process expressions: extract rules, type declarations, evaluate force-eval.
+    // Iterate by reference so the Vec stays alive for the frame guard.
+    for expr in expressions.iter() {
         if let Some(sexpr_items) = expr.as_sexpr() {
             // Force-eval: (! inner) → evaluate inner via trampoline
             if sexpr_items.len() == 2 {
@@ -309,8 +329,11 @@ where
         }
 
         // For other expressions, add to space as facts (queryable via `match &self`)
-        env.add_to_space(&expr);
+        env.add_to_space(expr);
     }
+
+    // Drop frame guard before restoring state
+    drop(_frame_guard);
 
     // Restore previous module dir and unmark loading
     env.set_current_module_path(prev_module_dir);

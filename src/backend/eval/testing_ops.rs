@@ -24,6 +24,7 @@
 //! See: `hyperon-experimental/lib/src/metta/runner/stdlib/debug.rs`
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
+use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
 use crate::backend::eval::trampoline::{
     eval_trampoline_generic, ContextEnv, EvalContext,
 };
@@ -114,8 +115,16 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    // Push frame protecting items across nested trampoline calls.
+    // SAFETY: `items` outlives `_frame_guard`.
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+
+    drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
@@ -152,8 +161,15 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    // Push frame protecting items across nested trampoline calls.
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+
+    drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
@@ -194,8 +210,14 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+
+    drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
@@ -227,8 +249,14 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+
+    drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
@@ -264,12 +292,18 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
+
+    drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
@@ -303,12 +337,18 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
+
+    drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
@@ -346,12 +386,18 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
+
+    drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
@@ -383,12 +429,18 @@ where
         return GenericEvalStep::Done((vec![err], env));
     }
 
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items)
+    };
+
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
+
+    drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),

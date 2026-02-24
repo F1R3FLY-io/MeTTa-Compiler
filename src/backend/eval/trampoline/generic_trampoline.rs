@@ -108,6 +108,18 @@ where
             for c in &continuations {
                 c.collect_values(&mut roots);
             }
+            // Collect roots from all caller frames in the thread-local chain.
+            // This protects values held by callers of nested trampolines
+            // (e.g., compiled expressions in eval_include_generic).
+            // Only applies when C::Value is MettaValue (GC-managed). After
+            // monomorphization, the TypeId check becomes a compile-time constant.
+            if std::any::TypeId::of::<C::Value>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
+                // SAFETY: C::Value is MettaValue, so Vec<C::Value> and Vec<MettaValue>
+                // have identical layout. We transmute the reference temporarily.
+                let concrete_roots: &mut Vec<crate::backend::models::MettaValue> =
+                    unsafe { &mut *(&mut roots as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
+                crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
+            }
             ctx.perform_safepoint(roots);
         }
         match work {
@@ -988,6 +1000,43 @@ where
                             is_tail_call: false,
                         });
                     }
+
+                    // Start if-reducible: evaluate expr, then compare to original
+                    GenericEvalStep::EvalIfReducible { expr, then_branch, else_branch, env, depth } => {
+                        continuations.push(GenericContinuation::ProcessIfReducible {
+                            original_expr: expr.clone(),
+                            then_branch,
+                            else_branch,
+                            env: env.clone(),
+                            depth,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: expr,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                        });
+                    }
+
+                    // Start match-or: evaluate space, then match with default fallback
+                    GenericEvalStep::StartMatchOr { space_arg, pattern, default, template, env, depth } => {
+                        continuations.push(GenericContinuation::ProcessMatchOrSpace {
+                            space_arg: space_arg.clone(),
+                            pattern,
+                            default,
+                            template,
+                            env: env.clone(),
+                            depth,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: space_arg,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                        });
+                    }
                 }
             }
 
@@ -1484,6 +1533,19 @@ fn process_continuation_generic<C: EvalContext>(
                     // Each combination substitutes one result per grounded arg into items.
                     let mut combinations: VecDeque<C::Value> = VecDeque::new();
 
+                    // Track whether any grounded arg changed after pre-evaluation.
+                    // If no args changed (fixpoint), skip re-evaluation to prevent
+                    // infinite loop on bloom filter false positives and data constructors.
+                    let mut changed = false;
+                    for (i, grounded_idx) in grounded_indices.iter().enumerate() {
+                        if evaluated_results[i].len() != 1
+                            || evaluated_results[i][0] != items[*grounded_idx]
+                        {
+                            changed = true;
+                            break;
+                        }
+                    }
+
                     // Compute Cartesian product inline
                     // Start with a single empty combination (indices all 0)
                     let mut combo_indices: Vec<usize> = vec![0; evaluated_results.len()];
@@ -1513,14 +1575,64 @@ fn process_continuation_generic<C: EvalContext>(
                     }
 
                     if combinations.len() == 1 {
-                        // Single combination — evaluate directly (common case optimization)
                         let sexpr = combinations.pop_front().expect("combinations is non-empty");
-                        work_stack.push(GenericWorkItem::Eval {
-                            value: sexpr,
-                            env: result_env,
-                            depth,
-                            is_tail_call: false,
-                        });
+
+                        if !changed {
+                            // Fixpoint: pre-evaluation didn't change any argument.
+                            // This happens when the bloom filter produces a false positive
+                            // (e.g., data constructors like `S`, `Z`, `Cons`), or when
+                            // a head has facts but no rewrite rules.
+                            //
+                            // Instead of re-pushing for Eval (which would infinite-loop
+                            // through the same bloom filter check), complete Steps 3-4
+                            // that were skipped when Step 2 (EvalGroundedArgs) fired.
+
+                            // Step 3: Try rule matching with the (unchanged) expression
+                            let all_matches = try_match_all_rules_generic(
+                                &sexpr, &result_env, *ctx.factory()
+                            );
+
+                            if !all_matches.is_empty() {
+                                // Rules matched — evaluate RHS
+                                let mut matches_deque: VecDeque<_> =
+                                    all_matches.into_iter().collect();
+                                let (rhs, bindings) =
+                                    matches_deque.pop_front().expect("matches is non-empty");
+
+                                continuations.push(
+                                    GenericContinuation::ProcessRuleMatches {
+                                        remaining_matches: matches_deque,
+                                        results: vec![],
+                                        env: result_env.clone(),
+                                        depth,
+                                    },
+                                );
+
+                                let instantiated_rhs = apply_bindings_generic(
+                                    &rhs, &bindings, ctx.factory()
+                                );
+
+                                work_stack.push(GenericWorkItem::Eval {
+                                    value: instantiated_rhs,
+                                    env: result_env,
+                                    depth,
+                                    is_tail_call: true,
+                                });
+                            } else {
+                                // Step 4: No rules matched — return as data constructor
+                                work_stack.push(GenericWorkItem::Resume {
+                                    result: (vec![sexpr], result_env),
+                                });
+                            }
+                        } else {
+                            // Args changed — safe to re-evaluate with new arg values
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: sexpr,
+                                env: result_env,
+                                depth,
+                                is_tail_call: false,
+                            });
+                        }
                     } else {
                         // Multiple combinations — evaluate each and collect results
                         let first = combinations.pop_front().expect("combinations is non-empty");
@@ -1786,8 +1898,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // MeTTa HE semantics: if is pure pattern matching on True/False.
                 // Bool(true) → then branch, Bool(false) → else branch,
-                // Unit → else branch (empty condition result),
-                // Non-boolean → return unreduced (if cond then else).
+                // Everything else (Unit, atoms, S-exprs) → return unreduced.
                 if let Some(is_true) = first.as_bool() {
                     let branch = if is_true { then_branch } else { else_branch };
                     work_stack.push(GenericWorkItem::Eval {
@@ -1796,16 +1907,8 @@ fn process_continuation_generic<C: EvalContext>(
                         depth,
                         is_tail_call: true,
                     });
-                } else if first.is_unit() {
-                    // Unit → else branch (empty condition result)
-                    work_stack.push(GenericWorkItem::Eval {
-                        value: else_branch,
-                        env: env_after_cond,
-                        depth,
-                        is_tail_call: true,
-                    });
                 } else {
-                    // Non-boolean → return unreduced (if cond then else)
+                    // Non-boolean (including Unit) → return unreduced (if cond then else)
                     let unreduced = ctx.factory().sexpr(vec![
                         ctx.factory().atom("if"),
                         first.clone(),
@@ -1817,12 +1920,16 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 }
             } else {
-                // No result from condition - treat as false
-                work_stack.push(GenericWorkItem::Eval {
-                    value: else_branch,
-                    env: env_after_cond,
-                    depth,
-                    is_tail_call: true,
+                // No result from condition — return unreduced (HE: Empty doesn't match True/False)
+                let empty_atom = ctx.factory().atom("Empty");
+                let unreduced = ctx.factory().sexpr(vec![
+                    ctx.factory().atom("if"),
+                    empty_atom,
+                    then_branch,
+                    else_branch,
+                ]);
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (vec![unreduced], env_after_cond),
                 });
             }
         }
@@ -2174,12 +2281,9 @@ fn process_continuation_generic<C: EvalContext>(
             let (expr_results, result_env) = result;
 
             if expr_results.is_empty() {
-                // Empty result - evaluate body with unbound variable
-                work_stack.push(GenericWorkItem::Eval {
-                    value: body,
-                    env: result_env,
-                    depth,
-                    is_tail_call: true,
+                // Empty result — produce zero results (branch annihilation, HE-compatible)
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (vec![], result_env),
                 });
             } else if expr_results.len() == 1 {
                 // Single result - substitute and evaluate body - NO conversion needed
@@ -3845,19 +3949,13 @@ fn process_continuation_generic<C: EvalContext>(
         } => {
             let (msg_results, env_after) = result;
 
-            // Get message string
-            let message_str = if let Some(first) = msg_results.first() {
-                first.friendly_repr()
-            } else {
-                "<empty>".to_string()
-            };
-
-            // Print the message prefix
-            eprint!("[TRACE] {}: ", message_str);
+            // HE semantics: print message on its own line, no prefix
+            if let Some(first) = msg_results.first() {
+                eprintln!("{}", first.friendly_repr());
+            }
 
             // Now evaluate the value
             continuations.push(GenericContinuation::ProcessTraceValue {
-                message_str,
                 value_expr: value_expr.clone(),
                 env: env_after.clone(),
                 depth,
@@ -3872,29 +3970,18 @@ fn process_continuation_generic<C: EvalContext>(
         }
 
         GenericContinuation::ProcessTraceValue {
-            message_str: _,
-            value_expr,
+            value_expr: _,
             env: _,
             depth: _,
         } => {
             let (value_results, env_after) = result;
 
-            if value_results.is_empty() {
-                let err = ctx.factory().error("trace!: value evaluated to empty", value_expr);
-                work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
-                });
-            } else {
-                // Print the value
-                for value in &value_results {
-                    eprintln!("{}", value.friendly_repr());
-                }
-
-                // Return the evaluated value
-                work_stack.push(GenericWorkItem::Resume {
-                    result: (value_results, env_after),
-                });
-            }
+            // HE semantics: return evaluated value(s) as-is.
+            // If empty, propagate empty (valid nondeterministic dead-end).
+            // HE trace! does not print the value — only the message.
+            work_stack.push(GenericWorkItem::Resume {
+                result: (value_results, env_after),
+            });
         }
 
         GenericContinuation::ProcessGetMetatype {
@@ -3957,6 +4044,170 @@ fn process_continuation_generic<C: EvalContext>(
                 work_stack.push(GenericWorkItem::Resume {
                     result: (vec![ctx.factory().unit()], env_after),
                 });
+            }
+        }
+
+        // if-reducible: expr has been evaluated, compare to original
+        GenericContinuation::ProcessIfReducible {
+            original_expr,
+            then_branch,
+            else_branch,
+            env: _,
+            depth,
+        } => {
+            let (eval_results, env_after) = result;
+
+            // Determine if the expression reduced:
+            // - Empty results → irreducible (nothing produced)
+            // - Single result equal to original → irreducible
+            // - Otherwise → reduced (result changed or multiple results)
+            let is_irreducible = if eval_results.is_empty() {
+                true
+            } else if eval_results.len() == 1 {
+                eval_results[0] == original_expr
+            } else {
+                // Multiple results means the expression nondeterministically reduced
+                false
+            };
+
+            if is_irreducible {
+                // Expression didn't change — evaluate else branch
+                work_stack.push(GenericWorkItem::Eval {
+                    value: else_branch,
+                    env: env_after,
+                    depth,
+                    is_tail_call: true,
+                });
+            } else {
+                // Expression reduced — evaluate then branch
+                work_stack.push(GenericWorkItem::Eval {
+                    value: then_branch,
+                    env: env_after,
+                    depth,
+                    is_tail_call: true,
+                });
+            }
+        }
+
+        // match-or: space has been evaluated, now perform match with default fallback
+        GenericContinuation::ProcessMatchOrSpace {
+            space_arg: _,
+            pattern,
+            default,
+            template,
+            env,
+            depth,
+        } => {
+            let (space_results, env_after) = result;
+
+            if space_results.is_empty() {
+                // Space evaluated to empty — use default
+                work_stack.push(GenericWorkItem::Eval {
+                    value: default,
+                    env: env_after,
+                    depth,
+                    is_tail_call: true,
+                });
+            } else {
+                let first = &space_results[0];
+                if let Some(handle) = first.as_space() {
+                    if handle.is_module_space() || handle.name == "self" {
+                        // &self or module space — use env.match_space
+                        let matches = env.match_space(&pattern, &template);
+                        let generic_results: Vec<C::Value> = matches
+                            .into_iter()
+                            .flat_map(|m| std::iter::repeat(m.value).take(m.count))
+                            .collect();
+
+                        if generic_results.is_empty() {
+                            // No matches — evaluate default
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: default,
+                                env: env_after,
+                                depth,
+                                is_tail_call: true,
+                            });
+                        } else if generic_results.len() == 1 {
+                            // Single match — evaluate template result
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: generic_results.into_iter().next().expect("non-empty"),
+                                env: env_after,
+                                depth,
+                                is_tail_call: true,
+                            });
+                        } else {
+                            // Multiple matches — queue template evaluations
+                            let mut templates: VecDeque<C::Value> = generic_results.into_iter().collect();
+                            let first_template = templates.pop_front().expect("non-empty");
+
+                            continuations.push(GenericContinuation::ProcessMatchTemplates {
+                                remaining_templates: templates,
+                                results: vec![],
+                                env: env_after.clone(),
+                                depth,
+                            });
+
+                            let forked_env = env_after.fork_for_nondeterminism();
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: first_template,
+                                env: forked_env,
+                                depth,
+                                is_tail_call: true,
+                            });
+                        }
+                    } else {
+                        // Owned space — match against SpaceHandle
+                        let instantiated_templates: Vec<C::Value> =
+                            handle.match_pattern_generic(&pattern, &template, ctx.factory());
+
+                        if instantiated_templates.is_empty() {
+                            // No matches — evaluate default
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: default,
+                                env: env_after,
+                                depth,
+                                is_tail_call: true,
+                            });
+                        } else if instantiated_templates.len() == 1 {
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: instantiated_templates.into_iter().next().expect("non-empty"),
+                                env: env_after,
+                                depth,
+                                is_tail_call: true,
+                            });
+                        } else {
+                            let mut generic_templates: VecDeque<C::Value> =
+                                instantiated_templates.into_iter().collect();
+                            let first_template = generic_templates.pop_front().expect("non-empty");
+
+                            continuations.push(GenericContinuation::ProcessMatchTemplates {
+                                remaining_templates: generic_templates,
+                                results: vec![],
+                                env: env_after.clone(),
+                                depth,
+                            });
+
+                            let forked_env = env_after.fork_for_nondeterminism();
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: first_template,
+                                env: forked_env,
+                                depth,
+                                is_tail_call: true,
+                            });
+                        }
+                    }
+                } else {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "match-or: first argument must be a space, got {}",
+                            first.friendly_repr()
+                        ),
+                        first.clone(),
+                    );
+                    work_stack.push(GenericWorkItem::Resume {
+                        result: (vec![err], env_after),
+                    });
+                }
             }
         }
 

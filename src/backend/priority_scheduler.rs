@@ -1,4 +1,3 @@
-#![cfg(feature = "hybrid-p2-priority-scheduler")]
 //! Priority Scheduler with P² Runtime Estimation
 //!
 //! This module provides a priority-based thread pool scheduler featuring:
@@ -21,9 +20,8 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, LazyLock};
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
@@ -426,11 +424,25 @@ impl PriorityTask {
         base + runtime_component - age_component
     }
 
-    /// Execute the task and return runtime in nanoseconds
+    /// Execute the task and return runtime in nanoseconds.
+    ///
+    /// If the task panics, the panic is caught and logged. The worker thread
+    /// continues normally. Returns `0` for panicked tasks so the P² estimator
+    /// is not polluted with meaningless runtime data.
     pub fn execute(self) -> u64 {
         let start = Instant::now();
-        (self.task)();
-        start.elapsed().as_nanos() as u64
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(self.task));
+        match result {
+            Ok(()) => start.elapsed().as_nanos() as u64,
+            Err(payload) => {
+                tracing::error!(
+                    task_type = ?self.task_type,
+                    panic = ?payload,
+                    "PriorityTask panicked -- worker continues"
+                );
+                0
+            }
+        }
     }
 
     /// Get task type for runtime tracking
@@ -478,15 +490,18 @@ impl PartialEq for ScoredTask {
 // Priority Queue
 // ============================================================================
 
-/// Thread-safe priority queue using parking_lot::Mutex and BinaryHeap.
+/// Thread-safe priority queue using a single parking_lot::Mutex over BinaryHeap.
+///
+/// Uses a single lock for both the heap and the "is-empty" condition, eliminating
+/// a TOCTOU race that existed when count and heap had separate locks. The condvar
+/// waits on the heap mutex, which is released during wait() and reacquired on
+/// wake — so pushers can acquire the lock while a popper is parked.
 pub struct PriorityQueue {
     heap: Mutex<BinaryHeap<ScoredTask>>,
     runtime_tracker: Arc<RuntimeTracker>,
     config: SchedulerConfig,
-    /// Condition variable for blocking when queue is empty
+    /// Condition variable signaled when the queue transitions from empty to non-empty.
     not_empty: Condvar,
-    /// Count of available tasks
-    count: Mutex<usize>,
 }
 
 impl PriorityQueue {
@@ -496,71 +511,71 @@ impl PriorityQueue {
             runtime_tracker,
             config,
             not_empty: Condvar::new(),
-            count: Mutex::new(0),
         }
     }
 
-    /// Push a task onto the priority queue
+    /// Push a task onto the priority queue.
     pub fn push(&self, task: PriorityTask) {
         let score = task.score(&self.runtime_tracker, &self.config);
-
-        {
-            let mut heap = self.heap.lock();
-            heap.push(ScoredTask { task, score });
-        }
-
-        // Notify one waiting worker
-        let mut count = self.count.lock();
-        *count += 1;
+        let mut heap = self.heap.lock();
+        heap.push(ScoredTask { task, score });
         self.not_empty.notify_one();
     }
 
-    /// Pop the highest-priority task (blocking)
+    /// Pop the highest-priority task (blocking).
+    ///
+    /// Blocks until a task is available or shutdown is signaled.
     pub fn pop_blocking(&self, shutdown: &AtomicBool) -> Option<PriorityTask> {
-        let mut count = self.count.lock();
-
-        while *count == 0 {
+        let mut heap = self.heap.lock();
+        while heap.is_empty() {
             if shutdown.load(AtomicOrdering::SeqCst) {
                 return None;
             }
-            self.not_empty.wait(&mut count);
+            self.not_empty.wait(&mut heap);
             if shutdown.load(AtomicOrdering::SeqCst) {
                 return None;
             }
         }
-
-        *count -= 1;
-        drop(count);
-
-        // Pop from heap
-        let mut heap = self.heap.lock();
         heap.pop().map(|st| st.task)
     }
 
-    /// Pop without blocking (try)
+    /// Pop the highest-priority task with timeout.
+    ///
+    /// Blocks until a task is available, timeout expires, or shutdown is signaled.
+    /// Returns `None` on timeout or shutdown.
+    pub fn pop_timeout(&self, shutdown: &AtomicBool, timeout: Duration) -> Option<PriorityTask> {
+        let mut heap = self.heap.lock();
+        while heap.is_empty() {
+            if shutdown.load(AtomicOrdering::Relaxed) {
+                return None;
+            }
+            if self.not_empty.wait_for(&mut heap, timeout).timed_out() {
+                return None;
+            }
+            if shutdown.load(AtomicOrdering::Relaxed) {
+                return None;
+            }
+        }
+        heap.pop().map(|st| st.task)
+    }
+
+    /// Pop without blocking (try).
     pub fn try_pop(&self) -> Option<PriorityTask> {
-        let mut count = self.count.lock();
-        if *count == 0 {
-            return None;
-        }
-        *count -= 1;
-        drop(count);
-
         let mut heap = self.heap.lock();
         heap.pop().map(|st| st.task)
     }
 
-    /// Get queue length
+    /// Get queue length.
     pub fn len(&self) -> usize {
-        *self.count.lock()
+        self.heap.lock().len()
     }
 
-    /// Check if queue is empty
+    /// Check if queue is empty.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.heap.lock().is_empty()
     }
 
-    /// Notify all waiting workers (for shutdown)
+    /// Notify all waiting workers (for shutdown).
     pub fn notify_all(&self) {
         self.not_empty.notify_all();
     }
@@ -637,211 +652,14 @@ pub struct PriorityPoolStats {
 }
 
 // ============================================================================
-// Priority Thread Pool
-// ============================================================================
-
-/// Global priority-aware eval thread pool instance
-static GLOBAL_PRIORITY_POOL: LazyLock<PriorityEvalThreadPool> = LazyLock::new(|| {
-    let num_threads = get_configured_thread_count();
-    PriorityEvalThreadPool::new(num_threads, SchedulerConfig::default())
-});
-
-/// Get the global priority eval thread pool
-pub fn global_priority_eval_pool() -> &'static PriorityEvalThreadPool {
-    &GLOBAL_PRIORITY_POOL
-}
-
-/// A priority-aware persistent thread pool for MeTTa evaluation.
-///
-/// Workers stay alive and pull highest-priority tasks from a shared priority queue,
-/// eliminating per-task spawn overhead while enabling priority-based scheduling.
-pub struct PriorityEvalThreadPool {
-    /// Priority queue for pending tasks
-    queue: Arc<PriorityQueue>,
-
-    /// Runtime tracker for P² estimation
-    runtime_tracker: Arc<RuntimeTracker>,
-
-    /// Worker thread handles
-    workers: Vec<JoinHandle<()>>,
-
-    /// Shutdown signal
-    shutdown: Arc<AtomicBool>,
-
-    /// Number of worker threads
-    num_threads: usize,
-
-    /// Scheduler configuration
-    config: SchedulerConfig,
-
-    /// Monotonic sequence counter for stable ordering
-    sequence: AtomicU64,
-}
-
-impl PriorityEvalThreadPool {
-    /// Create a new priority thread pool with specified number of workers
-    pub fn new(num_threads: usize, config: SchedulerConfig) -> Self {
-        let runtime_tracker = Arc::new(RuntimeTracker::new());
-        let queue = Arc::new(PriorityQueue::new(Arc::clone(&runtime_tracker), config));
-        let shutdown = Arc::new(AtomicBool::new(false));
-
-        let workers: Vec<_> = (0..num_threads)
-            .map(|id| {
-                let queue = Arc::clone(&queue);
-                let runtime_tracker = Arc::clone(&runtime_tracker);
-                let shutdown = Arc::clone(&shutdown);
-
-                thread::Builder::new()
-                    .name(format!("priority-eval-worker-{}", id))
-                    .spawn(move || {
-                        priority_worker_loop(queue, runtime_tracker, shutdown);
-                    })
-                    .expect("failed to spawn priority eval worker thread")
-            })
-            .collect();
-
-        Self {
-            queue,
-            runtime_tracker,
-            workers,
-            shutdown,
-            num_threads,
-            config,
-            sequence: AtomicU64::new(0),
-        }
-    }
-
-    /// Spawn a task with default priority (0) and generic task type
-    pub fn spawn<F, R>(&self, f: F) -> ResultReceiver<R>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        self.spawn_with_priority(f, 0, TaskTypeId::generic())
-    }
-
-    /// Spawn a task with explicit priority and task type
-    pub fn spawn_with_priority<F, R>(
-        &self,
-        f: F,
-        priority: u32,
-        task_type: TaskTypeId,
-    ) -> ResultReceiver<R>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let (result_sender, result_receiver) = crossbeam_channel::bounded(1);
-        let sequence = self.sequence.fetch_add(1, AtomicOrdering::Relaxed);
-
-        let task = Box::new(move || {
-            let result = f();
-            let _ = result_sender.send(result);
-        });
-
-        let priority_task = PriorityTask::new(task, priority, task_type, sequence);
-        self.queue.push(priority_task);
-
-        ResultReceiver {
-            receiver: result_receiver,
-        }
-    }
-
-    /// Spawn a task for MeTTa evaluation with expression-based runtime tracking
-    pub fn spawn_eval<F, R>(
-        &self,
-        f: F,
-        expr: &MettaValue,
-        priority: u32,
-    ) -> ResultReceiver<R>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        self.spawn_with_priority(f, priority, TaskTypeId::from_expr(expr))
-    }
-
-    /// Spawn a fire-and-forget task with explicit priority
-    pub fn spawn_detached<F>(&self, f: F, priority: u32, task_type: TaskTypeId)
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        let sequence = self.sequence.fetch_add(1, AtomicOrdering::Relaxed);
-        let task = Box::new(f);
-        let priority_task = PriorityTask::new(task, priority, task_type, sequence);
-        self.queue.push(priority_task);
-    }
-
-    /// Get the number of worker threads
-    pub fn num_threads(&self) -> usize {
-        self.num_threads
-    }
-
-    /// Get current queue length
-    pub fn queue_len(&self) -> usize {
-        self.queue.len()
-    }
-
-    /// Get runtime statistics
-    pub fn stats(&self) -> PriorityPoolStats {
-        PriorityPoolStats {
-            queue_length: self.queue.len(),
-            global_median_runtime: self.runtime_tracker.global_median(),
-        }
-    }
-
-    /// Shutdown the pool, waiting for all workers to finish
-    pub fn shutdown(self) {
-        self.shutdown.store(true, AtomicOrdering::SeqCst);
-        self.queue.notify_all(); // Wake up any blocked workers
-
-        for worker in self.workers {
-            let _ = worker.join();
-        }
-    }
-}
-
-/// Worker thread main loop for priority pool
-fn priority_worker_loop(
-    queue: Arc<PriorityQueue>,
-    runtime_tracker: Arc<RuntimeTracker>,
-    shutdown: Arc<AtomicBool>,
-) {
-    loop {
-        // Check for shutdown
-        if shutdown.load(AtomicOrdering::SeqCst) {
-            break;
-        }
-
-        // Block until a task is available
-        match queue.pop_blocking(&shutdown) {
-            Some(task) => {
-                let task_type = task.task_type();
-
-                // Execute task and measure runtime
-                let runtime_nanos = task.execute();
-
-                // Record runtime for future estimations
-                runtime_tracker.record_runtime(task_type, runtime_nanos);
-            }
-            None => {
-                // Shutdown signaled or spurious wakeup
-                if shutdown.load(AtomicOrdering::SeqCst) {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::AtomicU64;
+    use std::thread;
 
     #[test]
     fn test_p2_median_accuracy() {
@@ -899,79 +717,77 @@ mod tests {
     }
 
     #[test]
-    fn test_priority_pool_spawn_and_recv() {
-        let pool = PriorityEvalThreadPool::new(2, SchedulerConfig::default());
-
-        let result = pool.spawn(|| 42);
-        assert_eq!(result.recv().unwrap(), 42);
-
-        pool.shutdown();
-    }
-
-    #[test]
-    fn test_priority_pool_parallel_tasks() {
-        let pool = PriorityEvalThreadPool::new(4, SchedulerConfig::default());
-        let counter = Arc::new(AtomicUsize::new(0));
-
-        let receivers: Vec<_> = (0..100)
-            .map(|_| {
-                let counter = Arc::clone(&counter);
-                pool.spawn(move || {
-                    counter.fetch_add(1, AtomicOrdering::SeqCst);
-                })
-            })
-            .collect();
-
-        // Wait for all tasks
-        for rx in receivers {
-            rx.recv().unwrap();
-        }
-
-        assert_eq!(counter.load(AtomicOrdering::SeqCst), 100);
-
-        pool.shutdown();
-    }
-
-    #[test]
-    fn test_priority_ordering() {
-        // This test verifies that high-priority tasks tend to execute before low-priority
-        // Note: Due to concurrency, this is probabilistic
-        let pool = PriorityEvalThreadPool::new(1, SchedulerConfig::default()); // Single worker for determinism
-        let order = Arc::new(Mutex::new(Vec::new()));
-
-        // Submit low priority first, then high priority
-        let order_clone = Arc::clone(&order);
-        pool.spawn_with_priority(
-            move || {
-                order_clone.lock().push("low");
-            },
-            10,
-            TaskTypeId::Generic,
-        );
-
-        let order_clone = Arc::clone(&order);
-        pool.spawn_with_priority(
-            move || {
-                order_clone.lock().push("high");
-            },
+    fn test_priority_task_execute_catches_panic() {
+        let task = PriorityTask::new(
+            Box::new(|| panic!("intentional panic in PriorityTask")),
             0,
             TaskTypeId::Generic,
+            0,
         );
 
-        // Give time for tasks to execute
-        thread::sleep(Duration::from_millis(100));
-
-        let execution_order = order.lock();
-        // With single worker and immediate scheduling, high should execute first
-        // (though timing may vary)
-        assert_eq!(execution_order.len(), 2);
-
-        pool.shutdown();
+        // Should return 0 (not propagate the panic)
+        let runtime = task.execute();
+        assert_eq!(runtime, 0, "Panicked task should return runtime of 0");
     }
 
     #[test]
-    fn test_global_priority_pool() {
-        let result = global_priority_eval_pool().spawn(|| 123);
-        assert_eq!(result.recv().unwrap(), 123);
+    fn test_pop_timeout_returns_task() {
+        let tracker = Arc::new(RuntimeTracker::new());
+        let queue = PriorityQueue::new(Arc::clone(&tracker), SchedulerConfig::default());
+        let shutdown = AtomicBool::new(false);
+        let seq = AtomicU64::new(0);
+
+        let task = PriorityTask::new(
+            Box::new(|| {}),
+            0,
+            TaskTypeId::Generic,
+            seq.fetch_add(1, AtomicOrdering::Relaxed),
+        );
+        queue.push(task);
+
+        let result = queue.pop_timeout(&shutdown, Duration::from_millis(100));
+        assert!(result.is_some(), "Should pop an available task");
+    }
+
+    #[test]
+    fn test_pop_timeout_expires_on_empty() {
+        let tracker = Arc::new(RuntimeTracker::new());
+        let queue = PriorityQueue::new(Arc::clone(&tracker), SchedulerConfig::default());
+        let shutdown = AtomicBool::new(false);
+
+        let start = std::time::Instant::now();
+        let result = queue.pop_timeout(&shutdown, Duration::from_millis(50));
+        let elapsed = start.elapsed();
+
+        assert!(result.is_none(), "Should return None on timeout");
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "Should wait approximately the timeout period, elapsed: {:?}",
+            elapsed,
+        );
+    }
+
+    #[test]
+    fn test_pop_timeout_returns_on_shutdown() {
+        let tracker = Arc::new(RuntimeTracker::new());
+        let queue = Arc::new(PriorityQueue::new(Arc::clone(&tracker), SchedulerConfig::default()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let queue_clone = Arc::clone(&queue);
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let handle = thread::spawn(move || {
+            queue_clone.pop_timeout(&shutdown_clone, Duration::from_secs(10))
+        });
+
+        // Give thread time to enter the wait
+        thread::sleep(Duration::from_millis(50));
+
+        // Signal shutdown and notify
+        shutdown.store(true, AtomicOrdering::SeqCst);
+        queue.notify_all();
+
+        let result = handle.join().expect("Thread panicked");
+        assert!(result.is_none(), "Should return None on shutdown");
     }
 }

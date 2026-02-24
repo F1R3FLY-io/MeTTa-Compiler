@@ -188,7 +188,10 @@ mod tests {
         let state = compile(input).expect("compile failed");
         assert_eq!(state.source().len(), 1);
 
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::Long(30)));
     }
@@ -205,13 +208,19 @@ mod tests {
         let mut env = new_env();
 
         // First expression: rule definition
-        let (results, new_env) = eval(state.source()[0], env, &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, new_env) = eval(expr, env, &state);
         env = new_env;
         // Rule definition returns empty list
         assert!(results.is_empty());
 
         // Second expression: evaluation
-        let (results, _env) = eval(state.source()[1], env, &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[1];
+        let (results, _env) = eval(expr, env, &state);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::Long(42)));
     }
@@ -277,7 +286,10 @@ mod tests {
     fn test_if_control_flow() {
         let input = r#"(if (< 5 10) "yes" "no")"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::String(s) if *s == "yes"));
@@ -287,7 +299,10 @@ mod tests {
     fn test_if_with_equality_check() {
         let input = r#"(if (== 5 5) "equal" "not-equal")"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "equal");
@@ -404,7 +419,10 @@ mod tests {
         "#;
 
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "both-true");
@@ -414,7 +432,10 @@ mod tests {
     fn test_if_with_computation_in_branches() {
         let input = r#"(if (< 5 10) (+ 2 3) (* 4 5))"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_long(results[0], 5);
@@ -451,7 +472,10 @@ mod tests {
         // This matches HE behavior: !(quote (+ 1 2)) → (quote (+ 1 2))
         let input = "(quote (+ 1 2))";
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert!(
@@ -470,7 +494,10 @@ mod tests {
     fn test_error_propagation() {
         let input = r#"(error "test error" 42)"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
@@ -480,7 +507,10 @@ mod tests {
     fn test_error_in_nested_expression() {
         let input = r#"(+ 1 (+ 2 (+ 3 (error "deep error" nested))))"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         if let MettaValueInner::Error(msg, _) = results[0].inner() {
@@ -560,7 +590,10 @@ mod tests {
     fn test_error_with_catch() {
         let input = r#"(catch (error "caught" 42) "default-value")"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "default-value");
@@ -570,7 +603,10 @@ mod tests {
     fn test_catch_without_error() {
         let input = r#"(catch (+ 5 7) "default-value")"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_long(results[0], 12);
@@ -585,7 +621,10 @@ mod tests {
         "#;
 
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "outer-default");
@@ -595,7 +634,10 @@ mod tests {
     fn test_error_in_condition() {
         let input = r#"(if (error "condition failed" cond) yes no)"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         if let MettaValueInner::Error(msg, _) = results[0].inner() {
@@ -609,7 +651,10 @@ mod tests {
     fn test_is_error_check() {
         let input = r#"(is-error (error "test" 0))"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_bool(results[0], true);
@@ -619,7 +664,10 @@ mod tests {
     fn test_is_error_with_normal_value() {
         let input = r#"(is-error (+ 1 2))"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         // Arena evaluator may return multiple results; check that at least one is Bool(false)
         assert!(
@@ -727,7 +775,10 @@ mod tests {
     fn test_error_with_complex_details() {
         let input = r#"(error "complex" (+ 1 (+ 2 3)))"#;
         let state = compile(input).expect("compile failed");
-        let (results, _env) = eval(state.source()[0], new_env(), &state);
+        // SAFE: MutexGuard dropped at semicolon, before eval() runs.
+        // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
+        let expr = state.source()[0];
+        let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         if let MettaValueInner::Error(msg, details) = results[0].inner() {

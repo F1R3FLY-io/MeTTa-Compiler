@@ -508,6 +508,21 @@ impl HybridExecutor {
             }
         }
 
+        // Build type registry for type-driven applicative evaluation (MeTTa HE parity).
+        // If we have an environment pointer, build the registry from its type assertions
+        // and store it on the stack for the duration of JIT execution.
+        let type_registry = if let Some(env_raw) = self.env {
+            let env_ref = unsafe {
+                &*(env_raw as *const crate::backend::bytecode::MettaEnvironment)
+            };
+            Some(super::super::TypeSignatureRegistry::from_env(env_ref))
+        } else {
+            None
+        };
+        if let Some(ref registry) = type_registry {
+            ctx.type_registry_ptr = registry as *const super::super::TypeSignatureRegistry;
+        }
+
         // Set up grounded spaces if configured (Space Ops - Phase 2)
         if self.has_grounded_spaces() {
             unsafe {

@@ -24,7 +24,16 @@ struct MettaStateGcRoots {
 
 impl RootProvider for MettaStateGcRoots {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        // Lock ordering: source first, then output
+        // Use blocking lock() — GC root collection MUST see all roots for
+        // correctness. Skipping a locked provider via try_lock() would risk
+        // freeing values still reachable through that provider (use-after-free).
+        //
+        // The original ABBA deadlock (GC thread holds GC_IN_PROGRESS, blocks
+        // on source mutex; test thread holds source mutex, blocks on
+        // GC_IN_PROGRESS in EvalGuard::enter) is fixed at the callsites:
+        // every `eval(state.source()[N], ...)` is decomposed into two
+        // statements so the MutexGuard is dropped before eval() is called.
+        // See the doc comment on MettaState::source() for details.
         let source = self.source.lock();
         let output = self.output.lock();
         roots.extend(source.iter().copied());
@@ -95,7 +104,7 @@ impl MettaState {
     }
 
     /// Internal constructor: creates gc_roots Arc and registers with GC.
-    fn from_parts(
+    pub(crate) fn from_parts(
         source: Vec<MettaValue>,
         environment: MettaEnvironment,
         output: Vec<MettaValue>,
@@ -126,9 +135,51 @@ impl MettaState {
     ///
     /// Returns a `MutexGuard` that auto-derefs to `Vec<MettaValue>`.
     /// The lock is released when the guard is dropped.
+    ///
+    /// # Temporary Lifetime Pitfall
+    ///
+    /// **Do NOT** use `state.source()[i]` directly inside an `eval()` call:
+    ///
+    /// ```ignore
+    /// // UNSAFE — MutexGuard temporary lives until the end of the `let` statement,
+    /// // so the source mutex is held for the entire duration of eval(). This can
+    /// // deadlock with the GC thread (ABBA: source mutex vs GC_IN_PROGRESS).
+    /// let (results, _env) = eval(state.source()[0], new_env(), &state);
+    /// ```
+    ///
+    /// Instead, extract the value in a separate statement so the guard is dropped
+    /// before `eval()` is called:
+    ///
+    /// ```ignore
+    /// // SAFE — MutexGuard dropped at the semicolon, before eval() runs.
+    /// let expr = state.source()[0];
+    /// let (results, _env) = eval(expr, new_env(), &state);
+    /// ```
+    ///
+    /// Or use [`source_snapshot`](MettaState::source_snapshot) which returns an
+    /// owned `Vec<MettaValue>`, eliminating the guard entirely.
     #[inline]
     pub fn source(&self) -> MutexGuard<'_, Vec<MettaValue>> {
         self.gc_roots.source.lock()
+    }
+
+    /// Return an owned snapshot of the source expressions.
+    ///
+    /// This is the **preferred** way to access source expressions before
+    /// calling `eval()` — the mutex is locked, copied, and released in
+    /// a single expression, so there is no risk of holding the guard
+    /// across a long-running operation (which would deadlock with the GC).
+    ///
+    /// ```ignore
+    /// let source_exprs = state.source_snapshot();
+    /// for expr in source_exprs {
+    ///     let (results, new_env) = eval(expr, env, &state);
+    ///     // ...
+    /// }
+    /// ```
+    #[inline]
+    pub fn source_snapshot(&self) -> Vec<MettaValue> {
+        self.gc_roots.source.lock().iter().copied().collect()
     }
 
     /// Lock and mutably access the source expressions.
@@ -144,9 +195,22 @@ impl MettaState {
     ///
     /// Returns a `MutexGuard` that auto-derefs to `Vec<MettaValue>`.
     /// The lock is released when the guard is dropped.
+    ///
+    /// # Temporary Lifetime Pitfall
+    ///
+    /// Same as [`source`](MettaState::source) — do NOT use `state.output()[i]`
+    /// directly inside an `eval()` call. See `source()` docs for details.
     #[inline]
     pub fn output(&self) -> MutexGuard<'_, Vec<MettaValue>> {
         self.gc_roots.output.lock()
+    }
+
+    /// Return an owned snapshot of the output values.
+    ///
+    /// See [`source_snapshot`](MettaState::source_snapshot) for rationale.
+    #[inline]
+    pub fn output_snapshot(&self) -> Vec<MettaValue> {
+        self.gc_roots.output.lock().iter().copied().collect()
     }
 
     /// Lock and mutably access the output values.
@@ -186,16 +250,20 @@ impl MettaState {
     /// **Use Case**: Debugging, logging, inspection
     /// **Not Recommended**: Rholang integration (use PathMap Par instead)
     pub fn to_json_string(&self) -> String {
-        // Lock ordering: source first, then output
-        let source = self.gc_roots.source.lock();
-        let output = self.gc_roots.output.lock();
+        // Snapshot under lock, then release before formatting.
+        // Prevents holding both Mutexes during potentially slow formatting.
+        let (source_snapshot, output_snapshot) = {
+            let source = self.gc_roots.source.lock();
+            let output = self.gc_roots.output.lock();
+            (source.clone(), output.clone())
+        };
 
-        let source_json: Vec<String> = source
+        let source_json: Vec<String> = source_snapshot
             .iter()
             .map(|value| value.to_json_string())
             .collect();
 
-        let outputs_json: Vec<String> = output
+        let outputs_json: Vec<String> = output_snapshot
             .iter()
             .map(|value| value.to_json_string())
             .collect();
@@ -223,21 +291,31 @@ impl Clone for MettaState {
     /// Deep-clone the MettaState, creating a new `Arc<MettaStateGcRoots>` and
     /// registering it as a separate GC root provider.
     fn clone(&self) -> Self {
-        // Lock ordering: source first, then output
-        let source = self.gc_roots.source.lock();
-        let output = self.gc_roots.output.lock();
-        Self::from_parts(source.clone(), self.environment.clone(), output.clone())
+        // Snapshot under lock, then release before from_parts() which does
+        // GC registration (register_root_provider). This prevents holding
+        // both Mutexes during the Arc allocation and GC registration.
+        let (source_clone, output_clone) = {
+            let source = self.gc_roots.source.lock();
+            let output = self.gc_roots.output.lock();
+            (source.clone(), output.clone())
+        };
+        Self::from_parts(source_clone, self.environment.clone(), output_clone)
     }
 }
 
 impl fmt::Debug for MettaState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let source = self.gc_roots.source.lock();
-        let output = self.gc_roots.output.lock();
+        // Snapshot under lock, then release before formatting.
+        // Prevents holding both Mutexes during potentially slow Debug output.
+        let (source_snapshot, output_snapshot) = {
+            let source = self.gc_roots.source.lock();
+            let output = self.gc_roots.output.lock();
+            (source.clone(), output.clone())
+        };
         f.debug_struct("MettaState")
-            .field("source", &*source)
+            .field("source", &source_snapshot)
             .field("environment", &self.environment)
-            .field("output", &*output)
+            .field("output", &output_snapshot)
             .finish()
     }
 }

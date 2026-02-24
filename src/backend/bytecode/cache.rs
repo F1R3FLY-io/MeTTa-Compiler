@@ -15,15 +15,14 @@
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, OnceLock};
 use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3;
 
 use lru::LruCache;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::models::{MettaValue, MettaValueInner};
-use std::sync::Arc;
+use crate::backend::models::{register_root_provider, MettaValue, MettaValueInner, RootProvider};
 
 /// Statistics for bytecode cache monitoring (lock-free atomics).
 #[derive(Debug)]
@@ -192,6 +191,7 @@ pub fn get_cached_bytecode(hash: u64) -> Option<Arc<BytecodeChunk>> {
 /// Store compiled bytecode chunk in cache
 #[inline]
 pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
+    ensure_bytecode_cache_roots_registered();
     let mut cache = BYTECODE_CACHE.write();
     cache.put(hash, chunk);
 }
@@ -214,6 +214,51 @@ pub fn cache_sizes() -> (usize, usize) {
     let can_compile_size = CAN_COMPILE_CACHE.read().len();
     let bytecode_size = BYTECODE_CACHE.read().len();
     (can_compile_size, bytecode_size)
+}
+
+// =============================================================================
+// GC Root Provider for BYTECODE_CACHE
+// =============================================================================
+
+/// GC root provider that exposes all MettaValue constants stored in cached
+/// BytecodeChunks to the garbage collector's root set.
+///
+/// Without this, constants in cached bytecode chunks are invisible to GC and
+/// may be freed while still reachable from the cache, causing use-after-free.
+struct BytecodeCacheRoots;
+
+impl RootProvider for BytecodeCacheRoots {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        let cache = BYTECODE_CACHE.read();
+        for (_, chunk) in cache.iter() {
+            collect_chunk_constants(chunk, roots);
+        }
+    }
+}
+
+/// Recursively collect all MettaValue constants from a BytecodeChunk and its
+/// sub-chunks.
+pub fn collect_chunk_constants(chunk: &BytecodeChunk, roots: &mut Vec<MettaValue>) {
+    roots.extend(chunk.constants().iter().copied());
+    for sub in chunk.sub_chunks() {
+        collect_chunk_constants(sub, roots);
+    }
+}
+
+/// Keeps the Arc<dyn RootProvider> alive for the lifetime of the process so
+/// the Weak reference in ROOT_REGISTRY remains valid.
+static BYTECODE_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
+
+/// Ensure the bytecode cache is registered as a GC root provider.
+///
+/// Called lazily on first cache mutation (cache_bytecode). Idempotent —
+/// OnceLock guarantees single initialization.
+pub fn ensure_bytecode_cache_roots_registered() {
+    BYTECODE_CACHE_ROOT_PROVIDER.get_or_init(|| {
+        let provider = Arc::new(BytecodeCacheRoots) as Arc<dyn RootProvider>;
+        register_root_provider(&provider);
+        provider
+    });
 }
 
 #[cfg(test)]

@@ -188,6 +188,10 @@ where
                             results.push((factory.bool(float_cmp(x, y as f64)), None));
                         }
                         _ => {
+                            // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                            if a.is_empty() || b.is_empty() {
+                                continue;
+                            }
                             return GenericGroundedWork::Error(ExecError::NoReduce)
                         }
                     }
@@ -249,6 +253,10 @@ where
             let mut results = Vec::new();
             for a in a_results {
                 for b in b_results {
+                    // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                    if a.is_empty() || b.is_empty() {
+                        continue;
+                    }
                     let is_equal = numeric_equal_generic(a, b);
                     let result = if return_true_on_equal { is_equal } else { !is_equal };
                     results.push((factory.bool(result), None));

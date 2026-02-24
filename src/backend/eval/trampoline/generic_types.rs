@@ -507,7 +507,6 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing trace value
     ProcessTraceValue {
-        message_str: String,
         value_expr: V,
         env: E,
         depth: usize,
@@ -524,6 +523,36 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     ProcessBind {
         token: String,
         env: E,
+        depth: usize,
+    },
+
+    /// Processing if-reducible: expr has been evaluated, now compare to original.
+    ProcessIfReducible {
+        /// Original expression (before evaluation) for comparison
+        original_expr: V,
+        /// Branch to evaluate if expr reduced
+        then_branch: V,
+        /// Branch to evaluate if expr is irreducible
+        else_branch: V,
+        /// Environment
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
+    /// Processing match-or space evaluation
+    ProcessMatchOrSpace {
+        /// Space reference being evaluated
+        space_arg: V,
+        /// Pattern to match
+        pattern: V,
+        /// Default if no matches
+        default: V,
+        /// Template to instantiate
+        template: V,
+        /// Environment
+        env: E,
+        /// Evaluation depth
         depth: usize,
     },
 
@@ -879,6 +908,19 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             }
 
             Self::ProcessBind { .. } => {}
+
+            Self::ProcessIfReducible { original_expr, then_branch, else_branch, .. } => {
+                out.push(original_expr.clone());
+                out.push(then_branch.clone());
+                out.push(else_branch.clone());
+            }
+
+            Self::ProcessMatchOrSpace { space_arg, pattern, default, template, .. } => {
+                out.push(space_arg.clone());
+                out.push(pattern.clone());
+                out.push(default.clone());
+                out.push(template.clone());
+            }
 
             Self::ProcessCaseMultiResults { remaining_atoms, cases, collected, .. } => {
                 out.extend(remaining_atoms.iter().cloned());

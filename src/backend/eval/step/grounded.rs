@@ -17,7 +17,7 @@
 //! produces false positives on data constructors.
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 use super::super::{is_eager_special_form, is_grounded_op};
 
@@ -209,6 +209,104 @@ where
     }
 
     Some(indices)
+}
+
+// ============================================================================
+// Phase 8.3: Value type dispatch — data constructor shortcut
+// ============================================================================
+
+/// Check if an operator has ONLY value types (no arrow types).
+/// Returns `true` if the operator has type declarations and NONE are arrow types
+/// (i.e., it's a known data constructor). Returns `false` if no type info
+/// or if any type is an arrow type.
+///
+/// Used to skip rule matching entirely for data constructors (Step 2.5 in
+/// generic_sexpr.rs), sending them directly to the tuple path.
+pub fn is_declared_value_type<V, F>(op: &str, env: &GenericEnvironment<V, F>) -> bool
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    let types = env.get_types_generic(op);
+    !types.is_empty() && !types.iter().any(|t| is_arrow_type(t))
+}
+
+// ============================================================================
+// Phase 8.8: Grounded argument type pre-validation
+// ============================================================================
+
+/// Validate ground-type arguments against a grounded op's arrow signature.
+/// Returns `Some(error_value)` if a ground-type arg has incompatible type.
+/// Returns `None` if all args are compatible or can't be validated yet
+/// (S-expr args aren't validated since they need evaluation first).
+///
+/// This provides clear type error messages instead of `NoReduce` → reconstructed
+/// unreduced expression trees when ground-typed args don't match the signature.
+pub fn validate_grounded_arg_types<V, F>(
+    op: &str,
+    args: &[V],
+    factory: &F,
+) -> Option<V>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    use crate::backend::builtin_signatures::{get_signature, TypeExpr};
+
+    let sig = get_signature(op)?;
+
+    // Extract argument types from the arrow signature (-> T1 T2 ... Tret)
+    let arg_types = match &sig.type_sig {
+        TypeExpr::Arrow(args_te, _ret) => args_te,
+        _ => return None, // Not an arrow type — can't validate
+    };
+
+    for (i, arg) in args.iter().enumerate() {
+        if i >= arg_types.len() { break; }
+
+        // Pattern match on (actual_inner, expected_type) pairs.
+        // Only validate ground-type args in final form; skip S-exprs/atoms/variables.
+        let mismatch = match (arg.inner_raw(), &arg_types[i]) {
+            // Number args
+            (MettaValueInner::Long(_) | MettaValueInner::Float(_), TypeExpr::Number) => false,
+            (MettaValueInner::Long(_) | MettaValueInner::Float(_), TypeExpr::Bool) => true,
+            (MettaValueInner::Long(_) | MettaValueInner::Float(_), TypeExpr::String) => true,
+            // Bool args
+            (MettaValueInner::Bool(_), TypeExpr::Bool) => false,
+            (MettaValueInner::Bool(_), TypeExpr::Number) => true,
+            (MettaValueInner::Bool(_), TypeExpr::String) => true,
+            // String args
+            (MettaValueInner::String(_), TypeExpr::String) => false,
+            (MettaValueInner::String(_), TypeExpr::Number) => true,
+            (MettaValueInner::String(_), TypeExpr::Bool) => true,
+            // Polymorphic expected types — always compatible
+            (_, TypeExpr::Var(_) | TypeExpr::Any | TypeExpr::Atom
+               | TypeExpr::Undefined | TypeExpr::Expression) => false,
+            // Non-ground args (S-expr, atom, variable) — can't validate yet
+            _ => false,
+        };
+
+        if mismatch {
+            let actual_type = match arg.inner_raw() {
+                MettaValueInner::Long(_) | MettaValueInner::Float(_) => "Number",
+                MettaValueInner::Bool(_) => "Bool",
+                MettaValueInner::String(_) => "String",
+                _ => unreachable!("only ground types reach mismatch=true"),
+            };
+            let expected_name = match &arg_types[i] {
+                TypeExpr::Number => "Number",
+                TypeExpr::Bool => "Bool",
+                TypeExpr::String => "String",
+                _ => unreachable!("only concrete types reach mismatch=true"),
+            };
+            return Some(factory.error(
+                &format!("{}: argument {} expected {}, got {}",
+                    op, i + 1, expected_name, actual_type),
+                factory.atom("TypeError"),
+            ));
+        }
+    }
+    None
 }
 
 #[cfg(test)]

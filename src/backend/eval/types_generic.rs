@@ -194,7 +194,7 @@ where
 ///
 /// Handles type variables, `%Undefined%` universal match, and structural equality.
 /// HE parity: `%Undefined%` matches any type on either side.
-fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool {
+pub fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool {
     // %Undefined% matches anything (HE parity)
     if let Some(name) = expected.as_atom() {
         if name == "%Undefined%" {
@@ -590,6 +590,64 @@ where
 
     // No types found in the specified space
     vec![factory.atom("%Undefined%")]
+}
+
+// ====================================================================
+// Phase 8.5: Type constraint extraction for let/let* type validation
+// ====================================================================
+
+/// Extract a type constraint from a typed pattern `(: $var Type)`.
+/// Returns `Some(type_value)` if the pattern is a type assertion, `None` otherwise.
+///
+/// Used by `ProcessLet` to short-circuit structural pattern matching when
+/// the value's type is incompatible with the pattern's type constraint.
+pub fn extract_type_constraint<V: MettaValueTrait + Clone>(pattern: &V) -> Option<V> {
+    let items = pattern.as_sexpr()?;
+    if items.len() == 3 {
+        match (items[0].as_atom(), items[1].as_atom()) {
+            (Some(":"), Some(name)) if name.starts_with('$') => Some(items[2].clone()),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+// ====================================================================
+// Phase 8.6: Ground type identification for case type-driven skipping
+// ====================================================================
+
+/// Get the ground type name of a value (Number, Bool, String) if it's a literal.
+/// Returns `None` for atoms, S-exprs, variables, and other non-ground types.
+/// Uses pattern matching on `MettaValueInner` for O(1) dispatch.
+pub fn get_ground_type<V: MettaValueTrait>(val: &V) -> Option<&'static str> {
+    match val.inner_raw() {
+        MettaValueInner::Long(_) | MettaValueInner::Float(_) => Some("Number"),
+        MettaValueInner::Bool(_) => Some("Bool"),
+        MettaValueInner::String(_) => Some("String"),
+        _ => None,
+    }
+}
+
+/// Check if a case pattern could match a value of the given ground type.
+/// Conservative: returns `true` (compatible) if uncertain.
+/// Uses pattern matching on `MettaValueInner` for efficient dispatch.
+///
+/// Only rejects patterns that are ground-typed literals of a different type
+/// (e.g., a String literal pattern cannot match a Number scrutinee).
+/// Variable patterns, S-expression patterns, and atom patterns are always
+/// considered compatible since they might structurally match.
+pub fn is_pattern_type_compatible<V: MettaValueTrait>(pattern: &V, ground_type: &str) -> bool {
+    match pattern.inner_raw() {
+        // Variables match anything
+        MettaValueInner::Atom(name) if name.starts_with('$') => true,
+        // Ground values: compatible only if same ground type category
+        MettaValueInner::Long(_) | MettaValueInner::Float(_) => ground_type == "Number",
+        MettaValueInner::Bool(_) => ground_type == "Bool",
+        MettaValueInner::String(_) => ground_type == "String",
+        // S-expressions, non-variable atoms, etc.: conservatively compatible
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -1154,5 +1212,160 @@ mod tests {
         let result = eval_get_type_space_generic(&items, &factory, &env);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].as_atom(), Some("%Undefined%"));
+    }
+
+    // =========================================================================
+    // Phase 8.5: extract_type_constraint tests
+    // =========================================================================
+
+    #[test]
+    fn test_extract_type_constraint_typed_pattern() {
+        let factory = GcFactory::default();
+        // (: $x Number)
+        let pattern = factory.sexpr(vec![
+            factory.atom(":"),
+            factory.atom("$x"),
+            factory.atom("Number"),
+        ]);
+        let constraint = extract_type_constraint(&pattern);
+        assert!(constraint.is_some());
+        assert_eq!(constraint.unwrap().as_atom(), Some("Number"));
+    }
+
+    #[test]
+    fn test_extract_type_constraint_non_variable() {
+        let factory = GcFactory::default();
+        // (: foo Number) — foo is not a variable
+        let pattern = factory.sexpr(vec![
+            factory.atom(":"),
+            factory.atom("foo"),
+            factory.atom("Number"),
+        ]);
+        let constraint = extract_type_constraint(&pattern);
+        assert!(constraint.is_none());
+    }
+
+    #[test]
+    fn test_extract_type_constraint_wrong_length() {
+        let factory = GcFactory::default();
+        // (: $x) — only 2 elements
+        let pattern = factory.sexpr(vec![
+            factory.atom(":"),
+            factory.atom("$x"),
+        ]);
+        let constraint = extract_type_constraint(&pattern);
+        assert!(constraint.is_none());
+    }
+
+    #[test]
+    fn test_extract_type_constraint_non_sexpr() {
+        let factory = GcFactory::default();
+        // Just an atom — not an S-expression
+        let pattern = factory.atom("$x");
+        let constraint = extract_type_constraint(&pattern);
+        assert!(constraint.is_none());
+    }
+
+    // =========================================================================
+    // Phase 8.6: get_ground_type / is_pattern_type_compatible tests
+    // =========================================================================
+
+    #[test]
+    fn test_get_ground_type_number() {
+        assert_eq!(get_ground_type(&MettaValue::Long(42)), Some("Number"));
+        assert_eq!(get_ground_type(&MettaValue::Float(3.14)), Some("Number"));
+    }
+
+    #[test]
+    fn test_get_ground_type_bool() {
+        assert_eq!(get_ground_type(&MettaValue::Bool(true)), Some("Bool"));
+        assert_eq!(get_ground_type(&MettaValue::Bool(false)), Some("Bool"));
+    }
+
+    #[test]
+    fn test_get_ground_type_string() {
+        assert_eq!(get_ground_type(&MettaValue::String("hi".to_string())), Some("String"));
+    }
+
+    #[test]
+    fn test_get_ground_type_atom_returns_none() {
+        assert_eq!(get_ground_type(&MettaValue::Atom("foo".to_string())), None);
+    }
+
+    #[test]
+    fn test_is_pattern_type_compatible_variable() {
+        let factory = GcFactory::default();
+        // Variables match any ground type
+        assert!(is_pattern_type_compatible(&factory.atom("$x"), "Number"));
+        assert!(is_pattern_type_compatible(&factory.atom("$y"), "Bool"));
+    }
+
+    #[test]
+    fn test_is_pattern_type_compatible_same_type() {
+        // Number literal compatible with Number
+        assert!(is_pattern_type_compatible(&MettaValue::Long(42), "Number"));
+        // Bool literal compatible with Bool
+        assert!(is_pattern_type_compatible(&MettaValue::Bool(true), "Bool"));
+        // String literal compatible with String
+        assert!(is_pattern_type_compatible(&MettaValue::String("hi".to_string()), "String"));
+    }
+
+    #[test]
+    fn test_is_pattern_type_compatible_different_type() {
+        // Number literal NOT compatible with Bool
+        assert!(!is_pattern_type_compatible(&MettaValue::Long(42), "Bool"));
+        // Bool literal NOT compatible with Number
+        assert!(!is_pattern_type_compatible(&MettaValue::Bool(true), "Number"));
+        // String literal NOT compatible with Number
+        assert!(!is_pattern_type_compatible(&MettaValue::String("hi".to_string()), "Number"));
+    }
+
+    #[test]
+    fn test_is_pattern_type_compatible_non_ground_conservative() {
+        let factory = GcFactory::default();
+        // Non-variable atoms are conservatively compatible
+        assert!(is_pattern_type_compatible(&factory.atom("foo"), "Number"));
+        // S-expressions are conservatively compatible
+        let sexpr = factory.sexpr(vec![factory.atom("a"), factory.atom("b")]);
+        assert!(is_pattern_type_compatible(&sexpr, "Number"));
+    }
+
+    // =========================================================================
+    // Phase 8.7: types_match_generic tests
+    // =========================================================================
+
+    #[test]
+    fn test_types_match_generic_same() {
+        let factory = GcFactory::default();
+        let number = factory.atom("Number");
+        assert!(types_match_generic(&number, &number));
+    }
+
+    #[test]
+    fn test_types_match_generic_different() {
+        let factory = GcFactory::default();
+        let number = factory.atom("Number");
+        let bool_t = factory.atom("Bool");
+        assert!(!types_match_generic(&number, &bool_t));
+    }
+
+    #[test]
+    fn test_types_match_generic_undefined_matches_any() {
+        let factory = GcFactory::default();
+        let number = factory.atom("Number");
+        let undefined = factory.atom("%Undefined%");
+        // %Undefined% on either side matches anything
+        assert!(types_match_generic(&number, &undefined));
+        assert!(types_match_generic(&undefined, &number));
+    }
+
+    #[test]
+    fn test_types_match_generic_variable_matches_any() {
+        let factory = GcFactory::default();
+        let number = factory.atom("Number");
+        let var = factory.atom("$t");
+        // Type variables match anything
+        assert!(types_match_generic(&number, &var));
+        assert!(types_match_generic(&var, &number));
     }
 }

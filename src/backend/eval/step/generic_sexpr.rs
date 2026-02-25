@@ -17,7 +17,7 @@
 use tracing::trace;
 
 use super::generic_types::GenericEvalStep;
-use super::grounded::{find_grounded_arg_indices_generic, find_typed_arg_indices_generic};
+use super::grounded::{find_grounded_arg_indices_generic, find_typed_arg_indices_generic, is_declared_value_type, validate_grounded_arg_types};
 
 use crate::backend::eval::bindings_generic::{eval_atom_subst_generic, eval_sealed_generic};
 use crate::backend::eval::list_ops::generic::{
@@ -1494,8 +1494,13 @@ where
                 // Try generic grounded operation (zero-conversion path)
                 // Uses static dispatch - works with any V: MettaValueTrait
                 if has_generic_grounded_op(op) {
-                    // Use GenericGroundedState with native value type - NO conversion needed
                     let args: Vec<C::Value> = items[1..].to_vec();
+                    // Phase 8.8: Pre-validate ground-type args against arrow signature.
+                    // Returns clear type error instead of NoReduce → unreduced expression.
+                    if let Some(type_error) = validate_grounded_arg_types(op, &args, ctx.factory()) {
+                        return GenericEvalStep::Done((vec![type_error], env));
+                    }
+                    // Use GenericGroundedState with native value type - NO conversion needed
                     let state = GenericGroundedState::new(op.to_string(), args);
                     return GenericEvalStep::StartGroundedOp { state, env, depth };
                 }
@@ -1546,6 +1551,15 @@ where
         }
     }
 
+    // Step 2.5: Data constructor shortcut — if operator has ONLY value types
+    // (no arrow types), it can't have rules. Skip to tuple path directly.
+    // This avoids unnecessary rule matching for known data constructors.
+    if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+        if is_declared_value_type(op, &env) {
+            return GenericEvalStep::EvalSExpr { items, env, depth };
+        }
+    }
+
     // Step 3: Rule matching with unevaluated arguments (lazy evaluation).
     // Only reached when Step 2 found no args to pre-evaluate.
     let resolved_sexpr = ctx.factory().sexpr(items.clone());
@@ -1553,6 +1567,7 @@ where
 
     if !all_matches.is_empty() {
         // User rules matched — evaluate RHS with bindings from pattern match
+        // Phase 8.7: rhs_type (3rd element) preserved for branch pruning at trampoline level
         return GenericEvalStep::EvalRuleMatchesLazy {
             matches: all_matches,
             env,

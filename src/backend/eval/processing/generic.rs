@@ -267,12 +267,15 @@ where
 
     // Try rule matching using generic rule matching (zero-conversion)
     let sexpr = factory.sexpr(evaled_items.clone());
-    let all_matches = try_match_all_rules_generic(&sexpr, &unified_env, *factory);
+    let all_matches_with_types = try_match_all_rules_generic(&sexpr, &unified_env, *factory);
 
-    if !all_matches.is_empty() {
+    if !all_matches_with_types.is_empty() {
         // Rules match with evaluated arguments - evaluate the rule RHS
+        // Strip rhs_type from 3-tuples → 2-tuples
         return GenericProcessedSExpr::EvalRuleMatches {
-            matches: all_matches.into_iter().collect(),
+            matches: all_matches_with_types.into_iter()
+                .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                .collect(),
             env: unified_env,
             depth,
             base_results: vec![],

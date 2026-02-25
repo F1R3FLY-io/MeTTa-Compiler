@@ -37,6 +37,10 @@ use super::super::processing::{
 };
 use super::super::step::{eval_step_generic, GenericEvalStep};
 
+use crate::backend::eval::types_generic::{
+    extract_type_constraint, get_ground_type, is_pattern_type_compatible,
+    infer_type_generic, types_match_generic, types_match_with_subtypes,
+};
 use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
 use crate::backend::models::{GenericMultiplicityMatch, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
@@ -89,6 +93,7 @@ where
         env: env.clone(),
         depth: 0,
         is_tail_call: false,
+        expected_type: None,
     }];
 
     // Continuation storage - index 0 is always Done
@@ -137,6 +142,7 @@ where
                 env,
                 depth,
                 is_tail_call,
+                expected_type,
             } => {
                 trace!(target: "mettatron::backend::eval::eval_trampoline_generic", ?value, depth, "eval work item");
 
@@ -189,6 +195,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -227,6 +234,7 @@ where
                                         env,
                                         depth,
                                         is_tail_call: true,
+                                        expected_type: None,
                                     });
                                 }
                                 GenericGroundedWork::Error(e) => {
@@ -288,6 +296,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -298,18 +307,34 @@ where
                             env,
                             depth,
                             is_tail_call: true,
+                            expected_type: None,
                         });
                     }
 
                     // Evaluate rule matches with unevaluated arguments (lazy evaluation)
-                    // Note: matches are now in generic type (V, GenericBindings<V>)
-                    GenericEvalStep::EvalRuleMatchesLazy { matches, env, depth } => {
+                    // Note: matches are now in generic type (V, GenericBindings<V>, Option<V>)
+                    // Phase 8.7: Prune matches whose rhs_type is incompatible with expected_type
+                    GenericEvalStep::EvalRuleMatchesLazy { mut matches, env, depth } => {
+                        // 8.7: Branch pruning — filter out matches whose rhs_type
+                        // is known to be incompatible with the expected_type
+                        if let Some(ref expected) = expected_type {
+                            matches.retain(|(_rhs, _bindings, rhs_type)| {
+                                match rhs_type {
+                                    Some(rt) => types_match_generic(rt, expected),
+                                    None => true, // Unknown type — don't prune (conservative)
+                                }
+                            });
+                        }
+
                         if matches.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
                                 result: (vec![], env),
                             });
                         } else {
-                            let mut matches_deque: VecDeque<_> = matches.into_iter().collect();
+                            // Strip rhs_type → 2-tuples for ProcessRuleMatches
+                            let mut matches_deque: VecDeque<_> = matches.into_iter()
+                                .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                                .collect();
                             let (rhs, bindings) = matches_deque.pop_front().expect("matches is non-empty");
 
                             continuations.push(GenericContinuation::ProcessRuleMatches {
@@ -328,6 +353,7 @@ where
                                 env,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         }
                     }
@@ -340,6 +366,7 @@ where
                                 env,
                                 depth,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         } else {
                             let first_idx = grounded_indices[0];
@@ -359,6 +386,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -392,6 +420,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -426,6 +455,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -462,6 +492,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -506,6 +537,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -543,6 +575,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -556,11 +589,13 @@ where
                             depth,
                         });
 
+                        // 8.7: if-condition always expects Bool — prune non-Bool branches
                         work_stack.push(GenericWorkItem::Eval {
                             value: condition,
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: Some(ctx.factory().atom("Bool")),
                         });
                     }
 
@@ -577,6 +612,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -591,6 +627,7 @@ where
                                     env,
                                     depth,
                                     is_tail_call: true,
+                                    expected_type: None,
                                 });
                             }
                             GenericSwitchResult::Error(err) => {
@@ -619,6 +656,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -634,6 +672,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -651,6 +690,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -667,6 +707,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -682,6 +723,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -698,6 +740,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -713,6 +756,7 @@ where
                                 env,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         } else {
                             let mut remaining = VecDeque::from(goals);
@@ -730,6 +774,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -749,6 +794,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -764,6 +810,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -779,6 +826,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -804,6 +852,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     }
@@ -820,6 +869,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -836,6 +886,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -854,6 +905,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -871,6 +923,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -889,6 +942,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -907,6 +961,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -924,6 +979,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -941,6 +997,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -957,6 +1014,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -973,6 +1031,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -990,6 +1049,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1006,6 +1066,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1023,6 +1084,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1039,6 +1101,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1056,6 +1119,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1072,6 +1136,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1088,6 +1153,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1106,6 +1172,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
 
@@ -1125,6 +1192,7 @@ where
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
                 }
@@ -1215,6 +1283,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         }
                     }
@@ -1238,6 +1307,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env,
                             depth: redispatch_depth,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
                 }
@@ -1256,6 +1326,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: original_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -1292,6 +1363,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             }
         }
@@ -1336,6 +1408,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env: result_env,
                             depth,
                             is_tail_call: true,
+                            expected_type: None,
                         });
                     }
                     GenericGroundedWork::Error(e) => {
@@ -1408,6 +1481,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
                 return;
             }
@@ -1418,9 +1492,9 @@ fn process_continuation_generic<C: EvalContext>(
                 let generic_sexpr = ctx.factory().sexpr(combo.to_vec());
 
                 // Try to match rules using generic version - no conversion needed!
-                let all_matches = try_match_all_rules_generic(&generic_sexpr, &result_env, *ctx.factory());
+                let all_matches_with_types = try_match_all_rules_generic(&generic_sexpr, &result_env, *ctx.factory());
 
-                if all_matches.is_empty() {
+                if all_matches_with_types.is_empty() {
                     // No rule matches - expression is data
                     results.push(generic_sexpr);
 
@@ -1437,8 +1511,11 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 } else {
                     // Rules matched - evaluate them
-                    // Already generic type - no conversion needed!
-                    let mut matches_deque: VecDeque<_> = all_matches.into_iter().collect();
+                    // Strip rhs_type from 3-tuples → 2-tuples
+                    let mut matches_deque: VecDeque<_> = all_matches_with_types
+                        .into_iter()
+                        .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                        .collect();
                     let (rhs, bindings) = matches_deque.pop_front().expect("non-empty");
 
                     continuations.push(GenericContinuation::ProcessCombinations {
@@ -1457,6 +1534,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: result_env,
                         depth,
                         is_tail_call: true,
+                        expected_type: None,
                     });
                 }
             } else {
@@ -1477,6 +1555,9 @@ fn process_continuation_generic<C: EvalContext>(
         } => {
             let (result_values, result_env) = result;
 
+            // Phase 8.5: Extract type constraint once for all values
+            let type_constraint = extract_type_constraint(&pattern);
+
             match pending_values {
                 None => {
                     // First resumption: result_values are values to pattern match
@@ -1486,6 +1567,18 @@ fn process_continuation_generic<C: EvalContext>(
                     loop {
                         match values.pop_front() {
                             Some(value) => {
+                                // Phase 8.5: Type pre-check for typed patterns (: $var Type)
+                                // Only apply to ground-type values (Number/Bool/String) where
+                                // type inference is definitive. S-expressions and atoms may
+                                // structurally match the pattern even if type inference says otherwise.
+                                if let Some(ref tc) = type_constraint {
+                                    if get_ground_type(&value).is_some() {
+                                        let value_type = infer_type_generic(&value, ctx.factory(), &result_env);
+                                        if !types_match_with_subtypes(&value_type, tc, &result_env) {
+                                            continue; // Type mismatch — skip
+                                        }
+                                    }
+                                }
                                 // Use generic pattern matching - NO conversion needed
                                 if let Some(bindings) = pattern_match_generic(&pattern, &value) {
                                     // Pattern matches - instantiate body and evaluate
@@ -1507,6 +1600,7 @@ fn process_continuation_generic<C: EvalContext>(
                                         env: result_env,
                                         depth, // TCO: reuse depth for body eval
                                         is_tail_call: true,
+                                        expected_type: None,
                                     });
                                     return;
                                 }
@@ -1531,6 +1625,18 @@ fn process_continuation_generic<C: EvalContext>(
                     loop {
                         match remaining_values.pop_front() {
                             Some(value) => {
+                                // Phase 8.5: Type pre-check for typed patterns (: $var Type)
+                                // Only apply to ground-type values (Number/Bool/String) where
+                                // type inference is definitive. S-expressions and atoms may
+                                // structurally match the pattern even if type inference says otherwise.
+                                if let Some(ref tc) = type_constraint {
+                                    if get_ground_type(&value).is_some() {
+                                        let value_type = infer_type_generic(&value, ctx.factory(), &result_env);
+                                        if !types_match_with_subtypes(&value_type, tc, &result_env) {
+                                            continue; // Type mismatch — skip
+                                        }
+                                    }
+                                }
                                 if let Some(bindings) = pattern_match_generic(&pattern, &value) {
                                     // Pattern matches - evaluate body with bindings
                                     let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
@@ -1551,6 +1657,7 @@ fn process_continuation_generic<C: EvalContext>(
                                         env: result_env,
                                         depth, // TCO: reuse depth for body eval
                                         is_tail_call: true,
+                                        expected_type: None,
                                     });
                                     return;
                                 }
@@ -1607,6 +1714,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             } else {
                 // All grounded args evaluated — compute Cartesian product of
@@ -1679,14 +1787,17 @@ fn process_continuation_generic<C: EvalContext>(
                             // that were skipped when Step 2 (EvalGroundedArgs) fired.
 
                             // Step 3: Try rule matching with the (unchanged) expression
-                            let all_matches = try_match_all_rules_generic(
+                            let all_matches_with_types = try_match_all_rules_generic(
                                 &sexpr, &result_env, *ctx.factory()
                             );
 
-                            if !all_matches.is_empty() {
+                            if !all_matches_with_types.is_empty() {
                                 // Rules matched — evaluate RHS
+                                // Strip rhs_type from 3-tuples → 2-tuples
                                 let mut matches_deque: VecDeque<_> =
-                                    all_matches.into_iter().collect();
+                                    all_matches_with_types.into_iter()
+                                        .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                                        .collect();
                                 let (rhs, bindings) =
                                     matches_deque.pop_front().expect("matches is non-empty");
 
@@ -1708,6 +1819,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     env: result_env,
                                     depth,
                                     is_tail_call: true,
+                                    expected_type: None,
                                 });
                             } else {
                                 // Step 4: No rules matched — return as data constructor
@@ -1722,6 +1834,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: result_env,
                                 depth,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         }
                     } else {
@@ -1740,6 +1853,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env: result_env,
                             depth,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
                 }
@@ -1776,6 +1890,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -1835,6 +1950,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -1905,6 +2021,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -1966,6 +2083,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -2020,6 +2138,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: result_env,
                         depth: depth + 1,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                     return;
                 } else {
@@ -2063,6 +2182,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -2120,6 +2240,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -2151,6 +2272,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: env_after_cond,
                         depth,
                         is_tail_call: true,
+                        expected_type: None,
                     });
                 } else {
                     // Non-boolean (including Unit) → return unreduced (if cond then else)
@@ -2204,6 +2326,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env: atom_env,
                             depth,
                             is_tail_call: true,
+                            expected_type: None,
                         });
                     }
                     GenericSwitchResult::Error(err) => {
@@ -2248,6 +2371,7 @@ fn process_continuation_generic<C: EvalContext>(
                 env: atom_env,
                 depth: depth + 1,
                 is_tail_call: false,
+                expected_type: None,
             });
         }
 
@@ -2271,8 +2395,34 @@ fn process_continuation_generic<C: EvalContext>(
                     next_atom
                 };
 
+                // Phase 8.6: Type-driven case pattern skipping.
+                // If the scrutinee has a known ground type, filter case patterns
+                // to only type-compatible ones. This avoids unnecessary pattern
+                // matching against structurally incompatible patterns.
+                let effective_cases = if let Some(scrutinee_type) = get_ground_type(&switch_atom) {
+                    if let Some(case_pairs) = cases.as_sexpr() {
+                        let filtered: Vec<C::Value> = case_pairs.iter().filter(|pair| {
+                            pair.as_sexpr().map_or(true, |p| {
+                                p.first().map_or(true, |pattern| {
+                                    is_pattern_type_compatible(pattern, scrutinee_type)
+                                })
+                            })
+                        }).cloned().collect();
+                        if filtered.len() < case_pairs.len() {
+                            // Some patterns were skipped — use filtered cases
+                            ctx.factory().sexpr(filtered)
+                        } else {
+                            cases.clone() // No change — use original
+                        }
+                    } else {
+                        cases.clone()
+                    }
+                } else {
+                    cases.clone()
+                };
+
                 // Use generic switch - NO conversion needed
-                match eval_switch_generic(&switch_atom, &cases, ctx.factory()) {
+                match eval_switch_generic(&switch_atom, &effective_cases, ctx.factory()) {
                     GenericSwitchResult::Match(template, _bindings) => {
                         continuations.push(GenericContinuation::ProcessCaseMultiResults {
                             remaining_atoms,
@@ -2287,6 +2437,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env,
                             depth,
                             is_tail_call: true,
+                            expected_type: None,
                         });
                     }
                     GenericSwitchResult::Error(err) => {
@@ -2359,6 +2510,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: eval_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             } else {
                 // All raw results evaluated — now perform pattern matching
@@ -2372,6 +2524,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: eval_env,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         }
                         GenericSwitchResult::Error(err) => {
@@ -2408,6 +2561,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     env: eval_env,
                                     depth,
                                     is_tail_call: true,
+                                    expected_type: None,
                                 });
                             } else {
                                 continuations.push(GenericContinuation::ProcessCaseMultiResults {
@@ -2423,6 +2577,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     env: eval_env,
                                     depth,
                                     is_tail_call: true,
+                                    expected_type: None,
                                 });
                             }
                         }
@@ -2465,6 +2620,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             } else {
                 // Multiple results - evaluate each (unwrap Quoted values)
@@ -2485,6 +2641,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -2545,6 +2702,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             } else {
                 // Multiple results - chain evaluates each
@@ -2574,6 +2732,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             }
         }
@@ -2613,6 +2772,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             } else {
                 work_stack.push(GenericWorkItem::Resume {
@@ -2690,6 +2850,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env: current_env,
                             depth, // TCO: reuse depth for iteration
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     } else {
                         // Multiple continue expressions - just return them
@@ -2733,6 +2894,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             } else {
                 // No error - return original results
@@ -2781,6 +2943,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             } else {
                 // All goals evaluated - return last result
@@ -2807,6 +2970,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             } else if pattern1_results.len() == 1 {
                 // Single result - check if it's a Space (special handling)
@@ -2852,6 +3016,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     env: result_env,
                                     depth,
                                     is_tail_call: true,
+                                    expected_type: None,
                                 });
                             } else {
                                 // Build bodies to evaluate for each match - values already generic
@@ -2886,6 +3051,7 @@ fn process_continuation_generic<C: EvalContext>(
                                             env: result_env,
                                             depth,
                                             is_tail_call: true,
+                                            expected_type: None,
                                         });
                                     } else {
                                         // Multiple bodies - use ProcessUnifyBodies
@@ -2900,6 +3066,7 @@ fn process_continuation_generic<C: EvalContext>(
                                             env: result_env,
                                             depth: depth + 1,
                                             is_tail_call: false,
+                                            expected_type: None,
                                         });
                                     }
                                 } else {
@@ -2909,6 +3076,7 @@ fn process_continuation_generic<C: EvalContext>(
                                         env: result_env,
                                         depth,
                                         is_tail_call: true,
+                                        expected_type: None,
                                     });
                                 }
                             }
@@ -2925,6 +3093,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     env: result_env,
                                     depth,
                                     is_tail_call: true,
+                                    expected_type: None,
                                 });
                             } else {
                                 // Build bodies to evaluate for each match - NO conversion needed
@@ -2959,6 +3128,7 @@ fn process_continuation_generic<C: EvalContext>(
                                             env: result_env,
                                             depth,
                                             is_tail_call: true,
+                                            expected_type: None,
                                         });
                                     } else {
                                         // Multiple bodies - use ProcessUnifyBodies
@@ -2973,6 +3143,7 @@ fn process_continuation_generic<C: EvalContext>(
                                             env: result_env,
                                             depth: depth + 1,
                                             is_tail_call: false,
+                                            expected_type: None,
                                         });
                                     }
                                 } else {
@@ -2982,6 +3153,7 @@ fn process_continuation_generic<C: EvalContext>(
                                         env: result_env,
                                         depth,
                                         is_tail_call: true,
+                                        expected_type: None,
                                     });
                                 }
                             }
@@ -3003,6 +3175,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: result_env,
                         depth: depth + 1,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                 }
             } else {
@@ -3067,6 +3240,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: result_env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         } else {
                             // No bodies at all - send empty to iterator
@@ -3116,6 +3290,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: result_env,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         } else {
                             // No bodies at all - send empty to iterator
@@ -3140,6 +3315,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: result_env,
                         depth: depth + 1,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                 }
             }
@@ -3251,6 +3427,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: env_after,
                                 depth: depth + 1,
                                 is_tail_call: false,
+                                expected_type: None,
                             });
                         } else {
                             work_stack.push(GenericWorkItem::Resume {
@@ -3273,6 +3450,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: env_after,
                         depth: depth + 1,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                 }
             } else {
@@ -3283,6 +3461,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: env_after,
                         depth,
                         is_tail_call: true,
+                        expected_type: None,
                     });
                 } else {
                     work_stack.push(GenericWorkItem::Resume {
@@ -3308,6 +3487,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             } else {
                 // Try to unify with each pattern2 result - NO conversion needed
@@ -3324,6 +3504,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: result_env,
                         depth,
                         is_tail_call: true,
+                        expected_type: None,
                     });
                 } else if all_bindings.len() == 1 {
                     // Apply bindings generically - NO conversion needed
@@ -3334,6 +3515,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: result_env,
                         depth,
                         is_tail_call: true,
+                        expected_type: None,
                     });
                 } else {
                     // Multiple bindings - pre-instantiate all bodies generically
@@ -3357,6 +3539,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: result_env,
                         depth,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                 }
             }
@@ -3383,6 +3566,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: env_after_body,
                     depth,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             } else {
                 work_stack.push(GenericWorkItem::Resume {
@@ -3425,6 +3609,7 @@ fn process_continuation_generic<C: EvalContext>(
                 env: result_env,
                 depth: depth + 1,
                 is_tail_call: false,
+                expected_type: None,
             });
         }
 
@@ -3460,6 +3645,7 @@ fn process_continuation_generic<C: EvalContext>(
                 env: result_env,
                 depth: depth + 1,
                 is_tail_call: false,
+                expected_type: None,
             });
         }
 
@@ -3490,6 +3676,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             } else {
                 // All results evaluated — assemble the tuple
@@ -3522,6 +3709,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth: depth + 1,
                     is_tail_call: false,
+                    expected_type: None,
                 });
             } else {
                 work_stack.push(GenericWorkItem::Resume {
@@ -3641,13 +3829,51 @@ fn process_continuation_generic<C: EvalContext>(
                 let first = &space_results[0];
                 if let Some(handle) = first.as_space() {
                     if handle.is_module_space() || handle.name == "self" {
-                        // Use match_space which handles serialization internally
-                        let matches = env.match_space(&pattern, &template);
-                        // Expand multiplicities into flat list
-                        let generic_results: Vec<C::Value> = matches
-                            .into_iter()
-                            .flat_map(|m| std::iter::repeat(m.value).take(m.count))
-                            .collect();
+                        // Phase 8.4: Type-aware match optimization.
+                        // If pattern is (: $var TypeName), use the types HashMap as a
+                        // reverse index instead of scanning the entire MORK space.
+                        let type_filtered = if let Some(pat_items) = pattern.as_sexpr() {
+                            if pat_items.len() == 3 {
+                                if let (Some(":"), Some(var), Some(type_name)) = (
+                                    pat_items[0].as_atom(),
+                                    pat_items[1].as_atom(),
+                                    pat_items[2].as_atom(),
+                                ) {
+                                    if var.starts_with('$') {
+                                        // Use type index: O(k) where k = atoms of matching type
+                                        let matching_atoms = env.get_atoms_of_type(type_name);
+                                        let results: Vec<C::Value> = matching_atoms.iter()
+                                            .map(|name| {
+                                                let mut bindings = crate::backend::models::GenericBindings::new();
+                                                bindings.insert(var.to_string(), ctx.factory().atom(name));
+                                                apply_bindings_generic(&template, &bindings, ctx.factory())
+                                            })
+                                            .collect();
+                                        Some(results)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        let generic_results: Vec<C::Value> = if let Some(filtered) = type_filtered {
+                            filtered
+                        } else {
+                            // Standard path: match_space which handles serialization internally
+                            let matches = env.match_space(&pattern, &template);
+                            // Expand multiplicities into flat list
+                            matches
+                                .into_iter()
+                                .flat_map(|m| std::iter::repeat(m.value).take(m.count))
+                                .collect()
+                        };
                         work_stack.push(GenericWorkItem::Resume {
                             result: (generic_results, env_after),
                         });
@@ -3666,6 +3892,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: env_after,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         } else {
                             // Multiple matches - queue template evaluations
@@ -3687,6 +3914,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: forked_env,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         }
                     }
@@ -3733,6 +3961,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: env.fork_for_nondeterminism(),
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             }
         }
@@ -4012,6 +4241,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: env_after,
                         depth: depth + 1,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -4115,6 +4345,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: env_after,
                         depth: depth + 1,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -4211,6 +4442,7 @@ fn process_continuation_generic<C: EvalContext>(
                 env: env_after,
                 depth: depth + 1,
                 is_tail_call: false,
+                expected_type: None,
             });
         }
 
@@ -4322,6 +4554,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: env_after,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             } else {
                 // Expression reduced — evaluate then branch
@@ -4330,6 +4563,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: env_after,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             }
         }
@@ -4352,6 +4586,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: env_after,
                     depth,
                     is_tail_call: true,
+                    expected_type: None,
                 });
             } else {
                 let first = &space_results[0];
@@ -4371,6 +4606,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: env_after,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         } else if generic_results.len() == 1 {
                             // Single match — evaluate template result
@@ -4379,6 +4615,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: env_after,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         } else {
                             // Multiple matches — queue template evaluations
@@ -4398,6 +4635,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: forked_env,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         }
                     } else {
@@ -4412,6 +4650,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: env_after,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         } else if instantiated_templates.len() == 1 {
                             work_stack.push(GenericWorkItem::Eval {
@@ -4419,6 +4658,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: env_after,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         } else {
                             let mut generic_templates: VecDeque<C::Value> =
@@ -4438,6 +4678,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 env: forked_env,
                                 depth,
                                 is_tail_call: true,
+                                expected_type: None,
                             });
                         }
                     }
@@ -4497,6 +4738,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env: env_after,
                             depth: depth + 1,
                             is_tail_call: false,
+                            expected_type: None,
                         });
                     }
                 } else {
@@ -4574,6 +4816,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: env_after,
                         depth: depth + 1,
                         is_tail_call: false,
+                        expected_type: None,
                     });
                 } else {
                     // No size argument - create memo with default size (no limit)

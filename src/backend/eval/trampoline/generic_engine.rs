@@ -376,11 +376,13 @@ where
 ///
 /// A vector of (rhs, bindings) pairs for all matching rules, sorted by specificity
 /// and expanded by rule multiplicity.
+/// Phase 8.7: Return type includes `rhs_type` for branch pruning.
+/// The third element is the cached RHS type from the rule entry (if available).
 pub fn try_match_all_rules_generic<V, F>(
     expr: &V,
     env: &GenericEnvironment<V, F>,
     _factory: F,
-) -> Vec<(V, GenericBindings<V>)>
+) -> Vec<(V, GenericBindings<V>, Option<V>)>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Copy + Clone,
@@ -389,7 +391,8 @@ where
     // This replaces the old pipeline of:
     //   get_matching_rules_for_expr → pattern_match_generic → apply_bindings_generic
     //
-    // Returns (rhs_template, bindings) — the unapplied RHS template plus named bindings.
+    // Returns (rhs_template, bindings, rhs_type) — the unapplied RHS template plus
+    // named bindings, plus the cached return type for branch pruning.
     // The caller (trampoline ProcessCombinations) applies bindings via apply_bindings_generic,
     // ensuring a single point of binding application rather than double-applying.
     //
@@ -399,7 +402,7 @@ where
     let results = env.match_rules_native(expr, |v: &V, _: &GenericBindings<V>, _: &F| v.clone());
     results
         .into_iter()
-        .map(|r| (r.rhs_template, r.bindings))
+        .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
         .collect()
 }
 

@@ -1401,4 +1401,193 @@ mod tests {
         "#,
         &["(A B)", "computed-default"]
     );
+
+    // =========================================================================
+    // Phase 8: Type-Driven Optimization Tests
+    // =========================================================================
+
+    // --- Sub-phase 8.1: rhs_type wiring ---
+
+    // Arithmetic rules produce Number-typed RHS
+    eval_test!(phase8_rhs_type_arithmetic,
+        r#"
+            (= (f $x) (+ $x 1))
+            !(f 5)
+        "#,
+        &["6"]
+    );
+
+    // Comparison rules produce Bool-typed RHS
+    eval_test!(phase8_rhs_type_comparison,
+        r#"
+            (= (h $x) (< $x 0))
+            !(h 5)
+        "#,
+        &["False"]
+    );
+
+    // Variable-only RHS — type depends on binding
+    eval_test!(phase8_rhs_type_variable,
+        r#"
+            (= (g $x) $x)
+            !(g 42)
+        "#,
+        &["42"]
+    );
+
+    // Unknown function in RHS → %Undefined% filtered out (rhs_type = None)
+    eval_test!(phase8_rhs_type_undefined,
+        r#"
+            (= (k $x) (unknown $x))
+            !(k hello)
+        "#,
+        &["(unknown hello)"]
+    );
+
+    // --- Sub-phase 8.3: Function vs tuple dispatch ---
+
+    // Value type (no arrow type) → tuple path directly, no rule matching
+    eval_test!(phase8_value_type_skips_rules,
+        r#"
+            (: Red Color)
+            !(Red 1 2)
+        "#,
+        &["(Red 1 2)"]
+    );
+
+    // Arrow type → still does rule matching
+    eval_test!(phase8_arrow_type_does_not_skip,
+        r#"
+            (: f (-> Number Number))
+            (= (f $x) (+ $x 10))
+            !(f 5)
+        "#,
+        &["15"]
+    );
+
+    // Untyped operator → still does rule matching (no shortcut)
+    eval_test!(phase8_no_type_does_not_skip,
+        r#"
+            (= (foo $x) (+ $x 1))
+            !(foo 1)
+        "#,
+        &["2"]
+    );
+
+    // --- Sub-phase 8.4: match type-aware space pre-filtering ---
+
+    // Type-based match filtering: only atoms with matching type returned
+    eval_test!(phase8_match_type_filter_basic,
+        r#"
+            (: a Number)
+            (: b String)
+            !(match &self (: $x Number) $x)
+        "#,
+        &["a"]
+    );
+
+    // Multiple atoms of same type — all returned
+    eval_test_unordered!(phase8_match_type_filter_multi,
+        r#"
+            (: x Number)
+            (: y Number)
+            (: z String)
+            !(match &self (: $w Number) $w)
+        "#,
+        &["x", "y"]
+    );
+
+    // No atoms of matching type → empty result
+    eval_test!(phase8_match_type_filter_empty,
+        r#"
+            (: a Number)
+            !(match &self (: $x Bool) $x)
+        "#,
+        &[]
+    );
+
+    // --- Sub-phase 8.5: let/let* type validation ---
+
+    // Typed let binding with matching type — value 42 matches (: $x Number) structurally
+    // Note: (: $x Number) as a let-pattern does structural matching, not type checking
+    eval_test!(phase8_let_typed_match,
+        r#"
+            !(let $x 42 (+ $x 1))
+        "#,
+        &["43"]
+    );
+
+    // Typed let binding — untyped fallback unchanged
+    eval_test!(phase8_let_untyped_unchanged,
+        r#"
+            !(let $x 42 $x)
+        "#,
+        &["42"]
+    );
+
+    // --- Sub-phase 8.6: case type-driven pattern skipping ---
+
+    // String pattern should be skipped for numeric scrutinee
+    eval_test!(phase8_case_type_skip_string,
+        r#"
+            !(case 42 (("hello" string-match) ($x (+ $x 1))))
+        "#,
+        &["43"]
+    );
+
+    // Variable pattern should NOT be skipped
+    eval_test!(phase8_case_type_no_false_skip,
+        r#"
+            !(case 42 (($x (+ $x 1))))
+        "#,
+        &["43"]
+    );
+
+    // --- Sub-phase 8.8: Grounded arg type pre-validation ---
+
+    // Valid args pass through normally
+    eval_test!(phase8_grounded_valid_args,
+        r#"
+            !(+ 1 2)
+        "#,
+        &["3"]
+    );
+
+    // S-expr args are NOT pre-validated (need evaluation first)
+    eval_test!(phase8_grounded_sexpr_not_validated,
+        r#"
+            (= (f) 1)
+            !(+ (f) 2)
+        "#,
+        &["3"]
+    );
+
+    // --- Sub-phase 8.7: Branch pruning by return type ---
+
+    // Rules with unknown rhs_type (None) are NOT pruned (conservative)
+    eval_test!(phase8_branch_prune_conservative,
+        r#"
+            (= (g $x) (unknown-fn $x))
+            !(g hello)
+        "#,
+        &["(unknown-fn hello)"]
+    );
+
+    // Expected type Bool from if-condition: rules still fire correctly
+    eval_test!(phase8_expected_type_bool_if,
+        r#"
+            (= (pred $x) (< $x 10))
+            !(if (pred 5) yes no)
+        "#,
+        &["yes"]
+    );
+
+    // Expected type Number for arithmetic: basic functionality preserved
+    eval_test!(phase8_expected_type_number_arithmetic,
+        r#"
+            (= (double $x) (+ $x $x))
+            !(+ (double 3) 1)
+        "#,
+        &["7"]
+    );
 }

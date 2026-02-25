@@ -98,10 +98,11 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// ## Zero-Conversion Design
     ///
     /// Matches now store generic values, converted once at rule retrieval.
+    /// Phase 8.7: Third element is `rhs_type` for branch pruning by expected type.
     EvalRuleMatchesLazy {
-        /// Matched rules: (RHS expression, bindings from pattern match)
+        /// Matched rules: (RHS expression, bindings from pattern match, optional RHS type)
         /// Both RHS and bindings are in generic type V (converted once at rule retrieval)
-        matches: Vec<(V, GenericBindings<V>)>,
+        matches: Vec<(V, GenericBindings<V>, Option<V>)>,
         /// Environment for evaluation
         env: E,
         /// Evaluation depth

@@ -62,6 +62,24 @@ where
         self.shared.types.read().get(name).cloned().unwrap_or_default()
     }
 
+    /// Get all atom names that have a specific declared type.
+    ///
+    /// Enables O(k) type-filtered match instead of O(n) full space scan,
+    /// where k = number of atoms of the matching type.
+    ///
+    /// Used by Phase 8.4 match type-aware space pre-filtering: when the
+    /// match pattern is `(: $x SomeType)`, use this as a reverse index
+    /// instead of scanning the entire MORK space.
+    pub fn get_atoms_of_type(&self, type_name: &str) -> Vec<String> {
+        self.shared.types.read()
+            .iter()
+            .filter(|(_, types)| types.iter().any(|t| {
+                t.as_atom() == Some(type_name)
+            }))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Remove a specific type assertion (generic version).
     ///
     /// Removes the specific type from the `types` HashMap Vec. If the Vec

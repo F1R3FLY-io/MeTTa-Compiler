@@ -87,6 +87,9 @@ pub struct RuleMatchResult<V: MettaValueTrait + Clone> {
     pub bindings: GenericBindings<V>,
     /// How many times this rule was defined (multiplicity)
     pub multiplicity: u64,
+    /// Phase 8.7: Cached return type of the RHS (from RuleEntry).
+    /// Used for branch pruning when `expected_type` is set.
+    pub rhs_type: Option<V>,
 }
 
 /// A single rule entry in the RuleIndex.
@@ -650,6 +653,14 @@ where
         let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());
         let arity = lhs.get_arity();
 
+        // Phase 8.1: Compute RHS type at insertion time for branch pruning (Phase 8.7).
+        // Only stores non-trivial types — %Undefined% provides no pruning benefit.
+        let rhs_type = {
+            use crate::backend::eval::types_generic::infer_type_generic;
+            let inferred = infer_type_generic(&rhs, &self.factory, self);
+            if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
+        };
+
         // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
         if let Some(ref head) = head_owned {
             self.shared.fuzzy_matcher.write().insert(head);
@@ -760,7 +771,7 @@ where
                     var_names,
                     wildcard_indices,
                     multiplicity: 1,
-                    rhs_type: None, // Phase 8.1: will be populated when type inference is integrated
+                    rhs_type: rhs_type.clone(),
                 };
                 self.shared.rule_index.write().add_rule(
                     head_owned.as_deref(),
@@ -804,7 +815,7 @@ where
                 var_names,
                 wildcard_indices,
                 multiplicity: 1,
-                rhs_type: None, // Phase 8.1: will be populated when type inference is integrated
+                rhs_type, // Phase 8.1: computed before closure, last use — no clone needed
             };
             self.shared.rule_index.write().add_rule(
                 head_owned.as_deref(),
@@ -936,6 +947,7 @@ where
                                 rhs_template: entry.rhs.clone(),
                                 bindings,
                                 multiplicity: 1,
+                                rhs_type: entry.rhs_type.clone(),
                             });
                         } else {
                             for _ in 0..multiplicity {
@@ -944,6 +956,7 @@ where
                                     rhs_template: entry.rhs.clone(),
                                     bindings: bindings.clone(),
                                     multiplicity,
+                                    rhs_type: entry.rhs_type.clone(),
                                 });
                             }
                         }
@@ -1085,6 +1098,7 @@ where
                         rhs_template: entry.rhs.clone(),
                         bindings,
                         multiplicity: 1,
+                        rhs_type: entry.rhs_type.clone(),
                     });
                 } else {
                     for _ in 0..multiplicity {
@@ -1093,6 +1107,7 @@ where
                             rhs_template: entry.rhs.clone(),
                             bindings: bindings.clone(),
                             multiplicity,
+                            rhs_type: entry.rhs_type.clone(),
                         });
                     }
                 }
@@ -1510,6 +1525,13 @@ impl MettaEnvironment {
                         let (var_names, wildcard_indices) =
                             build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
 
+                        // Phase 8.1: Compute RHS type for branch pruning
+                        let rhs_type = {
+                            use crate::backend::eval::types_generic::infer_type_generic;
+                            let inferred = infer_type_generic(&rhs, &self.factory, self);
+                            if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
+                        };
+
                         let entry = RuleEntry {
                             lhs: lhs.clone(),
                             rhs: rhs.clone(),
@@ -1518,7 +1540,7 @@ impl MettaEnvironment {
                             var_names,
                             wildcard_indices,
                             multiplicity,
-                            rhs_type: None, // Phase 8.1: will be populated when type inference is integrated
+                            rhs_type,
                         };
 
                         // Set correct multiplicity (don't let add_rule deduplicate)

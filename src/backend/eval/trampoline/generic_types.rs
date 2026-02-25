@@ -53,6 +53,10 @@ pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
         /// If true, this is a tail call - don't increment depth
         is_tail_call: bool,
+        /// Phase 8.7: Expected return type for branch pruning.
+        /// When set, rules whose `rhs_type` is incompatible with this type
+        /// are pruned from the match set before evaluation.
+        expected_type: Option<V>,
     },
     /// Resume the continuation at stack top with a result
     Resume {
@@ -649,8 +653,11 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericWorkItem<V, E> {
     /// temporary roots before dropping the EvalGuard.
     pub fn collect_values(&self, out: &mut Vec<V>) {
         match self {
-            Self::Eval { value, .. } => {
+            Self::Eval { value, expected_type, .. } => {
                 out.push(value.clone());
+                if let Some(et) = expected_type {
+                    out.push(et.clone());
+                }
             }
             Self::Resume { result: (values, _), .. } => {
                 out.extend(values.iter().cloned());
@@ -1027,6 +1034,7 @@ mod tests {
             env: env(),
             depth: 0,
             is_tail_call: false,
+            expected_type: None,
         };
         let mut roots = Vec::new();
         item.collect_values(&mut roots);

@@ -6,6 +6,7 @@
 //! - `AndOpGeneric` - Logical AND with short-circuit evaluation
 //! - `OrOpGeneric` - Logical OR with short-circuit evaluation
 //! - `NotOpGeneric` - Logical NOT
+//! - `XorOpGeneric` - Logical XOR (no short-circuit — both operands always needed)
 //!
 //! ## Zero-Conversion Design
 //!
@@ -236,6 +237,81 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for NotOpGeneric
     }
 }
 
+/// Generic TCO Logical XOR operation: (xor a b)
+///
+/// No short-circuit: XOR always needs both operands since the result depends
+/// on both values (true iff exactly one operand is true).
+pub struct XorOpGeneric;
+
+impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for XorOpGeneric {
+    fn name(&self) -> &str {
+        "xor"
+    }
+
+    fn execute_step_generic<F: MettaValueFactory<V>>(
+        &self,
+        state: &mut GenericGroundedState<V>,
+        factory: &F,
+    ) -> GenericGroundedWork<V> {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GenericGroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "xor requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                if let Some(err) = find_error_generic(a_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                // No short-circuit for XOR — always need both operands
+                state.step = 2;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
+
+                if let Some(err) = find_error_generic(b_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a.as_bool(), b.as_bool()) {
+                            (Some(x), Some(y)) => {
+                                results.push((factory.bool(x ^ y), None));
+                            }
+                            _ => {
+                                return GenericGroundedWork::Error(ExecError::Runtime(format!(
+                                    "Cannot perform 'xor': expected Bool, got {} and {}",
+                                    a.friendly_type_name(),
+                                    b.friendly_type_name()
+                                )));
+                            }
+                        }
+                    }
+                }
+                GenericGroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for xor operation", state.step),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +390,14 @@ mod tests {
     fn test_not_op() {
         assert!(!run_unary_logical(&NotOpGeneric, true));
         assert!(run_unary_logical(&NotOpGeneric, false));
+    }
+
+    #[test]
+    fn test_xor_op() {
+        assert!(!run_binary_logical(&XorOpGeneric, true, true));
+        assert!(run_binary_logical(&XorOpGeneric, true, false));
+        assert!(run_binary_logical(&XorOpGeneric, false, true));
+        assert!(!run_binary_logical(&XorOpGeneric, false, false));
     }
 
     #[test]

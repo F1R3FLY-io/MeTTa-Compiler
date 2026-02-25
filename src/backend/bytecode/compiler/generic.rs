@@ -776,6 +776,110 @@ where
                 Ok(Some(()))
             }
 
+            // Set operations
+            "unique-atom" => {
+                self.check_arity("unique-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::UniqueAtom);
+                Ok(Some(()))
+            }
+            "union-atom" => {
+                self.check_arity("union-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::UnionAtom);
+                Ok(Some(()))
+            }
+            "intersection-atom" => {
+                self.check_arity("intersection-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::IntersectionAtom);
+                Ok(Some(()))
+            }
+            "subtraction-atom" => {
+                self.check_arity("subtraction-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::SubtractionAtom);
+                Ok(Some(()))
+            }
+
+            // Tuple operations
+            "tuple-concat" => {
+                self.check_arity("tuple-concat", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::TupleConcat);
+                Ok(Some(()))
+            }
+            "tuple-count" => {
+                self.check_arity("tuple-count", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::TupleCount);
+                Ok(Some(()))
+            }
+            "without" => {
+                self.check_arity("without", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::Without);
+                Ok(Some(()))
+            }
+            "element-of" => {
+                self.check_arity("element-of", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::ElementOf);
+                Ok(Some(()))
+            }
+
+            // Additional list operations (MeTTaTron extensions)
+            "range" => {
+                self.check_arity("range", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::Range);
+                Ok(Some(()))
+            }
+            "reverse-atom" => {
+                self.check_arity("reverse-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::ReverseAtom);
+                Ok(Some(()))
+            }
+            "flatten-atom" => {
+                self.check_arity("flatten-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::FlattenAtom);
+                Ok(Some(()))
+            }
+            "zip-atom" => {
+                self.check_arity("zip-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::ZipAtom);
+                Ok(Some(()))
+            }
+            "take-atom" => {
+                self.check_arity("take-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::TakeAtom);
+                Ok(Some(()))
+            }
+            "drop-atom" => {
+                self.check_arity("drop-atom", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::DropAtom);
+                Ok(Some(()))
+            }
+
+            // sort-tuple and best-candidate intentionally fall through to tree-walker.
+            // They have complex iterative evaluation requiring full trampoline context.
+            // /safe and clamp are handled by GenericGroundedOperationTCO without opcodes.
+
             // Not a built-in
             _ => Ok(None),
         }
@@ -1009,28 +1113,25 @@ where
                 return self.compile(&items[0]);
             }
 
-            // Multiple items - create choice point
-            // Compile sub-chunks for each alternative
-            let mut sub_indices = Vec::with_capacity(items.len());
+            // Multiple items - emit Fork opcode with value constants
+            // Each alternative is stored as a value constant (not a sub-chunk),
+            // matching the VM's op_fork which reads constants via get_constant().
+            let mut const_indices = Vec::with_capacity(items.len());
             for item in items {
-                let mut sub_compiler = GenericCompiler::with_context(
-                    "superpose_alt",
-                    self.context.clone(),
-                    self.factory.clone(),
-                );
-                sub_compiler.compile(item)?;
-                sub_compiler.builder.emit(Opcode::Return);
-                let sub_chunk = sub_compiler.builder.build();
-                let idx = self.builder.add_chunk_constant(sub_chunk);
-                sub_indices.push(idx);
+                let idx = self.builder.add_constant(item.clone());
+                const_indices.push(idx);
             }
 
-            // Emit Fork with alternatives
-            let count = sub_indices.len();
-            self.builder.emit_byte(Opcode::Fork, count as u8);
-            for idx in sub_indices {
-                self.builder.emit_raw(&(idx as u16).to_le_bytes());
+            // Emit Fork with count as u16 (big-endian), matching VM's read_u16()
+            let count = const_indices.len() as u16;
+            self.builder.emit_u16(Opcode::Fork, count);
+            for idx in const_indices {
+                self.builder.emit_raw(&idx.to_be_bytes());
             }
+
+            // Yield saves the current top-of-stack to results, then backtracks
+            // via op_fail to the choice point created by Fork, exploring all alternatives.
+            self.builder.emit(Opcode::Yield);
         } else {
             // Not a list - compile the list expression and it will be dynamically superposed
             self.compile(list)?;

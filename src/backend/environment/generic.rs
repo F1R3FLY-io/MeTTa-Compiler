@@ -58,7 +58,8 @@ use crate::backend::models::{
 };
 use crate::backend::modules::ModuleRegistry;
 use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
-use crate::backend::varint_encoding::value_to_varint_key_generic;
+use crate::backend::wide_mork::decode::wide_bytes_to_generic_value;
+use crate::backend::wide_mork::encoding::encode_wide_storage;
 
 // ============================================================================
 // Static Sentinel for Unmodified Environments
@@ -168,7 +169,7 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     // Unified Atom Storage (AtomSpace)
     // ========================================================================
     /// Unified atom storage: MORK PathMap (ground atoms) + variable atom Vec.
-    /// Contains btm, shared_mapping, head_arity_bloom, large_expr_pathmap,
+    /// Contains btm, wide_btm, shared_mapping, head_arity_bloom,
     /// total_atoms, and variable_atoms.
     pub(crate) atom_space: super::atom_space::AtomSpace<V>,
 
@@ -425,17 +426,17 @@ where
                 // Extract values before constructing (avoid borrow-of-moved issues)
                 let forked_btm = forked.btm.read().clone();
                 let forked_mapping = forked.shared_mapping.clone();
-                let forked_large = forked.large_expr_pathmap.read().clone();
+                let forked_wide = forked.wide_btm.read().clone();
                 let forked_count = forked.total_atoms.load(Ordering::Acquire);
                 let forked_var_atoms = forked.variable_atoms.read().clone();
                 // Deep-clone bloom filter into a new Arc for exclusive mutation
                 super::atom_space::AtomSpace {
                     btm: RwLock::new(forked_btm),
+                    wide_btm: RwLock::new(forked_wide),
                     shared_mapping: forked_mapping,
                     head_arity_bloom: std::sync::Arc::new(RwLock::new(
                         self.shared.atom_space.head_arity_bloom.read().clone(),
                     )),
-                    large_expr_pathmap: RwLock::new(forked_large),
                     total_atoms: AtomicUsize::new(forked_count),
                     variable_atoms: RwLock::new(forked_var_atoms),
                 }
@@ -704,7 +705,11 @@ where
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
-                large_expr_pathmap: RwLock::new(None), // TODO: merge these too
+                // Merge wide_btm using same lattice algebra as btm
+                wide_btm: RwLock::new(merge_pathmaps_max(
+                    &self.shared.atom_space.wide_btm.read(),
+                    &other.shared.atom_space.wide_btm.read(),
+                )),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
             },
@@ -989,7 +994,14 @@ where
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared.atom_space.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
-                large_expr_pathmap: RwLock::new(None), // TODO: merge these too
+                // Merge wide_btm from all environments using same lattice algebra as btm
+                wide_btm: RwLock::new({
+                    let mut merged_wide = self.shared.atom_space.wide_btm.read().clone();
+                    for other_env in others.iter() {
+                        merged_wide = merge_pathmaps_max(&merged_wide, &other_env.shared.atom_space.wide_btm.read());
+                    }
+                    merged_wide
+                }),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
             },
@@ -1077,7 +1089,7 @@ where
     ///
     /// Note: Rules are stored as MORK bytes in `btm` (PathMap), not as `V` values.
     /// They hold no slab pointers and thus are NOT GC roots.
-    /// `large_expr_pathmap` stores `V` and IS collected (handled by RootProvider impl).
+    /// `wide_btm` stores only byte keys + Multiplicity — no V references, no GC tracing needed.
     pub fn gc_roots(&self, roots: &mut Vec<V>) {
         // Named spaces: collect all atoms
         {
@@ -1154,7 +1166,7 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
                 + self.states.read().len()
                 + self.pattern_cache.read().len()
                 + self.rule_index.read().len() * 2 // lhs + rhs per entry
-                + 64; // buffer for tokenizer + large_expr_pathmap
+                + 64; // buffer for tokenizer + variable_atoms
             roots.reserve(estimated);
         }
 
@@ -1351,23 +1363,20 @@ where
         }) {
             Ok(()) => {}
             Err(_) => {
-                // Fallback for large expressions (arity >= 64)
-                // Store V directly (zero-conversion)
-                let key = value_to_varint_key_generic(value);
-
-                // Lock ordering: btm before large_expr_pathmap (consistent with remove_from_space)
+                // Fallback for large expressions (arity >= 64): Wide MORK encoding
+                let mut wide_key = Vec::new();
+                encode_wide_storage(value, &mut wide_key);
                 {
-                    let mut btm = self.shared.atom_space.btm.write();
-                    add_atom(&mut btm, &key);
-                }
-
-                {
-                    let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                    let fallback = guard.get_or_insert_with(PathMap::new);
-                    fallback.insert(&key, value.clone());
+                    let mut wbtm = self.shared.atom_space.wide_btm.write();
+                    add_atom(&mut wbtm, &wide_key);
                 }
 
                 self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
+                }
             }
         }
     }
@@ -1433,21 +1442,19 @@ where
                     self.shared.rule_index.write().remove_rule(&lhs, &rhs);
                 }
                 Err(_) => {
-                    // Fallback for large expressions (arity >= 64)
-                    let key = value_to_varint_key_generic(value);
-
-                    {
-                        let mut btm = self.shared.atom_space.btm.write();
-                        remove_atom(&mut btm, &key);
+                    // Fallback for large expressions (arity >= 64): Wide MORK encoding
+                    let mut wide_key = Vec::new();
+                    encode_wide_storage(value, &mut wide_key);
+                    let mut wbtm = self.shared.atom_space.wide_btm.write();
+                    let count = get_multiplicity(&wbtm, &wide_key);
+                    if count <= 1 {
+                        wbtm.remove(&wide_key);
+                    } else {
+                        remove_atom(&mut wbtm, &wide_key);
                     }
-
-                    let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                    if let Some(ref mut fallback) = *guard {
-                        if fallback.contains(&key) {
-                            fallback.remove(&key);
-                            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                        }
-                    }
+                    drop(wbtm);
+                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
                 }
             }
             return;
@@ -1480,21 +1487,19 @@ where
         }) {
             Ok(()) => {}
             Err(_) => {
-                // Fallback for large expressions (arity >= 64)
-                let key = value_to_varint_key_generic(value);
-
-                {
-                    let mut btm = self.shared.atom_space.btm.write();
-                    remove_atom(&mut btm, &key);
+                // Fallback for large expressions (arity >= 64): Wide MORK encoding
+                let mut wide_key = Vec::new();
+                encode_wide_storage(value, &mut wide_key);
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                let count = get_multiplicity(&wbtm, &wide_key);
+                if count <= 1 {
+                    wbtm.remove(&wide_key);
+                } else {
+                    remove_atom(&mut wbtm, &wide_key);
                 }
-
-                let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                if let Some(ref mut fallback) = *guard {
-                    if fallback.contains(&key) {
-                        fallback.remove(&key);
-                        self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    }
-                }
+                drop(wbtm);
+                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.shared.atom_space.head_arity_bloom.write().note_deletion();
             }
         }
     }
@@ -1562,20 +1567,13 @@ where
             }) {
                 Ok(()) => {}
                 Err(_) => {
-                    // Fallback for large expressions (arity >= 64)
-                    let key = value_to_varint_key_generic(value);
-
+                    // Fallback for large expressions (arity >= 64): Wide MORK encoding
+                    let mut wide_key = Vec::new();
+                    encode_wide_storage(value, &mut wide_key);
                     {
-                        let mut btm = self.shared.atom_space.btm.write();
-                        add_atom(&mut btm, &key);
+                        let mut wbtm = self.shared.atom_space.wide_btm.write();
+                        add_atom(&mut wbtm, &wide_key);
                     }
-
-                    {
-                        let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                        let fallback = guard.get_or_insert_with(PathMap::new);
-                        fallback.insert(&key, value.clone());
-                    }
-
                     self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -1599,23 +1597,19 @@ where
         }) {
             Ok(()) => {}
             Err(_) => {
-                // Fallback for large expressions (arity >= 64)
-                // Store V directly (zero-conversion)
-                let key = value_to_varint_key_generic(value);
-
-                // Lock ordering: btm before large_expr_pathmap (consistent with remove_from_space_shared)
+                // Fallback for large expressions (arity >= 64): Wide MORK encoding
+                let mut wide_key = Vec::new();
+                encode_wide_storage(value, &mut wide_key);
                 {
-                    let mut btm = self.shared.atom_space.btm.write();
-                    add_atom(&mut btm, &key);
+                    let mut wbtm = self.shared.atom_space.wide_btm.write();
+                    add_atom(&mut wbtm, &wide_key);
                 }
-
-                {
-                    let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                    let fallback = guard.get_or_insert_with(PathMap::new);
-                    fallback.insert(&key, value.clone());
-                }
-
                 self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
+                }
             }
         }
 
@@ -1665,21 +1659,19 @@ where
                     self.shared.rule_index.write().remove_rule(&lhs, &rhs);
                 }
                 Err(_) => {
-                    // Fallback for large expressions (arity >= 64)
-                    let key = value_to_varint_key_generic(value);
-
-                    {
-                        let mut btm = self.shared.atom_space.btm.write();
-                        remove_atom(&mut btm, &key);
+                    // Fallback for large expressions (arity >= 64): Wide MORK encoding
+                    let mut wide_key = Vec::new();
+                    encode_wide_storage(value, &mut wide_key);
+                    let mut wbtm = self.shared.atom_space.wide_btm.write();
+                    let count = get_multiplicity(&wbtm, &wide_key);
+                    if count <= 1 {
+                        wbtm.remove(&wide_key);
+                    } else {
+                        remove_atom(&mut wbtm, &wide_key);
                     }
-
-                    let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                    if let Some(ref mut fallback) = *guard {
-                        if fallback.contains(&key) {
-                            fallback.remove(&key);
-                            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                        }
-                    }
+                    drop(wbtm);
+                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
                 }
             }
             self.mark_modified();
@@ -1714,21 +1706,19 @@ where
         }) {
             Ok(()) => {}
             Err(_) => {
-                // Fallback for large expressions (arity >= 64)
-                let key = value_to_varint_key_generic(value);
-
-                {
-                    let mut btm = self.shared.atom_space.btm.write();
-                    remove_atom(&mut btm, &key);
+                // Fallback for large expressions (arity >= 64): Wide MORK encoding
+                let mut wide_key = Vec::new();
+                encode_wide_storage(value, &mut wide_key);
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                let count = get_multiplicity(&wbtm, &wide_key);
+                if count <= 1 {
+                    wbtm.remove(&wide_key);
+                } else {
+                    remove_atom(&mut wbtm, &wide_key);
                 }
-
-                let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                if let Some(ref mut fallback) = *guard {
-                    if fallback.contains(&key) {
-                        fallback.remove(&key);
-                        self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    }
-                }
+                drop(wbtm);
+                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.shared.atom_space.head_arity_bloom.write().note_deletion();
             }
         }
 
@@ -1799,17 +1789,18 @@ where
 
         drop(space);
 
-        // Check large expression fallback PathMap (stores V directly, zero-conversion)
-        let guard = self.shared.atom_space.large_expr_pathmap.read();
-        if let Some(ref fallback) = *guard {
-            let btm = self.shared.atom_space.btm.read();
-
-            for (key, stored_value) in fallback.iter() {
-                // stored_value is already V (zero-conversion)
-                if let Some(bindings) = pattern_match_generic(pattern, stored_value) {
-                    let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
-                    let multiplicity = get_multiplicity(&btm, &key).max(1) as usize;
-                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
+        // Check wide expression PathMap (arity >= 64, Wide MORK keys)
+        {
+            let wbtm = self.shared.atom_space.wide_btm.read();
+            let mut rz = wbtm.read_zipper();
+            while rz.to_next_val() {
+                let path_bytes = rz.path();
+                let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
+                if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
+                    if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                        let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
+                        results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                    }
                 }
             }
         }
@@ -1859,13 +1850,16 @@ where
 
         drop(space);
 
-        // Check large expression fallback PathMap (stores V directly, zero-conversion)
-        let guard = self.shared.atom_space.large_expr_pathmap.read();
-        if let Some(ref fallback) = *guard {
-            for (_key, stored_value) in fallback.iter() {
-                // stored_value is already V (zero-conversion)
-                if pattern_match_generic(pattern, stored_value).is_some() {
-                    return true;
+        // Check wide expression PathMap (arity ≥ 64, Wide MORK encoding)
+        {
+            let wbtm = self.shared.atom_space.wide_btm.read();
+            let mut wrz = wbtm.read_zipper();
+            while wrz.to_next_val() {
+                let path_bytes = wrz.path();
+                if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
+                    if pattern_match_generic(pattern, &atom).is_some() {
+                        return true;
+                    }
                 }
             }
         }
@@ -1873,14 +1867,15 @@ where
         false
     }
 
-    /// Get all atoms from the Space (MORK PathMap + large expression fallback).
+    /// Get all atoms from the Space (MORK PathMap + Wide MORK PathMap).
     ///
     /// This iterates the same data as `match_space()` but without pattern filtering,
     /// returning every stored atom as-is.
     ///
     /// ## Zero-Conversion Architecture
     ///
-    /// Uses `mork_bytes_to_generic_value()` for direct MORK bytes → V conversion.
+    /// Uses `mork_bytes_to_generic_value()` for MORK bytes → V conversion,
+    /// and `wide_bytes_to_generic_value()` for Wide MORK bytes → V conversion.
     pub fn get_all_atoms(&self) -> Vec<V> {
         let space = self.create_space();
         let mut rz = space.btm.read_zipper();
@@ -1900,11 +1895,15 @@ where
 
         drop(space);
 
-        // Include large expression fallback PathMap (stores V directly)
-        let guard = self.shared.atom_space.large_expr_pathmap.read();
-        if let Some(ref fallback) = *guard {
-            for (_key, stored_value) in fallback.iter() {
-                atoms.push(stored_value.clone());
+        // Include wide expression PathMap (arity ≥ 64, Wide MORK encoding)
+        {
+            let wbtm = self.shared.atom_space.wide_btm.read();
+            let mut wrz = wbtm.read_zipper();
+            while wrz.to_next_val() {
+                let path_bytes = wrz.path();
+                if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
+                    atoms.push(atom);
+                }
             }
         }
 

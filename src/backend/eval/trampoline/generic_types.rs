@@ -556,6 +556,51 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
     },
 
+    /// Processing sort-tuple: insertion sort via trampoline comparator evaluation.
+    /// Sorted elements accumulate in `sorted`, unsorted elements wait in `unsorted`.
+    /// `current` is being inserted into `sorted` at position `insert_pos`.
+    ProcessSortTuple {
+        /// Already-sorted elements
+        sorted: Vec<V>,
+        /// Remaining elements to insert
+        unsorted: Vec<V>,
+        /// Element currently being inserted
+        current: V,
+        /// Current comparison position in sorted
+        insert_pos: usize,
+        /// Variable name for left operand
+        var1_name: String,
+        /// Variable name for right operand
+        var2_name: String,
+        /// Comparator expression template
+        comparator: V,
+        /// Environment
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
+    /// Processing best-candidate: linear scan evaluating rank function.
+    /// Tracks the best element and its rank, evaluating remaining elements.
+    ProcessBestCandidate {
+        /// Best element so far (None = first iteration)
+        best: Option<V>,
+        /// Rank of best element
+        best_rank: Option<f64>,
+        /// Elements still to evaluate
+        remaining: Vec<V>,
+        /// Element whose rank we're currently evaluating
+        current: V,
+        /// Variable name for rank function binding
+        var_name: String,
+        /// Rank function expression template
+        rank_fn: V,
+        /// Environment
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
     /// Processing case multi-results
     ProcessCaseMultiResults {
         remaining_atoms: VecDeque<V>,
@@ -920,6 +965,22 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 out.push(pattern.clone());
                 out.push(default.clone());
                 out.push(template.clone());
+            }
+
+            Self::ProcessSortTuple { sorted, unsorted, current, comparator, .. } => {
+                out.extend(sorted.iter().cloned());
+                out.extend(unsorted.iter().cloned());
+                out.push(current.clone());
+                out.push(comparator.clone());
+            }
+
+            Self::ProcessBestCandidate { best, remaining, current, rank_fn, .. } => {
+                if let Some(b) = best {
+                    out.push(b.clone());
+                }
+                out.extend(remaining.iter().cloned());
+                out.push(current.clone());
+                out.push(rank_fn.clone());
             }
 
             Self::ProcessCaseMultiResults { remaining_atoms, cases, collected, .. } => {

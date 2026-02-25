@@ -4,7 +4,7 @@ use divan::black_box;
 use paste::paste;
 
 use mettatron::config::{configure_eval, EvalConfig};
-use mettatron::{compile, new_env, run_state, run_state_async};
+use mettatron::{compile, new_env, run_state, run_state_async, MettaState};
 
 static RT: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Runtime::new().unwrap());
@@ -31,14 +31,14 @@ const BACKWARD_CHAINING_SRC: &str = include_str!("../metta_samples/backward_chai
 fn run_sync(src: &'static str) {
     let state = compile(src).unwrap();
     let env = new_env();
-    let result_state = run_state(env, &state).unwrap();
+    let result_state = run_state(MettaState::from_env(env), &state).unwrap();
     black_box(result_state);
 }
 
 async fn run_async(src: &'static str) {
     let state = compile(src).unwrap();
     let env = new_env();
-    let result_state = run_state_async(env, &state).await.unwrap();
+    let result_state = run_state_async(MettaState::from_env(env), &state).await.unwrap();
     black_box(result_state);
 }
 

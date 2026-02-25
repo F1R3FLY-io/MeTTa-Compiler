@@ -13,6 +13,7 @@ mod analysis;
 pub mod init;
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use cranelift::codegen::ir::BlockArg;
 use cranelift::prelude::*;
@@ -27,6 +28,14 @@ use super::runtime;
 use super::types::{JitError, JitResult};
 
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
+
+/// Cached check for the `METTATRON_DISABLE_JIT` environment variable.
+/// Uses `OnceLock` so the syscall happens at most once per process.
+static JIT_DISABLED: OnceLock<bool> = OnceLock::new();
+
+fn is_jit_disabled() -> bool {
+    *JIT_DISABLED.get_or_init(|| std::env::var("METTATRON_DISABLE_JIT").is_ok())
+}
 
 // Import initialization traits for zero-cost static dispatch
 use init::{
@@ -157,7 +166,7 @@ impl JitCompiler {
         
 
         // Check for environment variable to disable JIT (useful for benchmarking)
-        if std::env::var("METTATRON_DISABLE_JIT").is_ok() {
+        if is_jit_disabled() {
             return Err(JitError::CompilationError(
                 "JIT disabled via METTATRON_DISABLE_JIT environment variable".to_string(),
             ));
@@ -2373,6 +2382,24 @@ impl JitCompiler {
             Opcode::EvalIfReducible | Opcode::EvalMatchOr => {
                 return Err(JitError::NotCompilable(
                     format!("Opcode {:?} requires trampoline fallback (not yet JIT-compiled)", op),
+                ));
+            }
+
+            // =====================================================================
+            // Tuple & List Operations: not yet JIT-compiled, fall back to interpreter
+            // =====================================================================
+            Opcode::TupleConcat
+            | Opcode::TupleCount
+            | Opcode::Without
+            | Opcode::ElementOf
+            | Opcode::Range
+            | Opcode::ReverseAtom
+            | Opcode::FlattenAtom
+            | Opcode::ZipAtom
+            | Opcode::TakeAtom
+            | Opcode::DropAtom => {
+                return Err(JitError::NotCompilable(
+                    format!("Opcode {:?} not yet JIT-compiled, falling back to VM interpreter", op),
                 ));
             }
         }

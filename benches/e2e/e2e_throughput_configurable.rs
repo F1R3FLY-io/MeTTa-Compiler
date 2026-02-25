@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use mettatron::config::{configure_eval, get_eval_config, EvalConfig};
-use mettatron::{compile, new_env, run_state};
+use mettatron::{compile, new_env, run_state, MettaState};
 
 // TODO -> need more comprehensive set of MeTTa programs
 const SAMPLES: &[(&str, &str)] = &[
@@ -123,7 +123,7 @@ struct ThroughputReport {
 fn evaluate_full_program(source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let program = compile(source)?;
     let env = new_env();
-    let _result = run_state(env, &program)?;
+    let _result = run_state(MettaState::from_env(env), &program)?;
     Ok(())
 }
 

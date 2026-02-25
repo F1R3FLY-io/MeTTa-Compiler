@@ -39,6 +39,7 @@ pub use metta_state::MettaState;
 pub use metta_value::{escape_json, serialize_tags};
 pub use metta_value_trait::{MettaValueTrait, MettaValueFactory};
 pub use space_handle::{GenericMultiplicityMatch, SpaceHandle};
+pub use work_pool::init_thread_pools;
 
 use crate::backend::environment::MettaEnvironment;
 

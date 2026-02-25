@@ -93,6 +93,8 @@ pub use backend::{
     global_factory, global_allocator, GcFactory,
     // Data model types (used by bytecode VM, JIT, and tiered cache internals)
     models::MettaState,
+    // Thread pool initialization (eager startup from main)
+    init_thread_pools,
     // Signal-triggered diagnostic dump (SIGTERM/SIGUSR1)
     diagnostics::install_signal_handlers,
 };

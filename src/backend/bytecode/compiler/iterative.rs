@@ -1421,6 +1421,177 @@ impl Compiler {
             }
 
             // ================================================================
+            // Set operations
+            // ================================================================
+            "unique-atom" => {
+                self.check_arity("unique-atom", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::UniqueAtom,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "union-atom" => {
+                self.check_arity("union-atom", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::UnionAtom,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "intersection-atom" => {
+                self.check_arity("intersection-atom", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::IntersectionAtom,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "subtraction-atom" => {
+                self.check_arity("subtraction-atom", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::SubtractionAtom,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+
+            // ================================================================
+            // Tuple operations
+            // ================================================================
+            "tuple-concat" => {
+                self.check_arity("tuple-concat", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::TupleConcat,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "tuple-count" => {
+                self.check_arity("tuple-count", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::TupleCount,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "without" => {
+                self.check_arity("without", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::Without,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "element-of" => {
+                self.check_arity("element-of", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::ElementOf,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+
+            // ================================================================
+            // Additional list operations (MeTTaTron extensions)
+            // ================================================================
+            "range" => {
+                self.check_arity("range", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::Range,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "reverse-atom" => {
+                self.check_arity("reverse-atom", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::ReverseAtom,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "flatten-atom" => {
+                self.check_arity("flatten-atom", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::FlattenAtom,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "zip-atom" => {
+                self.check_arity("zip-atom", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::ZipAtom,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "take-atom" => {
+                self.check_arity("take-atom", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::TakeAtom,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "drop-atom" => {
+                self.check_arity("drop-atom", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::DropAtom,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+
+            // ================================================================
+            // Higher-order tuple operations (intentional tree-walker fallthrough)
+            // ================================================================
+            // sort-tuple and best-candidate have complex iterative evaluation
+            // semantics requiring full trampoline context for comparisons/ranking.
+            // They intentionally fall through to tree-walker via rule dispatch.
+            // /safe and clamp are handled by the grounded op TCO state machine
+            // (GenericGroundedOperationTCO) without needing dedicated opcodes.
+
+            // ================================================================
             // Higher-order list operations
             // ================================================================
             "map-atom" => {
@@ -2383,6 +2554,11 @@ impl Compiler {
         for idx in const_indices {
             self.builder.emit_raw(&idx.to_be_bytes());
         }
+
+        // Yield saves the current top-of-stack to results, then backtracks
+        // via op_fail to the choice point created by Fork, exploring all alternatives.
+        // Without this, only the first alternative would be returned.
+        self.builder.emit(Opcode::Yield);
 
         Ok(())
     }

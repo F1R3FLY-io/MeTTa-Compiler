@@ -700,6 +700,174 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for MaxOpGeneric
     }
 }
 
+/// Generic TCO Safe Division operation: (/safe A B)
+/// Returns A/B if B > 0.0, else zero results (empty = branch annihilation).
+/// PLN uses this for safe division: (if (> $B 0.0) (/ $A $B) (empty))
+pub struct SafeDivOpGeneric;
+
+impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for SafeDivOpGeneric {
+    fn name(&self) -> &str {
+        "/safe"
+    }
+
+    fn execute_step_generic<F: MettaValueFactory<V>>(
+        &self,
+        state: &mut GenericGroundedState<V>,
+        factory: &F,
+    ) -> GenericGroundedWork<V> {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GenericGroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "/safe requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                if let Some(err) = find_error_generic(a_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
+
+                if let Some(err) = find_error_generic(b_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        // Extract numeric values as f64
+                        let a_val = a.as_float().or_else(|| a.as_long().map(|l| l as f64));
+                        let b_val = b.as_float().or_else(|| b.as_long().map(|l| l as f64));
+
+                        match (a_val, b_val) {
+                            (Some(x), Some(y)) if y > 0.0 => {
+                                results.push((factory.float(x / y), None));
+                            }
+                            (Some(_), Some(_)) => {
+                                // b <= 0.0: zero results (branch annihilation)
+                                // Don't push anything — this branch is pruned.
+                            }
+                            _ => {
+                                if a.is_empty() || b.is_empty() {
+                                    continue;
+                                }
+                                return GenericGroundedWork::Error(ExecError::NoReduce);
+                            }
+                        }
+                    }
+                }
+                GenericGroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for SafeDivOpGeneric", state.step),
+        }
+    }
+}
+
+/// Generic TCO Clamp operation: (clamp val min max)
+/// Returns min(max, max(val, min)), clamping val to [min, max].
+pub struct ClampOpGeneric;
+
+impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for ClampOpGeneric {
+    fn name(&self) -> &str {
+        "clamp"
+    }
+
+    fn execute_step_generic<F: MettaValueFactory<V>>(
+        &self,
+        state: &mut GenericGroundedState<V>,
+        factory: &F,
+    ) -> GenericGroundedWork<V> {
+        match state.step {
+            0 => {
+                if state.args.len() != 3 {
+                    return GenericGroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "clamp requires 3 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let val_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                if let Some(err) = find_error_generic(val_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let min_results = state.get_arg(1).expect("arg 1 should be evaluated");
+                if let Some(err) = find_error_generic(min_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 3;
+                GenericGroundedWork::EvalArg {
+                    arg_idx: 2,
+                    state: state.clone(),
+                }
+            }
+            3 => {
+                let val_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                let min_results = state.get_arg(1).expect("arg 1 should be evaluated");
+                let max_results = state.get_arg(2).expect("arg 2 should be evaluated");
+
+                if let Some(err) = find_error_generic(max_results) {
+                    return GenericGroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for val in val_results {
+                    for min_v in min_results {
+                        for max_v in max_results {
+                            let v = val.as_float().or_else(|| val.as_long().map(|l| l as f64));
+                            let mn = min_v.as_float().or_else(|| min_v.as_long().map(|l| l as f64));
+                            let mx = max_v.as_float().or_else(|| max_v.as_long().map(|l| l as f64));
+
+                            match (v, mn, mx) {
+                                (Some(v), Some(mn), Some(mx)) => {
+                                    let clamped = v.max(mn).min(mx);
+                                    results.push((factory.float(clamped), None));
+                                }
+                                _ => {
+                                    if val.is_empty() || min_v.is_empty() || max_v.is_empty() {
+                                        continue;
+                                    }
+                                    return GenericGroundedWork::Error(ExecError::NoReduce);
+                                }
+                            }
+                        }
+                    }
+                }
+                GenericGroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for ClampOpGeneric", state.step),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

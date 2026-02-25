@@ -22,8 +22,11 @@ use super::grounded::{find_grounded_arg_indices_generic, find_typed_arg_indices_
 use crate::backend::eval::bindings_generic::{eval_atom_subst_generic, eval_sealed_generic};
 use crate::backend::eval::list_ops::generic::{
     eval_car_atom_generic, eval_cdr_atom_generic, eval_cons_atom_generic,
-    eval_decons_atom_generic, eval_index_atom_generic, eval_max_atom_generic,
-    eval_min_atom_generic, eval_size_atom_generic,
+    eval_decons_atom_generic, eval_drop_atom_generic, eval_element_of_generic,
+    eval_flatten_atom_generic, eval_index_atom_generic, eval_max_atom_generic,
+    eval_min_atom_generic, eval_range_generic, eval_reverse_atom_generic,
+    eval_size_atom_generic, eval_take_atom_generic, eval_tuple_concat_generic,
+    eval_tuple_count_generic, eval_without_generic, eval_zip_atom_generic,
 };
 use crate::backend::eval::list_ops::helpers::suggest_variable_format;
 // Generic module operations - used directly (no boundary conversion)
@@ -605,20 +608,13 @@ where
                 }
 
                 // Extract name from expression (atom or first element of sexpr)
-                let name = if let Some(atom) = items[1].as_atom() {
-                    atom.to_string()
-                } else if let Some(expr_items) = items[1].as_sexpr() {
-                    if let Some(first) = expr_items.first() {
-                        if let Some(atom) = first.as_atom() {
-                            atom.to_string()
-                        } else {
-                            format!("{:?}", items[1])
-                        }
-                    } else {
-                        format!("{:?}", items[1])
-                    }
-                } else {
-                    format!("{:?}", items[1])
+                let name = match (items[1].as_atom(), items[1].as_sexpr()) {
+                    (Some(atom), _) => atom.to_string(),
+                    (_, Some(expr_items)) => match expr_items.first().and_then(|f| f.as_atom()) {
+                        Some(atom) => atom.to_string(),
+                        None => format!("{:?}", items[1]),
+                    },
+                    _ => format!("{:?}", items[1]),
                 };
 
                 // Add type directly (V is already the correct type)
@@ -658,47 +654,14 @@ where
                 let var_arg = &items[2];
                 let template = items[3].clone();
 
-                // Get variable name - match heap engine's error message format
-                let var_name = match var_arg.as_atom() {
-                    Some(name) if name.starts_with('$') => name.to_string(),
-                    Some(name) => {
-                        // Atom but not a variable - provide helpful suggestion
-                        let msg = match suggest_variable_format(name) {
-                            Some(suggestion) => format!(
-                                "map-atom: second argument must be a variable (starting with $). {}",
-                                suggestion
-                            ),
-                            None => {
-                                "map-atom: second argument must be a variable (starting with $)".to_string()
-                            }
-                        };
-                        let err = ctx.factory().error(&msg, var_arg.clone());
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
-                    None => {
-                        // Not an atom at all
-                        let err = ctx.factory().error(
-                            "map-atom: second argument must be a variable (starting with $)",
-                            var_arg.clone(),
-                        );
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
+                let var_name = match extract_var_name::<C>(var_arg, "map-atom", "second argument", &env, ctx) {
+                    Ok(name) => name,
+                    Err(step) => return step,
                 };
 
-                // Extract elements from list (Nil is treated as empty list)
-                let elements: Vec<C::Value> = if list_arg.is_unit() {
-                    vec![]
-                } else {
-                    match list_arg.as_sexpr() {
-                        Some(elems) => elems.iter().cloned().collect(),
-                        None => {
-                            let err = ctx.factory().error(
-                                "map-atom requires a list as first argument",
-                                ctx.factory().sexpr(items),
-                            );
-                            return GenericEvalStep::Done((vec![err], env));
-                        }
-                    }
+                let elements = match extract_list_elements::<C>(list_arg, "map-atom", ctx, &env) {
+                    Ok(elems) => elems,
+                    Err(step) => return step,
                 };
 
                 return GenericEvalStep::StartMapAtom {
@@ -727,47 +690,14 @@ where
                 let var_arg = &items[2];
                 let predicate = items[3].clone();
 
-                // Get variable name - match heap engine's error message format
-                let var_name = match var_arg.as_atom() {
-                    Some(name) if name.starts_with('$') => name.to_string(),
-                    Some(name) => {
-                        // Atom but not a variable - provide helpful suggestion
-                        let msg = match suggest_variable_format(name) {
-                            Some(suggestion) => format!(
-                                "filter-atom: second argument must be a variable (starting with $). {}",
-                                suggestion
-                            ),
-                            None => {
-                                "filter-atom: second argument must be a variable (starting with $)".to_string()
-                            }
-                        };
-                        let err = ctx.factory().error(&msg, var_arg.clone());
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
-                    None => {
-                        // Not an atom at all
-                        let err = ctx.factory().error(
-                            "filter-atom: second argument must be a variable (starting with $)",
-                            var_arg.clone(),
-                        );
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
+                let var_name = match extract_var_name::<C>(var_arg, "filter-atom", "second argument", &env, ctx) {
+                    Ok(name) => name,
+                    Err(step) => return step,
                 };
 
-                // Extract elements from list (Nil is treated as empty list)
-                let elements: Vec<C::Value> = if list_arg.is_unit() {
-                    vec![]
-                } else {
-                    match list_arg.as_sexpr() {
-                        Some(elems) => elems.iter().cloned().collect(),
-                        None => {
-                            let err = ctx.factory().error(
-                                "filter-atom requires a list as first argument",
-                                ctx.factory().sexpr(items),
-                            );
-                            return GenericEvalStep::Done((vec![err], env));
-                        }
-                    }
+                let elements = match extract_list_elements::<C>(list_arg, "filter-atom", ctx, &env) {
+                    Ok(elems) => elems,
+                    Err(step) => return step,
                 };
 
                 return GenericEvalStep::StartFilterAtom {
@@ -798,74 +728,19 @@ where
                 let item_var = &items[4];
                 let operation = items[5].clone();
 
-                // Get accumulator variable name - match heap engine's error message format
-                let acc_var_name = match acc_var.as_atom() {
-                    Some(name) if name.starts_with('$') => name.to_string(),
-                    Some(name) => {
-                        // Atom but not a variable - provide helpful suggestion
-                        let msg = match suggest_variable_format(name) {
-                            Some(suggestion) => format!(
-                                "foldl-atom: third argument must be a variable (starting with $). {}",
-                                suggestion
-                            ),
-                            None => {
-                                "foldl-atom: third argument must be a variable (starting with $)".to_string()
-                            }
-                        };
-                        let err = ctx.factory().error(&msg, acc_var.clone());
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
-                    None => {
-                        // Not an atom at all
-                        let err = ctx.factory().error(
-                            "foldl-atom: third argument must be a variable (starting with $)",
-                            acc_var.clone(),
-                        );
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
+                let acc_var_name = match extract_var_name::<C>(acc_var, "foldl-atom", "third argument", &env, ctx) {
+                    Ok(name) => name,
+                    Err(step) => return step,
                 };
 
-                // Get item variable name - match heap engine's error message format
-                let item_var_name = match item_var.as_atom() {
-                    Some(name) if name.starts_with('$') => name.to_string(),
-                    Some(name) => {
-                        // Atom but not a variable - provide helpful suggestion
-                        let msg = match suggest_variable_format(name) {
-                            Some(suggestion) => format!(
-                                "foldl-atom: fourth argument must be a variable (starting with $). {}",
-                                suggestion
-                            ),
-                            None => {
-                                "foldl-atom: fourth argument must be a variable (starting with $)".to_string()
-                            }
-                        };
-                        let err = ctx.factory().error(&msg, item_var.clone());
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
-                    None => {
-                        // Not an atom at all
-                        let err = ctx.factory().error(
-                            "foldl-atom: fourth argument must be a variable (starting with $)",
-                            item_var.clone(),
-                        );
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
+                let item_var_name = match extract_var_name::<C>(item_var, "foldl-atom", "fourth argument", &env, ctx) {
+                    Ok(name) => name,
+                    Err(step) => return step,
                 };
 
-                // Extract elements from list (Nil is treated as empty list)
-                let elements: Vec<C::Value> = if list_arg.is_unit() {
-                    vec![]
-                } else {
-                    match list_arg.as_sexpr() {
-                        Some(elems) => elems.iter().cloned().collect(),
-                        None => {
-                            let err = ctx.factory().error(
-                                "foldl-atom requires a list as first argument",
-                                ctx.factory().sexpr(items),
-                            );
-                            return GenericEvalStep::Done((vec![err], env));
-                        }
-                    }
+                let elements = match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
+                    Ok(elems) => elems,
+                    Err(step) => return step,
                 };
 
                 return GenericEvalStep::StartFoldlAtom {
@@ -880,42 +755,179 @@ where
             }
 
             // List operations - native generic implementations (zero conversion)
-            "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom" | "max-atom"
-            | "index-atom" | "min-atom" => {
-                let results = match op {
-                    "car-atom" => eval_car_atom_generic(&items, ctx.factory()),
-                    "cdr-atom" => eval_cdr_atom_generic(&items, ctx.factory()),
-                    "cons-atom" => eval_cons_atom_generic(&items, ctx.factory()),
-                    "decons-atom" => eval_decons_atom_generic(&items, ctx.factory()),
-                    "size-atom" => eval_size_atom_generic(&items, ctx.factory()),
-                    "max-atom" => eval_max_atom_generic(&items, ctx.factory()),
-                    "index-atom" => eval_index_atom_generic(&items, ctx.factory()),
-                    "min-atom" => eval_min_atom_generic(&items, ctx.factory()),
-                    _ => unreachable!(),
-                };
+            "car-atom" => {
+                let results = eval_car_atom_generic(&items, ctx.factory());
                 return GenericEvalStep::Done((results, env));
+            }
+            "cdr-atom" => {
+                let results = eval_cdr_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "cons-atom" => {
+                let results = eval_cons_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "decons-atom" => {
+                let results = eval_decons_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "size-atom" => {
+                let results = eval_size_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "max-atom" => {
+                let results = eval_max_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "index-atom" => {
+                let results = eval_index_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "min-atom" => {
+                let results = eval_min_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+
+            // Tuple operations - native generic implementations
+            "tuple-concat" => {
+                let results = eval_tuple_concat_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "tuple-count" => {
+                let results = eval_tuple_count_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "without" => {
+                let results = eval_without_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "element-of" => {
+                let results = eval_element_of_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "range" => {
+                let results = eval_range_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "reverse-atom" => {
+                let results = eval_reverse_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "flatten-atom" => {
+                let results = eval_flatten_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "zip-atom" => {
+                let results = eval_zip_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "take-atom" => {
+                let results = eval_take_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+            "drop-atom" => {
+                let results = eval_drop_atom_generic(&items, ctx.factory());
+                return GenericEvalStep::Done((results, env));
+            }
+
+            // sort-tuple - defers iteration to trampoline
+            "sort-tuple" => {
+                if items.len() != 5 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "sort-tuple requires exactly 4 arguments, got {}. Usage: (sort-tuple tuple $var1 $var2 comparator)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+
+                let list_arg = &items[1];
+                let var1_arg = &items[2];
+                let var2_arg = &items[3];
+                let comparator = items[4].clone();
+
+                let var1_name = match extract_var_name::<C>(var1_arg, "sort-tuple", "second argument", &env, ctx) {
+                    Ok(name) => name,
+                    Err(step) => return step,
+                };
+
+                let var2_name = match extract_var_name::<C>(var2_arg, "sort-tuple", "third argument", &env, ctx) {
+                    Ok(name) => name,
+                    Err(step) => return step,
+                };
+
+                let elements = match extract_list_elements::<C>(list_arg, "sort-tuple", ctx, &env) {
+                    Ok(elems) => elems,
+                    Err(step) => return step,
+                };
+
+                return GenericEvalStep::StartSortTuple {
+                    elements,
+                    var1_name,
+                    var2_name,
+                    comparator,
+                    env,
+                    depth,
+                };
+            }
+
+            // best-candidate - defers iteration to trampoline
+            "best-candidate" => {
+                if items.len() != 4 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "best-candidate requires exactly 3 arguments, got {}. Usage: (best-candidate tuple $var rank-fn)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+
+                let list_arg = &items[1];
+                let var_arg = &items[2];
+                let rank_fn = items[3].clone();
+
+                let var_name = match extract_var_name::<C>(var_arg, "best-candidate", "second argument", &env, ctx) {
+                    Ok(name) => name,
+                    Err(step) => return step,
+                };
+
+                let elements = match extract_list_elements::<C>(list_arg, "best-candidate", ctx, &env) {
+                    Ok(elems) => elems,
+                    Err(step) => return step,
+                };
+
+                return GenericEvalStep::StartBestCandidate {
+                    elements,
+                    var_name,
+                    rank_fn,
+                    env,
+                    depth,
+                };
             }
 
             // Space operations - native generic implementation (zero-conversion)
             "new-space" => {
                 // Get optional name, default to "unnamed"
-                let name = if items.len() > 1 {
-                    if let Some(s) = items[1].as_string() {
-                        s.to_string()
-                    } else if let Some(s) = items[1].as_atom() {
-                        s.to_string()
-                    } else {
-                        let err = ctx.factory().error(
-                            &format!(
-                                "new-space: optional name must be a string, got {:?}. Usage: (new-space) or (new-space \"name\")",
-                                items[1]
-                            ),
-                            items[1].clone(),
-                        );
-                        return GenericEvalStep::Done((vec![err], env));
-                    }
-                } else {
+                let name = if items.len() <= 1 {
                     "unnamed".to_string()
+                } else {
+                    match (items[1].as_string(), items[1].as_atom()) {
+                        (Some(s), _) | (_, Some(s)) => s.to_string(),
+                        _ => {
+                            let err = ctx.factory().error(
+                                &format!(
+                                    "new-space: optional name must be a string, got {:?}. Usage: (new-space) or (new-space \"name\")",
+                                    items[1]
+                                ),
+                                items[1].clone(),
+                            );
+                            return GenericEvalStep::Done((vec![err], env));
+                        }
+                    }
                 };
 
                 // Create named space via GenericEnvironment
@@ -1461,24 +1473,18 @@ where
                 );
             }
 
-            _ => {}
+            // Step 1: Try grounded operations with RAW (unevaluated) arguments
+            _ => {
+                // Try generic grounded operation (zero-conversion path)
+                // Uses static dispatch - works with any V: MettaValueTrait
+                if has_generic_grounded_op(op) {
+                    // Use GenericGroundedState with native value type - NO conversion needed
+                    let args: Vec<C::Value> = items[1..].to_vec();
+                    let state = GenericGroundedState::new(op.to_string(), args);
+                    return GenericEvalStep::StartGroundedOp { state, env, depth };
+                }
+            }
         }
-    }
-
-    // HE-compatible lazy evaluation: try grounded operations and rules with UNEVALUATED args first
-    // Step 1: Try grounded operations with RAW (unevaluated) arguments
-    if let Some(op) = items.first().and_then(|v| v.as_atom()) {
-        // Try generic grounded operation first (zero-conversion path)
-        // Uses static dispatch - works with any V: MettaValueTrait
-        if has_generic_grounded_op(op) {
-            // Use GenericGroundedState with native value type - NO conversion needed
-            let args: Vec<C::Value> = items[1..].to_vec();
-            let state = GenericGroundedState::new(op.to_string(), args);
-            return GenericEvalStep::StartGroundedOp { state, env, depth };
-        }
-
-        // Note: All standard operations are in the generic registry above.
-        // Custom operations should be added to GenericGroundedRegistry.
     }
 
     // Step 2: Applicative pre-evaluation of S-expression arguments.
@@ -1546,6 +1552,76 @@ where
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Extract a variable name (atom starting with `$`) from a value, with a
+/// helpful error if the value is not a valid variable.
+///
+/// Used by `map-atom`, `filter-atom`, and `foldl-atom` variable arguments.
+fn extract_var_name<C: EvalContext>(
+    var_arg: &C::Value,
+    op_name: &str,
+    arg_position: &str,
+    env: &ContextEnv<C>,
+    ctx: &C,
+) -> Result<String, GenericEvalStep<C::Value, ContextEnv<C>>>
+where
+    C::Value: Clone,
+{
+    match var_arg.as_atom() {
+        Some(name) if name.starts_with('$') => Ok(name.to_string()),
+        Some(name) => {
+            let msg = match suggest_variable_format(name) {
+                Some(suggestion) => format!(
+                    "{}: {} must be a variable (starting with $). {}",
+                    op_name, arg_position, suggestion
+                ),
+                None => format!(
+                    "{}: {} must be a variable (starting with $)",
+                    op_name, arg_position
+                ),
+            };
+            Err(GenericEvalStep::Done((
+                vec![ctx.factory().error(&msg, var_arg.clone())],
+                env.clone(),
+            )))
+        }
+        None => Err(GenericEvalStep::Done((
+            vec![ctx.factory().error(
+                &format!(
+                    "{}: {} must be a variable (starting with $)",
+                    op_name, arg_position
+                ),
+                var_arg.clone(),
+            )],
+            env.clone(),
+        ))),
+    }
+}
+
+/// Extract list elements from a value that should be a list (S-expression) or unit (empty list).
+///
+/// Used by `map-atom`, `filter-atom`, and `foldl-atom` list arguments.
+fn extract_list_elements<C: EvalContext>(
+    list_arg: &C::Value,
+    op_name: &str,
+    ctx: &C,
+    env: &ContextEnv<C>,
+) -> Result<Vec<C::Value>, GenericEvalStep<C::Value, ContextEnv<C>>>
+where
+    C::Value: Clone,
+{
+    match (list_arg.is_unit(), list_arg.as_sexpr()) {
+        (true, _) => Ok(vec![]),
+        (_, Some(elems)) => Ok(elems.iter().cloned().collect()),
+        _ => {
+            let err = ctx.factory().error(
+                &format!("{} requires a list as first argument", op_name),
+                list_arg.clone(),
+            );
+            Err(GenericEvalStep::Done((vec![err], env.clone())))
+        }
+    }
+}
 
 /// Preprocess space references: combine `& self` into `&self`.
 fn preprocess_space_refs_generic<C: EvalContext>(

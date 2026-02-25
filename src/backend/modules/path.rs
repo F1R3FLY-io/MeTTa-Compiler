@@ -6,6 +6,17 @@
 //! - `bare_name` - Treated as `self:bare_name` or file path
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Cached value of the `METTA_MODULE_PATH` environment variable.
+/// Uses `OnceLock` so the syscall happens at most once per process.
+static METTA_MODULE_PATH_CACHED: OnceLock<Option<String>> = OnceLock::new();
+
+fn cached_module_path() -> Option<&'static str> {
+    METTA_MODULE_PATH_CACHED
+        .get_or_init(|| std::env::var("METTA_MODULE_PATH").ok())
+        .as_deref()
+}
 
 /// Resolve a module path to a filesystem path.
 ///
@@ -91,8 +102,8 @@ pub fn resolve_module_path(path: &str, current_dir: Option<&Path>) -> PathBuf {
             }
         }
 
-        // 4. Search METTA_MODULE_PATH directories
-        if let Ok(module_path) = std::env::var("METTA_MODULE_PATH") {
+        // 4. Search METTA_MODULE_PATH directories (cached — one syscall per process)
+        if let Some(module_path) = cached_module_path() {
             for search_dir in module_path.split(':') {
                 let search_path = Path::new(search_dir);
                 let candidate = search_path.join(&name_with_ext);

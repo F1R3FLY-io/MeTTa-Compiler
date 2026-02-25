@@ -21,6 +21,7 @@
 //! with arena-allocated `MettaValue` values.
 
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 
 use tracing::trace;
 
@@ -38,6 +39,14 @@ use super::super::step::{eval_step_generic, GenericEvalStep};
 
 use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
 use crate::backend::models::{GenericMultiplicityMatch, MettaValueFactory, MettaValueInner, MettaValueTrait};
+
+/// Cached check for the `METTA_DEBUG_EVAL` environment variable.
+/// Uses `OnceLock` so the syscall happens at most once per process.
+static METTA_DEBUG_EVAL_CACHED: OnceLock<bool> = OnceLock::new();
+
+fn is_debug_eval() -> bool {
+    *METTA_DEBUG_EVAL_CACHED.get_or_init(|| std::env::var("METTA_DEBUG_EVAL").is_ok())
+}
 
 /// Generic trampoline evaluation entry point.
 ///
@@ -70,8 +79,8 @@ pub fn eval_trampoline_generic<C: EvalContext>(
 where
     C::Value: Clone,
 {
-    // Debug tracing controlled by environment variable
-    let debug_eval = std::env::var("METTA_DEBUG_EVAL").is_ok();
+    // Debug tracing controlled by environment variable (cached — one syscall per process)
+    let debug_eval = is_debug_eval();
     let mut eval_count: u64 = 0;
 
     // Initialize work stack with the initial evaluation
@@ -447,6 +456,87 @@ where
                             let instantiated = substitute_variable_generic(
                                 &instantiated, &item_var_name, &first, ctx.factory(),
                             );
+
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: instantiated,
+                                env,
+                                depth: depth + 1,
+                                is_tail_call: false,
+                            });
+                        }
+                    }
+
+                    // Start sort-tuple (insertion sort via trampoline)
+                    GenericEvalStep::StartSortTuple { elements, var1_name, var2_name, comparator, env, depth } => {
+                        if elements.len() <= 1 {
+                            // 0 or 1 elements — already sorted
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (vec![ctx.factory().sexpr(elements)], env),
+                            });
+                        } else {
+                            // Start insertion sort: first element is trivially sorted,
+                            // take the second element as 'current' to insert.
+                            let mut unsorted_iter = elements.into_iter();
+                            let first = unsorted_iter.next().expect("at least 2 elements");
+                            let current = unsorted_iter.next().expect("at least 2 elements");
+                            let unsorted: Vec<_> = unsorted_iter.collect();
+
+                            // Compare current vs sorted[0] (= first)
+                            let instantiated = substitute_variable_generic(
+                                &comparator, &var1_name, &current, ctx.factory(),
+                            );
+                            let instantiated = substitute_variable_generic(
+                                &instantiated, &var2_name, &first, ctx.factory(),
+                            );
+
+                            continuations.push(GenericContinuation::ProcessSortTuple {
+                                sorted: vec![first],
+                                unsorted,
+                                current,
+                                insert_pos: 0,
+                                var1_name,
+                                var2_name,
+                                comparator,
+                                env: env.clone(),
+                                depth,
+                            });
+
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: instantiated,
+                                env,
+                                depth: depth + 1,
+                                is_tail_call: false,
+                            });
+                        }
+                    }
+
+                    // Start best-candidate (linear scan via trampoline)
+                    GenericEvalStep::StartBestCandidate { elements, var_name, rank_fn, env, depth } => {
+                        if elements.is_empty() {
+                            // Empty tuple — return Unit
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (vec![ctx.factory().unit()], env),
+                            });
+                        } else {
+                            let mut elem_iter = elements.into_iter();
+                            let first = elem_iter.next().expect("non-empty");
+                            let remaining: Vec<_> = elem_iter.collect();
+
+                            // Evaluate rank function for first element
+                            let instantiated = substitute_variable_generic(
+                                &rank_fn, &var_name, &first, ctx.factory(),
+                            );
+
+                            continuations.push(GenericContinuation::ProcessBestCandidate {
+                                best: None,
+                                best_rank: None,
+                                remaining,
+                                current: first,
+                                var_name,
+                                rank_fn,
+                                env: env.clone(),
+                                depth,
+                            });
 
                             work_stack.push(GenericWorkItem::Eval {
                                 value: instantiated,
@@ -1525,6 +1615,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // Check if any arg produced empty results
                 if evaluated_results.iter().any(|r| r.is_empty()) {
                     // Empty result from any arg → no combinations possible
+                    // (Cartesian product of anything × empty = empty)
                     work_stack.push(GenericWorkItem::Resume {
                         result: (vec![], result_env),
                     });
@@ -1874,6 +1965,160 @@ fn process_continuation_generic<C: EvalContext>(
                     value: instantiated,
                     env: result_env,
                     depth,
+                    is_tail_call: false,
+                });
+            }
+        }
+
+        GenericContinuation::ProcessSortTuple {
+            mut sorted,
+            mut unsorted,
+            current,
+            insert_pos,
+            var1_name,
+            var2_name,
+            comparator,
+            env: _,
+            depth,
+        } => {
+            let (cmp_results, result_env) = result;
+
+            // Extract boolean comparison result
+            let cmp_true = cmp_results.first()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if cmp_true {
+                // current < sorted[insert_pos]: insert current here
+                sorted.insert(insert_pos, current);
+            } else {
+                // current >= sorted[insert_pos]: try next position
+                let next_pos = insert_pos + 1;
+                if next_pos < sorted.len() {
+                    // Compare current vs sorted[next_pos]
+                    let instantiated = substitute_variable_generic(
+                        &comparator, &var1_name, &current, ctx.factory(),
+                    );
+                    let instantiated = substitute_variable_generic(
+                        &instantiated, &var2_name, &sorted[next_pos], ctx.factory(),
+                    );
+
+                    continuations.push(GenericContinuation::ProcessSortTuple {
+                        sorted,
+                        unsorted,
+                        current,
+                        insert_pos: next_pos,
+                        var1_name,
+                        var2_name,
+                        comparator,
+                        env: result_env.clone(),
+                        depth,
+                    });
+
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: instantiated,
+                        env: result_env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                    });
+                    return;
+                } else {
+                    // current >= all sorted elements: insert at end
+                    sorted.push(current);
+                }
+            }
+
+            // Move to next unsorted element
+            if unsorted.is_empty() {
+                // Sorting complete
+                let result_tuple = ctx.factory().sexpr(sorted);
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (vec![result_tuple], result_env),
+                });
+            } else {
+                let next_current = unsorted.remove(0);
+
+                // Compare next_current vs sorted[0]
+                let instantiated = substitute_variable_generic(
+                    &comparator, &var1_name, &next_current, ctx.factory(),
+                );
+                let instantiated = substitute_variable_generic(
+                    &instantiated, &var2_name, &sorted[0], ctx.factory(),
+                );
+
+                continuations.push(GenericContinuation::ProcessSortTuple {
+                    sorted,
+                    unsorted,
+                    current: next_current,
+                    insert_pos: 0,
+                    var1_name,
+                    var2_name,
+                    comparator,
+                    env: result_env.clone(),
+                    depth,
+                });
+
+                work_stack.push(GenericWorkItem::Eval {
+                    value: instantiated,
+                    env: result_env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                });
+            }
+        }
+
+        GenericContinuation::ProcessBestCandidate {
+            best,
+            best_rank,
+            mut remaining,
+            current,
+            var_name,
+            rank_fn,
+            env: _,
+            depth,
+        } => {
+            let (rank_results, result_env) = result;
+
+            // Extract numeric rank from evaluation result
+            let current_rank = rank_results.first().and_then(|v| {
+                v.as_float().or_else(|| v.as_long().map(|l| l as f64))
+            });
+
+            // Determine new best
+            let (new_best, new_best_rank) = match (current_rank, best_rank) {
+                (Some(cr), Some(br)) if cr > br => (current, Some(cr)),
+                (Some(cr), None) => (current, Some(cr)),
+                _ => (best.unwrap_or(current), best_rank),
+            };
+
+            if remaining.is_empty() {
+                // Done — return best
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (vec![new_best], result_env),
+                });
+            } else {
+                // Evaluate next element's rank
+                let next = remaining.remove(0);
+
+                let instantiated = substitute_variable_generic(
+                    &rank_fn, &var_name, &next, ctx.factory(),
+                );
+
+                continuations.push(GenericContinuation::ProcessBestCandidate {
+                    best: Some(new_best),
+                    best_rank: new_best_rank,
+                    remaining,
+                    current: next,
+                    var_name,
+                    rank_fn,
+                    env: result_env.clone(),
+                    depth,
+                });
+
+                work_stack.push(GenericWorkItem::Eval {
+                    value: instantiated,
+                    env: result_env,
+                    depth: depth + 1,
                     is_tail_call: false,
                 });
             }

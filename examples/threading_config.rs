@@ -3,7 +3,7 @@
 //! Demonstrates how to configure MeTTaTron's threading model for different workloads.
 
 use mettatron::config::EvalConfig;
-use mettatron::{compile, new_env, run_state_async};
+use mettatron::{compile, new_env, run_state_async, MettaState};
 
 #[tokio::main]
 async fn main() {
@@ -64,7 +64,7 @@ async fn demo_default_config() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let result = run_state_async(env, &state)
+    let result = run_state_async(MettaState::from_env(env), &state)
         .await
         .expect("Failed to evaluate");
     let outputs = result.output();
@@ -94,7 +94,7 @@ async fn demo_cpu_optimized() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let result = run_state_async(env, &state)
+    let result = run_state_async(MettaState::from_env(env), &state)
         .await
         .expect("Failed to evaluate");
     let outputs = result.output();
@@ -117,7 +117,7 @@ async fn demo_memory_optimized() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let result = run_state_async(env, &state)
+    let result = run_state_async(MettaState::from_env(env), &state)
         .await
         .expect("Failed to evaluate");
     let outputs = result.output();
@@ -139,7 +139,7 @@ async fn demo_throughput_optimized() {
     }
 
     let state = compile(&src).expect("Failed to compile");
-    let result = run_state_async(env, &state)
+    let result = run_state_async(MettaState::from_env(env), &state)
         .await
         .expect("Failed to evaluate");
 
@@ -166,7 +166,7 @@ async fn demo_custom_config() {
     "#;
 
     let state = compile(src).expect("Failed to compile");
-    let result = run_state_async(env, &state)
+    let result = run_state_async(MettaState::from_env(env), &state)
         .await
         .expect("Failed to evaluate");
     let outputs = result.output();

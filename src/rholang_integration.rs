@@ -327,14 +327,14 @@ pub fn state_to_json(state: &MettaState) -> String {
 /// returned state. This mirrors the proven-safe pattern from `eval_metta_session_raw()`.
 ///
 /// **Threading**: Synchronous, single-threaded evaluation
-#[instrument(level = "info", skip(env, compiled_state))]
+#[instrument(level = "info", skip(accumulated_state, compiled_state))]
 pub fn run_state(
-    env: MettaEnvironment,
+    accumulated_state: MettaState,
     compiled_state: &MettaState,
 ) -> Result<MettaState, String> {
     info!("Run state");
 
-    let mut env = env;
+    let mut env = accumulated_state.environment;
     let mut result_state = MettaState::new_empty(); // GC-rooted immediately
 
     let source_exprs: Vec<MettaValue> = compiled_state.source().iter().copied().collect();
@@ -391,15 +391,15 @@ pub fn run_state(
 /// - Environment updates are atomic per batch
 ///
 /// **Threading Model:** Uses unified WorkPool with P2 priority scheduling
-#[instrument(level = "info", skip(env, compiled_state))]
+#[instrument(level = "info", skip(accumulated_state, compiled_state))]
 #[cfg(feature = "async")]
 pub async fn run_state_async(
-    env: MettaEnvironment,
+    accumulated_state: MettaState,
     compiled_state: &MettaState,
 ) -> Result<MettaState, String> {
     info!("Run state async");
 
-    let mut env = env;
+    let mut env = accumulated_state.environment;
     let mut result_state = MettaState::new_empty(); // GC-rooted immediately
 
     // Batch expressions into parallelizable groups
@@ -878,7 +878,7 @@ mod tests {
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -900,7 +900,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -918,7 +918,7 @@ mod tests {
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
-        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
         let outputs = result.output();
 
         // Should have output
@@ -943,7 +943,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
         let outputs = result.output();
 
         // Should have all outputs
@@ -976,7 +976,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
         let outputs = result.output();
 
         // Should have outputs (parallel evaluation of both double calls)
@@ -996,13 +996,13 @@ mod tests {
         // Regression test: verify ground facts are NOT added to output
         // Add ground facts
         let state1 = compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
-        let result1 = run_state(new_env(), &state1).expect("run_state failed");
+        let result1 = run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
         // Ground facts should NOT produce output
         assert_eq!(result1.output().len(), 0);
 
         // Verify ground facts are in environment (can be queried)
         let state2 = compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
-        let result2 = run_state(result1.environment.clone(), &state2).expect("run_state failed");
+        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2).expect("run_state failed");
         // Now output should contain query results (2 matches)
         assert_eq!(result2.output().len(), 2);
     }
@@ -1022,7 +1022,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
         let outputs = result.output();
 
         assert_eq!(outputs.len(), 2);
@@ -1041,10 +1041,10 @@ mod tests {
 
         // Test that rules persist across multiple run_state calls
         let state1 = compile("(= (double $x) (* $x 2))").expect("compile failed");
-        let result1 = run_state(new_env(), &state1).expect("run_state failed");
+        let result1 = run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
 
         let state2 = compile("!(double 5)").expect("compile failed");
-        let result2 = run_state(result1.environment.clone(), &state2).expect("run_state failed");
+        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2).expect("run_state failed");
         let outputs = result2.output();
 
         assert!(!outputs.is_empty());
@@ -1067,7 +1067,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should have outputs for both calls
@@ -1086,7 +1086,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1105,7 +1105,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1127,7 +1127,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Facts are added to space (no output), only eval expression produces output
@@ -1148,7 +1148,7 @@ mod tests {
                 "#,
         )
         .expect("compile failed");
-        let result1 = run_state(new_env(), &state1).expect("run_state failed");
+        let result1 = run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
 
         // Second run: use facts via rules
         let state2 = compile(
@@ -1160,7 +1160,7 @@ mod tests {
                 "#,
         )
         .expect("compile failed");
-        let result2 = run_state(result1.environment.clone(), &state2).expect("run_state failed");
+        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2).expect("run_state failed");
         let outputs = result2.output();
 
         // Should be able to query the facts
@@ -1183,7 +1183,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should find parents of Bob
@@ -1205,7 +1205,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should find all children of Tom
@@ -1234,7 +1234,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1258,7 +1258,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should find that Tom is an ancestor of Sara
@@ -1287,7 +1287,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1308,7 +1308,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should produce multiple results (nondeterministic)
@@ -1342,7 +1342,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should produce pairs where x != y
@@ -1378,7 +1378,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should produce valid triples with constraints
@@ -1405,7 +1405,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1427,7 +1427,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should find all children of Tom
@@ -1451,7 +1451,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1473,7 +1473,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Should find both Ann and Pat
@@ -1497,7 +1497,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1509,13 +1509,13 @@ mod tests {
         // Regression test: verify ground facts are NOT added to output (async version)
         // Add ground facts
         let state1 = compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
-        let result1 = run_state_async(new_env(), &state1).await.expect("run_state_async failed");
+        let result1 = run_state_async(MettaState::from_env(new_env()), &state1).await.expect("run_state_async failed");
         // Ground facts should NOT produce output
         assert_eq!(result1.output().len(), 0);
 
         // Verify ground facts are in environment (can be queried)
         let state2 = compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
-        let result2 = run_state_async(result1.environment.clone(), &state2).await.expect("run_state_async failed");
+        let result2 = run_state_async(MettaState::from_env(result1.environment.clone()), &state2).await.expect("run_state_async failed");
         // Now output should contain query results (2 matches)
         assert_eq!(result2.output().len(), 2);
     }
@@ -1537,7 +1537,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(env, &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
         let outputs = result.output();
 
         // Both queries should execute in parallel
@@ -1556,7 +1556,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         // Facts are added to space but produce no output
@@ -1578,7 +1578,7 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state(env, &state).expect("run_state failed");
+        let result = run_state(MettaState::from_env(env), &state).expect("run_state failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1831,7 +1831,7 @@ mod tests {
     /// Helper to compile and run a MeTTa expression, returning the first output.
     fn eval_first(src: &str) -> MettaValue {
         let compiled = compile(src).expect("compile failed");
-        let result = run_state(new_env(), &compiled).expect("run_state failed");
+        let result = run_state(MettaState::from_env(new_env()), &compiled).expect("run_state failed");
         let outputs = result.output();
         assert!(
             !outputs.is_empty(),

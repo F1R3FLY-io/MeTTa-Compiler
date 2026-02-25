@@ -19,8 +19,8 @@
 //!
 //! ## Thread Inventory
 //!
-//! - **Idle**: main + 1 work + 1 GC + scheduler = 4 threads
-//! - **Peak** (36-core): main + 18 work + 4 GC + scheduler = 24 threads
+//! - **Idle**: main + 4 work + 1 GC + scheduler = 7 threads
+//! - **Peak** (36-core): main + 72 work + 4 GC + scheduler = 78 threads
 //!
 //! ## Backpressure
 //!
@@ -47,7 +47,7 @@ use crate::backend::priority_scheduler::{
 /// Get work pool thread configuration from environment.
 ///
 /// - `METTATRON_MIN_WORK_THREADS`: Minimum workers (default: 1, at least 1)
-/// - `METTATRON_MAX_WORK_THREADS`: Maximum workers (default: num_cpus/2, at least min, at least 2)
+/// - `METTATRON_MAX_WORK_THREADS`: Maximum workers (default: num_cpus*2, at least min, at least 2)
 fn get_work_thread_config() -> (usize, usize) {
     let min = std::env::var("METTATRON_MIN_WORK_THREADS")
         .ok()
@@ -58,7 +58,7 @@ fn get_work_thread_config() -> (usize, usize) {
     let max = std::env::var("METTATRON_MAX_WORK_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(num_cpus::get() / 2)
+        .unwrap_or(num_cpus::get() * 2)
         .max(min)
         .max(2);
 
@@ -87,10 +87,13 @@ pub fn work_eval_count() -> u64 {
 
 /// Unified adaptive thread pool for eval + compile work.
 ///
-/// All workers are spawned at startup (up to `max_threads`). Workers beyond
-/// `min_threads` start in the Parked state.
+/// The pool pre-allocates worker slots and parking primitives at construction.
+/// OS threads are spawned asynchronously (global pool) or synchronously (test
+/// pools via `with_threads`). Workers [0..initial_active) start active;
+/// [initial_active..max_threads) start parked on their condvar and do not
+/// touch the task queue until the scaling monitor unparks them.
 ///
-/// Workers have a 4-state machine:
+/// Worker state machine:
 /// - **Idle**: Waiting for tasks from P2 queue (blocks on `pop_timeout`)
 /// - **Executing**: Running a task closure
 /// - **Parked**: Dormant (blocked on `WorkerPark` condvar), activated by scaling monitor
@@ -102,9 +105,8 @@ pub struct WorkPool {
     /// Runtime tracker for P2 estimation.
     runtime_tracker: Arc<RuntimeTracker>,
 
-    /// Worker thread handles (all workers, including initially parked ones).
-    /// Wrapped in `Mutex<Option<...>>` so the scaling monitor can check
-    /// `is_finished()` without moving the handle, and replace dead workers.
+    /// Worker thread handles. `None` before async init spawns the thread,
+    /// or after a dead worker is reaped and before respawn.
     workers: Vec<Mutex<Option<JoinHandle<()>>>>,
 
     /// Per-worker parking primitives.
@@ -115,6 +117,9 @@ pub struct WorkPool {
 
     /// Number of currently active (non-parked) workers.
     active_count: AtomicUsize,
+
+    /// Target number of initially active (non-parked) workers.
+    initial_active: usize,
 
     /// Minimum number of workers (never park below this).
     min_threads: usize,
@@ -127,51 +132,37 @@ pub struct WorkPool {
 }
 
 impl WorkPool {
-    /// Create and start the work pool using environment variable configuration.
+    /// Create a work pool using environment variable configuration.
+    ///
+    /// Allocates structures only — no OS threads are spawned. Use
+    /// `start_async_init()` (global singleton) or `spawn_all_workers()`
+    /// (tests) to actually start workers.
     pub fn new() -> Self {
         let (min_threads, max_threads) = get_work_thread_config();
-        Self::with_threads(min_threads, max_threads)
+        Self::allocate(min_threads, max_threads)
     }
 
-    /// Create and start a work pool with explicit thread counts.
+    /// Pre-allocate structures without spawning any OS threads.
     ///
-    /// This constructor is useful for tests that need isolated pools
-    /// without sharing the global singleton.
-    pub fn with_threads(min_threads: usize, max_threads: usize) -> Self {
+    /// Creates the priority queue, runtime tracker, worker park primitives,
+    /// and empty worker slots. Returns immediately.
+    fn allocate(min_threads: usize, max_threads: usize) -> Self {
         let min_threads = min_threads.max(1);
         let max_threads = max_threads.max(min_threads).max(2);
+        let initial_active = min_threads.max(4).min(max_threads);
         let config = SchedulerConfig::default();
         let runtime_tracker = Arc::new(RuntimeTracker::new());
         let queue = Arc::new(PriorityQueue::new(Arc::clone(&runtime_tracker), config));
         let shutdown = Arc::new(AtomicBool::new(false));
 
-        let mut workers = Vec::with_capacity(max_threads);
-        let mut worker_parks = Vec::with_capacity(max_threads);
+        // Pre-allocate WorkerPark structs (cheap: Mutex<bool> + Condvar)
+        let worker_parks: Vec<Arc<WorkerPark>> = (0..max_threads)
+            .map(|id| Arc::new(WorkerPark::new(id >= initial_active)))
+            .collect();
 
-        for id in 0..max_threads {
-            let initially_parked = id >= min_threads; // Workers beyond min start parked
-            let park = Arc::new(WorkerPark::new(initially_parked));
-            worker_parks.push(Arc::clone(&park));
-
-            let queue = Arc::clone(&queue);
-            let runtime_tracker = Arc::clone(&runtime_tracker);
-            let shutdown = Arc::clone(&shutdown);
-
-            let handle = thread::Builder::new()
-                .name(format!("work-pool-{}", id))
-                .spawn(move || {
-                    work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park);
-                })
-                .expect("failed to spawn work pool worker thread");
-
-            workers.push(Mutex::new(Some(handle)));
-        }
-
-        debug!(
-            min_threads,
-            max_threads,
-            "WorkPool started"
-        );
+        // Pre-allocate worker slots as None (no OS threads yet)
+        let workers: Vec<Mutex<Option<JoinHandle<()>>>> =
+            (0..max_threads).map(|_| Mutex::new(None)).collect();
 
         Self {
             queue,
@@ -179,11 +170,64 @@ impl WorkPool {
             workers,
             worker_parks,
             shutdown,
-            active_count: AtomicUsize::new(min_threads),
+            active_count: AtomicUsize::new(initial_active),
+            initial_active,
             min_threads,
             max_threads,
             sequence: AtomicU64::new(0),
         }
+    }
+
+    /// Spawn all max_threads worker OS threads into pre-allocated slots.
+    ///
+    /// Workers [0..initial_active) start unparked and immediately drain the
+    /// task queue. Workers [initial_active..max_threads) start parked — their
+    /// WorkerPark has `parked = true`, so they block on `wait_if_parked_timeout()`
+    /// at line 413 of the worker loop. This bounds active workers to
+    /// `active_count` (= initial_active).
+    ///
+    /// Uses `std::thread::scope` for parallel spawning when max_threads > 4.
+    fn spawn_all_workers(&self) {
+        if self.max_threads <= 4 {
+            for id in 0..self.max_threads {
+                self.spawn_worker(id);
+            }
+        } else {
+            thread::scope(|s| {
+                for id in 0..self.max_threads {
+                    s.spawn(move || self.spawn_worker(id));
+                }
+            });
+        }
+        debug!(
+            initial_active = self.initial_active,
+            max = self.max_threads,
+            "WorkPool: all workers spawned"
+        );
+    }
+
+    /// Spawn a single worker thread into slot `id`.
+    fn spawn_worker(&self, id: usize) {
+        let park = Arc::clone(&self.worker_parks[id]);
+        let queue = Arc::clone(&self.queue);
+        let runtime_tracker = Arc::clone(&self.runtime_tracker);
+        let shutdown = Arc::clone(&self.shutdown);
+        let handle = thread::Builder::new()
+            .name(format!("work-pool-{}", id))
+            .spawn(move || work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park))
+            .expect("failed to spawn work pool worker thread");
+        *self.workers[id].lock() = Some(handle);
+    }
+
+    /// Create and start a work pool with explicit thread counts.
+    ///
+    /// Spawns all workers synchronously before returning. This constructor
+    /// is useful for tests that need isolated pools without sharing the
+    /// global singleton.
+    pub fn with_threads(min_threads: usize, max_threads: usize) -> Self {
+        let pool = Self::allocate(min_threads, max_threads);
+        pool.spawn_all_workers();
+        pool
     }
 
     /// Spawn an eval task (priority = NORMAL).
@@ -253,6 +297,11 @@ impl WorkPool {
         self.max_threads
     }
 
+    /// Get the target number of initially active workers.
+    pub fn initial_active(&self) -> usize {
+        self.initial_active
+    }
+
     /// Unpark one worker (called by the scaling monitor).
     ///
     /// Finds the first parked worker and unparks it. Returns true if a worker
@@ -312,7 +361,7 @@ impl WorkPool {
             let mut guard = slot.lock();
             let is_dead = match guard.as_ref() {
                 Some(handle) => handle.is_finished(),
-                None => true, // Slot was already taken (shouldn't happen outside Drop)
+                None => false, // Not yet spawned (async init in progress) — skip
             };
 
             if !is_dead {
@@ -460,16 +509,55 @@ fn work_pool_worker_loop(
 // ============================================================================
 
 /// Global work pool singleton (lazy initialization).
+///
+/// `LazyLock::new(WorkPool::new)` calls `allocate()` only — no OS threads
+/// are spawned. Workers are started asynchronously via `start_async_init()`.
 static GLOBAL_WORK_POOL: LazyLock<WorkPool> = LazyLock::new(WorkPool::new);
+
+/// Global async init guard — ensures `spawn_all_workers()` runs exactly once.
+static WORK_POOL_INIT: OnceLock<()> = OnceLock::new();
+
+impl WorkPool {
+    /// Kick off background worker spawning (idempotent).
+    ///
+    /// Spawns a dedicated `work-pool-init` thread that calls
+    /// `spawn_all_workers()`. Requires `&'static self` (only valid
+    /// for the global singleton via `GLOBAL_WORK_POOL`).
+    fn start_async_init(&'static self) {
+        WORK_POOL_INIT.get_or_init(|| {
+            thread::Builder::new()
+                .name("work-pool-init".into())
+                .spawn(move || self.spawn_all_workers())
+                .expect("failed to spawn work pool init thread");
+        });
+    }
+}
 
 /// Get the global unified work pool.
 ///
-/// On first access, lazily initializes the pool and starts the scaling monitor.
+/// On first access, lazily initializes the pool (allocation only), kicks off
+/// async background worker spawning, and starts the scaling monitor.
 pub fn global_work_pool() -> &'static WorkPool {
     let pool = &*GLOBAL_WORK_POOL;
+    pool.start_async_init();
     // Start the scaling monitor (idempotent — only runs once)
     start_work_scaling_monitor();
     pool
+}
+
+/// Eagerly initialize all global thread pools at application startup.
+///
+/// Forces initialization of the global work pool (with async background
+/// worker spawning), GC pool, and scaling monitor. Call from `main()`
+/// before any evaluation to start workers warming up during arg parsing.
+///
+/// This is optional — all pools self-initialize on first access via
+/// `global_work_pool()` / `global_gc_pool()`, so the Rholang integration
+/// entry point (which calls `global_work_pool()` directly) also triggers
+/// initialization. Calling this from `main()` just starts it sooner.
+pub fn init_thread_pools() {
+    let _ = global_work_pool(); // Triggers LazyLock + start_async_init + scaling monitor
+    let _ = super::gc_pool::global_gc_pool(); // Triggers OnceLock for GC pool
 }
 
 // ============================================================================
@@ -679,7 +767,7 @@ impl WorkMonitorState {
                 WORK_IMPROVEMENT_THRESHOLD,
                 pool.min_threads(),
                 pool.max_threads(),
-                pool.active_workers(),
+                pool.initial_active(), // stable value, doesn't depend on spawn progress
             ),
             rss_limit: get_rss_limit(),
             page_size: get_page_size(),
@@ -1050,7 +1138,7 @@ mod tests {
 
     #[test]
     fn test_global_work_pool_spawn_task() {
-        let pool = &*GLOBAL_WORK_POOL;
+        let pool = global_work_pool(); // Triggers async init
 
         let done = Arc::new(AtomicBool::new(false));
         let d = Arc::clone(&done);
@@ -1328,6 +1416,38 @@ mod tests {
         assert!((ramp(1.0) - 2.0).abs() < f64::EPSILON, "At 100%: high pressure");
         assert!((ramp(1.25) - 3.0).abs() < f64::EPSILON, "At 125%: capped at 3.0");
         assert!((ramp(2.0) - 3.0).abs() < f64::EPSILON, "At 200%: still capped at 3.0");
+    }
+
+    /// Verify that tasks queued before workers exist are drained once
+    /// workers come online (simulates async init window).
+    #[test]
+    fn test_async_init_tasks_drain() {
+        // Create pool via allocate() — no OS threads yet
+        let pool = WorkPool::allocate(2, 4);
+
+        let num_tasks = 20u32;
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // Submit tasks while no workers exist — they sit in the queue
+        for _ in 0..num_tasks {
+            let c = Arc::clone(&counter);
+            pool.spawn_eval(
+                move || {
+                    c.fetch_add(1, Ordering::Relaxed);
+                },
+                TaskTypeId::Generic,
+                priority_levels::NORMAL,
+            );
+        }
+
+        assert_eq!(pool.queue_len(), num_tasks as usize, "Tasks should be queued");
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "No tasks executed yet");
+
+        // Now spawn workers — they should drain all queued tasks
+        pool.spawn_all_workers();
+
+        wait_for_count(&counter, num_tasks);
+        assert_eq!(counter.load(Ordering::Relaxed), num_tasks);
     }
 
     #[test]

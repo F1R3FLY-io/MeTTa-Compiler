@@ -207,6 +207,26 @@ pub enum Opcode {
     MinAtom = 0x84,
     /// Maximum numeric value in expression: [expr] -> [max]
     MaxAtom = 0x85,
+    /// Concatenate two tuples: [a, b] -> [combined]
+    TupleConcat = 0x86,
+    /// Count tuple elements: [tuple] -> [count (Long)]
+    TupleCount = 0x87,
+    /// Remove all occurrences of elem from tuple: [tuple, elem] -> [filtered]
+    Without = 0x88,
+    /// Membership test: [elem, tuple] -> [Bool]
+    ElementOf = 0x89,
+    /// Generate integer range [start, end): [start, end] -> [tuple]
+    Range = 0x8A,
+    /// Reverse tuple: [tuple] -> [reversed]
+    ReverseAtom = 0x8B,
+    /// Flatten one level of nesting: [nested] -> [flat]
+    FlattenAtom = 0x8C,
+    /// Pair-wise zip: [a, b] -> [pairs]
+    ZipAtom = 0x8D,
+    /// First n elements: [tuple, n] -> [prefix]
+    TakeAtom = 0x8E,
+    /// Skip first n elements: [tuple, n] -> [suffix]
+    DropAtom = 0x8F,
 
     // === Rule Dispatch (0x90-0x9F) ===
     /// Find matching rules via MORK
@@ -547,7 +567,17 @@ impl Opcode {
             | Self::MorkDelete
             | Self::ConsAtom
             | Self::Guard
-            | Self::Backtrack => 0,
+            | Self::Backtrack
+            | Self::TupleConcat
+            | Self::TupleCount
+            | Self::Without
+            | Self::ElementOf
+            | Self::Range
+            | Self::ReverseAtom
+            | Self::FlattenAtom
+            | Self::ZipAtom
+            | Self::TakeAtom
+            | Self::DropAtom => 0,
 
             // 1-byte immediate
             Self::PushLongSmall
@@ -706,6 +736,16 @@ impl Opcode {
             Self::IndexAtom => "index_atom",
             Self::MinAtom => "min_atom",
             Self::MaxAtom => "max_atom",
+            Self::TupleConcat => "tuple_concat",
+            Self::TupleCount => "tuple_count",
+            Self::Without => "without",
+            Self::ElementOf => "element_of",
+            Self::Range => "range",
+            Self::ReverseAtom => "reverse_atom",
+            Self::FlattenAtom => "flatten_atom",
+            Self::ZipAtom => "zip_atom",
+            Self::TakeAtom => "take_atom",
+            Self::DropAtom => "drop_atom",
             Self::DispatchRules => "dispatch_rules",
             Self::TryRule => "try_rule",
             Self::NextRule => "next_rule",
@@ -953,6 +993,16 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x83] = Some(Opcode::IndexAtom);
     table[0x84] = Some(Opcode::MinAtom);
     table[0x85] = Some(Opcode::MaxAtom);
+    table[0x86] = Some(Opcode::TupleConcat);
+    table[0x87] = Some(Opcode::TupleCount);
+    table[0x88] = Some(Opcode::Without);
+    table[0x89] = Some(Opcode::ElementOf);
+    table[0x8A] = Some(Opcode::Range);
+    table[0x8B] = Some(Opcode::ReverseAtom);
+    table[0x8C] = Some(Opcode::FlattenAtom);
+    table[0x8D] = Some(Opcode::ZipAtom);
+    table[0x8E] = Some(Opcode::TakeAtom);
+    table[0x8F] = Some(Opcode::DropAtom);
 
     // Rule dispatch
     table[0x90] = Some(Opcode::DispatchRules);

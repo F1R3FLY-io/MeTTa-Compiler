@@ -539,6 +539,40 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
     },
 
+    /// Start sort-tuple evaluation - sorts a tuple by evaluating a comparator
+    /// for element pairs via the trampoline.
+    /// `(sort-tuple $tuple $var1 $var2 $comparator)`
+    StartSortTuple {
+        /// The tuple's elements to sort
+        elements: Vec<V>,
+        /// Variable name for left operand in comparator
+        var1_name: String,
+        /// Variable name for right operand in comparator
+        var2_name: String,
+        /// Comparator expression template (returns True if var1 < var2)
+        comparator: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
+    /// Start best-candidate evaluation - finds the element that maximizes a rank function
+    /// by evaluating the rank function for each element via the trampoline.
+    /// `(best-candidate $tuple $var $rank-fn)`
+    StartBestCandidate {
+        /// The tuple's elements to search
+        elements: Vec<V>,
+        /// Variable name for rank function binding
+        var_name: String,
+        /// Rank function expression template (returns a Number)
+        rank_fn: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
     /// Start match-or evaluation (4-arg: match-or space pattern default template).
     /// Like `match` but returns `default` when no match is found instead of empty.
     StartMatchOr {

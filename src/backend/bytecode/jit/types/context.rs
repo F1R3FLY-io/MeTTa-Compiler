@@ -51,6 +51,7 @@ pub struct TypeSignatureRegistry {
 
 impl TypeSignatureRegistry {
     /// Create an empty registry.
+    #[inline]
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -58,16 +59,19 @@ impl TypeSignatureRegistry {
     }
 
     /// Insert a function's type info.
+    #[inline]
     pub fn insert(&mut self, name: String, info: FunctionTypeInfo) {
         self.entries.insert(name, info);
     }
 
     /// Look up a function's type info by name.
+    #[inline]
     pub fn get(&self, name: &str) -> Option<&FunctionTypeInfo> {
         self.entries.get(name)
     }
 
     /// Check if the registry has any entries.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

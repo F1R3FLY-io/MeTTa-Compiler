@@ -255,6 +255,20 @@ pub enum BinaryOp {
     ConsAtom,
     SpaceAdd,
     SpaceRemove,
+
+    // Set operations
+    UnionAtom,
+    IntersectionAtom,
+    SubtractionAtom,
+
+    // Tuple operations
+    TupleConcat,
+    Without,
+    ElementOf,
+    Range,
+    ZipAtom,
+    TakeAtom,
+    DropAtom,
 }
 
 impl BinaryOp {
@@ -283,6 +297,16 @@ impl BinaryOp {
             BinaryOp::ConsAtom => Opcode::ConsAtom,
             BinaryOp::SpaceAdd => Opcode::SpaceAdd,
             BinaryOp::SpaceRemove => Opcode::SpaceRemove,
+            BinaryOp::UnionAtom => Opcode::UnionAtom,
+            BinaryOp::IntersectionAtom => Opcode::IntersectionAtom,
+            BinaryOp::SubtractionAtom => Opcode::SubtractionAtom,
+            BinaryOp::TupleConcat => Opcode::TupleConcat,
+            BinaryOp::Without => Opcode::Without,
+            BinaryOp::ElementOf => Opcode::ElementOf,
+            BinaryOp::Range => Opcode::Range,
+            BinaryOp::ZipAtom => Opcode::ZipAtom,
+            BinaryOp::TakeAtom => Opcode::TakeAtom,
+            BinaryOp::DropAtom => Opcode::DropAtom,
         }
     }
 }
@@ -319,6 +343,14 @@ pub enum UnaryOp {
     DeconAtom,
     MinAtom,
     MaxAtom,
+
+    // Set operations
+    UniqueAtom,
+
+    // Tuple operations
+    TupleCount,
+    ReverseAtom,
+    FlattenAtom,
 
     // Type operations
     GetType,
@@ -375,6 +407,10 @@ impl UnaryOp {
             UnaryOp::EvalUnquote => Opcode::EvalUnquote,
             UnaryOp::EvalCollapse => Opcode::EvalCollapse,
             UnaryOp::Trace => Opcode::Trace,
+            UnaryOp::UniqueAtom => Opcode::UniqueAtom,
+            UnaryOp::TupleCount => Opcode::TupleCount,
+            UnaryOp::ReverseAtom => Opcode::ReverseAtom,
+            UnaryOp::FlattenAtom => Opcode::FlattenAtom,
         }
     }
 }

@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process;
+use std::time::{Duration, Instant};
 
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -32,7 +33,8 @@ fn print_usage() {
     eprintln!("    --no-gc                 Disable garbage collection
     --gc-stats              Print GC statistics to stderr on exit
     --tier-stats            Print tiered compilation stats to stderr on exit
-    --pool-stats            Print thread pool statistics to stderr on exit");
+    --pool-stats            Print thread pool statistics to stderr on exit
+    --startup-timing        Print per-phase startup timing to stderr");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
@@ -58,6 +60,7 @@ struct Options {
     gc_stats: bool,
     tier_stats: bool,
     pool_stats: bool,
+    startup_timing: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -72,6 +75,7 @@ fn parse_args() -> Result<Options, String> {
     let mut gc_stats = false;
     let mut tier_stats = false;
     let mut pool_stats = false;
+    let mut startup_timing = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -115,6 +119,9 @@ fn parse_args() -> Result<Options, String> {
             "--pool-stats" => {
                 pool_stats = true;
             }
+            "--startup-timing" => {
+                startup_timing = true;
+            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -138,6 +145,7 @@ fn parse_args() -> Result<Options, String> {
         gc_stats,
         tier_stats,
         pool_stats,
+        startup_timing,
     })
 }
 
@@ -213,7 +221,53 @@ fn format_results(results: &[MettaValue]) -> String {
     format!("[{}]", formatted.join(", "))
 }
 
-fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
+/// Collects per-phase wall-clock timings during startup.
+/// Each `mark()` records (name, cumulative elapsed time from t_start).
+struct StartupTimings {
+    t_start: Instant,
+    phases: Vec<(&'static str, Duration)>,
+}
+
+impl StartupTimings {
+    fn new(t_start: Instant) -> Self {
+        Self {
+            t_start,
+            phases: Vec::with_capacity(12),
+        }
+    }
+
+    /// Record the cumulative elapsed time for a named phase.
+    fn mark(&mut self, name: &'static str) {
+        self.phases.push((name, self.t_start.elapsed()));
+    }
+
+    /// Print the timing table to stderr.
+    fn print(&self) {
+        eprintln!();
+        eprintln!("=== MeTTaTron Startup Timing ===");
+        eprintln!("{:<24} {:>10}   {:>10}", "Phase", "Wall (ms)", "Delta (ms)");
+        eprintln!("{}", "\u{2500}".repeat(50));
+
+        let mut prev = Duration::ZERO;
+        for &(name, cumulative) in &self.phases {
+            let delta = cumulative.saturating_sub(prev);
+            eprintln!(
+                "{:<24} {:>10.3}   {:>10.3}",
+                name,
+                cumulative.as_secs_f64() * 1000.0,
+                delta.as_secs_f64() * 1000.0,
+            );
+            prev = cumulative;
+        }
+        eprintln!("{}", "\u{2500}".repeat(50));
+        if let Some(&(_, total)) = self.phases.last() {
+            eprintln!("Total wall time:         {:>10.3} ms", total.as_secs_f64() * 1000.0);
+        }
+        eprintln!();
+    }
+}
+
+fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> Result<String, String> {
     if options.show_sexpr {
         // Parse with Tree-Sitter and show S-expressions
         let mut parser = mettatron::TreeSitterMettaParser::new()
@@ -235,6 +289,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
 
     // Create arena environment (uses eval arena factory)
     let mut env = new_env();
+    timings.mark("new_env");
 
     // Set the current module path for relative includes
     if let Some(ref input_path) = options.input {
@@ -258,6 +313,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     // Compile to MettaState (acquires storage arena from pool)
     let state = compile_with_path(input, file_path)
         .map_err(|e| e.to_string())?;
+    timings.mark("compile");
 
     // Snapshot source expressions (MettaValue is Copy)
     let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
@@ -267,6 +323,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     // are tagged with the session's context ID and released asynchronously on
     // a background thread when the guard drops (after results are formatted).
     let mut output = String::new();
+    let mut first_eval_marked = false;
     for expr in source_exprs {
         // Only output results for S-expressions, not atoms or ground types
         let should_output = expr.is_sexpr();
@@ -275,6 +332,11 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
 
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
+
+        if !first_eval_marked {
+            timings.mark("first_eval");
+            first_eval_marked = true;
+        }
 
         // Format results WHILE guard is alive — values are not yet released.
         let filtered_results: Vec<MettaValue> = results
@@ -289,11 +351,13 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         // Drop guard triggers async release_session() on background thread
         drop(guard);
     }
+    timings.mark("all_evals");
 
     // MettaState drops here — values remain in global slab allocator
     // and will be reclaimed by GC when no longer referenced.
     drop(state);
     drop(env);
+    timings.mark("total_output");
 
     Ok(output)
 }
@@ -432,6 +496,9 @@ fn run_repl(options: &Options) {
 }
 
 fn main() {
+    let t_start = Instant::now();
+    let mut timings = StartupTimings::new(t_start);
+
     // Limit glibc per-thread malloc arenas. Since jemalloc is the global
     // allocator (via PathMap), glibc's arenas are only used internally by
     // pthread_getattr_np during thread creation. Without this limit, each
@@ -448,11 +515,18 @@ fn main() {
             mallopt(M_ARENA_MAX, 2);
         }
     }
+    timings.mark("mallopt");
 
     // Install signal-triggered diagnostic handlers (SIGTERM/SIGUSR1) early.
     // Also auto-installed by global_allocator(), but explicit call ensures
     // coverage even if main() fails before first allocation.
     mettatron::backend::diagnostics::install_signal_handlers();
+    timings.mark("signal_handlers");
+
+    // Eagerly initialize thread pools — workers spawn asynchronously in background.
+    // Pools also self-initialize on first access, so this just starts it sooner.
+    mettatron::init_thread_pools();
+    timings.mark("thread_pools");
 
     let options = match parse_args() {
         Ok(opts) => opts,
@@ -463,6 +537,7 @@ fn main() {
             process::exit(1);
         }
     };
+    timings.mark("arg_parsing");
 
     // Disable GC if requested
     if options.no_gc {
@@ -480,6 +555,9 @@ fn main() {
         }
         if options.pool_stats {
             mettatron::backend::diagnostics::print_pool_stats();
+        }
+        if options.startup_timing {
+            timings.print();
         }
         return;
     }
@@ -500,8 +578,9 @@ fn main() {
             process::exit(1);
         }
     };
+    timings.mark("file_read");
 
-    let output = match eval_metta(&input_content, &options) {
+    let output = match eval_metta(&input_content, &options, &mut timings) {
         Ok(output) => output,
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -522,5 +601,8 @@ fn main() {
     }
     if options.pool_stats {
         mettatron::backend::diagnostics::print_pool_stats();
+    }
+    if options.startup_timing {
+        timings.print();
     }
 }

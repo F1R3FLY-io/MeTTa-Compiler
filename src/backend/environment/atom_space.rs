@@ -10,11 +10,15 @@
 //! (MORK trie search cannot find stored atoms with variables at concrete
 //! query positions — see plan's MORK Capability Analysis).
 //!
+//! Wide expressions (arity ≥ 64) are stored in `wide_btm` using Wide MORK
+//! encoding (tag-byte + LEB128).  Same `PathMap<Multiplicity>` type as `btm`,
+//! values reconstructed on-demand via `wide_bytes_to_generic_value()`.
+//!
 //! ## GC Safety
 //!
-//! `variable_atoms` and `large_expr_pathmap` hold `MettaValue` references that
-//! MUST be traced by the GC. Callers must include `collect_gc_roots()` output
-//! in their root set.
+//! `variable_atoms` holds `MettaValue` references that MUST be traced by the GC.
+//! `btm` and `wide_btm` store only byte keys + Multiplicity — no V references,
+//! no GC tracing needed.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -37,16 +41,17 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
     /// Rules are stored as `(= lhs rhs)` MORK byte keys.
     pub(crate) btm: RwLock<PathMap<Multiplicity>>,
 
+    /// PathMap trie for wide expressions (arity ≥ 64).  Same type as `btm`.
+    /// Keyed by Wide MORK storage bytes.  Values reconstructed on-demand via
+    /// `wide_bytes_to_generic_value()` — no duplicate value storage.
+    pub(crate) wide_btm: RwLock<PathMap<Multiplicity>>,
+
     /// MORK symbol interning handle. Shared across all forks (Arc-wrapped internally).
     pub(crate) shared_mapping: SharedMappingHandle,
 
     /// Bloom filter for (head_symbol, arity) pairs — enables O(1) match_space() rejection.
     /// Arc-wrapped so fork is O(1) (Arc::clone).
     pub(crate) head_arity_bloom: std::sync::Arc<RwLock<HeadArityBloomFilter>>,
-
-    /// Fallback store for large expressions (arity >= 64) that can't be MORK-encoded.
-    /// Stores V directly (zero-conversion).
-    pub(crate) large_expr_pathmap: RwLock<Option<PathMap<V>>>,
 
     /// O(1) total atom count (sum of all multiplicities across ground + variable atoms).
     pub(crate) total_atoms: AtomicUsize,
@@ -70,11 +75,11 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
     pub fn new(shared_mapping: SharedMappingHandle, expected_entries: usize) -> Self {
         AtomSpace {
             btm: RwLock::new(PathMap::new()),
+            wide_btm: RwLock::new(PathMap::new()),
             shared_mapping,
             head_arity_bloom: std::sync::Arc::new(RwLock::new(
                 HeadArityBloomFilter::new(expected_entries),
             )),
-            large_expr_pathmap: RwLock::new(None),
             total_atoms: AtomicUsize::new(0),
             variable_atoms: RwLock::new(Vec::new()),
         }
@@ -87,9 +92,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
     pub fn fork(&self) -> Self {
         AtomSpace {
             btm: RwLock::new(self.btm.read().clone()),
+            wide_btm: RwLock::new(self.wide_btm.read().clone()),
             shared_mapping: self.shared_mapping.clone(),
             head_arity_bloom: std::sync::Arc::clone(&self.head_arity_bloom),
-            large_expr_pathmap: RwLock::new(self.large_expr_pathmap.read().clone()),
             total_atoms: AtomicUsize::new(self.total_atoms.load(Ordering::Acquire)),
             variable_atoms: RwLock::new(self.variable_atoms.read().clone()),
         }
@@ -103,24 +108,15 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
 
     /// Collect all GC-traceable MettaValues from this AtomSpace.
     ///
-    /// Must be called during GC root collection to keep variable atoms and
-    /// large expression PathMap values alive.
+    /// Must be called during GC root collection to keep variable atoms alive.
+    /// `btm` and `wide_btm` store only byte keys + Multiplicity — no V references,
+    /// so they require no GC tracing.
     pub fn collect_gc_roots(&self, roots: &mut Vec<V>) {
         // Variable atoms hold V values directly
-        {
-            let var_atoms = self.variable_atoms.read();
-            roots.reserve(var_atoms.len());
-            for (val, _mult) in var_atoms.iter() {
-                roots.push(val.clone());
-            }
-        }
-
-        // Large expression PathMap values
-        {
-            let large_pm = self.large_expr_pathmap.read();
-            if let Some(ref pm) = *large_pm {
-                roots.extend(pm.iter().map(|(_, val)| val.clone()));
-            }
+        let var_atoms = self.variable_atoms.read();
+        roots.reserve(var_atoms.len());
+        for (val, _mult) in var_atoms.iter() {
+            roots.push(val.clone());
         }
     }
 }

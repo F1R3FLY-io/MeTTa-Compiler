@@ -26,7 +26,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mettatron::config::{configure_eval, EvalConfig};
-use mettatron::{compile, new_env, run_state};
+use mettatron::{compile, new_env, run_state, MettaState};
 use sysinfo::{Pid, System};
 
 // Include mmverify sources
@@ -310,7 +310,7 @@ fn main() {
         }
 
         let env = new_env();
-        match run_state(env, &compiled_state) {
+        match run_state(MettaState::from_env(env), &compiled_state) {
             Ok(result_state) => {
                 black_box(result_state);
             }

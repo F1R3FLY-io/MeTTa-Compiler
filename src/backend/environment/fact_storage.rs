@@ -14,7 +14,6 @@ use super::multiplicity::Multiplicity;
 use super::{MettaEnvironment, MettaValue, MettaValueInner};
 use crate::backend::models::metta_value_trait::MettaValueTrait;
 use crate::backend::mork_convert::with_mork_bytes;
-use crate::backend::varint_encoding::metta_to_varint_key;
 
 impl MettaEnvironment {
     /// Check if an atom fact exists (queries MORK Space)
@@ -237,6 +236,30 @@ impl MettaEnvironment {
                 }
             }
         }
+
+        // Also iterate wide_btm entries for bloom filter
+        {
+            let wbtm = self.shared.atom_space.wide_btm.read();
+            let mut wrz = wbtm.read_zipper();
+            while wrz.to_next_val() {
+                let path_bytes = wrz.path();
+                if let Ok(metta_value) =
+                    crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<MettaValue, _>(
+                        path_bytes,
+                        &crate::backend::models::global_factory(),
+                    )
+                {
+                    if let Some(head) = MettaValueTrait::get_head_symbol(&metta_value) {
+                        let arity = MettaValueTrait::get_arity(&metta_value) as u8;
+                        self.shared
+                            .atom_space
+                            .head_arity_bloom
+                            .write()
+                            .insert(head.as_bytes(), arity);
+                    }
+                }
+            }
+        }
     }
 
     /// Bulk insert facts into MORK Space using PathMap anamorphism (Strategy 2)
@@ -261,12 +284,20 @@ impl MettaEnvironment {
         // OPTIMIZATION: Build temporary PathMap directly from callback (zero-copy per fact)
         let sm = &self.shared_mapping;
         let mut fact_trie: PathMap<Multiplicity> = PathMap::new();
+        let mut wide_fact_trie: PathMap<Multiplicity> = PathMap::new();
 
         for fact in facts {
-            with_mork_bytes(fact, sm, |mork_bytes| {
+            match with_mork_bytes(fact, sm, |mork_bytes| {
                 fact_trie.insert(mork_bytes, Multiplicity::new(1));
-            })
-            .map_err(|e| format!("MORK conversion failed for {:?}: {}", fact, e))?;
+            }) {
+                Ok(()) => {}
+                Err(_) => {
+                    // Wide expression (arity >= 64) — encode to wide trie
+                    let mut wide_key = Vec::new();
+                    crate::backend::wide_mork::encoding::encode_wide_storage(fact, &mut wide_key);
+                    wide_fact_trie.insert(&wide_key, Multiplicity::new(1));
+                }
+            }
         }
         trace!(
             target: "mettatron::environment::add_facts_bulk",
@@ -280,6 +311,12 @@ impl MettaEnvironment {
             *btm = btm.join(&fact_trie);
         }
 
+        // Merge wide trie (if any wide facts were encoded)
+        {
+            let mut wbtm = self.shared.atom_space.wide_btm.write();
+            *wbtm = wbtm.join(&wide_fact_trie);
+        }
+
         // Invalidate type index if any facts were type assertions
         // Conservative: Assume any bulk insert might contain types
         // AtomicBool - store directly
@@ -289,26 +326,17 @@ impl MettaEnvironment {
         Ok(())
     }
 
-    /// Get read access to the large expression fallback PathMap
-    ///
-    /// Returns the fallback PathMap that stores expressions with arity >= 64
-    /// (which exceed MORK's 63-arity limit). Uses varint encoding for keys.
-    /// Returns None if no large expressions have been stored.
-    pub fn get_large_expr_pathmap(
-        &self,
-    ) -> parking_lot::RwLockReadGuard<'_, Option<PathMap<MettaValue>>> {
-        // parking_lot::RwLock - no .expect()
-        self.shared.atom_space.large_expr_pathmap.read()
-    }
-
-    /// Insert a value into the large expressions fallback PathMap
-    /// Used during deserialization to restore large expressions (arity >= 64)
-    /// that exceed MORK's 63-arity limit
-    pub fn insert_large_expr(&self, value: MettaValue) {
-        let key = metta_to_varint_key(&value);
-        // parking_lot::RwLock - no .expect()
-        let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-        let fallback = guard.get_or_insert_with(PathMap::new);
-        fallback.insert(&key, value);
+    /// Insert a wide expression (arity ≥ 64) into the wide_btm PathMap.
+    /// Used during deserialization to restore wide expressions.
+    /// Encodes the value with Wide MORK storage encoding.
+    pub fn insert_wide_atom(&self, value: &MettaValue) {
+        let mut wide_key = Vec::new();
+        crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+        let mut wbtm = self.shared.atom_space.wide_btm.write();
+        super::multiplicity::add_atom(&mut wbtm, &wide_key);
+        self.shared
+            .atom_space
+            .total_atoms
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }

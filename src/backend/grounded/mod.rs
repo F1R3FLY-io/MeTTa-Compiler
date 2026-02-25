@@ -44,13 +44,14 @@ use super::models::{MettaValue, MettaValueInner};
 
 // Re-export generic types (active code path)
 pub use generic_arithmetic::{
-    AddOpGeneric, DivOpGeneric, ModOpGeneric, MulOpGeneric, SubOpGeneric,
+    AddOpGeneric, ClampOpGeneric, DivOpGeneric, ModOpGeneric, MulOpGeneric, SafeDivOpGeneric,
+    SubOpGeneric,
 };
 pub use generic_comparison::{
     EqualOpGeneric, GreaterEqOpGeneric, GreaterOpGeneric, LessEqOpGeneric, LessOpGeneric,
     NotEqualOpGeneric,
 };
-pub use generic_logical::{AndOpGeneric, NotOpGeneric, OrOpGeneric};
+pub use generic_logical::{AndOpGeneric, NotOpGeneric, OrOpGeneric, XorOpGeneric};
 pub use generic_registry::{
     execute_generic_grounded_op, get_generic_registry, has_generic_grounded_op,
     GenericGroundedRegistry,

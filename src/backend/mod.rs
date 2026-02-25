@@ -20,6 +20,7 @@ pub mod mork_convert;
 pub mod priority_scheduler;
 pub mod symbol;
 pub mod varint_encoding;
+pub mod wide_mork;
 
 pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,

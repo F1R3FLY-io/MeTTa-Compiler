@@ -33,12 +33,19 @@ static GROUNDED_OPS: phf::Set<&'static str> = phf_set! {
     // Comparison operations
     "<", "<=", ">", ">=", "==", "!=",
     // Boolean operations
-    "not", "and", "or",
+    "not", "and", "or", "xor",
     // Type operations that return concrete values
     "get-type", "get-metatype",
     // Atom/expression manipulation operations (all return immediate values)
     "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
     "max-atom", "min-atom", "index-atom",
+    // Tuple operations (all return immediate values)
+    "tuple-concat", "tuple-count", "without", "element-of",
+    "range", "reverse-atom", "flatten-atom", "zip-atom", "take-atom", "drop-atom",
+    // Higher-order tuple operations (iterate via trampoline)
+    "sort-tuple", "best-candidate",
+    // Safe arithmetic utilities
+    "/safe", "clamp",
 };
 
 /// Set of operations that need re-dispatch through eval_sexpr_step after
@@ -52,6 +59,8 @@ static GROUNDED_OPS: phf::Set<&'static str> = phf_set! {
 static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
     // Higher-order list operations (iterate over elements)
     "map-atom", "filter-atom", "foldl-atom",
+    // Higher-order tuple operations (iterate via trampoline)
+    "sort-tuple", "best-candidate",
     // Control flow (lazy branch evaluation)
     "if", "if-equal", "if-reducible", "case", "switch", "switch-minimal", "switch-internal",
     // Binding forms (special scoping)
@@ -97,6 +106,8 @@ static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
 static EAGER_SPECIAL_FORMS: phf::Set<&'static str> = phf_set! {
     // Higher-order list operations (produce list values)
     "map-atom", "filter-atom", "foldl-atom",
+    // Higher-order tuple operations (produce values)
+    "sort-tuple", "best-candidate",
     // Evaluation control that produces values
     "eval", "unquote",
     // Space operations that produce values

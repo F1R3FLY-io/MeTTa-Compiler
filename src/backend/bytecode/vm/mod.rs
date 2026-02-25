@@ -1207,6 +1207,18 @@ where
             Opcode::IntersectionAtom => self.op_intersection_atom()?,
             Opcode::SubtractionAtom => self.op_subtraction_atom()?,
 
+            // === Tuple & List Operations ===
+            Opcode::TupleConcat => self.op_tuple_concat()?,
+            Opcode::TupleCount => self.op_tuple_count()?,
+            Opcode::Without => self.op_without()?,
+            Opcode::ElementOf => self.op_element_of()?,
+            Opcode::Range => self.op_range()?,
+            Opcode::ReverseAtom => self.op_reverse_atom()?,
+            Opcode::FlattenAtom => self.op_flatten_atom()?,
+            Opcode::ZipAtom => self.op_zip_atom()?,
+            Opcode::TakeAtom => self.op_take_atom()?,
+            Opcode::DropAtom => self.op_drop_atom()?,
+
             // === Quote/Unquote ===
             Opcode::EvalQuote => self.op_eval_quote()?,
             Opcode::EvalUnquote => self.op_eval_unquote()?,
@@ -2439,6 +2451,186 @@ where
             }
         }
         self.push(self.make_sexpr(result));
+        Ok(())
+    }
+
+    // === Tuple & List Operations ===
+
+    /// tuple-concat: concatenate two tuples
+    /// Stack: [a, b] -> [combined]
+    fn op_tuple_concat(&mut self) -> VmResult<()> {
+        let b = self.pop()?;
+        let a = self.pop()?;
+        let a_items = a.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let b_items = b.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let mut combined = Vec::with_capacity(a_items.len() + b_items.len());
+        combined.extend(a_items.iter().cloned());
+        combined.extend(b_items.iter().cloned());
+        self.push(self.make_sexpr(combined));
+        Ok(())
+    }
+
+    /// tuple-count: count elements in tuple
+    /// Stack: [tuple] -> [count]
+    fn op_tuple_count(&mut self) -> VmResult<()> {
+        let tuple = self.pop()?;
+        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        self.push(self.make_long(items.len() as i64));
+        Ok(())
+    }
+
+    /// without: remove all occurrences of elem from tuple
+    /// Stack: [tuple, elem] -> [filtered]
+    fn op_without(&mut self) -> VmResult<()> {
+        let elem = self.pop()?;
+        let tuple = self.pop()?;
+        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let filtered: Vec<V> = items.iter().filter(|item| **item != elem).cloned().collect();
+        self.push(self.make_sexpr(filtered));
+        Ok(())
+    }
+
+    /// element-of: membership test
+    /// Stack: [elem, tuple] -> [bool]
+    fn op_element_of(&mut self) -> VmResult<()> {
+        let tuple = self.pop()?;
+        let elem = self.pop()?;
+        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let found = items.iter().any(|item| *item == elem);
+        self.push(self.make_bool(found));
+        Ok(())
+    }
+
+    /// range: generate integer range [start, end)
+    /// Stack: [start, end] -> [tuple]
+    fn op_range(&mut self) -> VmResult<()> {
+        let end = self.pop()?;
+        let start = self.pop()?;
+        let s = start.as_long().ok_or(VmError::TypeError {
+            expected: "Long",
+            got: "other",
+        })?;
+        let e = end.as_long().ok_or(VmError::TypeError {
+            expected: "Long",
+            got: "other",
+        })?;
+        if s >= e {
+            self.push(self.make_sexpr(vec![]));
+        } else {
+            let count = (e - s) as usize;
+            let mut elems = Vec::with_capacity(count);
+            for i in s..e {
+                elems.push(self.make_long(i));
+            }
+            self.push(self.make_sexpr(elems));
+        }
+        Ok(())
+    }
+
+    /// reverse-atom: reverse a tuple
+    /// Stack: [tuple] -> [reversed]
+    fn op_reverse_atom(&mut self) -> VmResult<()> {
+        let tuple = self.pop()?;
+        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let reversed: Vec<V> = items.iter().rev().cloned().collect();
+        self.push(self.make_sexpr(reversed));
+        Ok(())
+    }
+
+    /// flatten-atom: flatten one level of nesting
+    /// Stack: [nested] -> [flat]
+    fn op_flatten_atom(&mut self) -> VmResult<()> {
+        let nested = self.pop()?;
+        let items = nested.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let mut flat = Vec::new();
+        for item in items {
+            match item.as_sexpr() {
+                Some(inner) => flat.extend(inner.iter().cloned()),
+                None => flat.push(item.clone()),
+            }
+        }
+        self.push(self.make_sexpr(flat));
+        Ok(())
+    }
+
+    /// zip-atom: pair-wise zip of two tuples
+    /// Stack: [a, b] -> [pairs]
+    fn op_zip_atom(&mut self) -> VmResult<()> {
+        let b = self.pop()?;
+        let a = self.pop()?;
+        let a_items = a.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let b_items = b.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let min_len = a_items.len().min(b_items.len());
+        let mut pairs = Vec::with_capacity(min_len);
+        for i in 0..min_len {
+            pairs.push(self.make_sexpr(vec![a_items[i].clone(), b_items[i].clone()]));
+        }
+        self.push(self.make_sexpr(pairs));
+        Ok(())
+    }
+
+    /// take-atom: first n elements of tuple
+    /// Stack: [tuple, n] -> [prefix]
+    fn op_take_atom(&mut self) -> VmResult<()> {
+        let n_val = self.pop()?;
+        let tuple = self.pop()?;
+        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let n = n_val.as_long().ok_or(VmError::TypeError {
+            expected: "Long",
+            got: "other",
+        })?;
+        let take_count = if n < 0 { 0 } else { (n as usize).min(items.len()) };
+        let taken: Vec<V> = items[..take_count].to_vec();
+        self.push(self.make_sexpr(taken));
+        Ok(())
+    }
+
+    /// drop-atom: skip first n elements of tuple
+    /// Stack: [tuple, n] -> [suffix]
+    fn op_drop_atom(&mut self) -> VmResult<()> {
+        let n_val = self.pop()?;
+        let tuple = self.pop()?;
+        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+        let n = n_val.as_long().ok_or(VmError::TypeError {
+            expected: "Long",
+            got: "other",
+        })?;
+        let drop_count = if n < 0 { 0 } else { (n as usize).min(items.len()) };
+        let remaining: Vec<V> = items[drop_count..].to_vec();
+        self.push(self.make_sexpr(remaining));
         Ok(())
     }
 

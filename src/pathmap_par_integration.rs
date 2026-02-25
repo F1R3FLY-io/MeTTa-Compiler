@@ -14,7 +14,6 @@ use tracing::{debug, trace};
 use crate::backend::environment::multiplicity::Multiplicity;
 use crate::backend::environment::MettaEnvironment;
 use crate::backend::models::{MettaState, MettaValue, MettaValueInner};
-use crate::backend::varint_encoding::{metta_to_varint_key, varint_key_to_metta};
 
 /// Helper function to create a Par with a string value
 fn create_string_par(s: String) -> Par {
@@ -298,37 +297,35 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
     // The space is now a single GByteArray with raw path bytes
     let space_epathmap = space_bytes_par;
 
-    // Serialize large expressions (arity >= 64) from fallback PathMap
+    // Serialize wide expressions (arity >= 64) from wide_btm PathMap
     // Format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes]...
-    // Uses varint encoding (not MORK) for expressions that exceed 63-arity limit
+    // Uses Wide MORK storage encoding (tag-byte + LEB128) for expressions that exceed 63-arity limit
     let mut large_exprs_bytes = Vec::new();
     large_exprs_bytes.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
 
-    let guard = env.get_large_expr_pathmap();
-    if let Some(ref fallback) = *guard {
+    {
+        use pathmap::zipper::{ZipperIteration, ZipperMoving};
+
+        let wbtm = env.shared.atom_space.wide_btm.read();
+        let mut wrz = wbtm.read_zipper();
+
         // Reserve space for count
         let count_offset = large_exprs_bytes.len();
         large_exprs_bytes.extend_from_slice(&[0u8; 8]);
 
         let mut count = 0u64;
-        for (_key, metta_value) in fallback.iter() {
-            // Serialize each value using varint encoding
-            let value_bytes = metta_to_varint_key(metta_value);
-            // Write length (4 bytes, big-endian)
-            let len = value_bytes.len() as u32;
+        while wrz.to_next_val() {
+            let path_bytes = wrz.path();
+            // Write Wide MORK key bytes directly (already in storage encoding)
+            let len = path_bytes.len() as u32;
             large_exprs_bytes.extend_from_slice(&len.to_be_bytes());
-            // Write value bytes
-            large_exprs_bytes.extend_from_slice(&value_bytes);
+            large_exprs_bytes.extend_from_slice(path_bytes);
             count += 1;
         }
 
         // Write actual count
         large_exprs_bytes[count_offset..count_offset + 8].copy_from_slice(&count.to_be_bytes());
-    } else {
-        // No large expressions - write count = 0
-        large_exprs_bytes.extend_from_slice(&0u64.to_be_bytes());
     }
-    drop(guard);
 
     let large_exprs_par = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GByteArray(large_exprs_bytes)),
@@ -830,8 +827,9 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                 env.rebuild_bloom_filter_from_space();
             }
 
-            // Extract and restore large expressions (element 2) if present
+            // Extract and restore wide expressions (element 2) if present
             // These are expressions with arity >= 64 that exceed MORK's 63-arity limit
+            // Stored as Wide MORK storage bytes (tag-byte + LEB128)
             if tuple.ps.len() >= 3 {
                 let large_exprs_par = extract_tuple_value(&tuple.ps[2])?;
                 if let Some(expr) = large_exprs_par.exprs.first() {
@@ -861,7 +859,7 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                 ]);
                                 offset += 8;
 
-                                // Read and restore each large expression
+                                // Read and restore each wide expression
                                 for _ in 0..count {
                                     if offset + 4 > large_bytes.len() {
                                         break;
@@ -880,12 +878,17 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                         break;
                                     }
 
-                                    // Decode varint-encoded expression and insert
-                                    let expr_bytes = &large_bytes[offset..offset + len];
-                                    if let Some((metta_value, _)) = varint_key_to_metta(expr_bytes)
+                                    // Wide MORK bytes — insert directly into wide_btm
+                                    let wide_bytes = &large_bytes[offset..offset + len];
                                     {
-                                        env.insert_large_expr(metta_value);
+                                        use crate::backend::environment::multiplicity;
+                                        let mut wbtm = env.shared.atom_space.wide_btm.write();
+                                        multiplicity::add_atom(&mut wbtm, wide_bytes);
                                     }
+                                    env.shared
+                                        .atom_space
+                                        .total_atoms
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     offset += len;
                                 }
                             }

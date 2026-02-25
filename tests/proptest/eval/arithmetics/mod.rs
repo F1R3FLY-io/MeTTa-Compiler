@@ -1,6 +1,6 @@
 use std::fmt;
 
-use mettatron::{compile, new_env, run_state, MettaValue};
+use mettatron::{compile, new_env, run_state, MettaState, MettaValue};
 use proptest::prelude::*;
 
 mod operators;
@@ -235,7 +235,7 @@ proptest! {
         let compiled = compile(&test_program.source);
         prop_assert!(compiled.is_ok());
 
-        let result = run_state(new_env(), &compiled.expect("Failed to compile"))
+        let result = run_state(MettaState::from_env(new_env()), &compiled.expect("Failed to compile"))
             .expect("Failed to evaluate");
         let outputs = result.output();
         prop_assert_eq!(outputs[0], test_program.evaluated);
@@ -246,7 +246,7 @@ proptest! {
         let compiled = compile(&src);
         prop_assert!(compiled.is_ok());
 
-        let result = run_state(new_env(), &compiled.expect("Failed to compile"))
+        let result = run_state(MettaState::from_env(new_env()), &compiled.expect("Failed to compile"))
             .expect("Failed to evaluate");
         let outputs = result.output();
         prop_assert_eq!(outputs.len(), 1);
@@ -268,7 +268,7 @@ proptest! {
         let compiled = compile(&src);
         prop_assert!(compiled.is_ok());
 
-        let result = run_state(new_env(), &compiled.expect("Failed to compile"))
+        let result = run_state(MettaState::from_env(new_env()), &compiled.expect("Failed to compile"))
             .expect("Failed to evaluate");
         let outputs = result.output();
         prop_assert_eq!(outputs.len(), 1);
@@ -286,7 +286,7 @@ proptest! {
         let compiled = compile(&src);
         prop_assert!(compiled.is_ok());
 
-        let result = run_state(new_env(), &compiled.expect("Failed to compile"))
+        let result = run_state(MettaState::from_env(new_env()), &compiled.expect("Failed to compile"))
             .expect("Failed to evaluate");
         let outputs = result.output();
         prop_assert_eq!(outputs.len(), 1);
@@ -307,7 +307,7 @@ proptest! {
         let compiled = compile(&case.source);
         prop_assert!(compiled.is_ok());
 
-        let result = run_state(new_env(), &compiled.expect("Failed to compile"))
+        let result = run_state(MettaState::from_env(new_env()), &compiled.expect("Failed to compile"))
             .expect("Failed to evaluate");
         let outputs = result.output();
         prop_assert_eq!(outputs.len(), 1);
@@ -327,7 +327,7 @@ fn test_type_error_returns_unreduced_all_ops() {
         // Symbol on LHS: !(op A 0)
         let src = format!("!({} A 0)", op);
         let compiled = compile(&src).expect(&format!("compile failed for {}", src));
-        let result = run_state(new_env(), &compiled).expect(&format!("eval failed for {}", src));
+        let result = run_state(MettaState::from_env(new_env()), &compiled).expect(&format!("eval failed for {}", src));
         // Clone outputs immediately to release MutexGuard — holding it across
         // compile() calls deadlocks with the GC root registry (ROOT_REGISTRY
         // write lock vs output Mutex).
@@ -342,7 +342,7 @@ fn test_type_error_returns_unreduced_all_ops() {
         // Symbol on RHS: !(op 0 A)
         let src = format!("!({} 0 A)", op);
         let compiled = compile(&src).expect(&format!("compile failed for {}", src));
-        let result = run_state(new_env(), &compiled).expect(&format!("eval failed for {}", src));
+        let result = run_state(MettaState::from_env(new_env()), &compiled).expect(&format!("eval failed for {}", src));
         let outputs: Vec<MettaValue> = result.output().to_vec();
         assert_eq!(outputs.len(), 1, "op={} rhs: expected 1 output, got {}", op, outputs.len());
         let sexpr = outputs[0].as_sexpr().expect(&format!(
@@ -359,7 +359,7 @@ fn test_comparison_type_error_returns_unreduced() {
     for op in ["<", "<=", ">", ">="] {
         let src = format!("!({} A 0)", op);
         let compiled = compile(&src).expect(&format!("compile failed for {}", src));
-        let result = run_state(new_env(), &compiled).expect(&format!("eval failed for {}", src));
+        let result = run_state(MettaState::from_env(new_env()), &compiled).expect(&format!("eval failed for {}", src));
         let outputs: Vec<MettaValue> = result.output().to_vec();
         assert_eq!(outputs.len(), 1, "op={}: expected 1 output, got {}", op, outputs.len());
         let sexpr = outputs[0].as_sexpr().expect(&format!(
@@ -375,7 +375,7 @@ fn test_comparison_type_error_returns_unreduced() {
 fn test_genuine_errors_still_error() {
     // Division by zero
     let compiled = compile("!(/ 1 0)").expect("compile");
-    let result = run_state(new_env(), &compiled).expect("eval");
+    let result = run_state(MettaState::from_env(new_env()), &compiled).expect("eval");
     let outputs: Vec<MettaValue> = result.output().to_vec();
     assert_eq!(outputs.len(), 1);
     assert!(outputs[0].as_error().is_some(),
@@ -383,7 +383,7 @@ fn test_genuine_errors_still_error() {
 
     // Modulo by zero
     let compiled = compile("!(% 1 0)").expect("compile");
-    let result = run_state(new_env(), &compiled).expect("eval");
+    let result = run_state(MettaState::from_env(new_env()), &compiled).expect("eval");
     let outputs: Vec<MettaValue> = result.output().to_vec();
     assert_eq!(outputs.len(), 1);
     assert!(outputs[0].as_error().is_some(),
@@ -395,7 +395,7 @@ fn test_genuine_errors_still_error() {
 fn test_equality_mixed_types_not_unreduced() {
     // == with Atom vs Long should return False (not unreduced)
     let compiled = compile("!(== A 0)").expect("compile");
-    let result = run_state(new_env(), &compiled).expect("eval");
+    let result = run_state(MettaState::from_env(new_env()), &compiled).expect("eval");
     let outputs: Vec<MettaValue> = result.output().to_vec();
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_bool(), Some(false),
@@ -406,7 +406,7 @@ fn test_equality_mixed_types_not_unreduced() {
     // parser treats `!` as a prefix operator, so `!(!= A 0)` parses as
     // `!(! (= A 0))` rather than the intended `!(!= A 0)`.
     let compiled = compile("!(not (== A 0))").expect("compile");
-    let result = run_state(new_env(), &compiled).expect("eval");
+    let result = run_state(MettaState::from_env(new_env()), &compiled).expect("eval");
     let outputs: Vec<MettaValue> = result.output().to_vec();
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_bool(), Some(true),

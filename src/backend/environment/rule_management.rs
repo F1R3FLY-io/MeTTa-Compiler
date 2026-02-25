@@ -102,8 +102,14 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub rhs: V,
 
     // --- De Bruijn bytes (for extract_data matching) ---
-    /// LHS with NewVar/VarRef De Bruijn encoding (extracted from PathMap key)
+    /// LHS with NewVar/VarRef De Bruijn encoding (extracted from PathMap key).
+    /// Empty for wide rules (arity ≥ 64) — use `lhs_wide_debruijn` instead.
     pub lhs_debruijn: Vec<u8>,
+
+    /// LHS with Wide MORK De Bruijn encoding (tag-byte + LEB128, no arity limit).
+    /// Empty for narrow rules (arity < 64) — use `lhs_debruijn` instead.
+    /// Populated when MORK encoding fails due to arity ≥ 64.
+    pub lhs_wide_debruijn: Vec<u8>,
 
     // --- Metadata ---
     /// De Bruijn index → original variable name (e.g., "$x", "$y")
@@ -443,6 +449,104 @@ where
     bindings
 }
 
+/// Extract bindings by walking Wide MORK De Bruijn bytes and the original expression in parallel.
+///
+/// Same algorithm as `extract_bindings_from_expr` but for Wide MORK tag format
+/// (tag-byte + LEB128 instead of MORK's 2-bit tag + 6-bit payload).
+///
+/// Since `wide_extract_data` already confirmed the structural match, we can skip all
+/// matching logic and just navigate to NewVar positions to capture sub-expressions.
+fn extract_bindings_from_wide_expr<V>(
+    lhs_wide_debruijn: &[u8],
+    expr: &V,
+    var_names: &[String],
+    wildcard_indices: &SmallVec<[u8; 4]>,
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+{
+    use crate::backend::wide_mork::encoding::{
+        WideTag, decode_leb128,
+    };
+
+    let mut bindings = GenericBindings::new();
+    let mut offset = 0usize;
+    let mut newvar_idx = 0u8;
+    let mut expr_stack: Vec<&V> = vec![expr];
+    let end = lhs_wide_debruijn.len();
+
+    while offset < end && !expr_stack.is_empty() {
+        let tag = match WideTag::from_byte(lhs_wide_debruijn[offset]) {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+        offset += 1;
+
+        match tag {
+            WideTag::NewVar => {
+                let value = match expr_stack.pop() {
+                    Some(v) => v,
+                    None => break,
+                };
+                if !wildcard_indices.contains(&newvar_idx)
+                    && (newvar_idx as usize) < var_names.len()
+                {
+                    bindings.insert(var_names[newvar_idx as usize].clone(), value.clone());
+                }
+                newvar_idx += 1;
+            }
+            WideTag::VarRef => {
+                // Consume the LEB128 index and the corresponding expression
+                if let Some((_idx, consumed)) = decode_leb128(&lhs_wide_debruijn[offset..]) {
+                    offset += consumed;
+                } else {
+                    break;
+                }
+                expr_stack.pop(); // Consume without binding
+            }
+            WideTag::SymbolSize => {
+                // Skip the LEB128 size and the symbol bytes
+                if let Some((size, consumed)) = decode_leb128(&lhs_wide_debruijn[offset..]) {
+                    offset += consumed + size as usize;
+                } else {
+                    break;
+                }
+                expr_stack.pop(); // Consume the corresponding atom/leaf
+            }
+            WideTag::Arity => {
+                if let Some((n, consumed)) = decode_leb128(&lhs_wide_debruijn[offset..]) {
+                    offset += consumed;
+                    if n == 0 {
+                        expr_stack.pop(); // Unit / empty S-expression
+                    } else if let Some(parent) = expr_stack.pop() {
+                        // Push children in reverse order so first child is on top
+                        if let Some(items) = parent.as_sexpr() {
+                            for child in items.iter().rev() {
+                                expr_stack.push(child);
+                            }
+                        } else if let Some(goals) = parent.as_conjunction() {
+                            for goal in goals.iter().rev() {
+                                expr_stack.push(goal);
+                            }
+                            expr_stack.push(parent); // Placeholder for comma
+                        } else if let Some((_msg, details)) = parent.as_error() {
+                            expr_stack.push(details);
+                            expr_stack.push(parent); // Placeholder for msg
+                            expr_stack.push(parent); // Placeholder for "error"
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    bindings
+}
+
 /// Build the head+arity MORK byte prefix for targeted rule lookup.
 ///
 /// **NOTE**: Superseded by `RuleIndex` for the primary hot path. Retained for
@@ -648,6 +752,7 @@ where
                     lhs: lhs.clone(),
                     rhs: rhs.clone(),
                     lhs_debruijn,
+                    lhs_wide_debruijn: Vec::new(), // Narrow path — MORK encoding succeeded
                     var_names,
                     wildcard_indices,
                     multiplicity: 1,
@@ -661,23 +766,45 @@ where
         );
 
         // Fallback for expressions that can't be MORK-encoded (arity >= 64).
-        // Store directly in large_expr_pathmap (bypasses add_to_space to avoid recursion,
-        // since add_to_space routes rules back to add_rule).
+        // Use Wide MORK encoding for proper byte-level pattern matching.
+        // Store in wide_btm (PathMap<Multiplicity>) — same type as btm.
         if result.is_err() {
-            let key = crate::backend::varint_encoding::value_to_varint_key_generic(&rule_sexpr);
+            let mut wide_key = Vec::new();
+            crate::backend::wide_mork::encoding::encode_wide_storage(&rule_sexpr, &mut wide_key);
 
             {
-                let mut btm = self.shared.atom_space.btm.write();
-                super::multiplicity::add_atom(&mut btm, &key);
-            }
-
-            {
-                let mut guard = self.shared.atom_space.large_expr_pathmap.write();
-                let fallback = guard.get_or_insert_with(pathmap::PathMap::new);
-                fallback.insert(&key, rule_sexpr);
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                super::multiplicity::add_atom(&mut wbtm, &wide_key);
             }
 
             self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+            // Encode the LHS with Wide MORK De Bruijn encoding for byte-level matching.
+            // This replaces the old structural fallback with O(n) byte-level matching.
+            let mut wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut lhs_wide_debruijn = Vec::new();
+            crate::backend::wide_mork::encoding::encode_wide_debruijn(
+                &lhs, &mut wide_ctx, &mut lhs_wide_debruijn,
+            );
+
+            let lhs_var_count = crate::backend::wide_mork::encoding::count_wide_newvar_tags(&lhs_wide_debruijn);
+            let (var_names, wildcard_indices) =
+                build_var_names_and_wildcards(&wide_ctx.var_names, lhs_var_count);
+
+            let entry = RuleEntry {
+                lhs: lhs.clone(),
+                rhs: rhs.clone(),
+                lhs_debruijn: Vec::new(), // Empty — this is a wide rule
+                lhs_wide_debruijn,
+                var_names,
+                wildcard_indices,
+                multiplicity: 1,
+            };
+            self.shared.rule_index.write().add_rule(
+                head_owned.as_deref(),
+                arity,
+                entry,
+            );
         }
 
         // Update bloom filter with (head, arity) for O(1) match_space() rejection
@@ -754,7 +881,69 @@ where
             });
 
             if serialize_ok.is_err() {
-                return Vec::new(); // Can't serialize = no matches possible
+                // MORK can't encode this expression (e.g., a child S-expression
+                // has arity >= 64).  Use Wide MORK byte-level matching for candidates
+                // with lhs_wide_debruijn, and structural fallback for MORK-only candidates.
+                drop(buf);
+
+                // Encode expr to wide storage bytes ONCE for all wide candidates
+                let mut expr_wide_buf = Vec::with_capacity(256);
+                crate::backend::wide_mork::encoding::encode_wide_storage(expr, &mut expr_wide_buf);
+
+                let rule_index = self.shared.rule_index.read();
+                let candidates: Vec<&RuleEntry<V>> = if !head.is_empty() {
+                    rule_index.get_candidates(head, arity).collect()
+                } else {
+                    rule_index.get_all_rules().collect()
+                };
+
+                let mut results: Vec<RuleMatchResult<V>> = Vec::new();
+                for entry in candidates {
+                    // Try wide MORK byte-level matching first (for wide rules)
+                    let matched_bindings = if !entry.lhs_wide_debruijn.is_empty() {
+                        if crate::backend::wide_mork::extract::wide_extract_data(
+                            &entry.lhs_wide_debruijn,
+                            &expr_wide_buf,
+                        ).is_ok() {
+                            Some(extract_bindings_from_wide_expr(
+                                &entry.lhs_wide_debruijn,
+                                expr,
+                                &entry.var_names,
+                                &entry.wildcard_indices,
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Structural pattern match fallback for MORK-only candidates
+                        // (their LHS has arity < 64, but the query has arity >= 64,
+                        // so MORK can't encode the query — use MettaValue-level matching)
+                        crate::backend::eval::trampoline::pattern_match_generic(&entry.lhs, expr)
+                    };
+
+                    if let Some(bindings) = matched_bindings {
+                        let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);
+                        let multiplicity = entry.multiplicity.max(1);
+                        if multiplicity == 1 {
+                            results.push(RuleMatchResult {
+                                instantiated_rhs,
+                                rhs_template: entry.rhs.clone(),
+                                bindings,
+                                multiplicity: 1,
+                            });
+                        } else {
+                            for _ in 0..multiplicity {
+                                results.push(RuleMatchResult {
+                                    instantiated_rhs: instantiated_rhs.clone(),
+                                    rhs_template: entry.rhs.clone(),
+                                    bindings: bindings.clone(),
+                                    multiplicity,
+                                });
+                            }
+                        }
+                    }
+                }
+                return results;
             }
 
             // Validate expr buffer contains valid MORK bytes (no reserved 0x40-0x7F)
@@ -781,45 +970,56 @@ where
             // candidates Vec allocation (which can hold 1000s of entries for large programs).
             struct MatchHit<'a, V: MettaValueTrait + Clone> {
                 entry: &'a RuleEntry<V>,
+                is_wide: bool,  // true if matched via Wide MORK
             }
 
             let mut hits: Vec<MatchHit<'_, V>> = Vec::new();
+
+            // Lazily-computed wide storage encoding of expr (only allocated if needed)
+            let mut expr_wide_storage: Option<Vec<u8>> = None;
 
             // Inline macro to avoid duplicating the match body for both iterator paths
             macro_rules! try_match_entry {
                 ($entry:expr) => {
                     let entry = $entry;
-                    // Validate lhs_debruijn starts with a valid MORK tag before creating Expr/ExprZipper.
-                    // ExprZipper::new() calls byte_item() which panics on reserved bytes (0x40-0x7F).
-                    if entry.lhs_debruijn.is_empty() {
-                        continue;
-                    }
-                    if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
-                        tracing::warn!(
-                            target: "mettatron::match_rules_native",
-                            "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
-                             head={}, arity={}, lhs_bytes={:02x?}",
-                            reserved,
-                            entry.lhs_debruijn.len(),
-                            head,
-                            arity,
-                            &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
-                        );
-                        continue;
-                    }
 
-                    // Create Expr and ExprZipper for the LHS De Bruijn pattern (template)
-                    let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
-
-                    // Create ExprZipper for the input expression (data)
-                    let mut input_zipper = ExprZipper::new(
-                        Expr { ptr: buf.as_ptr().cast_mut() }
-                    );
-
-                    // extract_data: template.extract_data(input) → Vec<Expr> or failure
-                    if lhs_expr.extract_data(&mut input_zipper).is_ok() {
-                        hits.push(MatchHit { entry });
+                    // Try MORK byte-level matching first (fast path for arity < 64)
+                    if !entry.lhs_debruijn.is_empty() {
+                        if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
+                            tracing::warn!(
+                                target: "mettatron::match_rules_native",
+                                "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
+                                 head={}, arity={}, lhs_bytes={:02x?}",
+                                reserved,
+                                entry.lhs_debruijn.len(),
+                                head,
+                                arity,
+                                &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
+                            );
+                        } else {
+                            let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
+                            let mut input_zipper = ExprZipper::new(
+                                Expr { ptr: buf.as_ptr().cast_mut() }
+                            );
+                            if lhs_expr.extract_data(&mut input_zipper).is_ok() {
+                                hits.push(MatchHit { entry, is_wide: false });
+                            }
+                        }
+                    } else if !entry.lhs_wide_debruijn.is_empty() {
+                        // Wide MORK path: encode expr to wide storage bytes (lazy) and match
+                        let wide_data = expr_wide_storage.get_or_insert_with(|| {
+                            let mut wide_buf = Vec::with_capacity(256);
+                            crate::backend::wide_mork::encoding::encode_wide_storage(expr, &mut wide_buf);
+                            wide_buf
+                        });
+                        if crate::backend::wide_mork::extract::wide_extract_data(
+                            &entry.lhs_wide_debruijn,
+                            wide_data,
+                        ).is_ok() {
+                            hits.push(MatchHit { entry, is_wide: true });
+                        }
                     }
+                    // else: both empty — skip (shouldn't happen)
                 };
             }
 
@@ -850,13 +1050,22 @@ where
             for hit in &hits {
                 let entry = hit.entry;
 
-                // Extract bindings by walking De Bruijn bytes + original expr in lockstep
-                let bindings = extract_bindings_from_expr(
-                    &entry.lhs_debruijn,
-                    expr,
-                    &entry.var_names,
-                    &entry.wildcard_indices,
-                );
+                // Extract bindings using the appropriate decoder
+                let bindings = if hit.is_wide {
+                    extract_bindings_from_wide_expr(
+                        &entry.lhs_wide_debruijn,
+                        expr,
+                        &entry.var_names,
+                        &entry.wildcard_indices,
+                    )
+                } else {
+                    extract_bindings_from_expr(
+                        &entry.lhs_debruijn,
+                        expr,
+                        &entry.var_names,
+                        &entry.wildcard_indices,
+                    )
+                };
 
                 // Apply bindings to the cached RHS template
                 let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);
@@ -1186,7 +1395,14 @@ impl MettaEnvironment {
             if count == 0 { 1 } else { count as usize }
         }) {
             Ok(count) => count,
-            Err(_) => 1,
+            Err(_) => {
+                // Wide expression (arity >= 64) — check wide_btm
+                let mut wide_key = Vec::new();
+                crate::backend::wide_mork::encoding::encode_wide_storage(&rule_sexpr, &mut wide_key);
+                let wbtm = self.shared.atom_space.wide_btm.read();
+                let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                if count == 0 { 1 } else { count as usize }
+            }
         }
     }
 
@@ -1292,6 +1508,7 @@ impl MettaEnvironment {
                             lhs: lhs.clone(),
                             rhs: rhs.clone(),
                             lhs_debruijn,
+                            lhs_wide_debruijn: Vec::new(), // Bulk path uses MORK encoding
                             var_names,
                             wildcard_indices,
                             multiplicity,
@@ -1440,8 +1657,17 @@ impl MettaEnvironment {
         }) {
             Ok(count) => count,
             Err(_) => {
+                // Wide expression (arity >= 64) — use wide_btm
+                let mut wide_key = Vec::new();
+                crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                super::multiplicity::add_atom(&mut wbtm, &wide_key);
+                let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                drop(wbtm);
+
+                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
                 self.modified.store(true, Ordering::Release);
-                1
+                count as usize
             }
         }
     }
@@ -1469,7 +1695,20 @@ impl MettaEnvironment {
             new_count as usize
         }) {
             Ok(count) => count,
-            Err(_) => 0,
+            Err(_) => {
+                // Wide expression (arity >= 64) — use wide_btm
+                let mut wide_key = Vec::new();
+                crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                if count > 0 {
+                    super::multiplicity::remove_atom(&mut wbtm, &wide_key);
+                    drop(wbtm);
+                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.modified.store(true, Ordering::Release);
+                }
+                count.saturating_sub(1) as usize
+            }
         }
     }
 
@@ -1484,7 +1723,14 @@ impl MettaEnvironment {
                 if count == 0 { 1 } else { count as usize }
             }) {
                 Ok(count) => count,
-                Err(_) => 1,
+                Err(_) => {
+                    // Wide expression (arity >= 64) — check wide_btm
+                    let mut wide_key = Vec::new();
+                    crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                    let wbtm = self.shared.atom_space.wide_btm.read();
+                    let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                    if count == 0 { 1 } else { count as usize }
+                }
             }
         } else {
             match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
@@ -1493,7 +1739,14 @@ impl MettaEnvironment {
                 if count == 0 { 1 } else { count as usize }
             }) {
                 Ok(count) => count,
-                Err(_) => 1,
+                Err(_) => {
+                    // Wide expression (arity >= 64) — check wide_btm
+                    let mut wide_key = Vec::new();
+                    crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                    let wbtm = self.shared.atom_space.wide_btm.read();
+                    let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                    if count == 0 { 1 } else { count as usize }
+                }
             }
         }
     }
@@ -1503,5 +1756,18 @@ impl MettaEnvironment {
         let btm = self.shared.atom_space.btm.read();
         let count = get_multiplicity(&btm, mork_bytes);
         if count == 0 { 1 } else { count as usize }
+    }
+
+    /// Get the count of distinct wide atoms (arity >= 64) stored in wide_btm.
+    /// Returns 0 if no wide atoms exist.
+    pub fn get_wide_atom_count(&self) -> usize {
+        use pathmap::zipper::ZipperIteration;
+        let wbtm = self.shared.atom_space.wide_btm.read();
+        let mut count = 0usize;
+        let mut rz = wbtm.read_zipper();
+        while rz.to_next_val() {
+            count += 1;
+        }
+        count
     }
 }

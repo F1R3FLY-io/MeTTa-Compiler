@@ -16,7 +16,7 @@
 //! or use `.into_iter().flat_map(|m| m.expand()).collect()` to expand all results.
 
 use mork_expr::{maybe_byte_item, Expr};
-use pathmap::zipper::{ZipperIteration, ZipperMoving};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use tracing::trace;
 
 use super::multiplicity::get_multiplicity;
@@ -134,17 +134,47 @@ impl MettaEnvironment {
             }
         };
 
-        // Also check large expression fallback PathMap
-        // parking_lot::RwLock - no .expect()
-        let guard = self.shared.atom_space.large_expr_pathmap.read();
-        if let Some(ref fallback) = *guard {
-            let btm = self.shared.atom_space.btm.read();
+        // Also check wide expression PathMap (arity >= 64, Wide MORK encoding)
+        // Uses byte-level pre-filter via wide_extract_data() to avoid costly
+        // MettaValue reconstruction for non-matches.
+        {
+            // Encode pattern to Wide MORK De Bruijn bytes (once)
+            let mut pattern_ctx =
+                crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut pattern_debruijn = Vec::new();
+            crate::backend::wide_mork::encoding::encode_wide_debruijn(
+                pattern,
+                &mut pattern_ctx,
+                &mut pattern_debruijn,
+            );
 
-            for (key, stored_value) in fallback.iter() {
-                if let Some(bindings) = pattern_match(pattern, stored_value) {
-                    let instantiated = apply_bindings(template, &bindings).into_owned();
-                    let multiplicity = get_multiplicity(&btm, &key).max(1) as usize;
-                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
+            let wbtm = self.shared.atom_space.wide_btm.read();
+            let mut wrz = wbtm.read_zipper();
+            while wrz.to_next_val() {
+                let path_bytes = wrz.path();
+                let multiplicity = wrz.val().map(|m| m.count()).unwrap_or(1) as usize;
+
+                // Byte-level structural match (same algorithm as MORK's extract_data)
+                if crate::backend::wide_mork::extract::wide_extract_data(
+                    &pattern_debruijn,
+                    path_bytes,
+                )
+                .is_ok()
+                {
+                    // Match succeeded — reconstruct value and extract bindings
+                    if let Ok(stored_value) =
+                        crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<
+                            MettaValue,
+                            _,
+                        >(
+                            path_bytes, &crate::backend::models::global_factory()
+                        )
+                    {
+                        if let Some(bindings) = pattern_match(pattern, &stored_value) {
+                            let instantiated = apply_bindings(template, &bindings).into_owned();
+                            results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                        }
+                    }
                 }
             }
         }
@@ -224,14 +254,42 @@ impl MettaEnvironment {
 
         drop(space);
 
-        // 2. Check large expression fallback PathMap
-        // parking_lot::RwLock - no .expect()
-        let guard = self.shared.atom_space.large_expr_pathmap.read();
-        if let Some(ref fallback) = *guard {
-            for (_key, stored_value) in fallback.iter() {
-                if let Some(bindings) = pattern_match(pattern, stored_value) {
-                    let instantiated = apply_bindings(template, &bindings).into_owned();
-                    return Some(instantiated); // EARLY EXIT
+        // 2. Check wide expression PathMap (arity >= 64, Wide MORK encoding)
+        // Uses byte-level pre-filter via wide_extract_data() for early rejection.
+        {
+            let mut pattern_ctx =
+                crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut pattern_debruijn = Vec::new();
+            crate::backend::wide_mork::encoding::encode_wide_debruijn(
+                pattern,
+                &mut pattern_ctx,
+                &mut pattern_debruijn,
+            );
+
+            let wbtm = self.shared.atom_space.wide_btm.read();
+            let mut wrz = wbtm.read_zipper();
+            while wrz.to_next_val() {
+                let path_bytes = wrz.path();
+                // Byte-level pre-filter
+                if crate::backend::wide_mork::extract::wide_extract_data(
+                    &pattern_debruijn,
+                    path_bytes,
+                )
+                .is_ok()
+                {
+                    if let Ok(stored_value) =
+                        crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<
+                            MettaValue,
+                            _,
+                        >(
+                            path_bytes, &crate::backend::models::global_factory()
+                        )
+                    {
+                        if let Some(bindings) = pattern_match(pattern, &stored_value) {
+                            let instantiated = apply_bindings(template, &bindings).into_owned();
+                            return Some(instantiated); // EARLY EXIT
+                        }
+                    }
                 }
             }
         }

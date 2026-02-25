@@ -163,10 +163,19 @@ impl SpaceHandle {
         let atom_space = AtomSpace::new(sm, atoms.len().max(100));
         {
             let mut pm = atom_space.btm.write();
+            let mut wbtm = atom_space.wide_btm.write();
             for atom in &atoms {
-                let _ = with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
+                match with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
                     multiplicity::add_atom(&mut pm, bytes);
-                });
+                }) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        // Wide expression (arity >= 64) — encode to wide_btm
+                        let mut wide_key = Vec::new();
+                        crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
+                        multiplicity::add_atom(&mut wbtm, &wide_key);
+                    }
+                }
             }
         }
         atom_space.total_atoms.store(atoms.len(), std::sync::atomic::Ordering::Relaxed);
@@ -237,10 +246,19 @@ impl SpaceHandle {
                 let atom_space = AtomSpace::new(sm, module_atoms.len().max(100));
                 {
                     let mut pm = atom_space.btm.write();
+                    let mut wbtm = atom_space.wide_btm.write();
                     for atom in &module_atoms {
-                        let _ = with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
+                        match with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
                             multiplicity::add_atom(&mut pm, bytes);
-                        });
+                        }) {
+                            Ok(()) => {}
+                            Err(_) => {
+                                // Wide expression (arity >= 64) — encode to wide_btm
+                                let mut wide_key = Vec::new();
+                                crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
+                                multiplicity::add_atom(&mut wbtm, &wide_key);
+                            }
+                        }
                     }
                 }
                 atom_space.total_atoms.store(module_atoms.len(), std::sync::atomic::Ordering::Relaxed);
@@ -303,10 +321,19 @@ impl SpaceHandle {
                     }
                 } else {
                     // Ground atom → MORK PathMap
-                    let _ = with_mork_bytes(&atom, &space.shared_mapping, |bytes| {
+                    match with_mork_bytes(&atom, &space.shared_mapping, |bytes| {
                         let mut pm = space.btm.write();
                         multiplicity::add_atom(&mut pm, bytes);
-                    });
+                    }) {
+                        Ok(()) => {}
+                        Err(_) => {
+                            // Wide expression (arity >= 64) — encode to wide_btm
+                            let mut wide_key = Vec::new();
+                            crate::backend::wide_mork::encoding::encode_wide_storage(&atom, &mut wide_key);
+                            let mut wbtm = space.wide_btm.write();
+                            multiplicity::add_atom(&mut wbtm, &wide_key);
+                        }
+                    }
                 }
                 space.total_atoms.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
@@ -353,7 +380,20 @@ impl SpaceHandle {
                         }
                     }) {
                         Ok(removed) => removed,
-                        Err(_) => false,
+                        Err(_) => {
+                            // Try wide_btm (arity >= 64)
+                            let mut wide_key = Vec::new();
+                            crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
+                            let mut wbtm = space.wide_btm.write();
+                            let old_count = multiplicity::get_multiplicity(&wbtm, &wide_key);
+                            if old_count > 0 {
+                                multiplicity::remove_atom(&mut wbtm, &wide_key);
+                                space.total_atoms.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                true
+                            } else {
+                                false
+                            }
+                        }
                     }
                 }
             }
@@ -391,6 +431,29 @@ impl SpaceHandle {
                         }
                         if let Ok(value) =
                             mork_encoding::mork_bytes_to_generic_value(path, &deser_space, &factory)
+                        {
+                            for _ in 0..count {
+                                result.push(value);
+                            }
+                        }
+                    }
+                }
+
+                // Wide atoms from wide_btm
+                {
+                    let wbtm = space.wide_btm.read();
+                    let mut wrz = wbtm.read_zipper();
+                    while wrz.to_next_val() {
+                        let path_bytes = wrz.path();
+                        let count = wrz.val().map(|m| m.count()).unwrap_or(0);
+                        if count == 0 {
+                            continue;
+                        }
+                        if let Ok(value) =
+                            crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<
+                                MettaValue,
+                                _,
+                            >(path_bytes, &factory)
                         {
                             for _ in 0..count {
                                 result.push(value);
@@ -451,6 +514,27 @@ impl SpaceHandle {
                     }
                 }
 
+                // Wide atoms from wide_btm
+                {
+                    let wbtm = space.wide_btm.read();
+                    let mut wrz = wbtm.read_zipper();
+                    while wrz.to_next_val() {
+                        let path_bytes = wrz.path();
+                        let count = wrz.val().map(|m| m.count()).unwrap_or(0);
+                        if count == 0 {
+                            continue;
+                        }
+                        if let Ok(value) =
+                            crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<
+                                MettaValue,
+                                _,
+                            >(path_bytes, &factory)
+                        {
+                            results.push(MultiplicityMatch::new(value, count as usize));
+                        }
+                    }
+                }
+
                 // Variable atoms from Vec — freshen each independently
                 {
                     let var_atoms = space.variable_atoms.read();
@@ -495,6 +579,14 @@ impl SpaceHandle {
                 while rz.to_next_val() {
                     count += 1;
                 }
+                // Also count distinct wide atoms
+                {
+                    let wbtm = space.wide_btm.read();
+                    let mut wrz = wbtm.read_zipper();
+                    while wrz.to_next_val() {
+                        count += 1;
+                    }
+                }
                 // Also count distinct variable atoms
                 count += space.variable_atoms.read().len();
                 count
@@ -523,7 +615,13 @@ impl SpaceHandle {
                         multiplicity::get_multiplicity(&pm, bytes) > 0
                     }) {
                         Ok(found) => found,
-                        Err(_) => false,
+                        Err(_) => {
+                            // Try wide_btm (arity >= 64)
+                            let mut wide_key = Vec::new();
+                            crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
+                            let wbtm = space.wide_btm.read();
+                            multiplicity::get_multiplicity(&wbtm, &wide_key) > 0
+                        }
                     }
                 }
             }
@@ -554,7 +652,13 @@ impl SpaceHandle {
                         multiplicity::get_multiplicity(&pm, bytes) as usize
                     }) {
                         Ok(count) => count,
-                        Err(_) => 0,
+                        Err(_) => {
+                            // Try wide_btm (arity >= 64)
+                            let mut wide_key = Vec::new();
+                            crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
+                            let wbtm = space.wide_btm.read();
+                            multiplicity::get_multiplicity(&wbtm, &wide_key) as usize
+                        }
                     }
                 }
             }
@@ -712,6 +816,32 @@ impl SpaceHandle {
                     }
                 }
 
+                // 1b. Match against wide atoms from wide_btm (unidirectional)
+                {
+                    let wbtm = space.wide_btm.read();
+                    let mut wrz = wbtm.read_zipper();
+                    while wrz.to_next_val() {
+                        let path_bytes = wrz.path();
+                        let count = wrz.val().map(|m| m.count()).unwrap_or(0);
+                        if count == 0 {
+                            continue;
+                        }
+                        if let Ok(atom) =
+                            crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<V, _>(
+                                path_bytes, factory,
+                            )
+                        {
+                            if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                                let instantiated =
+                                    apply_bindings_generic(template, &bindings, factory);
+                                for _ in 0..count {
+                                    results.push(instantiated.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // 2. Match against variable atoms from Vec (bidirectional with freshening)
                 {
                     let var_atoms = space.variable_atoms.read();
@@ -771,13 +901,13 @@ impl SpaceHandle {
     ///
     /// Used by the GC mark phase to traverse into Space values.
     ///
-    /// Owned spaces: collect variable_atoms and large_expr_pathmap values
-    /// from AtomSpace (these hold slab-allocated MettaValues).
+    /// Owned spaces: collect variable_atoms values from AtomSpace
+    /// (wide_btm stores only byte keys + Multiplicity — no V references, no GC tracing).
     /// Module spaces: collect live MettaValue atoms from ModuleSpace.
     pub(crate) fn collect_gc_values(&self, values: &mut Vec<MettaValue>) {
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                // Collect GC roots from AtomSpace (variable_atoms + large_expr_pathmap)
+                // Collect GC roots from AtomSpace (variable_atoms only — wide_btm has no V refs)
                 space.collect_gc_roots(values);
             }
             SpaceBacking::Module { space, .. } => {

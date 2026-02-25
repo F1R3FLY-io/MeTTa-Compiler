@@ -98,6 +98,12 @@ impl MettaState {
         Self::from_parts(Vec::new(), MettaEnvironment::default(), Vec::new())
     }
 
+    /// Create an accumulated state from just an environment (no prior output).
+    /// Convenience for callers that have a MettaEnvironment and need a MettaState.
+    pub fn from_env(environment: MettaEnvironment) -> Self {
+        Self::new_accumulated(environment, Vec::new())
+    }
+
     /// Create an accumulated state with existing environment and output.
     pub fn new_accumulated(environment: MettaEnvironment, output: Vec<MettaValue>) -> Self {
         Self::from_parts(Vec::new(), environment, output)

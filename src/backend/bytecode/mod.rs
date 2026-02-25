@@ -334,8 +334,9 @@ pub fn can_compile(expr: &MettaValue) -> bool {
                     "quote" => return true, // Early return - don't check args
                     // Unquote - unwraps Quoted variant
                     "unquote" => true,
-                    // Nondeterminism
-                    "superpose" => true,
+                    // Nondeterminism — superpose's argument is a data list of
+                    // alternatives, not an expression to compile recursively.
+                    "superpose" => return true,
                     // NOTE: collapse intentionally NOT included - needs EvalCollapse VM impl
                     // List operations
                     "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" => true,
@@ -476,8 +477,9 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "quote" => return true,
                     // Unquote - unwraps Quoted variant
                     "unquote" => true,
-                    // Nondeterminism
-                    "superpose" => true,
+                    // Nondeterminism — superpose's argument is a data list of
+                    // alternatives, not an expression to compile recursively.
+                    "superpose" => return true,
                     // List operations
                     "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" | "decons-atom"
                     | "empty" => true,

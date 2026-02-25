@@ -752,6 +752,42 @@ impl SpaceHandle {
             .collect()
     }
 
+    /// Query all types for an atom in this space (generic version).
+    ///
+    /// Searches for `(: atom_name TYPE)` patterns by collapsing atoms from
+    /// the space and inspecting each atom's structure via trait methods.
+    /// Returns all distinct TYPE values found, or empty Vec if none.
+    ///
+    /// Performance: O(n) where n = total atoms in space. For high-performance
+    /// type lookups, use the dedicated `type_btm` PathMap (Phase 7 optimization).
+    pub fn query_types_generic<V, F>(&self, atom_name: &str, factory: &F) -> Vec<V>
+    where
+        V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+        F: MettaValueFactory<V>,
+    {
+        // Collapse to MettaValue then convert to V
+        let heap_atoms = self.collapse();
+        let mut types = Vec::new();
+        for atom in &heap_atoms {
+            // Use MettaValueTrait methods on MettaValue (which implements the trait)
+            if let Some(items) = atom.as_sexpr() {
+                if items.len() == 3 {
+                    if let Some(":") = items[0].as_atom() {
+                        if let Some(name) = items[1].as_atom() {
+                            if name == atom_name {
+                                let typ = factory.from_metta_value(items[2]);
+                                if !types.contains(&typ) {
+                                    types.push(typ);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        types
+    }
+
     /// Get the multiplicity (count) of a specific atom (generic version).
     pub fn atom_multiplicity_generic<V: MettaValueTrait>(&self, atom: &V) -> usize {
         let bytes = atom.serialize();

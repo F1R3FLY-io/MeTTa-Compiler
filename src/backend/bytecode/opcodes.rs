@@ -385,6 +385,10 @@ pub enum Opcode {
     AssertType = 0xEB,
     /// Get meta-type of value (Expression, Symbol, Variable, etc.)
     GetMetaType = 0xEC,
+    /// Validate atom well-typedness (recursive type checking)
+    ValidateAtom = 0xED,
+    /// Get type of atom in a specific space
+    GetTypeSpace = 0xEE,
 
     // === Nondeterminism (0xF0-0xF7) ===
     /// Create choice point with alternatives
@@ -471,6 +475,8 @@ impl Opcode {
             | Self::DeconAtom
             | Self::Repr
             | Self::GetMetaType
+            | Self::ValidateAtom
+            | Self::GetTypeSpace
             | Self::ApplySubst
             | Self::Add
             | Self::Sub
@@ -818,6 +824,8 @@ impl Opcode {
             Self::IsType => "is_type",
             Self::AssertType => "assert_type",
             Self::GetMetaType => "get_metatype",
+            Self::ValidateAtom => "validate_atom",
+            Self::GetTypeSpace => "get_type_space",
             Self::Fork => "fork",
             Self::Fail => "fail",
             Self::Cut => "cut",
@@ -1087,6 +1095,8 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xEA] = Some(Opcode::IsType);
     table[0xEB] = Some(Opcode::AssertType);
     table[0xEC] = Some(Opcode::GetMetaType);
+    table[0xED] = Some(Opcode::ValidateAtom);
+    table[0xEE] = Some(Opcode::GetTypeSpace);
 
     // Nondeterminism
     table[0xF0] = Some(Opcode::Fork);

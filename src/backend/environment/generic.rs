@@ -201,9 +201,15 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// Uses RwLock<HashMap> — protected by CoW semantics
     pub(crate) bindings: RwLock<HashMap<String, V>>,
 
-    /// Type assertions: Maps symbol name -> type value V (no serialization)
-    /// Uses RwLock<HashMap> — protected by CoW semantics
-    pub(crate) types: RwLock<HashMap<String, V>>,
+    /// Type assertions: Maps symbol name -> all declared type values V (nondeterministic)
+    /// HE parity: an atom can have multiple types declared via separate `(: name type)` assertions.
+    /// Uses RwLock<HashMap<String, Vec<V>>> — protected by CoW semantics.
+    pub(crate) types: RwLock<HashMap<String, Vec<V>>>,
+
+    /// Subtype relations: Maps sub-type name -> list of direct super-type names.
+    /// HE parity: supports `(:< Sub Super)` declarations with transitive closure.
+    /// Uses RwLock<HashMap<String, Vec<String>>> — protected by CoW semantics.
+    pub(crate) subtypes: RwLock<HashMap<String, Vec<String>>>,
 
     // ========================================================================
     // Type-Agnostic Registries and Caches
@@ -350,6 +356,8 @@ where
 
             // Type assertions storage
             types: RwLock::new(HashMap::new()),
+            // Subtype relations storage
+            subtypes: RwLock::new(HashMap::new()),
 
             // Type-agnostic registries (Arc-wrapped for O(1) fork)
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
@@ -429,13 +437,20 @@ where
                 let forked_wide = forked.wide_btm.read().clone();
                 let forked_count = forked.total_atoms.load(Ordering::Acquire);
                 let forked_var_atoms = forked.variable_atoms.read().clone();
+                let forked_type_btm = forked.type_btm.read().clone();
+                let forked_subtype_btm = forked.subtype_btm.read().clone();
                 // Deep-clone bloom filter into a new Arc for exclusive mutation
                 super::atom_space::AtomSpace {
                     btm: RwLock::new(forked_btm),
                     wide_btm: RwLock::new(forked_wide),
+                    type_btm: RwLock::new(forked_type_btm),
+                    subtype_btm: RwLock::new(forked_subtype_btm),
                     shared_mapping: forked_mapping,
                     head_arity_bloom: std::sync::Arc::new(RwLock::new(
                         self.shared.atom_space.head_arity_bloom.read().clone(),
+                    )),
+                    type_bloom: std::sync::Arc::new(RwLock::new(
+                        self.shared.atom_space.type_bloom.read().clone(),
                     )),
                     total_atoms: AtomicUsize::new(forked_count),
                     variable_atoms: RwLock::new(forked_var_atoms),
@@ -455,6 +470,8 @@ where
 
             // Type assertions - RwLock<HashMap>
             types: RwLock::new(self.shared.types.read().clone()),
+            // Subtype relations - RwLock<HashMap>
+            subtypes: RwLock::new(self.shared.subtypes.read().clone()),
 
             // Type-agnostic registries — deep-clone into new Arcs so this
             // owned env has exclusive copies for mutation
@@ -505,6 +522,8 @@ where
 
             // Type assertions - RwLock<HashMap>
             types: RwLock::new(self.shared.types.read().clone()),
+            // Subtype relations - RwLock<HashMap>
+            subtypes: RwLock::new(self.shared.subtypes.read().clone()),
 
             // O(1) Arc::clone for all read-only registries — forked envs
             // don't modify these during evaluation, so sharing is safe.
@@ -648,11 +667,30 @@ where
             merged
         };
 
-        // Merge types (other takes precedence)
-        let merged_types: HashMap<String, V> = {
+        // Merge types (union of type Vecs per key, with dedup)
+        let merged_types: HashMap<String, Vec<V>> = {
             let mut merged = self.shared.types.read().clone();
-            for (k, v) in other.shared.types.read().iter() {
-                merged.insert(k.clone(), v.clone());
+            for (k, other_types) in other.shared.types.read().iter() {
+                let vec = merged.entry(k.clone()).or_default();
+                for t in other_types {
+                    if !vec.contains(t) {
+                        vec.push(t.clone());
+                    }
+                }
+            }
+            merged
+        };
+
+        // Merge subtypes (union of super-type Vecs per key, with dedup)
+        let merged_subtypes: HashMap<String, Vec<String>> = {
+            let mut merged = self.shared.subtypes.read().clone();
+            for (k, other_supers) in other.shared.subtypes.read().iter() {
+                let vec = merged.entry(k.clone()).or_default();
+                for s in other_supers {
+                    if !vec.contains(s) {
+                        vec.push(s.clone());
+                    }
+                }
             }
             merged
         };
@@ -705,10 +743,20 @@ where
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
+                type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
                 // Merge wide_btm using same lattice algebra as btm
                 wide_btm: RwLock::new(merge_pathmaps_max(
                     &self.shared.atom_space.wide_btm.read(),
                     &other.shared.atom_space.wide_btm.read(),
+                )),
+                // Merge type and subtype PathMaps
+                type_btm: RwLock::new(merge_pathmaps_max(
+                    &self.shared.atom_space.type_btm.read(),
+                    &other.shared.atom_space.type_btm.read(),
+                )),
+                subtype_btm: RwLock::new(merge_pathmaps_max(
+                    &self.shared.atom_space.subtype_btm.read(),
+                    &other.shared.atom_space.subtype_btm.read(),
                 )),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
@@ -721,6 +769,7 @@ where
 
             bindings: RwLock::new(merged_bindings),
             types: RwLock::new(merged_types),
+            subtypes: RwLock::new(merged_subtypes),
 
             // Share from self (these are typically static after initialization)
             module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
@@ -749,6 +798,15 @@ where
                 Arc::new(RwLock::new(merged))
             },
         });
+
+        // Repopulate type bloom filter from merged types HashMap
+        {
+            let types = new_shared.types.read();
+            let mut bloom = new_shared.atom_space.type_bloom.write();
+            for name in types.keys() {
+                bloom.insert(name.as_bytes());
+            }
+        }
 
         // Register merged shared state as GC root provider
         try_register_env_roots(&new_shared);
@@ -922,15 +980,36 @@ where
             base_bindings
         };
 
-        // Merge types (later environments take precedence)
-        let merged_types: HashMap<String, V> = {
+        // Merge types (union of type Vecs per key, with dedup)
+        let merged_types: HashMap<String, Vec<V>> = {
             let mut base_types = base.shared.types.read().clone();
             for other in &others[merge_start_idx..] {
-                for (k, v) in other.shared.types.read().iter() {
-                    base_types.insert(k.clone(), v.clone());
+                for (k, other_types) in other.shared.types.read().iter() {
+                    let vec = base_types.entry(k.clone()).or_default();
+                    for t in other_types {
+                        if !vec.contains(t) {
+                            vec.push(t.clone());
+                        }
+                    }
                 }
             }
             base_types
+        };
+
+        // Merge subtypes (union of super-type Vecs per key, with dedup)
+        let merged_subtypes: HashMap<String, Vec<String>> = {
+            let mut base_subtypes = base.shared.subtypes.read().clone();
+            for other in &others[merge_start_idx..] {
+                for (k, other_supers) in other.shared.subtypes.read().iter() {
+                    let vec = base_subtypes.entry(k.clone()).or_default();
+                    for s in other_supers {
+                        if !vec.contains(s) {
+                            vec.push(s.clone());
+                        }
+                    }
+                }
+            }
+            base_subtypes
         };
 
         // Merge states (later environments take precedence)
@@ -994,6 +1073,7 @@ where
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared.atom_space.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
+                type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
                 // Merge wide_btm from all environments using same lattice algebra as btm
                 wide_btm: RwLock::new({
                     let mut merged_wide = self.shared.atom_space.wide_btm.read().clone();
@@ -1001,6 +1081,22 @@ where
                         merged_wide = merge_pathmaps_max(&merged_wide, &other_env.shared.atom_space.wide_btm.read());
                     }
                     merged_wide
+                }),
+                // Merge type PathMaps from all environments
+                type_btm: RwLock::new({
+                    let mut merged_types = self.shared.atom_space.type_btm.read().clone();
+                    for other_env in others.iter() {
+                        merged_types = merge_pathmaps_max(&merged_types, &other_env.shared.atom_space.type_btm.read());
+                    }
+                    merged_types
+                }),
+                // Merge subtype PathMaps from all environments
+                subtype_btm: RwLock::new({
+                    let mut merged_subs = self.shared.atom_space.subtype_btm.read().clone();
+                    for other_env in others.iter() {
+                        merged_subs = merge_pathmaps_max(&merged_subs, &other_env.shared.atom_space.subtype_btm.read());
+                    }
+                    merged_subs
                 }),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
@@ -1013,6 +1109,7 @@ where
 
             bindings: RwLock::new(merged_bindings),
             types: RwLock::new(merged_types),
+            subtypes: RwLock::new(merged_subtypes),
 
             // Share from self (typically static after init)
             module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
@@ -1043,6 +1140,15 @@ where
                 Arc::new(RwLock::new(merged))
             },
         });
+
+        // Repopulate type bloom filter from merged types HashMap
+        {
+            let types = new_shared.types.read();
+            let mut bloom = new_shared.atom_space.type_bloom.write();
+            for name in types.keys() {
+                bloom.insert(name.as_bytes());
+            }
+        }
 
         // Register batch-merged shared state as GC root provider
         try_register_env_roots(&new_shared);
@@ -1105,10 +1211,12 @@ where
             roots.extend(bindings.values().cloned());
         }
 
-        // Type assertions
+        // Type assertions (flatten Vec<V> per key)
         {
             let types = self.shared.types.read();
-            roots.extend(types.values().cloned());
+            for type_vec in types.values() {
+                roots.extend(type_vec.iter().cloned());
+            }
         }
 
         // Mutable state cells
@@ -1184,10 +1292,12 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
             roots.extend(bindings.values().copied());
         }
 
-        // Type assertions
+        // Type assertions (flatten Vec<MettaValue> per key)
         {
             let types = self.types.read();
-            roots.extend(types.values().copied());
+            for type_vec in types.values() {
+                roots.extend(type_vec.iter().copied());
+            }
         }
 
         // Mutable state cells
@@ -1334,14 +1444,42 @@ where
             return;
         }
 
-        // Check if this is a type assertion (: name type) — also register in the types
-        // HashMap so get-type queries work without MORK linear scan.
+        // Check if this is a type assertion (: name type) or subtype declaration (:<  sub super)
+        // — also register in the types/subtypes HashMap for fast lookup.
+        // Track whether this is a type or subtype atom for incremental PathMap updates.
+        let mut is_type_atom = false;
+        let mut is_subtype_atom = false;
+        let mut type_atom_name: Option<String> = None;
         if let Some(items) = value.as_sexpr() {
             if items.len() == 3 {
-                if let Some(":") = items[0].as_atom() {
-                    if let Some(name) = items[1].as_atom() {
-                        self.shared.types.write().insert(name.to_string(), items[2].clone());
-                        self.shared.type_index_dirty.store(true, Ordering::Release);
+                if let Some(op) = items[0].as_atom() {
+                    match op {
+                        ":" => {
+                            if let Some(name) = items[1].as_atom() {
+                                let typ = items[2].clone();
+                                let mut types = self.shared.types.write();
+                                let vec = types.entry(name.to_string()).or_default();
+                                if !vec.contains(&typ) {
+                                    vec.push(typ);
+                                }
+                                drop(types);
+                                self.shared.type_index_dirty.store(true, Ordering::Release);
+                                is_type_atom = true;
+                                type_atom_name = Some(name.to_string());
+                            }
+                        }
+                        ":<" => {
+                            // Subtype declaration: (:< SubType SuperType)
+                            if let (Some(sub), Some(sup)) = (items[1].as_atom(), items[2].as_atom()) {
+                                let mut subtypes = self.shared.subtypes.write();
+                                let vec = subtypes.entry(sub.to_string()).or_default();
+                                if !vec.contains(&sup.to_string()) {
+                                    vec.push(sup.to_string());
+                                }
+                                is_subtype_atom = true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1352,6 +1490,19 @@ where
             let mut btm = self.shared.atom_space.btm.write();
             add_atom(&mut btm, mork_bytes);
             drop(btm);
+
+            // Incrementally update type/subtype dedicated PathMaps + type bloom filter
+            if is_type_atom {
+                let mut type_btm = self.shared.atom_space.type_btm.write();
+                add_atom(&mut type_btm, mork_bytes);
+                // Insert atom name into type bloom filter for O(1) early rejection
+                if let Some(ref name) = type_atom_name {
+                    self.shared.atom_space.type_bloom.write().insert(name.as_bytes());
+                }
+            } else if is_subtype_atom {
+                let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
+                add_atom(&mut subtype_btm, mork_bytes);
+            }
 
             self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
 
@@ -1396,14 +1547,44 @@ where
     pub fn remove_from_space(&mut self, value: &V) {
         self.make_owned();
 
-        // Check if this is a type assertion (: name type) — also remove from the types
-        // HashMap so get-type queries stay consistent.
+        // Check if this is a type assertion (: name type) or subtype declaration (:< sub super)
+        // — remove from the types/subtypes HashMap so queries stay consistent.
+        // Track for incremental PathMap updates.
+        let mut is_type_removal = false;
+        let mut is_subtype_removal = false;
         if let Some(items) = value.as_sexpr() {
             if items.len() == 3 {
-                if let Some(":") = items[0].as_atom() {
-                    if let Some(name) = items[1].as_atom() {
-                        self.shared.types.write().remove(name);
-                        self.shared.type_index_dirty.store(true, Ordering::Release);
+                if let Some(op) = items[0].as_atom() {
+                    match op {
+                        ":" => {
+                            if let Some(name) = items[1].as_atom() {
+                                let typ = &items[2];
+                                let mut types = self.shared.types.write();
+                                if let Some(vec) = types.get_mut(name) {
+                                    vec.retain(|t| t != typ);
+                                    if vec.is_empty() {
+                                        types.remove(name);
+                                    }
+                                }
+                                drop(types);
+                                self.shared.type_index_dirty.store(true, Ordering::Release);
+                                is_type_removal = true;
+                            }
+                        }
+                        ":<" => {
+                            // Remove subtype declaration: (:< SubType SuperType)
+                            if let (Some(sub), Some(sup)) = (items[1].as_atom(), items[2].as_atom()) {
+                                let mut subtypes = self.shared.subtypes.write();
+                                if let Some(vec) = subtypes.get_mut(sub) {
+                                    vec.retain(|s| s != sup);
+                                    if vec.is_empty() {
+                                        subtypes.remove(sub);
+                                    }
+                                }
+                                is_subtype_removal = true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1471,6 +1652,15 @@ where
                 }
                 btm.remove(mork_bytes);
                 drop(btm);
+
+                // Incrementally remove from type/subtype dedicated PathMaps
+                if is_type_removal {
+                    self.shared.atom_space.type_btm.write().remove(mork_bytes);
+                    self.shared.atom_space.type_bloom.write().note_deletion();
+                } else if is_subtype_removal {
+                    self.shared.atom_space.subtype_btm.write().remove(mork_bytes);
+                }
+
                 self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
                 self.shared.atom_space.head_arity_bloom.write().note_deletion();
                 return;
@@ -1483,6 +1673,18 @@ where
             }
 
             drop(btm);
+
+            // Incrementally update type/subtype dedicated PathMaps
+            if is_type_removal {
+                let mut type_btm = self.shared.atom_space.type_btm.write();
+                remove_atom(&mut type_btm, mork_bytes);
+                drop(type_btm);
+                self.shared.atom_space.type_bloom.write().note_deletion();
+            } else if is_subtype_removal {
+                let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
+                remove_atom(&mut subtype_btm, mork_bytes);
+            }
+
             self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
         }) {
             Ok(()) => {}

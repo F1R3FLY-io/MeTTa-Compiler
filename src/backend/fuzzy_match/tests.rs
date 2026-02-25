@@ -600,11 +600,34 @@ fn test_context_arity_zero_arity_empty() {
 
 #[test]
 fn test_context_arity_zero_arity_with_args_should_not_match() {
-    // nop has arity 0, (nopp x) has 1 arg - should NOT match
+    // empty has strict arity 0, (emty x) has 1 arg - should NOT match
+    let matcher = FuzzyMatcher::from_terms(vec!["empty"]);
+    let env = MettaEnvironment::default();
+
+    // Expression: (emty x) - 1 argument, but empty expects exactly 0
+    let expr = vec![
+        MettaValue::Atom("emty".to_string()),
+        MettaValue::Atom("x".to_string()),
+    ];
+    let ctx = SuggestionContext::for_head(&expr, &env);
+
+    let result = matcher.smart_suggest_with_context("emty", 2, &ctx);
+    // Should NOT suggest empty because arity 1 > max_arity 0
+    if let Some(suggestion) = &result {
+        assert!(
+            !suggestion.suggestions.contains(&"empty".to_string()),
+            "emty with arity 1 should NOT suggest empty (expects 0)"
+        );
+    }
+}
+
+#[test]
+fn test_context_arity_nop_variadic() {
+    // nop has min_arity 0, max_arity MAX per HE — accepts any args
     let matcher = FuzzyMatcher::from_terms(vec!["nop"]);
     let env = MettaEnvironment::default();
 
-    // Expression: (nopp x) - 1 argument, but nop expects 0
+    // Expression: (nopp x) - 1 argument, nop accepts 0+
     let expr = vec![
         MettaValue::Atom("nopp".to_string()),
         MettaValue::Atom("x".to_string()),
@@ -612,13 +635,11 @@ fn test_context_arity_zero_arity_with_args_should_not_match() {
     let ctx = SuggestionContext::for_head(&expr, &env);
 
     let result = matcher.smart_suggest_with_context("nopp", 2, &ctx);
-    // Should NOT suggest nop because arity 1 > max_arity 0
-    if let Some(suggestion) = &result {
-        assert!(
-            !suggestion.suggestions.contains(&"nop".to_string()),
-            "nopp with arity 1 should NOT suggest nop (expects 0)"
-        );
-    }
+    // nop now accepts any arity per HE, so this should suggest
+    assert!(
+        result.is_some(),
+        "nopp with arity 1 should suggest nop (nop accepts any arity)"
+    );
 }
 
 #[test]
@@ -646,17 +667,23 @@ fn test_context_arity_variadic_case_min() {
 #[test]
 fn test_context_arity_variadic_case_many_args() {
     // case can have many arguments (variadic)
+    // HE signature: (-> Atom Expression %Undefined%)
+    // First arg is Atom (scrutinee), second+ are Expression (pattern pairs)
     let matcher = FuzzyMatcher::from_terms(vec!["case"]);
     let env = MettaEnvironment::default();
 
-    // Expression: (caze x y z w v) - 5 arguments
+    // Expression: (caze x (pattern1 body1) (pattern2 body2) ...) — proper case syntax
+    let pattern_pair = MettaValue::SExpr(vec![
+        MettaValue::Atom("p".to_string()),
+        MettaValue::Atom("b".to_string()),
+    ]);
     let expr = vec![
         MettaValue::Atom("caze".to_string()),
-        MettaValue::Atom("x".to_string()),
-        MettaValue::Atom("y".to_string()),
-        MettaValue::Atom("z".to_string()),
-        MettaValue::Atom("w".to_string()),
-        MettaValue::Atom("v".to_string()),
+        MettaValue::Atom("x".to_string()),     // Atom — matches Atom
+        pattern_pair.clone(),                   // SExpr — matches Expression
+        pattern_pair.clone(),
+        pattern_pair.clone(),
+        pattern_pair,
     ];
     let ctx = SuggestionContext::for_head(&expr, &env);
 

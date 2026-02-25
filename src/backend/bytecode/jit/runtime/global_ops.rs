@@ -65,8 +65,9 @@ pub unsafe extern "C" fn jit_runtime_load_global(
         let env_read = env_arc.read();
 
         // First check if there's a type annotation for this symbol
-        if let Some(type_val) = env_read.get_type(&name) {
-            return metta_to_jit(&type_val).to_bits();
+        let types = env_read.get_type(&name);
+        if let Some(type_val) = types.first() {
+            return metta_to_jit(type_val).to_bits();
         }
 
         // Check if the atom itself exists in the space

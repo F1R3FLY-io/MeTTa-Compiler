@@ -164,9 +164,9 @@ fn test_arity_unify_typo() {
 
 #[test]
 fn test_arity_zero_operations() {
-    // nop, new-space, empty have arity 0
+    // nop accepts 0+ args (variadic), new-space and empty have arity 0
     assert!(would_suggest_for_arity("nopp", "nop", 0));
-    assert!(!would_suggest_for_arity("nopp", "nop", 1));
+    assert!(would_suggest_for_arity("nopp", "nop", 1));
 
     assert!(would_suggest_for_arity("emty", "empty", 0));
     assert!(!would_suggest_for_arity("emty", "empty", 1));

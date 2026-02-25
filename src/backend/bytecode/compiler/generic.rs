@@ -489,6 +489,19 @@ where
                 self.builder.emit(Opcode::GetMetaType);
                 Ok(Some(()))
             }
+            "validate-atom" => {
+                self.check_arity("validate-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::ValidateAtom);
+                Ok(Some(()))
+            }
+            "get-type-space" => {
+                self.check_arity("get-type-space", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::GetTypeSpace);
+                Ok(Some(()))
+            }
 
             // Nondeterminism
             "superpose" => {

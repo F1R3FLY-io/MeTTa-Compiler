@@ -46,12 +46,27 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
     /// `wide_bytes_to_generic_value()` — no duplicate value storage.
     pub(crate) wide_btm: RwLock<PathMap<Multiplicity>>,
 
+    /// Dedicated PathMap for type assertions `(: name type)`.
+    /// Updated incrementally on every add_type/remove_type — no lazy `restrict()` rebuild.
+    /// O(1) CoW fork via `PathMap::clone()`.
+    pub(crate) type_btm: RwLock<PathMap<Multiplicity>>,
+
+    /// Dedicated PathMap for subtype relations `(:< sub super)`.
+    /// Updated incrementally alongside the `subtypes` HashMap.
+    /// O(1) CoW fork via `PathMap::clone()`.
+    pub(crate) subtype_btm: RwLock<PathMap<Multiplicity>>,
+
     /// MORK symbol interning handle. Shared across all forks (Arc-wrapped internally).
     pub(crate) shared_mapping: SharedMappingHandle,
 
     /// Bloom filter for (head_symbol, arity) pairs — enables O(1) match_space() rejection.
     /// Arc-wrapped so fork is O(1) (Arc::clone).
     pub(crate) head_arity_bloom: std::sync::Arc<RwLock<HeadArityBloomFilter>>,
+
+    /// Bloom filter for atom names with type declarations — enables O(1) rejection
+    /// in get_type()/get_types_generic() for untyped atoms.
+    /// Arc-wrapped so fork is O(1) (Arc::clone).
+    pub(crate) type_bloom: std::sync::Arc<RwLock<super::bloom::TypeBloomFilter>>,
 
     /// O(1) total atom count (sum of all multiplicities across ground + variable atoms).
     pub(crate) total_atoms: AtomicUsize,
@@ -76,9 +91,14 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
         AtomSpace {
             btm: RwLock::new(PathMap::new()),
             wide_btm: RwLock::new(PathMap::new()),
+            type_btm: RwLock::new(PathMap::new()),
+            subtype_btm: RwLock::new(PathMap::new()),
             shared_mapping,
             head_arity_bloom: std::sync::Arc::new(RwLock::new(
                 HeadArityBloomFilter::new(expected_entries),
+            )),
+            type_bloom: std::sync::Arc::new(RwLock::new(
+                super::bloom::TypeBloomFilter::new(expected_entries / 10),
             )),
             total_atoms: AtomicUsize::new(0),
             variable_atoms: RwLock::new(Vec::new()),
@@ -93,8 +113,11 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
         AtomSpace {
             btm: RwLock::new(self.btm.read().clone()),
             wide_btm: RwLock::new(self.wide_btm.read().clone()),
+            type_btm: RwLock::new(self.type_btm.read().clone()),
+            subtype_btm: RwLock::new(self.subtype_btm.read().clone()),
             shared_mapping: self.shared_mapping.clone(),
             head_arity_bloom: std::sync::Arc::clone(&self.head_arity_bloom),
+            type_bloom: std::sync::Arc::clone(&self.type_bloom),
             total_atoms: AtomicUsize::new(self.total_atoms.load(Ordering::Acquire)),
             variable_atoms: RwLock::new(self.variable_atoms.read().clone()),
         }

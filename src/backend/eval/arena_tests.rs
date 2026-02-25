@@ -205,9 +205,9 @@ mod tests {
     eval_test!(get_type_long, "!(get-type 42)", &["Number"]);
     eval_test!(get_type_bool, "!(get-type True)", &["Bool"]);
     eval_test!(get_type_string, "!(get-type \"hello\")", &["String"]);
-    eval_test!(get_type_symbol, "!(get-type foo)", &["Undefined"]);
-    eval_test!(get_type_expr, "!(get-type (a b c))", &["Undefined"]);
-    eval_test!(get_type_nil, "!(get-type Nil)", &["Undefined"]);
+    eval_test!(get_type_symbol, "!(get-type foo)", &["%Undefined%"]);
+    eval_test!(get_type_expr, "!(get-type (a b c))", &["%Undefined%"]);
+    eval_test!(get_type_nil, "!(get-type Nil)", &["%Undefined%"]);
     eval_test!(metatype_expr, "!(get-metatype (a b c))", &["Expression"]);
 
     #[test]

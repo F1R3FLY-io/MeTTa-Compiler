@@ -269,6 +269,9 @@ pub enum BinaryOp {
     ZipAtom,
     TakeAtom,
     DropAtom,
+
+    // Type operations
+    GetTypeSpace,
 }
 
 impl BinaryOp {
@@ -307,6 +310,7 @@ impl BinaryOp {
             BinaryOp::ZipAtom => Opcode::ZipAtom,
             BinaryOp::TakeAtom => Opcode::TakeAtom,
             BinaryOp::DropAtom => Opcode::DropAtom,
+            BinaryOp::GetTypeSpace => Opcode::GetTypeSpace,
         }
     }
 }
@@ -355,6 +359,7 @@ pub enum UnaryOp {
     // Type operations
     GetType,
     GetMetaType,
+    ValidateAtom,
     Repr,
 
     // State operations
@@ -411,6 +416,7 @@ impl UnaryOp {
             UnaryOp::TupleCount => Opcode::TupleCount,
             UnaryOp::ReverseAtom => Opcode::ReverseAtom,
             UnaryOp::FlattenAtom => Opcode::FlattenAtom,
+            UnaryOp::ValidateAtom => Opcode::ValidateAtom,
         }
     }
 }

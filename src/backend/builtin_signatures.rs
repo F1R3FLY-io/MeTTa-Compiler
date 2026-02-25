@@ -29,18 +29,28 @@ pub enum TypeExpr {
     Bool,
     /// String type (double-quoted)
     String,
-    /// Atom type (symbols)
+    /// Atom type (symbols/meta-type: unevaluated)
     Atom,
+    /// Expression type (S-expressions, meta-type: unevaluated)
+    Expression,
+    /// Variable type (meta-type)
+    Variable,
     /// Space type (named spaces like &self)
     Space,
-    /// State type (mutable state)
+    /// State type (mutable state) — legacy, use StateMonad for HE
     State,
+    /// StateMonad type with element type: (StateMonad $t)
+    StateMonad(Box<TypeExpr>),
     /// Unit type (empty result)
     Unit,
-    /// Error type
+    /// Error type (HE: ErrorType)
     Error,
     /// Type type (type expressions themselves)
     Type,
+    /// %Undefined% — universal match type (matches any type)
+    Undefined,
+    /// Grounded type
+    Grounded,
 
     // Structural types
     /// List type with element type: (List $a)
@@ -68,9 +78,15 @@ fn arrow(args: Vec<TypeExpr>, ret: TypeExpr) -> TypeExpr {
     TypeExpr::Arrow(args, Box::new(ret))
 }
 
-/// Helper to create list types
+/// Helper to create list types (used in tests for TypeExpr::List variants)
+#[cfg(test)]
 fn list(elem: TypeExpr) -> TypeExpr {
     TypeExpr::List(Box::new(elem))
+}
+
+/// Helper to create StateMonad types
+fn state_monad(elem: TypeExpr) -> TypeExpr {
+    TypeExpr::StateMonad(Box::new(elem))
 }
 
 /// Signature definition for a built-in operation
@@ -110,449 +126,414 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
         // ====================================================================
         // Arithmetic operators: (-> Number Number Number)
         // ====================================================================
-        BuiltinSignature {
-            name: "+",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Number),
-        },
-        BuiltinSignature {
-            name: "-",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Number),
-        },
-        BuiltinSignature {
-            name: "*",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Number),
-        },
-        BuiltinSignature {
-            name: "/",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Number),
-        },
-        BuiltinSignature {
-            name: "%",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Number),
-        },
+        BuiltinSignature { name: "+", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "-", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "*", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "/", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "%", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "min", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "max", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "/safe", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "clamp", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Number, Number, Number], Number) },
+        BuiltinSignature { name: "floor-div", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        // Unary math
+        BuiltinSignature { name: "abs", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "abs-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "floor", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "floor-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "ceil", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "ceil-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "round", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "round-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "sqrt", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "sqrt-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "trunc", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "trunc-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        // Binary math
+        BuiltinSignature { name: "pow", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "pow-math", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "log", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        BuiltinSignature { name: "log-math", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Number) },
+        // ====================================================================
+        // Trigonometric functions: (-> Number Number)
+        // ====================================================================
+        BuiltinSignature { name: "sin-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "cos-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "tan-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "asin-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "acos-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        BuiltinSignature { name: "atan-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Number) },
+        // ====================================================================
+        // Float classification: (-> Number Bool)
+        // ====================================================================
+        BuiltinSignature { name: "isnan-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Bool) },
+        BuiltinSignature { name: "isinf-math", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Number], Bool) },
         // ====================================================================
         // Comparison operators: (-> Number Number Bool)
         // ====================================================================
-        BuiltinSignature {
-            name: "<",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Bool),
-        },
-        BuiltinSignature {
-            name: "<=",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Bool),
-        },
-        BuiltinSignature {
-            name: ">",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Bool),
-        },
-        BuiltinSignature {
-            name: ">=",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Number, Number], Bool),
-        },
+        BuiltinSignature { name: "<", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Bool) },
+        BuiltinSignature { name: "<=", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Bool) },
+        BuiltinSignature { name: ">", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Bool) },
+        BuiltinSignature { name: ">=", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Bool) },
         // ====================================================================
         // Equality operators: polymorphic (-> $a $a Bool)
         // ====================================================================
-        BuiltinSignature {
-            name: "==",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Var("a"), Var("a")], Bool),
-        },
-        BuiltinSignature {
-            name: "!=",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Var("a"), Var("a")], Bool),
-        },
+        BuiltinSignature { name: "==", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Var("a"), Var("a")], Bool) },
+        BuiltinSignature { name: "!=", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Var("a"), Var("a")], Bool) },
         // ====================================================================
-        // Control flow
+        // Boolean operators
         // ====================================================================
-        // if: (-> Bool $a $a $a)
-        BuiltinSignature {
-            name: "if",
-            min_arity: 3,
-            max_arity: 3,
-            type_sig: arrow(vec![Bool, Var("a"), Var("a")], Var("a")),
-        },
-        // case: (-> $a (Pattern $b)... $b)
-        BuiltinSignature {
-            name: "case",
-            min_arity: 2,
-            max_arity: usize::MAX,
-            type_sig: arrow(vec![Var("a"), Pattern], Var("b")),
-        },
-        // switch: (-> $a (Pattern $b)... $b)
-        BuiltinSignature {
-            name: "switch",
-            min_arity: 2,
-            max_arity: usize::MAX,
-            type_sig: arrow(vec![Var("a"), Pattern], Var("b")),
-        },
+        BuiltinSignature { name: "and", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Bool, Bool], Bool) },
+        BuiltinSignature { name: "or", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Bool, Bool], Bool) },
+        BuiltinSignature { name: "not", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Bool], Bool) },
+        BuiltinSignature { name: "xor", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Bool, Bool], Bool) },
         // ====================================================================
-        // Binding forms
+        // Control flow (HE-aligned: lazy args use Atom meta-type)
         // ====================================================================
-        // let: (-> Pattern $a $b $b)
-        BuiltinSignature {
-            name: "let",
-            min_arity: 3,
-            max_arity: 3,
-            type_sig: arrow(vec![Pattern, Var("a"), Var("b")], Var("b")),
-        },
+        // if: (-> Bool Atom Atom $t) — then/else are Atom (lazy, unevaluated)
+        BuiltinSignature { name: "if", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Bool, Atom, Atom], Var("t")) },
+        // case: (-> Atom Expression %Undefined%)
+        BuiltinSignature { name: "case", min_arity: 2, max_arity: usize::MAX,
+            type_sig: arrow(vec![Atom, Expression], Undefined) },
+        // switch: (-> %Undefined% Expression %Undefined%)
+        BuiltinSignature { name: "switch", min_arity: 2, max_arity: usize::MAX,
+            type_sig: arrow(vec![Undefined, Expression], Undefined) },
+        // if-equal: (-> Atom Atom Atom Atom %Undefined%)
+        BuiltinSignature { name: "if-equal", min_arity: 4, max_arity: 4,
+            type_sig: arrow(vec![Atom, Atom, Atom, Atom], Undefined) },
+        // if-reducible: (-> Atom Atom Atom %Undefined%)
+        BuiltinSignature { name: "if-reducible", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Atom, Atom], Undefined) },
+        // ====================================================================
+        // Binding forms (HE-aligned)
+        // ====================================================================
+        // let: (-> Atom %Undefined% Atom %Undefined%)
+        BuiltinSignature { name: "let", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Undefined, Atom], Undefined) },
         // let*: (-> Bindings $a $a)
-        BuiltinSignature {
-            name: "let*",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Bindings, Var("a")], Var("a")),
-        },
-        // unify: (-> $a $a $b $b $b)
-        BuiltinSignature {
-            name: "unify",
-            min_arity: 4,
-            max_arity: 4,
-            type_sig: arrow(vec![Var("a"), Var("a"), Var("b"), Var("b")], Var("b")),
-        },
-        // function: (-> $a $a)
-        BuiltinSignature {
-            name: "function",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Var("a")),
-        },
-        // return: (-> $a $a)
-        BuiltinSignature {
-            name: "return",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Var("a")),
-        },
-        // chain: (-> $a Pattern $b $b)
-        BuiltinSignature {
-            name: "chain",
-            min_arity: 3,
-            max_arity: 3,
-            type_sig: arrow(vec![Var("a"), Pattern, Var("b")], Var("b")),
-        },
+        BuiltinSignature { name: "let*", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Bindings, Var("a")], Var("a")) },
+        // unify: (-> Atom Atom Atom Atom %Undefined%)
+        BuiltinSignature { name: "unify", min_arity: 4, max_arity: 4,
+            type_sig: arrow(vec![Atom, Atom, Atom, Atom], Undefined) },
+        // function: (-> Atom Atom) — HE uses Atom meta-type
+        BuiltinSignature { name: "function", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Atom) },
+        // return: (-> $t $t)
+        BuiltinSignature { name: "return", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Var("t")], Var("t")) },
+        // chain: (-> Atom Variable Atom %Undefined%)
+        BuiltinSignature { name: "chain", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Variable, Atom], Undefined) },
         // ====================================================================
-        // Space operations
+        // Rule & Type definitions (HE-aligned)
         // ====================================================================
-        // match: (-> Space Pattern $a [$a]) - optional default
-        BuiltinSignature {
-            name: "match",
-            min_arity: 3,
-            max_arity: 4,
-            type_sig: arrow(vec![Space, Pattern, Var("a"), Var("a")], Var("a")),
-        },
-        // new-space: (-> Space)
-        BuiltinSignature {
-            name: "new-space",
-            min_arity: 0,
-            max_arity: 0,
-            type_sig: arrow(vec![], Space),
-        },
-        // add-atom: (-> Space $a Unit)
-        BuiltinSignature {
-            name: "add-atom",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Space, Var("a")], Unit),
-        },
-        // remove-atom: (-> Space $a Unit)
-        BuiltinSignature {
-            name: "remove-atom",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Space, Var("a")], Unit),
-        },
-        // get-atoms: (-> Space (List $a))
-        BuiltinSignature {
-            name: "get-atoms",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Space], list(Var("a"))),
-        },
-        // collapse: (-> $a (List $a))
-        BuiltinSignature {
-            name: "collapse",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], list(Var("a"))),
-        },
+        // =: (-> $t $t %Undefined%)
+        BuiltinSignature { name: "=", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Var("t"), Var("t")], Undefined) },
+        // :: (-> $a Type Unit)
+        BuiltinSignature { name: ":", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Var("a"), Type], Unit) },
         // ====================================================================
-        // List operations
+        // Space operations (HE-aligned)
         // ====================================================================
-        // car-atom: (-> (List $a) $a)
-        BuiltinSignature {
-            name: "car-atom",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![list(Var("a"))], Var("a")),
-        },
-        // cdr-atom: (-> (List $a) (List $a))
-        BuiltinSignature {
-            name: "cdr-atom",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![list(Var("a"))], list(Var("a"))),
-        },
-        // cons-atom: (-> $a (List $a) (List $a))
-        BuiltinSignature {
-            name: "cons-atom",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Var("a"), list(Var("a"))], list(Var("a"))),
-        },
-        // decons-atom: (-> (List $a) (List $a))
-        BuiltinSignature {
-            name: "decons-atom",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![list(Var("a"))], list(Var("a"))),
-        },
-        // size-atom: (-> (List $a) Number)
-        BuiltinSignature {
-            name: "size-atom",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![list(Var("a"))], Number),
-        },
-        // max-atom: (-> (List Number) Number)
-        BuiltinSignature {
-            name: "max-atom",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![list(Number)], Number),
-        },
-        // empty: (-> (List $a))
-        BuiltinSignature {
-            name: "empty",
-            min_arity: 0,
-            max_arity: 0,
-            type_sig: arrow(vec![], list(Var("a"))),
-        },
+        // match: (-> SpaceType Atom Atom %Undefined%) — 3 args per HE
+        BuiltinSignature { name: "match", min_arity: 3, max_arity: 4,
+            type_sig: arrow(vec![Space, Atom, Atom], Undefined) },
+        // match-or: MeTTaTron extension
+        BuiltinSignature { name: "match-or", min_arity: 4, max_arity: 4,
+            type_sig: arrow(vec![Space, Atom, Atom, Atom], Undefined) },
+        // new-space: (-> SpaceType)
+        BuiltinSignature { name: "new-space", min_arity: 0, max_arity: 0,
+            type_sig: arrow(vec![], Space) },
+        // add-atom: (-> SpaceType Atom Unit) — atom arg is Atom (unevaluated)
+        BuiltinSignature { name: "add-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Space, Atom], Unit) },
+        // remove-atom: (-> SpaceType Atom Unit)
+        BuiltinSignature { name: "remove-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Space, Atom], Unit) },
+        // get-atoms: (-> SpaceType Atom) — HE returns Atom, not List
+        BuiltinSignature { name: "get-atoms", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Space], Atom) },
+        // collapse: (-> Atom Atom) — HE: Atom → Atom
+        BuiltinSignature { name: "collapse", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Atom) },
+        // collapse-bind: (-> Atom Expression)
+        BuiltinSignature { name: "collapse-bind", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Expression) },
         // ====================================================================
-        // Higher-order list operations
+        // List/Expression operations (HE-aligned: Expression, not List)
         // ====================================================================
-        // map-atom: (-> (-> $a $b) (List $a) (List $b))
-        BuiltinSignature {
-            name: "map-atom",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(
-                vec![arrow(vec![Var("a")], Var("b")), list(Var("a"))],
-                list(Var("b")),
-            ),
-        },
-        // filter-atom: (-> (-> $a Bool) (List $a) (List $a))
-        BuiltinSignature {
-            name: "filter-atom",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(
-                vec![arrow(vec![Var("a")], Bool), list(Var("a"))],
-                list(Var("a")),
-            ),
-        },
-        // foldl-atom: (-> (-> $acc $a $acc) $acc (List $a) $acc)
-        BuiltinSignature {
-            name: "foldl-atom",
-            min_arity: 3,
-            max_arity: 3,
-            type_sig: arrow(
-                vec![
-                    arrow(vec![Var("acc"), Var("a")], Var("acc")),
-                    Var("acc"),
-                    list(Var("a")),
-                ],
-                Var("acc"),
-            ),
-        },
+        // car-atom: (-> Expression %Undefined%)
+        BuiltinSignature { name: "car-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Undefined) },
+        // cdr-atom: (-> Expression Expression)
+        BuiltinSignature { name: "cdr-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Expression) },
+        // cons-atom: (-> Atom Expression Atom) — HE signature
+        BuiltinSignature { name: "cons-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Expression], Atom) },
+        // decons-atom: (-> Expression Atom)
+        BuiltinSignature { name: "decons-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Atom) },
+        // size-atom: (-> Expression Number)
+        BuiltinSignature { name: "size-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Number) },
+        // max-atom: (-> Expression Number)
+        BuiltinSignature { name: "max-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Number) },
+        // min-atom: (-> Expression Number)
+        BuiltinSignature { name: "min-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Number) },
+        // index-atom: (-> Expression Number Atom)
+        BuiltinSignature { name: "index-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Number], Atom) },
+        // empty: zero results (not a function returning a list)
+        BuiltinSignature { name: "empty", min_arity: 0, max_arity: 0,
+            type_sig: arrow(vec![], Undefined) },
+        // MeTTaTron extensions
+        BuiltinSignature { name: "tuple-concat", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Expression], Expression) },
+        BuiltinSignature { name: "tuple-count", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Number) },
+        BuiltinSignature { name: "without", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Atom], Expression) },
+        BuiltinSignature { name: "element-of", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Expression], Bool) },
+        BuiltinSignature { name: "range", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Number, Number], Expression) },
+        BuiltinSignature { name: "reverse-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Expression) },
+        BuiltinSignature { name: "flatten-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Expression) },
+        BuiltinSignature { name: "zip-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Expression], Expression) },
+        BuiltinSignature { name: "take-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Number], Expression) },
+        BuiltinSignature { name: "drop-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Number], Expression) },
+        // ====================================================================
+        // Higher-order list operations (HE-aligned: template-based, not arrow)
+        // ====================================================================
+        // map-atom: (-> Expression Variable Atom Expression)
+        BuiltinSignature { name: "map-atom", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Expression, Variable, Atom], Expression) },
+        // filter-atom: (-> Expression Variable Atom Expression)
+        BuiltinSignature { name: "filter-atom", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Expression, Variable, Atom], Expression) },
+        // foldl-atom: (-> Expression Atom Variable Variable Atom %Undefined%)
+        BuiltinSignature { name: "foldl-atom", min_arity: 5, max_arity: 5,
+            type_sig: arrow(vec![Expression, Atom, Variable, Variable, Atom], Undefined) },
+        // MeTTaTron extensions
+        BuiltinSignature { name: "sort-tuple", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Atom], Expression) },
+        BuiltinSignature { name: "best-candidate", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Atom], Atom) },
+        // ====================================================================
+        // Set operations: (-> Expression ... Atom)
+        // ====================================================================
+        BuiltinSignature { name: "unique-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Atom) },
+        BuiltinSignature { name: "union-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Expression], Atom) },
+        BuiltinSignature { name: "intersection-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Expression], Atom) },
+        BuiltinSignature { name: "subtraction-atom", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Expression], Atom) },
+        // ====================================================================
+        // Nondeterminism
+        // ====================================================================
+        // superpose: (-> Expression %Undefined%)
+        BuiltinSignature { name: "superpose", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Undefined) },
+        // MeTTaTron extensions
+        BuiltinSignature { name: "amb", min_arity: 1, max_arity: usize::MAX,
+            type_sig: arrow(vec![Atom], Undefined) },
+        BuiltinSignature { name: "guard", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Bool, Atom], Atom) },
+        BuiltinSignature { name: "commit", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Atom) },
+        BuiltinSignature { name: "backtrack", min_arity: 0, max_arity: 0,
+            type_sig: arrow(vec![], Undefined) },
+        // ====================================================================
+        // Quoting & Meta (HE-aligned)
+        // ====================================================================
+        // quote: (-> Atom Atom)
+        BuiltinSignature { name: "quote", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Atom) },
+        // unquote: (-> %Undefined% %Undefined%)
+        BuiltinSignature { name: "unquote", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Undefined], Undefined) },
+        // eval: (-> Atom Atom)
+        BuiltinSignature { name: "eval", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Atom) },
+        // !: (-> Atom Atom) — same as eval
+        BuiltinSignature { name: "!", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Atom) },
+        // sealed: (-> Expression Atom Atom)
+        BuiltinSignature { name: "sealed", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Expression, Atom], Atom) },
+        // atom-subst: (-> Atom Variable Atom Atom)
+        BuiltinSignature { name: "atom-subst", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Variable, Atom], Atom) },
+        // nop: (-> %Undefined% %Undefined%)
+        BuiltinSignature { name: "nop", min_arity: 0, max_arity: usize::MAX,
+            type_sig: arrow(vec![Undefined], Undefined) },
         // ====================================================================
         // Type operations
         // ====================================================================
-        // :: (-> $a Type Unit)
-        BuiltinSignature {
-            name: ":",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Var("a"), Type], Unit),
-        },
-        // get-type: (-> $a Type)
-        BuiltinSignature {
-            name: "get-type",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Type),
-        },
-        // check-type: (-> $a Type Bool)
-        BuiltinSignature {
-            name: "check-type",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Var("a"), Type], Bool),
-        },
-        // get-metatype: (-> $a Type)
-        BuiltinSignature {
-            name: "get-metatype",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Type),
-        },
+        BuiltinSignature { name: "get-type", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Var("a")], Type) },
+        BuiltinSignature { name: "check-type", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Var("a"), Type], Bool) },
+        BuiltinSignature { name: "get-metatype", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Var("a")], Type) },
+        // validate-atom (Phase 4)
+        BuiltinSignature { name: "validate-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Bool) },
+        // get-type-space (Phase 5)
+        BuiltinSignature { name: "get-type-space", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Space, Atom], Type) },
+        // is-function: (-> Type Bool)
+        BuiltinSignature { name: "is-function", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Type], Bool) },
         // ====================================================================
-        // Error handling
+        // Error handling (HE-aligned)
         // ====================================================================
-        // error: (-> Any Any Error)
-        BuiltinSignature {
-            name: "error",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Any, Any], Error),
-        },
+        // Error: (-> Atom Atom ErrorType)
+        BuiltinSignature { name: "Error", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Error) },
+        // error: alias
+        BuiltinSignature { name: "error", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Error) },
         // is-error: (-> $a Bool)
-        BuiltinSignature {
-            name: "is-error",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Bool),
-        },
+        BuiltinSignature { name: "is-error", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Var("a")], Bool) },
         // catch: (-> $a $a $a)
-        BuiltinSignature {
-            name: "catch",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Var("a"), Var("a")], Var("a")),
-        },
+        BuiltinSignature { name: "catch", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Var("a"), Var("a")], Var("a")) },
         // ====================================================================
-        // Evaluation control
+        // State operations (HE-aligned: StateMonad)
         // ====================================================================
-        // !: (-> $a $a)
-        BuiltinSignature {
-            name: "!",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Var("a")),
-        },
-        // eval: (-> Expr $a)
-        BuiltinSignature {
-            name: "eval",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Expr], Var("a")),
-        },
-        // quote: (-> $a Expr)
-        BuiltinSignature {
-            name: "quote",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Expr),
-        },
-        // nop: (-> Unit)
-        BuiltinSignature {
-            name: "nop",
-            min_arity: 0,
-            max_arity: 0,
-            type_sig: arrow(vec![], Unit),
-        },
+        // new-state: (-> $t (StateMonad $t))
+        BuiltinSignature { name: "new-state", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Var("t")], state_monad(Var("t"))) },
+        // get-state: (-> (StateMonad $t) $t)
+        BuiltinSignature { name: "get-state", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![state_monad(Var("t"))], Var("t")) },
+        // change-state!: (-> (StateMonad $t) $t (StateMonad $t))
+        BuiltinSignature { name: "change-state!", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![state_monad(Var("t")), Var("t")], state_monad(Var("t"))) },
         // ====================================================================
-        // Rule definition
+        // I/O and debugging (HE-aligned)
         // ====================================================================
-        // =: (-> Pattern $a Unit)
-        BuiltinSignature {
-            name: "=",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Pattern, Var("a")], Unit),
-        },
-        // ====================================================================
-        // State operations
-        // ====================================================================
-        // new-state: (-> $a State)
-        BuiltinSignature {
-            name: "new-state",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], State),
-        },
-        // get-state: (-> State $a)
-        BuiltinSignature {
-            name: "get-state",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![State], Var("a")),
-        },
-        // change-state!: (-> State $a $a)
-        BuiltinSignature {
-            name: "change-state!",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![State, Var("a")], Var("a")),
-        },
-        // ====================================================================
-        // I/O and debugging
-        // ====================================================================
-        // println!: (-> $a Unit)
-        BuiltinSignature {
-            name: "println!",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], Unit),
-        },
-        // trace!: (-> Undefined Atom Undefined) per MeTTa HE
-        BuiltinSignature {
-            name: "trace!",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Any, Any], Any),
-        },
+        // println!: (-> %Undefined% Unit)
+        BuiltinSignature { name: "println!", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Undefined], Unit) },
+        // trace!: (-> %Undefined% Atom %Undefined%)
+        BuiltinSignature { name: "trace!", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Undefined, Atom], Undefined) },
         // repr: (-> $a String)
-        BuiltinSignature {
-            name: "repr",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![Var("a")], String),
-        },
-        // format-args: (-> String $a... String)
-        BuiltinSignature {
-            name: "format-args",
-            min_arity: 1,
-            max_arity: usize::MAX,
-            type_sig: arrow(vec![String, Any], String),
-        },
+        BuiltinSignature { name: "repr", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Var("a")], String) },
+        // format-args: (-> String Expression String) — HE: second arg is Expression
+        BuiltinSignature { name: "format-args", min_arity: 1, max_arity: usize::MAX,
+            type_sig: arrow(vec![String, Expression], String) },
+        // =alpha: (-> Atom Atom Bool)
+        BuiltinSignature { name: "=alpha", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Bool) },
         // ====================================================================
         // Module system
         // ====================================================================
-        // bind!: (-> Atom $a Unit)
-        BuiltinSignature {
-            name: "bind!",
-            min_arity: 2,
-            max_arity: 2,
-            type_sig: arrow(vec![Atom, Var("a")], Unit),
-        },
-        // include: (-> String Unit)
-        BuiltinSignature {
-            name: "include",
-            min_arity: 1,
-            max_arity: 1,
-            type_sig: arrow(vec![String], Unit),
-        },
+        BuiltinSignature { name: "include", min_arity: 1, max_arity: 2,
+            type_sig: arrow(vec![Atom], Unit) },
+        BuiltinSignature { name: "import!", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Space, Atom], Unit) },
+        BuiltinSignature { name: "bind!", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Var("a")], Unit) },
+        BuiltinSignature { name: "mod-space!", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Space) },
+        BuiltinSignature { name: "print-mods!", min_arity: 0, max_arity: 0,
+            type_sig: arrow(vec![], Unit) },
+        BuiltinSignature { name: "pragma!", min_arity: 1, max_arity: usize::MAX,
+            type_sig: arrow(vec![Undefined], Unit) },
+        // ====================================================================
+        // Memoization (MeTTaTron extension)
+        // ====================================================================
+        BuiltinSignature { name: "new-memo", min_arity: 0, max_arity: 0,
+            type_sig: arrow(vec![], Atom) },
+        BuiltinSignature { name: "memo", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Expression) },
+        BuiltinSignature { name: "memo-first", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Atom) },
+        BuiltinSignature { name: "clear-memo!", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Unit) },
+        BuiltinSignature { name: "memo-stats", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Expression) },
+        // ====================================================================
+        // Assertion/Testing
+        // ====================================================================
+        BuiltinSignature { name: "assertEqual", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Unit) },
+        BuiltinSignature { name: "assertEqualMsg", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Atom, Atom], Unit) },
+        BuiltinSignature { name: "assertAlphaEqual", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Unit) },
+        BuiltinSignature { name: "assertAlphaEqualMsg", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Atom, Atom], Unit) },
+        BuiltinSignature { name: "assertEqualToResult", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Unit) },
+        BuiltinSignature { name: "assertEqualToResultMsg", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Atom, Atom], Unit) },
+        BuiltinSignature { name: "assertAlphaEqualToResult", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Unit) },
+        BuiltinSignature { name: "assertAlphaEqualToResultMsg", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Atom, Atom], Unit) },
     ]
 });
 
@@ -681,8 +662,9 @@ mod tests {
 
         assert_eq!(arg_types.len(), 3);
         assert_eq!(arg_types[0], TypeExpr::Bool);
-        assert_eq!(arg_types[1], TypeExpr::Var("a"));
-        assert_eq!(arg_types[2], TypeExpr::Var("a"));
+        // HE-aligned: then/else are Atom (lazy, unevaluated)
+        assert_eq!(arg_types[1], TypeExpr::Atom);
+        assert_eq!(arg_types[2], TypeExpr::Atom);
     }
 
     #[test]
@@ -724,9 +706,9 @@ mod tests {
         let t0 = get_expected_type_at_position(sig, 0).unwrap();
         assert_eq!(*t0, TypeExpr::Space);
 
-        // Position 1 should be Pattern
+        // Position 1 should be Atom (HE-aligned: pattern is Atom meta-type)
         let t1 = get_expected_type_at_position(sig, 1).unwrap();
-        assert_eq!(*t1, TypeExpr::Pattern);
+        assert_eq!(*t1, TypeExpr::Atom);
 
         // Out of bounds
         assert!(get_expected_type_at_position(sig, 100).is_none());
@@ -734,60 +716,72 @@ mod tests {
 
     #[test]
     fn test_all_special_forms_have_signatures() {
-        // All forms from SPECIAL_FORMS in eval/mod.rs should have signatures
-        let special_forms = [
-            "=",
-            "!",
-            "quote",
-            "if",
-            "error",
-            "is-error",
-            "catch",
-            "eval",
-            "function",
-            "return",
-            "chain",
-            "match",
-            "case",
-            "switch",
-            "let",
-            ":",
-            "get-type",
-            "check-type",
-            "map-atom",
-            "filter-atom",
-            "foldl-atom",
-            "car-atom",
-            "cdr-atom",
-            "cons-atom",
-            "decons-atom",
-            "size-atom",
-            "max-atom",
-            "let*",
-            "unify",
-            "new-space",
-            "add-atom",
-            "remove-atom",
-            "collapse",
-            "get-atoms",
-            "new-state",
-            "get-state",
-            "change-state!",
-            "bind!",
-            "println!",
-            "trace!",
-            "nop",
-            "repr",
-            "format-args",
-            "empty",
-            "get-metatype",
-            "include",
+        // All forms and operations should have signatures
+        let all_ops = [
+            // Core
+            "=", ":", "!", "quote", "unquote", "eval", "nop",
+            // Control flow
+            "if", "case", "switch", "if-equal", "if-reducible",
+            // Binding
+            "let", "let*", "unify", "function", "return", "chain",
+            // Error handling
+            "error", "Error", "is-error", "catch",
+            // Space ops
+            "match", "match-or", "new-space", "add-atom", "remove-atom",
+            "collapse", "collapse-bind", "get-atoms",
+            // Type ops
+            "get-type", "check-type", "get-metatype", "validate-atom", "get-type-space",
+            "is-function",
+            // List/Expression ops
+            "car-atom", "cdr-atom", "cons-atom", "decons-atom",
+            "size-atom", "max-atom", "min-atom", "index-atom", "empty",
+            "tuple-concat", "tuple-count", "without", "element-of",
+            "range", "reverse-atom", "flatten-atom", "zip-atom",
+            "take-atom", "drop-atom",
+            // Higher-order
+            "map-atom", "filter-atom", "foldl-atom",
+            "sort-tuple", "best-candidate",
+            // Set ops
+            "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+            // Nondeterminism
+            "superpose", "amb", "guard", "commit", "backtrack",
+            // Quoting
+            "sealed", "atom-subst",
+            // State
+            "new-state", "get-state", "change-state!",
+            // I/O
+            "println!", "trace!", "repr", "format-args", "=alpha",
+            // Modules
+            "include", "import!", "bind!", "mod-space!", "print-mods!", "pragma!",
+            // Memoization
+            "new-memo", "memo", "memo-first", "clear-memo!", "memo-stats",
+            // Assertions
+            "assertEqual", "assertEqualMsg",
+            "assertAlphaEqual", "assertAlphaEqualMsg",
+            "assertEqualToResult", "assertEqualToResultMsg",
+            "assertAlphaEqualToResult", "assertAlphaEqualToResultMsg",
+            // Arithmetic
+            "+", "-", "*", "/", "%", "min", "max",
+            "/safe", "clamp", "floor-div",
+            "abs", "abs-math", "floor", "floor-math",
+            "ceil", "ceil-math", "round", "round-math",
+            "sqrt", "sqrt-math", "trunc", "trunc-math",
+            "pow", "pow-math", "log", "log-math",
+            // Trig
+            "sin-math", "cos-math", "tan-math",
+            "asin-math", "acos-math", "atan-math",
+            // Float classification
+            "isnan-math", "isinf-math",
+            // Boolean
+            "and", "or", "not", "xor",
+            // Comparison
+            "<", "<=", ">", ">=", "==", "!=",
         ];
 
-        for form in special_forms {
+        for form in all_ops {
             assert!(
                 is_builtin(form),
-                "Special form '{}' should have a signature",
+                "Operation '{}' should have a signature",
                 form
             );
         }
@@ -822,13 +816,11 @@ mod tests {
     #[test]
     fn test_list_operations_have_signatures() {
         for op in [
-            "car-atom",
-            "cdr-atom",
-            "cons-atom",
-            "decons-atom",
-            "size-atom",
-            "max-atom",
-            "empty",
+            "car-atom", "cdr-atom", "cons-atom", "decons-atom",
+            "size-atom", "max-atom", "min-atom", "index-atom", "empty",
+            "tuple-concat", "tuple-count", "without", "element-of",
+            "range", "reverse-atom", "flatten-atom", "zip-atom",
+            "take-atom", "drop-atom",
         ] {
             let sig = get_signature(op);
             assert!(
@@ -865,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_module_operations_have_signatures() {
-        for op in ["bind!", "include"] {
+        for op in ["bind!", "include", "import!", "mod-space!", "print-mods!", "pragma!"] {
             let sig = get_signature(op);
             assert!(
                 sig.is_some(),
@@ -877,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_type_operations_have_signatures() {
-        for op in [":", "get-type", "check-type", "get-metatype"] {
+        for op in [":", "get-type", "check-type", "get-metatype", "validate-atom", "get-type-space", "is-function"] {
             let sig = get_signature(op);
             assert!(
                 sig.is_some(),
@@ -889,7 +881,7 @@ mod tests {
 
     #[test]
     fn test_error_operations_have_signatures() {
-        for op in ["error", "is-error", "catch"] {
+        for op in ["error", "Error", "is-error", "catch"] {
             let sig = get_signature(op);
             assert!(
                 sig.is_some(),
@@ -901,7 +893,7 @@ mod tests {
 
     #[test]
     fn test_evaluation_operations_have_signatures() {
-        for op in ["!", "eval", "quote", "nop"] {
+        for op in ["!", "eval", "quote", "unquote", "nop", "sealed", "atom-subst"] {
             let sig = get_signature(op);
             assert!(
                 sig.is_some(),
@@ -925,7 +917,7 @@ mod tests {
 
     #[test]
     fn test_higher_order_list_operations_have_signatures() {
-        for op in ["map-atom", "filter-atom", "foldl-atom"] {
+        for op in ["map-atom", "filter-atom", "foldl-atom", "sort-tuple", "best-candidate"] {
             let sig = get_signature(op);
             assert!(
                 sig.is_some(),
@@ -977,20 +969,22 @@ mod tests {
         let ret = get_return_type(&sig.type_sig).unwrap();
         assert_eq!(*ret, TypeExpr::Unit);
 
+        // HE-aligned: get-atoms returns Atom, not List
         let sig = get_signature("get-atoms").unwrap();
         let ret = get_return_type(&sig.type_sig).unwrap();
-        assert!(matches!(ret, TypeExpr::List(_)));
+        assert_eq!(*ret, TypeExpr::Atom);
     }
 
     #[test]
     fn test_return_type_state_operations() {
+        // HE-aligned: new-state returns StateMonad($t)
         let sig = get_signature("new-state").unwrap();
         let ret = get_return_type(&sig.type_sig).unwrap();
-        assert_eq!(*ret, TypeExpr::State);
+        assert!(matches!(ret, TypeExpr::StateMonad(_)));
 
         let sig = get_signature("get-state").unwrap();
         let ret = get_return_type(&sig.type_sig).unwrap();
-        assert_eq!(*ret, TypeExpr::Var("a"));
+        assert_eq!(*ret, TypeExpr::Var("t"));
     }
 
     #[test]
@@ -1127,7 +1121,7 @@ mod tests {
     fn test_builtin_names_not_empty() {
         let names: Vec<_> = builtin_names().collect();
         assert!(!names.is_empty(), "builtin_names should not be empty");
-        assert!(names.len() > 40, "Should have at least 40 built-ins");
+        assert!(names.len() > 100, "Should have at least 100 built-ins, got {}", names.len());
     }
 
     #[test]
@@ -1157,12 +1151,15 @@ mod tests {
 
     #[test]
     fn test_zero_arity_operations() {
-        let zero_arity_ops = ["nop", "new-space", "empty"];
-        for op in zero_arity_ops {
+        // new-space and empty have fixed arity 0
+        for op in ["new-space", "empty"] {
             let sig = get_signature(op).unwrap();
             assert_eq!(sig.min_arity, 0, "Op '{}' should have min_arity 0", op);
             assert_eq!(sig.max_arity, 0, "Op '{}' should have max_arity 0", op);
         }
+        // nop accepts 0+ args per HE
+        let sig = get_signature("nop").unwrap();
+        assert_eq!(sig.min_arity, 0);
     }
 
     #[test]
@@ -1220,12 +1217,16 @@ mod tests {
 
     #[test]
     fn test_ternary_operations() {
-        let ternary_ops = ["if", "let", "chain", "foldl-atom"];
+        // foldl-atom is now 5-ary per HE
+        let ternary_ops = ["if", "let", "chain"];
         for op in ternary_ops {
             let sig = get_signature(op).unwrap();
             assert_eq!(sig.min_arity, 3, "Op '{}' should have min_arity 3", op);
             assert_eq!(sig.max_arity, 3, "Op '{}' should have max_arity 3", op);
         }
+        let sig = get_signature("foldl-atom").unwrap();
+        assert_eq!(sig.min_arity, 5);
+        assert_eq!(sig.max_arity, 5);
     }
 
     #[test]
@@ -1256,65 +1257,54 @@ mod tests {
     fn test_expected_type_if() {
         let sig = get_signature("if").unwrap();
 
-        // (if cond then else)
+        // (if cond then else) — HE: then/else are Atom (lazy)
         let t0 = get_expected_type_at_position(sig, 0).unwrap();
         assert_eq!(*t0, TypeExpr::Bool, "if position 0 should be Bool");
 
         let t1 = get_expected_type_at_position(sig, 1).unwrap();
-        assert_eq!(*t1, TypeExpr::Var("a"), "if position 1 should be Var(a)");
+        assert_eq!(*t1, TypeExpr::Atom, "if position 1 should be Atom (lazy)");
 
         let t2 = get_expected_type_at_position(sig, 2).unwrap();
-        assert_eq!(*t2, TypeExpr::Var("a"), "if position 2 should be Var(a)");
+        assert_eq!(*t2, TypeExpr::Atom, "if position 2 should be Atom (lazy)");
     }
 
     #[test]
     fn test_expected_type_let() {
         let sig = get_signature("let").unwrap();
 
-        // (let pattern value body)
+        // HE-aligned: (let Atom %Undefined% Atom %Undefined%)
         let t0 = get_expected_type_at_position(sig, 0).unwrap();
-        assert_eq!(*t0, TypeExpr::Pattern, "let position 0 should be Pattern");
+        assert_eq!(*t0, TypeExpr::Atom, "let position 0 should be Atom (pattern)");
 
         let t1 = get_expected_type_at_position(sig, 1).unwrap();
-        assert_eq!(*t1, TypeExpr::Var("a"), "let position 1 should be Var(a)");
+        assert_eq!(*t1, TypeExpr::Undefined, "let position 1 should be %Undefined% (value)");
 
         let t2 = get_expected_type_at_position(sig, 2).unwrap();
-        assert_eq!(*t2, TypeExpr::Var("b"), "let position 2 should be Var(b)");
+        assert_eq!(*t2, TypeExpr::Atom, "let position 2 should be Atom (body)");
     }
 
     #[test]
     fn test_expected_type_add_atom() {
         let sig = get_signature("add-atom").unwrap();
 
-        // (add-atom space atom)
+        // HE-aligned: (add-atom SpaceType Atom Unit) — atom arg is unevaluated
         let t0 = get_expected_type_at_position(sig, 0).unwrap();
         assert_eq!(*t0, TypeExpr::Space, "add-atom position 0 should be Space");
 
         let t1 = get_expected_type_at_position(sig, 1).unwrap();
-        assert_eq!(
-            *t1,
-            TypeExpr::Var("a"),
-            "add-atom position 1 should be Var(a)"
-        );
+        assert_eq!(*t1, TypeExpr::Atom, "add-atom position 1 should be Atom (unevaluated)");
     }
 
     #[test]
     fn test_expected_type_cons_atom() {
         let sig = get_signature("cons-atom").unwrap();
 
-        // (cons-atom elem list)
+        // HE-aligned: (cons-atom Atom Expression Atom)
         let t0 = get_expected_type_at_position(sig, 0).unwrap();
-        assert_eq!(
-            *t0,
-            TypeExpr::Var("a"),
-            "cons-atom position 0 should be Var(a)"
-        );
+        assert_eq!(*t0, TypeExpr::Atom, "cons-atom position 0 should be Atom");
 
         let t1 = get_expected_type_at_position(sig, 1).unwrap();
-        assert!(
-            matches!(t1, TypeExpr::List(_)),
-            "cons-atom position 1 should be List"
-        );
+        assert_eq!(*t1, TypeExpr::Expression, "cons-atom position 1 should be Expression");
     }
 
     #[test]
@@ -1355,5 +1345,131 @@ mod tests {
         let debug_str = format!("{:?}", sig);
         assert!(debug_str.contains("+"));
         assert!(debug_str.contains("min_arity"));
+    }
+
+    // ========================================================================
+    // Phase 9: New Type Variant Tests
+    // ========================================================================
+
+    #[test]
+    fn test_type_expr_new_variants() {
+        assert_eq!(TypeExpr::Undefined, TypeExpr::Undefined);
+        assert_eq!(TypeExpr::Expression, TypeExpr::Expression);
+        assert_eq!(TypeExpr::Variable, TypeExpr::Variable);
+        assert_eq!(TypeExpr::Grounded, TypeExpr::Grounded);
+        assert_ne!(TypeExpr::Undefined, TypeExpr::Atom);
+        assert_ne!(TypeExpr::Expression, TypeExpr::Atom);
+    }
+
+    #[test]
+    fn test_state_monad_type() {
+        let sm1 = TypeExpr::StateMonad(Box::new(TypeExpr::Var("t")));
+        let sm2 = TypeExpr::StateMonad(Box::new(TypeExpr::Var("t")));
+        let sm3 = TypeExpr::StateMonad(Box::new(TypeExpr::Number));
+        assert_eq!(sm1, sm2);
+        assert_ne!(sm1, sm3);
+    }
+
+    #[test]
+    fn test_state_monad_helper() {
+        let t = state_monad(TypeExpr::Var("t"));
+        if let TypeExpr::StateMonad(inner) = t {
+            assert_eq!(*inner, TypeExpr::Var("t"));
+        } else {
+            panic!("Expected StateMonad");
+        }
+    }
+
+    #[test]
+    fn test_boolean_operations_have_signatures() {
+        for op in ["and", "or", "not", "xor"] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Boolean op '{}' should have a signature", op);
+        }
+    }
+
+    #[test]
+    fn test_set_operations_have_signatures() {
+        for op in ["unique-atom", "union-atom", "intersection-atom", "subtraction-atom"] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Set op '{}' should have a signature", op);
+        }
+    }
+
+    #[test]
+    fn test_nondeterminism_operations_have_signatures() {
+        for op in ["superpose", "amb", "guard", "commit", "backtrack"] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Nondeterminism op '{}' should have a signature", op);
+        }
+    }
+
+    #[test]
+    fn test_memoization_operations_have_signatures() {
+        for op in ["new-memo", "memo", "memo-first", "clear-memo!", "memo-stats"] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Memoization op '{}' should have a signature", op);
+        }
+    }
+
+    #[test]
+    fn test_assertion_operations_have_signatures() {
+        for op in [
+            "assertEqual", "assertEqualMsg",
+            "assertAlphaEqual", "assertAlphaEqualMsg",
+            "assertEqualToResult", "assertEqualToResultMsg",
+            "assertAlphaEqualToResult", "assertAlphaEqualToResultMsg",
+        ] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Assertion op '{}' should have a signature", op);
+        }
+    }
+
+    #[test]
+    fn test_math_operations_have_signatures() {
+        // Unary math
+        for op in ["abs", "abs-math", "floor", "floor-math", "ceil", "ceil-math",
+                    "round", "round-math", "sqrt", "sqrt-math", "trunc", "trunc-math"] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Math op '{}' should have a signature", op);
+            let sig = sig.unwrap();
+            assert_eq!(sig.min_arity, 1, "Unary math op '{}' should have min_arity 1", op);
+        }
+        // Binary math
+        for op in ["pow", "pow-math", "log", "log-math"] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Math op '{}' should have a signature", op);
+            let sig = sig.unwrap();
+            assert_eq!(sig.min_arity, 2, "Binary math op '{}' should have min_arity 2", op);
+        }
+    }
+
+    #[test]
+    fn test_trig_operations_have_signatures() {
+        for op in ["sin-math", "cos-math", "tan-math", "asin-math", "acos-math", "atan-math"] {
+            let sig = get_signature(op);
+            assert!(sig.is_some(), "Trig op '{}' should have a signature", op);
+            let sig = sig.unwrap();
+            assert_eq!(sig.min_arity, 1);
+            let ret = get_return_type(&sig.type_sig).unwrap();
+            assert_eq!(*ret, TypeExpr::Number);
+        }
+    }
+
+    #[test]
+    fn test_float_classification_signatures() {
+        for op in ["isnan-math", "isinf-math"] {
+            let sig = get_signature(op).unwrap();
+            assert_eq!(sig.min_arity, 1);
+            let ret = get_return_type(&sig.type_sig).unwrap();
+            assert_eq!(*ret, TypeExpr::Bool);
+        }
+    }
+
+    #[test]
+    fn test_total_signature_count() {
+        let names: Vec<_> = builtin_names().collect();
+        // We have 130+ signatures now
+        assert!(names.len() >= 130, "Should have at least 130 built-in signatures, got {}", names.len());
     }
 }

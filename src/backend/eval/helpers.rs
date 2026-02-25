@@ -35,7 +35,7 @@ static GROUNDED_OPS: phf::Set<&'static str> = phf_set! {
     // Boolean operations
     "not", "and", "or", "xor",
     // Type operations that return concrete values
-    "get-type", "get-metatype",
+    "get-type", "get-metatype", "validate-atom", "get-type-space",
     // Atom/expression manipulation operations (all return immediate values)
     "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
     "max-atom", "min-atom", "index-atom",
@@ -117,7 +117,7 @@ static EAGER_SPECIAL_FORMS: phf::Set<&'static str> = phf_set! {
     // Error handling that produces values
     "catch",
     // Other value-producing special forms
-    "get-metatype",
+    "get-metatype", "validate-atom", "get-type-space",
     // String operations
     "repr", "format-args",
     // Set operations (produce list values)

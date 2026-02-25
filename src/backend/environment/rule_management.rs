@@ -124,6 +124,10 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     // `(f ((Implication $A $B) $TV) $Y)` with 4 vars despite the latter being more specific).
     /// How many times this rule was added (synced with PathMap multiplicity)
     pub multiplicity: u64,
+    /// Cached return type of the RHS, computed once at insertion time.
+    /// Used by Phase 8 optimizations for rule pre-filtering by expected type.
+    /// `None` if RHS type couldn't be inferred (e.g., variable RHS, untyped operators).
+    pub rhs_type: Option<V>,
 }
 
 /// Lightweight in-memory index for O(1) rule lookup + MORK byte-level matching.
@@ -756,6 +760,7 @@ where
                     var_names,
                     wildcard_indices,
                     multiplicity: 1,
+                    rhs_type: None, // Phase 8.1: will be populated when type inference is integrated
                 };
                 self.shared.rule_index.write().add_rule(
                     head_owned.as_deref(),
@@ -799,6 +804,7 @@ where
                 var_names,
                 wildcard_indices,
                 multiplicity: 1,
+                rhs_type: None, // Phase 8.1: will be populated when type inference is integrated
             };
             self.shared.rule_index.write().add_rule(
                 head_owned.as_deref(),
@@ -1512,6 +1518,7 @@ impl MettaEnvironment {
                             var_names,
                             wildcard_indices,
                             multiplicity,
+                            rhs_type: None, // Phase 8.1: will be populated when type inference is integrated
                         };
 
                         // Set correct multiplicity (don't let add_rule deduplicate)

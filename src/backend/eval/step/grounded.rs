@@ -72,6 +72,23 @@ pub fn extract_arg_types<V: MettaValueTrait + Clone>(typ: &V) -> Option<Vec<V>> 
     None
 }
 
+/// Extract the return type from an arrow type `(-> T1 T2 ... Tret)`.
+///
+/// Returns the last element (return type) if this is an arrow type.
+/// Returns `None` if the value is not an arrow type.
+pub fn extract_return_type<V: MettaValueTrait + Clone>(typ: &V) -> Option<V> {
+    if let Some(items) = typ.as_sexpr() {
+        if items.len() >= 2 {
+            if let Some(arrow) = items.first().and_then(|v| v.as_atom()) {
+                if arrow == "->" {
+                    return items.last().cloned();
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Check if an operator has a `(-> ...)` type signature indicating it's a function.
 ///
 /// MeTTa HE parity: only operators with arrow types trigger applicative evaluation.
@@ -84,10 +101,7 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
-    if let Some(typ) = env.get_type_generic(op) {
-        return is_arrow_type(&typ);
-    }
-    false
+    env.get_types_generic(op).iter().any(|t| is_arrow_type(t))
 }
 
 /// Generic version of find_grounded_arg_indices.
@@ -161,16 +175,30 @@ where
     F: MettaValueFactory<V> + Clone,
 {
     let parent_op = items.first().and_then(|v| v.as_atom())?;
-    let parent_type = env.get_type_generic(parent_op)?;
-    let arg_types = extract_arg_types(&parent_type)?;
+    let parent_types = env.get_types_generic(parent_op);
+
+    // Collect all arrow types for this operator
+    let all_arg_types: Vec<Vec<V>> = parent_types
+        .iter()
+        .filter_map(|t| extract_arg_types(t))
+        .collect();
+
+    // No arrow types found → return None so caller falls back to bloom filter
+    if all_arg_types.is_empty() {
+        return None;
+    }
 
     let mut indices = Vec::new();
 
     for (i, item) in items.iter().enumerate().skip(1) {
         let arg_idx = i - 1; // 0-based arg index
 
-        // If formal type is a meta-type, skip (don't pre-evaluate)
-        if arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx]) {
+        // If formal type is a meta-type in ALL arrow types, skip (don't pre-evaluate).
+        // Conservative: if ANY arrow type says value-typed at this position, pre-eval.
+        let all_meta = all_arg_types.iter().all(|arg_types| {
+            arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx])
+        });
+        if all_meta {
             continue;
         }
 
@@ -316,5 +344,29 @@ mod tests {
         ];
 
         assert!(find_typed_arg_indices_generic(&items, &e).is_none());
+    }
+
+    #[test]
+    fn test_extract_return_type() {
+        let f = factory();
+
+        // (-> Number Bool String) → return type = String
+        let arrow = f.sexpr(vec![
+            f.atom("->"),
+            f.atom("Number"),
+            f.atom("Bool"),
+            f.atom("String"),
+        ]);
+        let ret = extract_return_type(&arrow).expect("should extract return type");
+        assert_eq!(ret.as_atom(), Some("String"));
+
+        // (-> Number) → return type = Number (nullary function)
+        let nullary = f.sexpr(vec![f.atom("->"), f.atom("Number")]);
+        let ret = extract_return_type(&nullary).expect("should extract return type");
+        assert_eq!(ret.as_atom(), Some("Number"));
+
+        // "Number" → not an arrow type
+        let not_arrow = f.atom("Number");
+        assert!(extract_return_type(&not_arrow).is_none());
     }
 }

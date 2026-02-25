@@ -87,26 +87,30 @@ impl TypeSignatureRegistry {
         let mut registry = Self::new();
         let types_guard = env.shared.types.read();
 
-        for (name, typ) in types_guard.iter() {
-            // Check if this type is an arrow type (-> T1 T2 ... Tret)
-            if let Some(arg_types) = extract_arg_types(typ) {
-                let classifications: Vec<TypeClassification> = arg_types
-                    .iter()
-                    .map(|t| {
-                        if is_meta_type(t) {
-                            TypeClassification::PassThrough
-                        } else {
-                            TypeClassification::Evaluate
-                        }
-                    })
-                    .collect();
-                registry.insert(
-                    name.clone(),
-                    FunctionTypeInfo {
-                        arity: classifications.len(),
-                        arg_types: classifications,
-                    },
-                );
+        for (name, type_vec) in types_guard.iter() {
+            // Check all types for arrow types (-> T1 T2 ... Tret)
+            // Use the first arrow type found for JIT pre-eval classification
+            for typ in type_vec {
+                if let Some(arg_types) = extract_arg_types(typ) {
+                    let classifications: Vec<TypeClassification> = arg_types
+                        .iter()
+                        .map(|t| {
+                            if is_meta_type(t) {
+                                TypeClassification::PassThrough
+                            } else {
+                                TypeClassification::Evaluate
+                            }
+                        })
+                        .collect();
+                    registry.insert(
+                        name.clone(),
+                        FunctionTypeInfo {
+                            arity: classifications.len(),
+                            arg_types: classifications,
+                        },
+                    );
+                    break; // Use first arrow type for JIT classification
+                }
             }
         }
 

@@ -96,6 +96,9 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnviro
         // Universal types - accept anything
         TypeExpr::Any | TypeExpr::Pattern | TypeExpr::Bindings | TypeExpr::Expr => true,
 
+        // %Undefined% matches anything (HE parity)
+        TypeExpr::Undefined => true,
+
         // Type variables accept anything (instantiate on first use)
         TypeExpr::Var(_) => true,
 
@@ -112,14 +115,21 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnviro
 
         TypeExpr::String => matches!(actual.inner(), MettaValueInner::String(_)),
 
+        // Atom meta-type: matches any atom (symbol)
         TypeExpr::Atom => matches!(actual.inner(), MettaValueInner::Atom(_)),
+
+        // Expression meta-type: matches any S-expression
+        TypeExpr::Expression => matches!(actual.inner(), MettaValueInner::SExpr(_) | MettaValueInner::Unit),
+
+        // Variable meta-type: matches variable atoms ($x, $var, etc.)
+        TypeExpr::Variable => matches!(actual.inner(), MettaValueInner::Atom(s) if s.starts_with('$')),
 
         TypeExpr::Space => {
             matches!(actual.inner(), MettaValueInner::Space(_))
                 || matches!(actual.inner(), MettaValueInner::Atom(s) if s.starts_with('&'))
         }
 
-        TypeExpr::State => matches!(actual.inner(), MettaValueInner::State(_)),
+        TypeExpr::State | TypeExpr::StateMonad(_) => matches!(actual.inner(), MettaValueInner::State(_)),
 
         TypeExpr::Unit => matches!(actual.inner(), MettaValueInner::Unit),
 
@@ -129,6 +139,9 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnviro
             matches!(actual.inner(), MettaValueInner::Type(_))
                 || matches!(actual.inner(), MettaValueInner::Atom(s) if is_type_name(s))
         }
+
+        // Grounded type: matches grounded atoms
+        TypeExpr::Grounded => matches!(actual.inner(), MettaValueInner::Atom(_)),
 
         // List type - check if it's an s-expression (Unit is normalized SExpr([]))
         TypeExpr::List(_) => matches!(actual.inner(), MettaValueInner::SExpr(_) | MettaValueInner::Unit),

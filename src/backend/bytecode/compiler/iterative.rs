@@ -1289,6 +1289,27 @@ impl Compiler {
                 });
                 Ok(Some(()))
             }
+            "validate-atom" => {
+                self.check_arity("validate-atom", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::ValidateAtom,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "get-type-space" => {
+                self.check_arity("get-type-space", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::GetTypeSpace,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
 
             // ================================================================
             // Nondeterminism

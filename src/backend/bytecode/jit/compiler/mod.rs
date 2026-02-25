@@ -2379,6 +2379,12 @@ impl JitCompiler {
             // =====================================================================
             // If-Reducible & Match-Or: not yet JIT-compiled, fall back to interpreter
             // =====================================================================
+            Opcode::ValidateAtom | Opcode::GetTypeSpace => {
+                return Err(JitError::NotCompilable(
+                    format!("Opcode {:?} requires full type inference — falls back to tree-walker", op),
+                ));
+            }
+
             Opcode::EvalIfReducible | Opcode::EvalMatchOr => {
                 return Err(JitError::NotCompilable(
                     format!("Opcode {:?} requires trampoline fallback (not yet JIT-compiled)", op),

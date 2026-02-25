@@ -1151,6 +1151,11 @@ where
             Opcode::DeconAtom => self.op_decon_atom()?,
             Opcode::Repr => self.op_repr()?,
             Opcode::GetMetaType => self.op_get_metatype()?,
+            // validate-atom and get-type-space require full type inference with
+            // environment access — fall back to tree-walker for correct semantics
+            Opcode::ValidateAtom | Opcode::GetTypeSpace => {
+                return Err(VmError::Halted);
+            }
             Opcode::ConsAtom => self.op_cons_atom()?,
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
@@ -3298,16 +3303,19 @@ where
             None => return Ok(expr),
         };
 
-        // Look up the operator's type signature
-        let op_type = match env.get_type_generic(head) {
-            Some(t) => t,
-            None => return Ok(expr),
-        };
+        // Look up the operator's type signatures (may have multiple)
+        let op_types = env.get_types_generic(head);
 
-        let arg_types = match extract_arg_types(&op_type) {
-            Some(at) => at,
-            None => return Ok(expr), // Not an arrow type
-        };
+        // Collect all arrow types for this operator
+        let all_arg_types: Vec<Vec<V>> = op_types
+            .iter()
+            .filter_map(|t| extract_arg_types(t))
+            .collect();
+
+        // No arrow types found → no type-driven pre-eval
+        if all_arg_types.is_empty() {
+            return Ok(expr);
+        }
 
         // Pre-evaluate non-meta-typed S-expr arguments
         let mut evaluated_items: Vec<V> = items.to_vec();
@@ -3316,8 +3324,12 @@ where
         for (i, item) in items.iter().enumerate().skip(1) {
             let arg_idx = i - 1; // 0-based arg index
 
-            // Skip meta-typed args (pass unevaluated)
-            if arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx]) {
+            // If formal type is a meta-type in ALL arrow types, skip.
+            // Conservative: if ANY arrow type says value-typed at this position, pre-eval.
+            let all_meta = all_arg_types.iter().all(|arg_types| {
+                arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx])
+            });
+            if all_meta {
                 continue;
             }
 

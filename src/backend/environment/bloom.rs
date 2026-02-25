@@ -93,3 +93,73 @@ impl HeadArityBloomFilter {
         (h as usize, (h >> 32) as usize)
     }
 }
+
+/// Bloom filter for atom names that have type declarations.
+///
+/// Enables O(1) rejection in `get_type()`/`get_types_generic()` when an atom
+/// name definitely has no type declared. Avoids HashMap lookup and MORK trie
+/// traversal for the common case of untyped atoms.
+///
+/// # Design Notes
+/// - Only tracks atom names (no arity needed for type lookups)
+/// - False positives allowed (may check HashMap when no type exists)
+/// - No false negatives (never skips when type does exist)
+/// - Uses xxh3 (SIMD-accelerated) for fast hashing
+#[derive(Clone)]
+pub(crate) struct TypeBloomFilter {
+    bits: Vec<u64>,
+    num_bits: usize,
+    num_insertions: usize,
+    num_deletions: usize,
+}
+
+impl TypeBloomFilter {
+    /// Create a new type bloom filter sized for expected_entries.
+    /// Uses 10 bits per entry for ~1% false positive rate.
+    pub fn new(expected_entries: usize) -> Self {
+        let num_bits = (expected_entries * 10).max(512);
+        let num_words = (num_bits + 63) / 64;
+        Self {
+            bits: vec![0; num_words],
+            num_bits,
+            num_insertions: 0,
+            num_deletions: 0,
+        }
+    }
+
+    /// Insert an atom name into the type bloom filter.
+    #[inline]
+    pub fn insert(&mut self, name: &[u8]) {
+        let (h1, h2) = Self::hash_name(name);
+        for i in 0usize..3 {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            self.bits[idx / 64] |= 1 << (idx % 64);
+        }
+        self.num_insertions += 1;
+    }
+
+    /// Check if an atom name may have a type declaration.
+    /// Returns false only if the name definitely has no type.
+    #[inline]
+    pub fn may_have_type(&self, name: &[u8]) -> bool {
+        let (h1, h2) = Self::hash_name(name);
+        (0usize..3).all(|i| {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            self.bits[idx / 64] & (1 << (idx % 64)) != 0
+        })
+    }
+
+    /// Note that a type deletion occurred (for lazy rebuild tracking).
+    pub fn note_deletion(&mut self) {
+        self.num_deletions += 1;
+    }
+
+    /// Compute two hash values for double hashing using xxh3 (SIMD-accelerated).
+    #[inline]
+    fn hash_name(name: &[u8]) -> (usize, usize) {
+        let mut hasher = Xxh3::with_seed(0x7470); // seed = "tp" (type)
+        name.hash(&mut hasher);
+        let h = hasher.finish();
+        (h as usize, (h >> 32) as usize)
+    }
+}

@@ -637,6 +637,22 @@ where
                 return GenericEvalStep::Done((results, env));
             }
 
+            // validate-atom - recursive well-typedness checking (Phase 4)
+            "validate-atom" => {
+                let results = crate::backend::eval::types_generic::eval_validate_atom_generic(
+                    &items, ctx.factory(), &env,
+                );
+                return GenericEvalStep::Done((results, env));
+            }
+
+            // get-type-space - query types in a specific space (Phase 5)
+            "get-type-space" => {
+                let results = crate::backend::eval::types_generic::eval_get_type_space_generic(
+                    &items, ctx.factory(), &env,
+                );
+                return GenericEvalStep::Done((results, env));
+            }
+
             // map-atom - defers iteration to trampoline
             "map-atom" => {
                 if items.len() != 4 {

@@ -35,6 +35,8 @@ fn print_usage() {
     --tier-stats            Print tiered compilation stats to stderr on exit
     --pool-stats            Print thread pool statistics to stderr on exit
     --startup-timing        Print per-phase startup timing to stderr");
+    #[cfg(feature = "eval-trace")]
+    eprintln!("    --trace <FILE>          Write binary evaluation trace to FILE");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
@@ -61,6 +63,8 @@ struct Options {
     tier_stats: bool,
     pool_stats: bool,
     startup_timing: bool,
+    #[cfg(feature = "eval-trace")]
+    trace_output: Option<String>,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -76,6 +80,8 @@ fn parse_args() -> Result<Options, String> {
     let mut tier_stats = false;
     let mut pool_stats = false;
     let mut startup_timing = false;
+    #[cfg(feature = "eval-trace")]
+    let mut trace_output: Option<String> = None;
     let mut i = 1;
 
     while i < args.len() {
@@ -122,6 +128,14 @@ fn parse_args() -> Result<Options, String> {
             "--startup-timing" => {
                 startup_timing = true;
             }
+            #[cfg(feature = "eval-trace")]
+            "--trace" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing trace file after --trace".to_string());
+                }
+                trace_output = Some(args[i].clone());
+            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -146,6 +160,8 @@ fn parse_args() -> Result<Options, String> {
         tier_stats,
         pool_stats,
         startup_timing,
+        #[cfg(feature = "eval-trace")]
+        trace_output,
     })
 }
 
@@ -315,6 +331,20 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         .map_err(|e| e.to_string())?;
     timings.mark("compile");
 
+    // Create trace collector if --trace was specified (eval-trace feature only).
+    #[cfg(feature = "eval-trace")]
+    let trace_collector = {
+        match &options.trace_output {
+            Some(trace_path) => {
+                let source_name = file_path.unwrap_or("<stdin>");
+                let collector = mettatron::trace::TraceCollector::new(trace_path, source_name)
+                    .map_err(|e| format!("Failed to create trace file '{}': {}", trace_path, e))?;
+                Some(collector)
+            }
+            None => None,
+        }
+    };
+
     // Snapshot source expressions (MettaValue is Copy)
     let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
 
@@ -330,7 +360,18 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
 
         let guard = SessionGuard::enter();
 
+        // Use trace-aware eval when a trace collector is active.
+        #[cfg(feature = "eval-trace")]
+        let (results, new_env) = {
+            if let Some(ref collector) = trace_collector {
+                mettatron::eval_with_trace(expr, env, &state, collector)
+            } else {
+                eval(expr, env, &state)
+            }
+        };
+        #[cfg(not(feature = "eval-trace"))]
         let (results, new_env) = eval(expr, env, &state);
+
         env = new_env;
 
         if !first_eval_marked {
@@ -352,6 +393,25 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         drop(guard);
     }
     timings.mark("all_evals");
+
+    // Finalize trace collector — flush remaining events and write footer.
+    #[cfg(feature = "eval-trace")]
+    {
+        if let Some(collector) = trace_collector {
+            match collector.finalize() {
+                Ok(event_count) => {
+                    eprintln!(
+                        "[trace] Wrote {} events to '{}'",
+                        event_count,
+                        options.trace_output.as_deref().unwrap_or("?"),
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[trace] Failed to finalize trace file: {}", e);
+                }
+            }
+        }
+    }
 
     // MettaState drops here — values remain in global slab allocator
     // and will be reclaimed by GC when no longer referenced.

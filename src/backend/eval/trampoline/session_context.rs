@@ -18,6 +18,8 @@
 //! allocations through the global slab factory.
 
 use std::cell::Cell;
+#[cfg(feature = "eval-trace")]
+use std::sync::Arc;
 
 use crate::backend::models::{
     alloc_count_snapshot, drop_eval_guard_for_safepoint, global_factory,
@@ -66,6 +68,11 @@ pub struct SessionContext<'s> {
     /// Alloc count at the last safepoint check.
     /// Cell for interior mutability (should_safepoint takes &self).
     last_safepoint_allocs: Cell<u64>,
+
+    /// Optional trace collector for evaluation tracing.
+    /// Present only when `--trace FILE` was specified and the `eval-trace` feature is enabled.
+    #[cfg(feature = "eval-trace")]
+    trace_collector: Option<Arc<crate::backend::trace::TraceCollector>>,
 }
 
 // Manual Debug impl to skip last_safepoint_bytes (Cell is not Debug in all contexts)
@@ -89,7 +96,21 @@ impl<'s> SessionContext<'s> {
             state,
             factory: global_factory(),
             last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
+            #[cfg(feature = "eval-trace")]
+            trace_collector: None,
         }
+    }
+
+    /// Attach a trace collector to this session context.
+    ///
+    /// When a trace collector is attached, evaluation events will be emitted
+    /// to the collector's output file. This is called when `--trace FILE` is
+    /// specified on the command line.
+    #[cfg(feature = "eval-trace")]
+    #[inline]
+    pub fn with_trace_collector(mut self, collector: Arc<crate::backend::trace::TraceCollector>) -> Self {
+        self.trace_collector = Some(collector);
+        self
     }
 
     /// Get the factory for intermediate (eval) allocations.
@@ -202,6 +223,12 @@ impl<'s> EvalContext for SessionContext<'s> {
         reacquire_eval_guard_after_safepoint();
 
         // 5. _root_handle drops here → unregisters temporary roots
+    }
+
+    #[cfg(feature = "eval-trace")]
+    #[inline]
+    fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
+        self.trace_collector.as_deref()
     }
 }
 

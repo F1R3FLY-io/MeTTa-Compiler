@@ -219,6 +219,13 @@ where
         (entry.func)(args, ctx)
     }
 
+    /// Look up the name of a registered function by ID.
+    ///
+    /// Returns `None` if the ID is out of range.
+    pub fn name_for_id(&self, id: u16) -> Option<&str> {
+        self.functions.get(id as usize).map(|e| e.name.as_str())
+    }
+
     /// Get the number of registered functions
     pub fn len(&self) -> usize {
         self.functions.len()

@@ -230,6 +230,11 @@ memchr = "2"
 # Enables ArenaValue<'a> to reference the arena it's allocated in within the same struct
 ouroboros = "0.18"
 
+# postcard — fast, compact binary serde format for evaluation traces (optional)
+postcard = { version = "1", features = ["alloc"], optional = true }
+# trace-format - Shared trace event types (optional, enabled by eval-trace feature)
+trace-format = { path = "trace-format", optional = true }
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]
@@ -255,6 +260,12 @@ jit = []
 # DISABLED by default because it adds significant overhead (10-20%)
 # Enable with: cargo build --release --features fuzzy-suggestions
 fuzzy-suggestions = []
+
+# Evaluation trace: binary tracing of every rewrite, type check, error,
+# bailout, and tier transition with full source location provenance.
+# Zero cost when disabled (no branches, no dead code, no rkyv dep).
+# Enable with: cargo build --release --features eval-trace
+eval-trace = ["dep:postcard", "dep:trace-format"]
 
 [dev-dependencies]
 # For integration tests

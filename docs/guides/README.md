@@ -45,3 +45,12 @@ Comprehensive guides for using MeTTaTron effectively.
 - Auto-regenerate vs detect-and-error approaches
 - Recommended configurations for LSP vs runtime
 - Build script examples
+
+## Evaluation Tracing
+
+**[eval-trace/](eval-trace/README.md)** - Evaluation Trace System
+- Building and running with tracing enabled
+- trace-analyzer tool reference
+- Reading and understanding trace events
+- Debugging workflows using traces
+- Adding new instrumentation points

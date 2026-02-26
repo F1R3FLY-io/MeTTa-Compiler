@@ -22,6 +22,9 @@ pub mod symbol;
 pub mod varint_encoding;
 pub mod wide_mork;
 
+#[cfg(feature = "eval-trace")]
+pub mod trace;
+
 pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,
 };
@@ -30,6 +33,8 @@ pub use compile::{
 };
 pub use environment::{GenericEnvironment, MettaEnvironment, ScopeTracker};
 pub use eval::{eval, pattern_match};
+#[cfg(feature = "eval-trace")]
+pub use eval::eval_with_trace;
 pub use eval::trampoline::{
     eval_trampoline, new_env, StaticEvalContext,
     get_static_factory,

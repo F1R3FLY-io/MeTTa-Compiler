@@ -17,6 +17,9 @@
 
 use crate::backend::models::{MettaState, MettaValue, GcFactory, global_factory};
 
+#[cfg(feature = "eval-trace")]
+use std::sync::Arc;
+
 use super::context::MettaEnvironment;
 use super::generic_trampoline::eval_trampoline_generic;
 use super::generic_types::GenericEvalResult;
@@ -50,6 +53,26 @@ pub fn eval_trampoline(
     state: &MettaState,
 ) -> EvalResult {
     let ctx = SessionContext::new(state);
+    eval_trampoline_generic(value, env, &ctx)
+}
+
+/// Zero-conversion arena evaluation with optional trace collector.
+///
+/// Identical to [`eval_trampoline`] but accepts a trace collector that will
+/// be attached to the `SessionContext`. When `collector` is `Some`, all
+/// evaluation events are emitted to the collector's output file.
+///
+/// This function is only available when the `eval-trace` feature is enabled.
+#[cfg(feature = "eval-trace")]
+#[inline]
+pub fn eval_trampoline_with_trace(
+    value: MettaValue,
+    env: MettaEnvironment,
+    state: &MettaState,
+    collector: &Arc<crate::backend::trace::TraceCollector>,
+) -> EvalResult {
+    let ctx = SessionContext::new(state)
+        .with_trace_collector(Arc::clone(collector));
     eval_trampoline_generic(value, env, &ctx)
 }
 

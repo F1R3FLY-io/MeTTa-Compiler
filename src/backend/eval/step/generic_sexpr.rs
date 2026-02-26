@@ -80,6 +80,36 @@ where
 
     // Check for special forms - these are handled directly
     if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+        // Trace: SpecialForm dispatch
+        #[cfg(feature = "eval-trace")]
+        {
+            if let Some(tc) = ctx.trace_collector() {
+                let is_special = matches!(op,
+                    "=" | "!" | "quote" | "unquote" | "if" | "if-reducible" | "error" | "Error"
+                    | "is-error" | "catch" | "eval" | "chain" | "let" | "let*" | ":" | "get-type"
+                    | "check-type" | "match" | "match-or" | "superpose" | "amb" | "collapse"
+                    | "map-atom" | "filter-atom" | "foldl-atom" | "add-atom" | "remove-atom"
+                    | "get-atoms" | "new-space" | "new-state" | "get-state" | "change-state!"
+                    | "pragma!" | "println!" | "import!" | "include" | "mod-space!"
+                    | "print-mods!" | "unique" | "subtraction" | "intersection" | "union"
+                    | "assertEqual" | "assertEqualToResult"
+                );
+                if is_special {
+                    let input_tv = crate::backend::trace::trace_value_generic(&ctx.factory().sexpr(items.clone()));
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        input_tv,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::SpecialForm {
+                            form_name: op.to_string(),
+                            phase: "dispatch".to_string(),
+                        },
+                    );
+                }
+            }
+        }
         match op {
             // Rule definition - native generic implementation (zero-conversion)
             "=" => {
@@ -1528,6 +1558,25 @@ where
         Some(typed_indices) => {
             // Type system was consulted. Use only its result.
             if !typed_indices.is_empty() {
+                // Trace: ApplicativePreEval (type-driven)
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        let operator = items.first().and_then(|v| v.as_atom()).unwrap_or("?").to_string();
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(&ctx.factory().sexpr(items.clone())),
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::ApplicativePreEval {
+                                operator,
+                                arg_indices: typed_indices.iter().map(|&i| i as u16).collect(),
+                                source: "type-driven".to_string(),
+                            },
+                        );
+                    }
+                }
                 return GenericEvalStep::EvalGroundedArgs {
                     items,
                     grounded_indices: typed_indices,
@@ -1541,6 +1590,25 @@ where
             // No type info — use bloom filter fallback.
             let bloom_indices = find_grounded_arg_indices_generic(&items, &env);
             if !bloom_indices.is_empty() {
+                // Trace: ApplicativePreEval (bloom-filter)
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        let operator = items.first().and_then(|v| v.as_atom()).unwrap_or("?").to_string();
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(&ctx.factory().sexpr(items.clone())),
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::ApplicativePreEval {
+                                operator,
+                                arg_indices: bloom_indices.iter().map(|&i| i as u16).collect(),
+                                source: "bloom-filter".to_string(),
+                            },
+                        );
+                    }
+                }
                 return GenericEvalStep::EvalGroundedArgs {
                     items,
                     grounded_indices: bloom_indices,
@@ -1566,6 +1634,29 @@ where
     let all_matches = crate::backend::eval::trampoline::try_match_all_rules_generic(&resolved_sexpr, &env, *ctx.factory());
 
     if !all_matches.is_empty() {
+        // Trace: RuleMatchSet
+        #[cfg(feature = "eval-trace")]
+        {
+            if let Some(tc) = ctx.trace_collector() {
+                let match_count = all_matches.len() as u32;
+                let matches_tv: Vec<(trace_format::TraceValue, Option<trace_format::TraceSpan>)> = all_matches.iter()
+                    .map(|(rhs, _bindings, _rhs_type)| {
+                        (crate::backend::trace::trace_value_generic(rhs), None)
+                    })
+                    .collect();
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    depth as u32,
+                    crate::backend::trace::trace_value_generic(&resolved_sexpr),
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::RuleMatchSet {
+                        match_count,
+                        matches: matches_tv,
+                    },
+                );
+            }
+        }
         // User rules matched — evaluate RHS with bindings from pattern match
         // Phase 8.7: rhs_type (3rd element) preserved for branch pruning at trampoline level
         return GenericEvalStep::EvalRuleMatchesLazy {

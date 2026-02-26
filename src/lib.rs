@@ -117,6 +117,12 @@ pub use config::{configure_eval, get_eval_config, EvalConfig};
 // Export commonly used REPL components
 pub use repl::{MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, SmartIndenter};
 
+// Evaluation trace system (zero-cost when disabled)
+#[cfg(feature = "eval-trace")]
+pub use backend::trace;
+#[cfg(feature = "eval-trace")]
+pub use backend::eval_with_trace;
+
 #[cfg(test)]
 mod tests {
     use crate::backend::compile::compile;

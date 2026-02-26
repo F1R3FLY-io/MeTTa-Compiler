@@ -154,6 +154,24 @@ impl HybridExecutor {
                 debug!(target: "mettatron::jit::hybrid::arena", bailout_ip = ctx.bailout_ip, reason = ?ctx.bailout_reason, "JIT bailout in arena mode");
             }
 
+            // Trace: JitBailout event
+            #[cfg(feature = "eval-trace")]
+            {
+                use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+                with_thread_trace_collector(|tc| {
+                    tc.emit_converted(
+                        trace_format::TraceTier::JitStage1, 0,
+                        trace_format::TraceValue::Unit,
+                        vec![], None,
+                        trace_format::TraceEventKind::JitBailout {
+                            bailout_ip: ctx.bailout_ip as u32,
+                            reason: format!("{:?}", ctx.bailout_reason),
+                            fallback_tier: "tree-walker".to_string(),
+                        },
+                    );
+                });
+            }
+
             // In arena mode, bailout means we need to fall back to tree-walker
             // Return empty results and let the caller handle fallback
             return Ok(vec![factory.unit()]);
@@ -300,6 +318,24 @@ impl HybridExecutor {
 
             if self.config.trace {
                 debug!(target: "mettatron::jit::hybrid::arena", bailout_ip = ctx.bailout_ip, reason = ?ctx.bailout_reason, "JIT bailout in arena mode with env");
+            }
+
+            // Trace: JitBailout event
+            #[cfg(feature = "eval-trace")]
+            {
+                use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+                with_thread_trace_collector(|tc| {
+                    tc.emit_converted(
+                        trace_format::TraceTier::JitStage1, 0,
+                        trace_format::TraceValue::Unit,
+                        vec![], None,
+                        trace_format::TraceEventKind::JitBailout {
+                            bailout_ip: ctx.bailout_ip as u32,
+                            reason: format!("{:?}", ctx.bailout_reason),
+                            fallback_tier: "tree-walker".to_string(),
+                        },
+                    );
+                });
             }
 
             // In arena mode, bailout means we need to fall back to tree-walker

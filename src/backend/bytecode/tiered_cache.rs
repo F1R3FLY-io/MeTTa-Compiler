@@ -159,9 +159,9 @@ pub struct ExprCompilationState {
     /// JIT Stage 2 native code (write-once via OnceLock, lock-free reads)
     jit2_code: OnceLock<Arc<NativeCode>>,
 
-    /// Original expression for recompilation (if needed)
-    /// Stored as hash to avoid cloning large expressions
-    expr_hash: u64,
+    /// Original expression hash for identification and tracing.
+    /// Stored as hash to avoid cloning large expressions.
+    pub expr_hash: u64,
 }
 
 impl ExprCompilationState {

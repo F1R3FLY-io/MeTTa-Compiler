@@ -1,0 +1,13 @@
+[package]
+name = "trace-format"
+version = "0.1.0"
+edition = "2021"
+description = "Shared binary trace format types for MeTTaTron evaluation tracing"
+license = "Apache-2.0"
+
+[dependencies]
+# postcard — fast, compact, varint-encoded binary serde format.
+# Handles recursive types (Box<Self>, Vec<Self>) naturally.
+# Actively maintained; recommended replacement for bincode.
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }

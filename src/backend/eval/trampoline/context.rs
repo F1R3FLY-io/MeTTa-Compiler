@@ -85,6 +85,20 @@ pub trait EvalContext {
     fn perform_safepoint(&self, _roots: Vec<Self::Value>) {
         // no-op by default — non-production contexts don't safepoint
     }
+
+    /// Get the trace collector for emitting evaluation trace events.
+    ///
+    /// Returns `Some(&TraceCollector)` when evaluation tracing is active,
+    /// `None` otherwise. Called by `trace_emit_ctx!` macro to conditionally
+    /// emit events with zero overhead when tracing is disabled.
+    ///
+    /// Default implementation returns `None`. Override in contexts that
+    /// carry a `TraceCollector` (e.g., `SessionContext` when `--trace` is used).
+    #[cfg(feature = "eval-trace")]
+    #[inline]
+    fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
+        None
+    }
 }
 
 /// Type alias for the environment associated with an EvalContext.

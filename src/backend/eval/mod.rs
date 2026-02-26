@@ -115,6 +115,183 @@ pub fn eval(
     result
 }
 
+/// Evaluate an MettaValue with bytecode/JIT tiering and trace collection.
+///
+/// Identical to [`eval`] but threads a `TraceCollector` through the evaluation
+/// pipeline so that all tree-walker events are recorded. The bytecode/JIT tiers
+/// also fall back to the trace-enabled tree-walker on bailout.
+///
+/// Only available when the `eval-trace` feature is enabled.
+#[cfg(feature = "eval-trace")]
+pub fn eval_with_trace(
+    value: MettaValue,
+    env: MettaEnvironment,
+    state: &crate::backend::models::MettaState,
+    collector: &std::sync::Arc<crate::backend::trace::TraceCollector>,
+) -> EvalResult {
+    use crate::backend::models::EvalGuard;
+
+    let result = {
+        let _guard = EvalGuard::enter();
+        eval_inner_with_trace(value, env, state, collector)
+    };
+
+    result.1.maybe_run_type_fixpoint();
+    result
+}
+
+/// Inner eval body with trace — bytecode/JIT tiered execution with trace-enabled
+/// tree-walker fallback.
+///
+/// Sets the thread-local trace collector before each bytecode/JIT dispatch so that
+/// opcode handlers and JIT runtime helpers can emit trace events via
+/// `with_thread_trace_collector()`. Emits `TierDispatch` events at each tier
+/// selection point for tier-transition visibility.
+#[cfg(feature = "eval-trace")]
+fn eval_inner_with_trace(
+    value: MettaValue,
+    env: MettaEnvironment,
+    state: &crate::backend::models::MettaState,
+    collector: &std::sync::Arc<crate::backend::trace::TraceCollector>,
+) -> EvalResult {
+    use crate::backend::bytecode::{
+        can_compile, can_compile_with_env, eval_bytecode_arena_with_env,
+        execute_arena, global_tiered_cache,
+        ExecutionTier, TierStatusKind,
+    };
+    use crate::backend::trace::thread_local_sink::{
+        set_thread_trace_collector, clear_thread_trace_collector,
+    };
+
+    let compilation_state = global_tiered_cache().record_execution(&value);
+    let execution_count = compilation_state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
+    let expr_hash = compilation_state.expr_hash;
+
+    // Set thread-local trace collector for bytecode/JIT instrumentation.
+    set_thread_trace_collector(collector);
+
+    if can_compile(&value) {
+        // JIT Stage 2
+        if compilation_state.jit2_status() == TierStatusKind::Ready {
+            if let Some(code) = compilation_state.jit2_code() {
+                // Emit TierDispatch event
+                collector.emit_converted(
+                    trace_format::TraceTier::JitStage2, 0,
+                    crate::backend::trace::trace_value_generic(&value),
+                    vec![], None,
+                    trace_format::TraceEventKind::TierDispatch {
+                        expression_hash: expr_hash,
+                        selected_tier: trace_format::TraceTier::JitStage2,
+                        execution_count,
+                    },
+                );
+
+                match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
+                    Ok((results, new_env)) => {
+                        global_tiered_cache()
+                            .record_tier_execution(ExecutionTier::JitStage2);
+                        clear_thread_trace_collector();
+                        return (results, new_env);
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+
+        // JIT Stage 1
+        if compilation_state.jit1_status() == TierStatusKind::Ready {
+            if let Some(code) = compilation_state.jit1_code() {
+                collector.emit_converted(
+                    trace_format::TraceTier::JitStage1, 0,
+                    crate::backend::trace::trace_value_generic(&value),
+                    vec![], None,
+                    trace_format::TraceEventKind::TierDispatch {
+                        expression_hash: expr_hash,
+                        selected_tier: trace_format::TraceTier::JitStage1,
+                        execution_count,
+                    },
+                );
+
+                match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
+                    Ok((results, new_env)) => {
+                        global_tiered_cache()
+                            .record_tier_execution(ExecutionTier::JitStage1);
+                        clear_thread_trace_collector();
+                        return (results, new_env);
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+
+        // Bytecode VM
+        if compilation_state.bytecode_status() == TierStatusKind::Ready {
+            if let Some(chunk) = compilation_state.bytecode_chunk() {
+                collector.emit_converted(
+                    trace_format::TraceTier::BytecodeVM, 0,
+                    crate::backend::trace::trace_value_generic(&value),
+                    vec![], None,
+                    trace_format::TraceEventKind::TierDispatch {
+                        expression_hash: expr_hash,
+                        selected_tier: trace_format::TraceTier::BytecodeVM,
+                        execution_count,
+                    },
+                );
+
+                match execute_arena(chunk, env.clone()) {
+                    Ok((results, new_env)) => {
+                        global_tiered_cache()
+                            .record_tier_execution(ExecutionTier::Bytecode);
+                        clear_thread_trace_collector();
+                        return (results, new_env);
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
+    // Environment-aware bytecode
+    if can_compile_with_env(&value) {
+        collector.emit_converted(
+            trace_format::TraceTier::BytecodeVM, 0,
+            crate::backend::trace::trace_value_generic(&value),
+            vec![], None,
+            trace_format::TraceEventKind::TierDispatch {
+                expression_hash: expr_hash,
+                selected_tier: trace_format::TraceTier::BytecodeVM,
+                execution_count,
+            },
+        );
+
+        match eval_bytecode_arena_with_env(&value, env.clone()) {
+            Ok((results, new_env)) => {
+                global_tiered_cache()
+                    .record_tier_execution(ExecutionTier::Bytecode);
+                clear_thread_trace_collector();
+                return (results, new_env);
+            }
+            Err(_) => {}
+        }
+    }
+
+    // Tier 0: Tree-walker with trace collection
+    collector.emit_converted(
+        trace_format::TraceTier::TreeWalker, 0,
+        crate::backend::trace::trace_value_generic(&value),
+        vec![], None,
+        trace_format::TraceEventKind::TierDispatch {
+            expression_hash: expr_hash,
+            selected_tier: trace_format::TraceTier::TreeWalker,
+            execution_count,
+        },
+    );
+
+    clear_thread_trace_collector();
+    global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
+    trampoline::eval_trampoline_with_trace(value, env, state, collector)
+}
+
 /// Inner eval body — bytecode/JIT tiered execution with tree-walker fallback.
 ///
 /// Called from `eval()` while an `EvalGuard` is held (ACTIVE_EVALUATORS > 0).

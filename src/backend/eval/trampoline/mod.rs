@@ -44,6 +44,9 @@ pub use arena_engine::{
     is_arena_mode_available, new_env, EvalResult,
 };
 
+#[cfg(feature = "eval-trace")]
+pub use arena_engine::eval_trampoline_with_trace;
+
 // Re-export evaluation context types
 #[allow(unused_imports)]
 pub use context::{

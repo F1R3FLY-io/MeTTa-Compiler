@@ -87,6 +87,21 @@ where
     let debug_eval = is_debug_eval();
     let mut eval_count: u64 = 0;
 
+    // Trace: EvalStart (before value is moved into work stack)
+    #[cfg(feature = "eval-trace")]
+    {
+        if let Some(tc) = ctx.trace_collector() {
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                0,
+                crate::backend::trace::trace_value_generic(&value),
+                vec![],
+                None,
+                trace_format::TraceEventKind::EvalStart,
+            );
+        }
+    }
+
     // Initialize work stack with the initial evaluation
     let mut work_stack: Vec<GenericWorkItem<C::Value, ContextEnv<C>>> = vec![GenericWorkItem::Eval {
         value,
@@ -134,7 +149,26 @@ where
                     unsafe { &mut *(&mut roots as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
             }
+            #[cfg(feature = "eval-trace")]
+            let _root_count = roots.len() as u32;
             ctx.perform_safepoint(roots);
+            // Trace: GcSafepoint (after safepoint so root_count is computed before move)
+            #[cfg(feature = "eval-trace")]
+            {
+                if let Some(tc) = ctx.trace_collector() {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        0,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::GcSafepoint {
+                            root_count: _root_count,
+                            allocation_delta_bytes: 0,
+                        },
+                    );
+                }
+            }
         }
         match work {
             GenericWorkItem::Eval {
@@ -215,6 +249,31 @@ where
                                         .into_iter()
                                         .map(|(v, _)| v)
                                         .collect();
+                                    // Trace: GroundedOp success
+                                    #[cfg(feature = "eval-trace")]
+                                    {
+                                        if let Some(tc) = ctx.trace_collector() {
+                                            let input = crate::backend::trace::trace_value_generic(
+                                                &ctx.factory().sexpr({
+                                                    let mut parts = Vec::with_capacity(1 + state.args.len());
+                                                    parts.push(ctx.factory().atom(&op_name));
+                                                    for arg in state.args.iter() { parts.push(arg.clone()); }
+                                                    parts
+                                                }),
+                                            );
+                                            tc.emit_converted(
+                                                trace_format::TraceTier::TreeWalker,
+                                                depth as u32,
+                                                input,
+                                                values.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                None,
+                                                trace_format::TraceEventKind::GroundedOp {
+                                                    op_name: op_name.clone(),
+                                                    args: state.args.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                },
+                                            );
+                                        }
+                                    }
                                     work_stack.push(GenericWorkItem::Resume {
                                         result: (values, env),
                                     });
@@ -238,6 +297,39 @@ where
                                     });
                                 }
                                 GenericGroundedWork::Error(e) => {
+                                    // Trace: GroundedOpError
+                                    #[cfg(feature = "eval-trace")]
+                                    {
+                                        if let Some(tc) = ctx.trace_collector() {
+                                            let (error_kind, message) = match &e {
+                                                ExecError::NoReduce => ("NoReduce", String::new()),
+                                                ExecError::Runtime(msg) => ("Runtime", msg.clone()),
+                                                ExecError::Arithmetic(msg) => ("Arithmetic", msg.clone()),
+                                                ExecError::IncorrectArgument(msg) => ("IncorrectArgument", msg.clone()),
+                                            };
+                                            let input = crate::backend::trace::trace_value_generic(
+                                                &ctx.factory().sexpr({
+                                                    let mut parts = Vec::with_capacity(1 + state.args.len());
+                                                    parts.push(ctx.factory().atom(&op_name));
+                                                    for arg in state.args.iter() { parts.push(arg.clone()); }
+                                                    parts
+                                                }),
+                                            );
+                                            tc.emit_converted(
+                                                trace_format::TraceTier::TreeWalker,
+                                                depth as u32,
+                                                input,
+                                                vec![],
+                                                None,
+                                                trace_format::TraceEventKind::GroundedOpError {
+                                                    op_name: op_name.clone(),
+                                                    error_kind: error_kind.to_string(),
+                                                    message,
+                                                    args: state.args.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                },
+                                            );
+                                        }
+                                    }
                                     match e {
                                         ExecError::NoReduce => {
                                             // MeTTa HE semantics: return the original expression unreduced
@@ -1213,6 +1305,22 @@ where
                     ctx,
                 );
             }
+        }
+    }
+
+    // Trace: EvalEnd
+    #[cfg(feature = "eval-trace")]
+    {
+        if let Some(tc) = ctx.trace_collector() {
+            let result_count = final_result.as_ref().map_or(0, |r| r.0.len()) as u32;
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                0,
+                trace_format::TraceValue::Unit,
+                vec![],
+                None,
+                trace_format::TraceEventKind::EvalEnd { result_count },
+            );
         }
     }
 

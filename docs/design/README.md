@@ -134,12 +134,6 @@ In-depth technical design documentation for MeTTaTron's architecture and impleme
 - Memory-performance tradeoffs
 - Implementation strategies
 
-**[OPTIMIZATION_STATUS.md](OPTIMIZATION_STATUS.md)** - Overall Optimization Status
-- Current optimization state
-- Performance benchmarks
-- Future optimization targets
-- Priority analysis
-
 ## S-Expression and Facts
 
 **[SEXPR_FACTS_DESIGN.md](SEXPR_FACTS_DESIGN.md)** - S-Expression Facts Design
@@ -155,10 +149,11 @@ In-depth technical design documentation for MeTTaTron's architecture and impleme
 - Property-based testing
 - Coverage analysis
 
-## Maintenance
+## Evaluation Tracing
 
-**[TODO_ANALYSIS.md](TODO_ANALYSIS.md)** - Implementation Status and TODOs
-- Feature implementation status
-- Known limitations
-- Future enhancements
-- Priority roadmap
+**[eval-trace/](eval-trace/README.md)** - Evaluation Trace Design Decisions
+- Serialization format selection (postcard vs rkyv)
+- Iterative trampoline value conversion
+- Thread-local sink pattern for VM/JIT
+- Zero-cost feature gating
+- GC-safe owned value snapshots

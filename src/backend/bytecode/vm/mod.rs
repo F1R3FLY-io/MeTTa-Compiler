@@ -1231,7 +1231,25 @@ where
             // === Debug ===
             Opcode::Breakpoint => self.op_breakpoint()?,
             Opcode::Trace => self.op_trace()?,
-            Opcode::Halt => return Err(VmError::Halted),
+            Opcode::Halt => {
+                // Trace: BytecodeHalt
+                #[cfg(feature = "eval-trace")]
+                {
+                    use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+                    with_thread_trace_collector(|tc| {
+                        tc.emit_converted(
+                            trace_format::TraceTier::BytecodeVM, 0,
+                            trace_format::TraceValue::Unit,
+                            vec![], None,
+                            trace_format::TraceEventKind::BytecodeHalt {
+                                ip: self.ip as u32,
+                                reason: "Halt opcode".to_string(),
+                            },
+                        );
+                    });
+                }
+                return Err(VmError::Halted);
+            }
 
             // Catch-all for any unhandled opcodes
             _ => {
@@ -2753,6 +2771,22 @@ where
             alternatives.push(GenericAlternative::Value(value));
         }
 
+        // Trace: NondeterministicFork
+        #[cfg(feature = "eval-trace")]
+        {
+            use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+            with_thread_trace_collector(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::BytecodeVM, 0,
+                    trace_format::TraceValue::Unit,
+                    vec![], None,
+                    trace_format::TraceEventKind::NondeterministicFork {
+                        branch_count: count as u32,
+                    },
+                );
+            });
+        }
+
         // Save IP pointing past all constant indices (where execution should resume)
         let resume_ip = self.ip;
 
@@ -2991,22 +3025,83 @@ where
         let ctx = GenericNativeContext::new(env, self.factory.clone());
 
         // Call through registry
-        let result = self
+        let call_result = self
             .native_registry
-            .call(func_id, &args, &ctx)
-            .map_err(|e| VmError::Runtime(e.to_string()))?;
+            .call(func_id, &args, &ctx);
 
-        // Push result(s)
-        if result.len() == 1 {
-            self.push(result.into_iter().next().expect("result has 1 element"));
-        } else if result.is_empty() {
-            self.push(self.factory.unit());
-        } else {
-            // Multiple results - push as S-expression
-            self.push(self.factory.sexpr(result));
+        match call_result {
+            Ok(result) => {
+                // Trace: GroundedOp success
+                #[cfg(feature = "eval-trace")]
+                {
+                    use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+                    use crate::backend::trace::trace_value_generic;
+                    with_thread_trace_collector(|tc| {
+                        let op_name = self.native_registry
+                            .name_for_id(func_id)
+                            .unwrap_or("?")
+                            .to_string();
+                        tc.emit_converted(
+                            trace_format::TraceTier::BytecodeVM, 0,
+                            trace_format::TraceValue::SExpr(
+                                std::iter::once(trace_format::TraceValue::Atom(op_name.clone()))
+                                    .chain(args.iter().map(|a| trace_value_generic(a)))
+                                    .collect()
+                            ),
+                            result.iter().map(|v| trace_value_generic(v)).collect(),
+                            None,
+                            trace_format::TraceEventKind::GroundedOp {
+                                op_name,
+                                args: args.iter().map(|a| trace_value_generic(a)).collect(),
+                            },
+                        );
+                    });
+                }
+
+                // Push result(s)
+                if result.len() == 1 {
+                    self.push(result.into_iter().next().expect("result has 1 element"));
+                } else if result.is_empty() {
+                    self.push(self.factory.unit());
+                } else {
+                    // Multiple results - push as S-expression
+                    self.push(self.factory.sexpr(result));
+                }
+
+                Ok(())
+            }
+            Err(e) => {
+                // Trace: GroundedOpError
+                #[cfg(feature = "eval-trace")]
+                {
+                    use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+                    use crate::backend::trace::trace_value_generic;
+                    with_thread_trace_collector(|tc| {
+                        let op_name = self.native_registry
+                            .name_for_id(func_id)
+                            .unwrap_or("?")
+                            .to_string();
+                        tc.emit_converted(
+                            trace_format::TraceTier::BytecodeVM, 0,
+                            trace_format::TraceValue::SExpr(
+                                std::iter::once(trace_format::TraceValue::Atom(op_name.clone()))
+                                    .chain(args.iter().map(|a| trace_value_generic(a)))
+                                    .collect()
+                            ),
+                            vec![], None,
+                            trace_format::TraceEventKind::GroundedOpError {
+                                op_name,
+                                error_kind: "Runtime".to_string(),
+                                message: e.to_string(),
+                                args: args.iter().map(|a| trace_value_generic(a)).collect(),
+                            },
+                        );
+                    });
+                }
+
+                Err(VmError::Runtime(e.to_string()))
+            }
         }
-
-        Ok(())
     }
 
     /// Call an external FFI function by name.
@@ -3212,6 +3307,26 @@ where
         // Use native byte-level matching via RuleIndex + extract_data
         let matches = env.match_rules_native(&expr, apply_bindings_generic);
 
+        // Trace: Emit RuleMatchSet for all matching rules
+        #[cfg(feature = "eval-trace")]
+        {
+            use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+            use crate::backend::trace::trace_value_generic;
+            with_thread_trace_collector(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::BytecodeVM, 0,
+                    trace_value_generic(&expr),
+                    vec![], None,
+                    trace_format::TraceEventKind::RuleMatchSet {
+                        match_count: matches.len() as u32,
+                        matches: matches.iter().map(|m| {
+                            (trace_value_generic(&m.instantiated_rhs), None)
+                        }).collect(),
+                    },
+                );
+            });
+        }
+
         if matches.is_empty() {
             // No rules match - return expression unchanged
             self.push(expr);
@@ -3221,6 +3336,31 @@ where
         if matches.len() == 1 {
             // Single match - push the instantiated body for further evaluation
             let result = matches.into_iter().next().expect("matches has 1 element");
+
+            // Trace: RuleApplication for single match
+            #[cfg(feature = "eval-trace")]
+            {
+                use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+                use crate::backend::trace::trace_value_generic;
+                with_thread_trace_collector(|tc| {
+                    let bindings_tv: Vec<(String, trace_format::TraceValue)> = result.bindings
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), trace_value_generic(v)))
+                        .collect();
+                    tc.emit_converted(
+                        trace_format::TraceTier::BytecodeVM, 0,
+                        trace_value_generic(&expr),
+                        vec![trace_value_generic(&result.instantiated_rhs)],
+                        None,
+                        trace_format::TraceEventKind::RuleApplication {
+                            rule_lhs: trace_value_generic(&expr),
+                            rule_rhs: trace_value_generic(&result.instantiated_rhs),
+                            bindings: bindings_tv,
+                            rule_span: None,
+                        },
+                    );
+                });
+            }
 
             // Set up bindings in the current binding frame
             if let Some(frame) = self.bindings_stack.last_mut() {
@@ -3246,6 +3386,23 @@ where
                 // Store as alternative value
                 alternatives.push(GenericAlternative::Value(result.instantiated_rhs));
             }
+        }
+
+        // Trace: NondeterministicFork for multiple matches
+        #[cfg(feature = "eval-trace")]
+        {
+            use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+            use crate::backend::trace::trace_value_generic;
+            with_thread_trace_collector(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::BytecodeVM, 0,
+                    trace_value_generic(&expr),
+                    vec![], None,
+                    trace_format::TraceEventKind::NondeterministicFork {
+                        branch_count: (alternatives.len() + 1) as u32,
+                    },
+                );
+            });
         }
 
         // Create choice point for backtracking to alternatives

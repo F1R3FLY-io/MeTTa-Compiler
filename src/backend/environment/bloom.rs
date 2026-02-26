@@ -9,6 +9,7 @@
 //! This reduces bloom filter overhead from ~27% to ~5-10% of total CPU time.
 
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -159,6 +160,96 @@ impl TypeBloomFilter {
     fn hash_name(name: &[u8]) -> (usize, usize) {
         let mut hasher = Xxh3::with_seed(0x7470); // seed = "tp" (type)
         name.hash(&mut hasher);
+        let h = hasher.finish();
+        (h as usize, (h >> 32) as usize)
+    }
+}
+
+/// Lock-free bloom filter using atomic bit arrays (Phase 10.1).
+///
+/// All operations are wait-free:
+/// - Reads via `AtomicU64::load(Relaxed)` — zero synchronization.
+/// - Writes via `AtomicU64::fetch_or(Relaxed, mask)` — lock-free CAS insertion.
+///
+/// Used for O(1) rejection of inferred function type lookups. False positives
+/// are harmless (fall through to DashMap lookup). No false negatives.
+///
+/// Uses Kirsch-Mitzenmacher double hashing with k=3 hash functions and xxh3
+/// (SIMD-accelerated) for consistent hashing with the other bloom filters.
+pub(crate) struct AtomicBloomFilter {
+    bits: Box<[AtomicU64]>,
+    num_bits: usize,
+}
+
+impl AtomicBloomFilter {
+    /// Number of hash functions (k=3 for ~1% FPR at 10 bits/entry).
+    const NUM_HASHES: usize = 3;
+
+    /// Create a new atomic bloom filter sized for expected_entries.
+    /// Uses 10 bits per entry for ~1% false positive rate.
+    pub fn new(expected_entries: usize) -> Self {
+        let num_bits = (expected_entries * 10).max(512);
+        let num_words = (num_bits + 63) / 64;
+        let bits: Vec<AtomicU64> = (0..num_words).map(|_| AtomicU64::new(0)).collect();
+        Self {
+            bits: bits.into_boxed_slice(),
+            num_bits,
+        }
+    }
+
+    /// Lock-free insertion via fetch_or.
+    #[inline]
+    pub fn insert(&self, key: &[u8]) {
+        let (h1, h2) = Self::hash_key(key);
+        for i in 0..Self::NUM_HASHES {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            let word = idx / 64;
+            let bit = idx % 64;
+            self.bits[word].fetch_or(1u64 << bit, Ordering::Relaxed);
+        }
+    }
+
+    /// Lock-free query via load.
+    #[inline]
+    pub fn may_contain(&self, key: &[u8]) -> bool {
+        let (h1, h2) = Self::hash_key(key);
+        (0..Self::NUM_HASHES).all(|i| {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            let word = idx / 64;
+            let bit = idx % 64;
+            self.bits[word].load(Ordering::Relaxed) & (1u64 << bit) != 0
+        })
+    }
+
+    /// Snapshot for fork: clone all atomic words into a new filter.
+    pub fn snapshot(&self) -> Self {
+        let bits: Vec<AtomicU64> = self
+            .bits
+            .iter()
+            .map(|w| AtomicU64::new(w.load(Ordering::Relaxed)))
+            .collect();
+        Self {
+            bits: bits.into_boxed_slice(),
+            num_bits: self.num_bits,
+        }
+    }
+
+    /// Bitwise OR merge from another filter (for union).
+    /// Both filters must have the same size.
+    pub fn merge_from(&self, other: &Self) {
+        debug_assert_eq!(self.bits.len(), other.bits.len());
+        for (dst, src) in self.bits.iter().zip(other.bits.iter()) {
+            dst.fetch_or(src.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+    }
+
+    /// Compute two hash values for double hashing using xxh3 (SIMD-accelerated).
+    /// Uses a different seed (0x6966 = "if" for inferred) to avoid collisions
+    /// with the TypeBloomFilter.
+    #[inline]
+    fn hash_key(key: &[u8]) -> (usize, usize) {
+        let mut hasher = Xxh3::with_seed(0x6966); // seed = "if" (inferred function)
+        key.hash(&mut hasher);
         let h = hasher.finish();
         (h as usize, (h >> 32) as usize)
     }

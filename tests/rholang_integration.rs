@@ -347,17 +347,32 @@ fn test_control_flow() {
     // fully implemented or produce empty outputs. This test validates the features
     // that do work (quote, eval) and verifies that all tests ran.
 
-    // Validation 4: quote → [(+, 1, 2)] (unevaluated s-expression)
+    // Validation 4: quote → [(quote (+ 1 2))] (unevaluated, wrapped in quote per MeTTa HE)
     let has_quote = pathmaps.iter().any(|pm| {
-        use common::PathMapQuery;
-        pm.output.len() == 1 && pm.query_sexpr("+").exists(|_| true)
+        pm.output.len() == 1
+            && pm.output.iter().any(|v| {
+                if let MettaValueInner::SExpr(exprs) = v.inner() {
+                    exprs.len() == 2
+                        && matches!(exprs[0].inner(),
+                            MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "quote")
+                        && matches!(exprs[1].inner(), MettaValueInner::SExpr(inner) if
+                            inner.len() == 3
+                            && matches!(inner[0].inner(),
+                                MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "+")
+                            && matches!(inner[1].inner(), MettaValueInner::Long(1))
+                            && matches!(inner[2].inner(), MettaValueInner::Long(2))
+                        )
+                } else {
+                    false
+                }
+            })
     });
     report.add_result(
-        "Quote produces unevaluated s-expression (+, 1, 2)",
+        "Quote produces (quote (+ 1 2)) per MeTTa HE semantics",
         if has_quote {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected quoted s-expression not found")
+            ValidationResult::fail("Expected (quote (+ 1 2)) not found")
         },
     );
 
@@ -1349,19 +1364,11 @@ fn test_example_robot_planning() {
     );
 
     // Validation 16: No unexpected Error values in PathMap outputs
-    // Note: Expected errors like (error no_1hop_path ...) from failed path attempts are OK
-    // We're checking for unexpected runtime errors, not intentional error returns
+    // BFS produces no error values, so reject any Error in output
     let no_unexpected_errors = pathmaps.iter().all(|pm| {
-        !pm.output.iter().any(|v| {
-            // Check for Error variant with messages indicating actual failures
-            // (as opposed to expected control-flow errors like no_1hop_path)
-            matches!(v.inner(), MettaValueInner::Error(msg, _) if
-                !msg.contains("no_1hop_path") &&
-                !msg.contains("no_2hop_path") &&
-                !msg.contains("no_3hop_path") &&
-                !msg.is_empty()
-            )
-        })
+        !pm.output
+            .iter()
+            .any(|v| matches!(v.inner(), MettaValueInner::Error(_, _)))
     });
     report.add_result(
         "All PathMaps have no unexpected runtime errors",

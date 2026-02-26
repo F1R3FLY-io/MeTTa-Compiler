@@ -661,6 +661,39 @@ where
             if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
         };
 
+        // Phase 10.1: Register inferred return type in function return type index.
+        // Makes rhs_type queryable by infer_types_generic for user-defined functions
+        // without explicit (: f (-> ...)) type declarations.
+        if let Some(ref rt) = rhs_type {
+            if let Some(ref head) = head_owned {
+                self.register_inferred_type(head, rt);
+            }
+        }
+
+        // Phase 10.4: Synthesize arrow type from rule LHS pattern + RHS body.
+        // Analyzes parameter constraints from RHS usage to build (-> T1 T2 ... Tret).
+        // Only for rules without explicit (: f (-> ...)) type declarations.
+        if let Some(ref head) = head_owned {
+            // Skip if the function already has a declared arrow type
+            let has_declared_arrow = self.get_types_generic(head).iter().any(|t| {
+                t.as_sexpr()
+                    .and_then(|items| items.first().and_then(|v| v.as_atom()))
+                    == Some("->")
+            });
+            if !has_declared_arrow {
+                use crate::backend::eval::types_generic::infer_arrow_type_from_rule;
+                if let Some(arrow) = infer_arrow_type_from_rule(
+                    &lhs,
+                    &rhs,
+                    rhs_type.as_ref(),
+                    &self.factory,
+                    self,
+                ) {
+                    self.register_inferred_type(head, &arrow);
+                }
+            }
+        }
+
         // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
         if let Some(ref head) = head_owned {
             self.shared.fuzzy_matcher.write().insert(head);
@@ -1531,6 +1564,34 @@ impl MettaEnvironment {
                             let inferred = infer_type_generic(&rhs, &self.factory, self);
                             if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
                         };
+
+                        // Phase 10.1: Register inferred return type (bulk path)
+                        if let Some(ref rt) = rhs_type {
+                            if let Some(ref head) = head_owned {
+                                self.register_inferred_type(head, rt);
+                            }
+                        }
+
+                        // Phase 10.4: Synthesize arrow type (bulk path)
+                        if let Some(ref head) = head_owned {
+                            let has_declared_arrow = self.get_types_generic(head).iter().any(|t| {
+                                t.as_sexpr()
+                                    .and_then(|items| items.first().and_then(|v| v.as_atom()))
+                                    == Some("->")
+                            });
+                            if !has_declared_arrow {
+                                use crate::backend::eval::types_generic::infer_arrow_type_from_rule;
+                                if let Some(arrow) = infer_arrow_type_from_rule(
+                                    &lhs,
+                                    &rhs,
+                                    rhs_type.as_ref(),
+                                    &self.factory,
+                                    self,
+                                ) {
+                                    self.register_inferred_type(head, &arrow);
+                                }
+                            }
+                        }
 
                         let entry = RuleEntry {
                             lhs: lhs.clone(),

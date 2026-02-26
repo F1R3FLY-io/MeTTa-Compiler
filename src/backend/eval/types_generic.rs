@@ -81,14 +81,42 @@ where
                 let op_types = env.get_types_generic(op);
                 let mut result_types = Vec::new();
 
+                let actual_args = &items[1..]; // Skip operator
+
                 for generic_type in &op_types {
                     if let Some(type_items) = generic_type.as_sexpr() {
                         if let Some(arrow) = type_items.first().and_then(|v| v.as_atom()) {
                             if arrow == "->" && type_items.len() > 1 {
-                                if let Some(last) = type_items.last() {
-                                    if !result_types.contains(last) {
-                                        result_types.push(last.clone());
+                                let param_types = &type_items[1..type_items.len() - 1];
+                                let return_type = &type_items[type_items.len() - 1];
+
+                                // Phase 10.2: Match actual arg types against declared param
+                                // types, collecting type variable bindings for substitution.
+                                let mut bindings = HashMap::new();
+                                let mut all_match = true;
+
+                                for (i, param_type) in param_types.iter().enumerate() {
+                                    if i < actual_args.len() {
+                                        let arg_type = infer_type_generic(&actual_args[i], factory, env);
+                                        // Skip matching if arg type is %Undefined% (can't constrain)
+                                        if arg_type.as_atom() != Some("%Undefined%") {
+                                            if !match_types_with_bindings(param_type, &arg_type, &mut bindings) {
+                                                all_match = false;
+                                                break;
+                                            }
+                                        }
                                     }
+                                }
+
+                                let resolved = if all_match && !bindings.is_empty() {
+                                    // Substitute bindings into return type
+                                    apply_type_bindings(return_type, &bindings, factory)
+                                } else {
+                                    return_type.clone()
+                                };
+
+                                if !result_types.contains(&resolved) {
+                                    result_types.push(resolved);
                                 }
                             }
                         }
@@ -108,6 +136,65 @@ where
 
                 if !result_types.is_empty() {
                     return result_types;
+                }
+
+                // Phase 10.1: Check inferred function return type index.
+                // This catches user-defined functions whose RHS type was inferred
+                // at add_rule() time but which lack explicit (: f (-> ...)) declarations.
+                if env.has_inferred_type(op) {
+                    let inferred = env.get_inferred_fn_types(op);
+                    let mut inferred_results = Vec::new();
+
+                    for inferred_type in &inferred {
+                        // Check if this is an arrow type — process it like declared types
+                        if let Some(type_items) = inferred_type.as_sexpr() {
+                            if type_items.first().and_then(|v| v.as_atom()) == Some("->")
+                                && type_items.len() > 1
+                            {
+                                // Phase 10.2: Type variable substitution on inferred arrow
+                                let param_types = &type_items[1..type_items.len() - 1];
+                                let return_type = &type_items[type_items.len() - 1];
+
+                                let mut bindings = HashMap::new();
+                                let mut all_match = true;
+                                for (i, param_type) in param_types.iter().enumerate() {
+                                    if i < actual_args.len() {
+                                        let arg_type = infer_type_generic(
+                                            &actual_args[i], factory, env,
+                                        );
+                                        if arg_type.as_atom() != Some("%Undefined%") {
+                                            if !match_types_with_bindings(
+                                                param_type, &arg_type, &mut bindings,
+                                            ) {
+                                                all_match = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let resolved = if all_match && !bindings.is_empty() {
+                                    apply_type_bindings(return_type, &bindings, factory)
+                                } else {
+                                    return_type.clone()
+                                };
+
+                                if !inferred_results.contains(&resolved) {
+                                    inferred_results.push(resolved);
+                                }
+                                continue;
+                            }
+                        }
+
+                        // Non-arrow type: direct return type from rhs_type
+                        if !inferred_results.contains(inferred_type) {
+                            inferred_results.push(inferred_type.clone());
+                        }
+                    }
+
+                    if !inferred_results.is_empty() {
+                        return inferred_results;
+                    }
                 }
             }
 
@@ -365,6 +452,230 @@ pub fn match_types_with_bindings<V: MettaValueTrait + Clone>(
 
     // Ground type equality
     pattern == actual
+}
+
+/// Substitute type variable bindings into a type expression (Phase 10.2).
+///
+/// Given bindings like `{$t: Number, $u: Bool}`, transforms:
+/// - `$t` → `Number`
+/// - `(List $t)` → `(List Number)`
+/// - `(-> $t $u)` → `(-> Number Bool)`
+/// - Unbound variables remain as-is
+pub fn apply_type_bindings<V, F>(
+    typ: &V,
+    bindings: &HashMap<String, V>,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    // Variable atom: substitute if bound
+    if let Some(name) = typ.as_atom() {
+        if name.starts_with('$') {
+            if let Some(bound) = bindings.get(name) {
+                return bound.clone();
+            }
+        }
+        return typ.clone();
+    }
+
+    // Type wrapper: recurse into inner
+    if typ.is_type() {
+        if let Some(inner) = typ.as_type() {
+            if let Some(name) = inner.as_atom() {
+                if name.starts_with('$') {
+                    if let Some(bound) = bindings.get(name) {
+                        return bound.clone();
+                    }
+                }
+            }
+        }
+        return typ.clone();
+    }
+
+    // S-expression: recurse into all children
+    if let Some(items) = typ.as_sexpr() {
+        let substituted: Vec<V> = items
+            .iter()
+            .map(|item| apply_type_bindings(item, bindings, factory))
+            .collect();
+        return factory.sexpr(substituted);
+    }
+
+    // Ground types, errors, etc.: return as-is
+    typ.clone()
+}
+
+/// Infer an arrow type from a rule definition `(= (f params...) rhs)` (Phase 10.4).
+///
+/// Uses bidirectional analysis:
+///   1. Forward: extract parameter variables from LHS pattern
+///   2. Backward: collect type constraints on variables from RHS usage
+///   3. Synthesize: build `(-> param_types... return_type)`
+///
+/// Returns `None` if inference fails or produces only `%Undefined%` types.
+///
+/// # Examples
+///
+/// | Rule | Constraints | Result |
+/// |------|------------|--------|
+/// | `(= (double $x) (+ $x $x))` | `$x: Number` | `(-> Number Number)` |
+/// | `(= (neg $x) (- 0 $x))` | `$x: Number` | `(-> Number Number)` |
+/// | `(= (is-pos $x) (> $x 0))` | `$x: Number` | `(-> Number Bool)` |
+/// | `(= (id $x) $x)` | (none) | `None` (all `%Undefined%`) |
+pub fn infer_arrow_type_from_rule<V, F>(
+    lhs: &V,
+    rhs: &V,
+    rhs_type: Option<&V>,
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+) -> Option<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    // 1. Extract LHS parameters: (f $x $y ...) → [$x, $y, ...]
+    let lhs_items = lhs.as_sexpr()?;
+    if lhs_items.len() < 2 {
+        return None; // Need at least (f param)
+    }
+    let params: Vec<&str> = lhs_items[1..]
+        .iter()
+        .filter_map(|v| {
+            v.as_atom().filter(|name| name.starts_with('$'))
+        })
+        .collect();
+
+    if params.is_empty() {
+        return None; // No variable parameters (e.g., (= (f 0) 1))
+    }
+
+    // 2. Collect constraints from RHS: walk the RHS expression tree
+    //    looking for subexpressions where params appear as args to typed ops.
+    let mut constraints: HashMap<String, V> = HashMap::new();
+    collect_param_constraints(rhs, &params, &mut constraints, factory, env);
+
+    // 3. Resolve parameter types
+    let mut param_types: Vec<V> = Vec::with_capacity(params.len());
+    let mut has_useful_type = false;
+    for param in &params {
+        if let Some(typ) = constraints.get(*param) {
+            param_types.push(typ.clone());
+            has_useful_type = true;
+        } else {
+            param_types.push(factory.atom("%Undefined%"));
+        }
+    }
+
+    // 4. Compute return type (use pre-computed rhs_type if available)
+    let return_type = rhs_type
+        .cloned()
+        .unwrap_or_else(|| factory.atom("%Undefined%"));
+
+    if return_type.as_atom() != Some("%Undefined%") {
+        has_useful_type = true;
+    }
+
+    // 5. Filter: if all types are %Undefined%, return None (no useful info)
+    if !has_useful_type {
+        return None;
+    }
+
+    // 6. Synthesize arrow type: (-> param_type1 param_type2 ... return_type)
+    let mut arrow_items = Vec::with_capacity(2 + param_types.len());
+    arrow_items.push(factory.atom("->"));
+    arrow_items.extend(param_types);
+    arrow_items.push(return_type);
+
+    Some(factory.sexpr(arrow_items))
+}
+
+/// Collect type constraints on parameter variables from RHS usage (Phase 10.4).
+///
+/// DFS over the RHS expression tree. For each subexpression `(op arg1 arg2 ...)`:
+/// - If `op` has a known signature `(-> T1 T2 ... Tret)`, and `arg_i` is a
+///   parameter variable, then constrain that variable to `T_i`.
+/// - If `op` has inferred types (Phase 10.1), use those too.
+///
+/// Takes the first/most-specific constraint found for each variable.
+fn collect_param_constraints<V, F>(
+    expr: &V,
+    params: &[&str],
+    constraints: &mut HashMap<String, V>,
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+)
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    let items = match expr.as_sexpr() {
+        Some(items) if !items.is_empty() => items,
+        _ => return, // Leaf node or empty — nothing to constrain
+    };
+
+    let op = match items.first().and_then(|v| v.as_atom()) {
+        Some(op) => op,
+        None => {
+            // Operator is not an atom — recurse into all children
+            for item in items {
+                collect_param_constraints(item, params, constraints, factory, env);
+            }
+            return;
+        }
+    };
+
+    // Get the operator's type signature(s) as arrow items: ["->" T1 T2 ... Tret]
+    let mut op_arrow_types: Vec<Vec<V>> = Vec::new();
+
+    // Check built-in signature registry
+    if let Some(sig) = get_signature(op) {
+        // Convert TypeExpr::Arrow(args, ret) to ["->" arg_types... ret_type]
+        if let TypeExpr::Arrow(ref args, ref ret) = sig.type_sig {
+            let mut arrow_items = vec![factory.atom("->")];
+            for arg in args {
+                arrow_items.push(type_expr_to_generic(arg, factory));
+            }
+            arrow_items.push(type_expr_to_generic(ret, factory));
+            op_arrow_types.push(arrow_items);
+        }
+    }
+
+    // Check declared types in environment
+    for generic_type in env.get_types_generic(op) {
+        if let Some(type_items) = generic_type.as_sexpr() {
+            if type_items.first().and_then(|v| v.as_atom()) == Some("->") && type_items.len() >= 2 {
+                op_arrow_types.push(type_items.to_vec());
+            }
+        }
+    }
+
+    // For each arrow type, match params to arg positions
+    for arrow in &op_arrow_types {
+        // arrow = ["->" T1 T2 ... Tret]
+        let param_types = &arrow[1..arrow.len() - 1]; // Skip "->" and return type
+        let actual_args = &items[1..]; // Skip operator
+
+        for (i, param_type) in param_types.iter().enumerate() {
+            if i < actual_args.len() {
+                if let Some(arg_name) = actual_args[i].as_atom() {
+                    if arg_name.starts_with('$') && params.contains(&arg_name) {
+                        // This arg is a parameter variable — constrain it
+                        let type_name = param_type.as_atom();
+                        if type_name != Some("%Undefined%") && type_name != Some("->") {
+                            constraints.entry(arg_name.to_string()).or_insert_with(|| param_type.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse into all subexpressions (including the operator's arguments)
+    for item in &items[1..] {
+        collect_param_constraints(item, params, constraints, factory, env);
+    }
 }
 
 /// get-type: Return ALL types of an expression nondeterministically (HE parity).

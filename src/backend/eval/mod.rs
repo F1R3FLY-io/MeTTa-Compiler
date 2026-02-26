@@ -20,6 +20,7 @@ pub mod priority;
 mod processing;
 pub(crate) mod step;
 pub mod trampoline;
+pub(crate) mod type_fixpoint;
 pub(crate) mod types_generic;
 
 #[cfg(test)]
@@ -99,6 +100,13 @@ pub fn eval(
         eval_inner(value, env, state)
     };
     // _guard dropped here — ACTIVE_EVALUATORS decremented.
+
+    // Phase 10.5: Run type fixpoint if rules were added during this eval.
+    // O(1) atomic check; no-op when no new types were registered.
+    // Must be OUTSIDE EvalGuard scope: run_type_fixpoint() acquires rule_index.read(),
+    // and add_rule() (which completed during eval) holds rule_index.write().
+    // Calling after eval() returns ensures all locks are released (no deadlock).
+    result.1.maybe_run_type_fixpoint();
 
     // Session-based GC: reclamation is triggered by SessionGuard::drop() between
     // top-level expressions. No post-eval GC lifecycle needed here — the caller

@@ -200,6 +200,123 @@ where
         }
         self.get_all_supertypes(sub).iter().any(|s| s == super_type)
     }
+
+    // ========================================================================
+    // Phase 10.1: Inferred Function Return Type Queries
+    // ========================================================================
+
+    /// Check if a function has inferred return types (Phase 10.1).
+    ///
+    /// Lock-free: AtomicBloomFilter uses `load(Relaxed)` — zero synchronization.
+    /// False positives harmless (fall through to DashMap lookup).
+    #[inline]
+    pub fn has_inferred_type(&self, name: &str) -> bool {
+        self.shared
+            .atom_space
+            .inferred_type_bloom
+            .may_contain(name.as_bytes())
+    }
+
+    /// Get inferred return types for a function name (Phase 10.1).
+    ///
+    /// Lock-free: DashMap per-shard read lock (non-blocking, no writer starvation).
+    /// Returns empty Vec if no inferred types exist.
+    pub fn get_inferred_fn_types(&self, name: &str) -> Vec<V> {
+        if !self.has_inferred_type(name) {
+            return Vec::new();
+        }
+        self.shared
+            .inferred_fn_types
+            .get(name)
+            .map(|entry| entry.value().clone())
+            .unwrap_or_default()
+    }
+
+    /// Register an inferred return type for a function (Phase 10.1).
+    ///
+    /// Called from `add_rule()` after computing `rhs_type`. Deduplicates entries.
+    /// Updates both the DashMap index and the AtomicBloomFilter.
+    ///
+    /// Phase 10.5: Also increments `inferred_type_generation` to signal that
+    /// a fixpoint re-inference is needed at the next eval boundary.
+    pub fn register_inferred_type(&self, name: &str, return_type: &V) {
+        // DashMap index — lock-free per-shard write
+        let mut entry = self.shared.inferred_fn_types.entry(name.to_string()).or_default();
+        if !entry.value().contains(return_type) {
+            entry.value_mut().push(return_type.clone());
+        }
+        drop(entry);
+
+        // Atomic bloom filter — lock-free fetch_or insertion
+        self.shared
+            .atom_space
+            .inferred_type_bloom
+            .insert(name.as_bytes());
+
+        // Phase 10.5: Increment generation counter to trigger fixpoint at next eval boundary.
+        self.shared
+            .atom_space
+            .inferred_type_generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// Phase 10.5: Run iterative fixpoint type inference if new types were registered.
+    ///
+    /// This method is called at eval boundaries (after `eval()` returns) to propagate
+    /// inferred types through mutually recursive function call chains. It uses a
+    /// generation-counter protocol to detect when new types have been registered since
+    /// the last fixpoint run:
+    ///
+    /// - `inferred_type_generation`: incremented by `register_inferred_type()` on each new type.
+    /// - `fixpoint_generation`: records the generation at which the last fixpoint completed.
+    ///
+    /// When `inferred_type_generation != fixpoint_generation`, new types exist that haven't
+    /// been processed by the fixpoint. A CAS (compare-and-swap) claims the fixpoint run
+    /// to prevent concurrent/duplicate runs across threads.
+    ///
+    /// ## What is a fixpoint?
+    ///
+    /// A fixpoint (fixed point) is a value *x* that is unchanged by a function application:
+    /// *f(x) = x*. Here, we iteratively re-infer return types of mutually recursive
+    /// functions until the inferred type set stabilizes — i.e., another round of inference
+    /// produces the same types as the previous round. That stable state is the fixpoint
+    /// of the type inference function. State-based cycle detection guarantees termination
+    /// even in non-monotonic type lattices.
+    ///
+    /// ## Deadlock Safety
+    ///
+    /// `run_type_fixpoint()` acquires `rule_index.read()`. This method MUST be called
+    /// at eval boundaries (after `eval()` returns), when all locks from `add_rule()`
+    /// (which holds `rule_index.write()`) have been released.
+    pub fn maybe_run_type_fixpoint(&self) {
+        let current = self
+            .shared
+            .atom_space
+            .inferred_type_generation
+            .load(Ordering::Acquire);
+        let last = self
+            .shared
+            .atom_space
+            .fixpoint_generation
+            .load(Ordering::Acquire);
+
+        if current == last {
+            return; // No new types since last fixpoint
+        }
+
+        // CAS claims this fixpoint run (prevents concurrent/duplicate runs)
+        if self
+            .shared
+            .atom_space
+            .fixpoint_generation
+            .compare_exchange(last, current, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return; // Another thread ran/is running the fixpoint
+        }
+
+        crate::backend::eval::type_fixpoint::run_type_fixpoint(self);
+    }
 }
 
 // ============================================================================

@@ -20,13 +20,14 @@
 //! `btm` and `wide_btm` store only byte keys + Multiplicity — no V references,
 //! no GC tracing needed.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use mork_interning::SharedMappingHandle;
 use parking_lot::RwLock;
 use pathmap::PathMap;
 
-use super::bloom::HeadArityBloomFilter;
+use super::bloom::{AtomicBloomFilter, HeadArityBloomFilter};
 use super::multiplicity::Multiplicity;
 use crate::backend::models::MettaValueTrait;
 
@@ -56,6 +57,18 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
     /// O(1) CoW fork via `PathMap::clone()`.
     pub(crate) subtype_btm: RwLock<PathMap<Multiplicity>>,
 
+    /// Phase 10.1: MORK PathMap for inferred type assertions `(: name inferred_type)`.
+    /// Stores inferred (not declared) types from rule RHS analysis. Enables structural
+    /// pattern queries like "find all functions returning Number".
+    /// RwLock justified: PathMap trie mutations require exclusive access.
+    pub(crate) inferred_type_btm: RwLock<PathMap<Multiplicity>>,
+
+    /// Phase 10.1: Atomic bloom filter for inferred function types — fully lock-free.
+    /// Reads: `load(Relaxed)` + bit test — zero synchronization.
+    /// Writes: `fetch_or(Relaxed, bit_mask)` — lock-free CAS insertion.
+    /// False positives harmless (fall through to DashMap lookup).
+    pub(crate) inferred_type_bloom: Arc<AtomicBloomFilter>,
+
     /// MORK symbol interning handle. Shared across all forks (Arc-wrapped internally).
     pub(crate) shared_mapping: SharedMappingHandle,
 
@@ -70,6 +83,26 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
 
     /// O(1) total atom count (sum of all multiplicities across ground + variable atoms).
     pub(crate) total_atoms: AtomicUsize,
+
+    /// Phase 10.5: Generation counter for inferred type changes.
+    /// Incremented by `register_inferred_type()` on each new type registration.
+    /// Used with `fixpoint_generation` to detect when new types have been registered
+    /// since the last fixpoint run, triggering re-inference at the next eval boundary.
+    pub(crate) inferred_type_generation: AtomicU64,
+
+    /// Phase 10.5: Generation at which the last type fixpoint completed.
+    /// Compared against `inferred_type_generation` to detect if fixpoint is needed.
+    /// Updated via CAS to prevent concurrent/duplicate fixpoint runs.
+    ///
+    /// ## What is a fixpoint?
+    ///
+    /// A fixpoint (fixed point) is a value *x* that is unchanged by a function
+    /// application: *f(x) = x*. In this type system, we iteratively re-infer the
+    /// return types of mutually recursive functions until the inferred types stop
+    /// changing — i.e., re-inference produces the same type set as the previous
+    /// iteration. That stable state is the fixpoint of the type inference function.
+    /// State-based cycle detection guarantees termination even if types oscillate.
+    pub(crate) fixpoint_generation: AtomicU64,
 
     /// Atoms containing variables, stored separately from the PathMap trie.
     /// Each entry is `(value, multiplicity)`. Expected to be very small (< 10 typically).
@@ -93,6 +126,8 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             wide_btm: RwLock::new(PathMap::new()),
             type_btm: RwLock::new(PathMap::new()),
             subtype_btm: RwLock::new(PathMap::new()),
+            inferred_type_btm: RwLock::new(PathMap::new()),
+            inferred_type_bloom: Arc::new(AtomicBloomFilter::new(expected_entries / 10)),
             shared_mapping,
             head_arity_bloom: std::sync::Arc::new(RwLock::new(
                 HeadArityBloomFilter::new(expected_entries),
@@ -101,6 +136,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
                 super::bloom::TypeBloomFilter::new(expected_entries / 10),
             )),
             total_atoms: AtomicUsize::new(0),
+            // Phase 10.5: both start at 0 — no fixpoint needed until types are registered
+            inferred_type_generation: AtomicU64::new(0),
+            fixpoint_generation: AtomicU64::new(0),
             variable_atoms: RwLock::new(Vec::new()),
         }
     }
@@ -115,10 +153,21 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             wide_btm: RwLock::new(self.wide_btm.read().clone()),
             type_btm: RwLock::new(self.type_btm.read().clone()),
             subtype_btm: RwLock::new(self.subtype_btm.read().clone()),
+            // Phase 10.1: inferred_type_btm is CoW-cloned (same as type_btm)
+            inferred_type_btm: RwLock::new(self.inferred_type_btm.read().clone()),
+            // Phase 10.1: bloom is append-only, safe to share via Arc::clone
+            inferred_type_bloom: Arc::clone(&self.inferred_type_bloom),
             shared_mapping: self.shared_mapping.clone(),
             head_arity_bloom: std::sync::Arc::clone(&self.head_arity_bloom),
             type_bloom: std::sync::Arc::clone(&self.type_bloom),
             total_atoms: AtomicUsize::new(self.total_atoms.load(Ordering::Acquire)),
+            // Phase 10.5: snapshot generation counters into forked AtomSpace
+            inferred_type_generation: AtomicU64::new(
+                self.inferred_type_generation.load(Ordering::Acquire),
+            ),
+            fixpoint_generation: AtomicU64::new(
+                self.fixpoint_generation.load(Ordering::Acquire),
+            ),
             variable_atoms: RwLock::new(self.variable_atoms.read().clone()),
         }
     }

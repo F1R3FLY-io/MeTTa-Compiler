@@ -1,113 +1,13 @@
 // =====================================================================
-// Robot Planning System - IMPROVED with State Reuse and Deterministic Selection
+// Robot Planning System - BFS (A* with h=0) Shortest-Path Finding
 // =====================================================================
-// IMPROVEMENTS:
+// DESIGN:
 // 1. Persistent state - initialized ONCE, reused across all queries
-// 2. Dynamic list operations - using map-atom, foldl-atom
-// 3. Better error handling - using catch and is-error
-// 4. Sequential composition - using chain for cleaner code
-// 5. Deterministic path selection - shortest paths with lexicographic ordering
-// 6. Optimized distance calculation - direct minimum without path construction
-// 7. ~50-100x performance improvement on repeated queries
-// =====================================================================
-//
-// =====================================================================
-// KNOWN LIMITATIONS AND POTENTIAL IMPROVEMENTS
-// =====================================================================
-//
-// 1. INCOMPLETE DETERMINISM
-//    Problem: The `match` operation returns ALL matching results, causing
-//             nondeterminism when multiple neighbors exist.
-//    Impact:  - get_neighbors("room_a") returns both "room_b" and "room_e"
-//             - This cascades through path-finding and distance calculations
-//             - Demo 3: Returns shortest path + errors from failed alternatives
-//             - Demo 5: Returns [999, 3, 999, 999, 2, 2, 2, 2] instead of [2]
-//
-//    Example: (get_neighbors room_a) → returns BOTH room_b AND room_e
-//             Each is tried in path-finding, creating multiple results
-//
-//    Solution: Requires new built-in functions:
-//              - `first` or `car`: Extract first element from list
-//              - `sort`: Sort list for stable lexicographic ordering
-//              - `unique`: Remove duplicate results
-//
-//    Workaround: Current implementation uses `catch` to prioritize shortest
-//                paths, but cannot eliminate all nondeterminism without
-//                built-in list operations.
-//
-// 2. LEXICOGRAPHIC ORDERING NOT FULLY IMPLEMENTED
-//    Problem: Multiple paths with same length aren't sorted alphabetically
-//    Impact:  When two 2-hop paths exist, order depends on knowledge base
-//             insertion order, not alphabetical sorting
-//
-//    Example: room_c → room_a can go via:
-//             - (path room_c room_b room_a)  [2 hops]
-//             - (path room_c room_d room_e room_a) [3 hops - not returned]
-//             But if multiple 2-hop paths existed, order would be arbitrary
-//
-//    Solution: Implement string comparison in MeTTa (<, >, == for strings)
-//              or add built-in `sort-by` function
-//
-// 3. NO AGGREGATE FUNCTIONS
-//    Problem: Cannot collect all results and select minimum/maximum
-//    Impact:  Must use workarounds like:
-//             - Multiple separate checks (1-hop? 2-hop? 3-hop?)
-//             - Sentinel values (999) for impossible paths
-//
-//    Solution: Add built-ins: `min`, `max`, `min-by`, `max-by`, `sort-by`
-//
-// 4. PERFORMANCE: REDUNDANT EVALUATIONS
-//    Problem: Each demo re-evaluates all path-finding rules
-//    Impact:  Demo 5 evaluates distance checks multiple times due to
-//             match returning multiple intermediate nodes
-//
-//    Solution: Memoization - cache evaluation results for same inputs
-//              Requires: Built-in memoization or lazy evaluation
-//
-// 5. LIMITED PATH DEPTH
-//    Problem: Only supports paths up to 3 hops
-//    Impact:  Cannot find longer paths even if they're the only option
-//
-//    Example: No path from room_a to room_c exists in < 3 hops, so:
-//             (find_any_path room_a room_c) → error
-//
-//    Solution: Implement recursive path-finding with visited-set tracking
-//              Requires: Set data structure and recursion depth limits
-//
-// 6. NO CYCLE DETECTION
-//    Problem: Path-finding doesn't track visited nodes
-//    Impact:  If extended to arbitrary depth, could loop infinitely
-//             Example: room_a → room_b → room_a → room_b → ...
-//
-//    Solution: Maintain visited-set during path construction
-//              Requires: Set data structure and membership testing
-//
-// 7. DISTANCE CALCULATION USES FIRST-MATCH ONLY
-//    Problem: check_2hop_distance uses get_first_neighbor, which returns
-//             first match from knowledge base, not necessarily optimal
-//    Impact:  May not find TRUE minimum if multiple 2-hop paths exist
-//             with different intermediate nodes
-//
-//    Example: If room_a connects to room_x (far from goal) and room_y
-//             (close to goal), but room_x is listed first, suboptimal
-//             path is chosen
-//
-//    Solution: Check ALL intermediate nodes, then take minimum:
-//              (= (check_2hop_distance $from $to)
-//                 (let $all_mids (get_neighbors $from)
-//                      (min-by $all_mids $mid
-//                         (if (is_connected $mid $to) 2 999))))
-//
-// RECOMMENDED BUILT-INS TO ADD TO METTA:
-//   - first, car, head: Get first element of list
-//   - rest, cdr, tail: Get remaining elements
-//   - unique: Remove duplicates from list
-//   - sort, sort-by: Sort list by value or custom key
-//   - min, max, min-by, max-by: Find minimum/maximum by value or key
-//   - member?, contains?: Check set/list membership
-//   - memoize: Cache function results
-//   - string comparisons: <, >, <= for string types
-//
+// 2. BFS search - pure-functional A* with h=0 for optimal shortest paths
+// 3. Deterministic results - BFS guarantees single shortest path
+// 4. Cycle detection - visited set prevents infinite loops
+// 5. Arbitrary depth - no fixed hop limit; works for any graph topology
+// 6. ~50-100x performance improvement on repeated queries via state reuse
 // =====================================================================
 
 new stdoutAck(`rho:io:stdoutAck`),
@@ -186,118 +86,87 @@ new stdoutAck(`rho:io:stdoutAck`),
         (= (get_robot_cargo)
            (match &self (robot_carrying $item) $item))
 
-        ; Check if two rooms are directly connected (returns True/False)
-        (= (is_connected $from $to)
-           (match &self (connected $from $to) True))
-
-        ; Get connection if exists (returns target or empty)
-        (= (directly_connected $from $to)
-           (match &self (connected $from $to) $to))
+        ; Collect all neighbors as a deterministic tuple
+        (= (get_neighbors_list $room)
+           (collapse (get_neighbors $room)))
 
         ; ============================================================
-        ; DYNAMIC PATH FINDING: Using if + match
+        ; BFS SEARCH (A* with h=0): Arbitrary-length shortest paths
+        ; ============================================================
+        ; Pure-functional BFS with cycle detection.
+        ; All edges cost 1, so FIFO queue order = optimal A* order.
+        ;
+        ; Entry format: (bfs_entry cost forward_path)
+        ;   cost = number of hops from start
+        ;   forward_path = (start mid1 mid2 ... current)
         ; ============================================================
 
-        ; 1-hop: Direct connection with conditional check
-        ; Returns error if no path exists (for catch to work properly)
-        (= (find_path_1hop $from $to)
-           (if (is_connected $from $to)
-               (path $from $to)
-               (error no_1hop_path ())))
+        ; List membership check
+        (= (member $elem $list)
+           (foldl-atom $list False $acc $x
+             (if $acc True (if (== $x $elem) True False))))
 
-        ; 2-hop: Through intermediate node (lexicographically first neighbor)
-        ; Returns error if no path exists (for catch to work properly)
-        (= (find_path_2hop $from $to)
-           (let $mid (get_first_neighbor $from)
-                (if (is_connected $mid $to)
-                    (path $from $mid $to)
-                    (error no_2hop_path ()))))
+        ; Create a single BFS entry for neighbor $n
+        (= (make_entry $n $cost $path)
+           (let $new_cost (+ $cost 1)
+             (bfs_entry $new_cost (union-atom $path ($n)))))
 
-        ; 3-hop: Through two intermediate nodes (lexicographically first neighbors)
-        ; Returns error if no path exists
-        (= (find_path_3hop $from $to)
-           (let $mid1 (get_first_neighbor $from)
-                (let $mid2 (get_first_neighbor $mid1)
-                     (if (is_connected $mid2 $to)
-                         (path $from $mid1 $mid2 $to)
-                         (error no_3hop_path ())))))
+        ; Create entries for all neighbors
+        (= (make_entries $neighbors $cost $path)
+           (map-atom $neighbors $n (make_entry $n $cost $path)))
 
-        ; Deterministic path finding: try shortest paths first using catch
-        ; Returns single shortest path with lexicographic tie-breaking
-        (= (find_any_path $from $to)
-           (catch (find_path_1hop $from $to)
-                  (catch (find_path_2hop $from $to)
-                         (find_path_3hop $from $to))))
+        ; Core BFS loop
+        (= (bfs_step $open $visited $goal)
+           (if (== (size-atom $open) 0)
+               (no_path)
+               (let* (
+                   ($entry (car-atom $open))
+                   ($rest (cdr-atom $open))
+                   ($cost (index-atom $entry 1))
+                   ($path (index-atom $entry 2))
+                   ($path_len (size-atom $path))
+                   ($last_idx (- $path_len 1))
+                   ($current (index-atom $path $last_idx))
+                 )
+                 (if (== $current $goal)
+                     (cons-atom path $path)
+                     (if (member $current $visited)
+                         (bfs_step $rest $visited $goal)
+                         (let* (
+                             ($new_visited (cons-atom $current $visited))
+                             ($nbrs (get_neighbors_list $current))
+                             ($unvisited (subtraction-atom $nbrs $new_visited))
+                             ($new_entries (make_entries $unvisited $cost $path))
+                             ($new_open (union-atom $rest $new_entries))
+                           )
+                           (bfs_step $new_open $new_visited $goal)))))))
 
-        ; Safe path finding with error handling
-        (= (safe_find_path $from $to)
-           (catch (find_any_path $from $to)
-                  (error no_path_exists (from $from to $to))))
+        ; Entry point: initialize BFS
+        (= (bfs_search $from $to)
+           (bfs_step
+               ((bfs_entry 0 ($from)))
+               ()
+               $to))
 
-
-        ; ============================================================
-        ; HELPER FUNCTIONS: Extract elements from path structure
-        ; ============================================================
-
-        ; Convert path to list of waypoints
-        (= (path_to_list (path $a $b)) ($a $b))
-        (= (path_to_list (path $a $b $c)) ($a $b $c))
-        (= (path_to_list (path $a $b $c $d)) ($a $b $c $d))
-
-        ; ============================================================
-        ; HELPER FUNCTIONS: Minimum finding and deterministic selection
-        ; ============================================================
-
-        ; Find minimum of three values
-        (= (min3 $a $b $c)
-           (if (< $a $b)
-               (if (< $a $c) $a $c)
-               (if (< $b $c) $b $c)))
-
-        ; Get first neighbor (deterministic - uses first match from knowledge base)
-        ; Since connections are defined in order in the knowledge base,
-        ; this gives us deterministic behavior
-        (= (get_first_neighbor $room)
-           (get_neighbors $room))
+        ; Shortest path finder (replaces 3 nondeterministic rules)
+        (= (find_any_path $from $to) (bfs_search $from $to))
 
         ; ============================================================
-        ; DISTANCE CALCULATION: Using foldl-atom for dynamic counting
+        ; DYNAMIC HELPERS: Work for any path length
         ; ============================================================
 
-        ; Count elements in a list using foldl-atom
-        (= (count_list $list)
-           (foldl-atom $list 0 $acc $_ (+ $acc 1)))
+        (= (path_to_list $p) (cdr-atom $p))
 
-        ; Find minimum distance without building full paths
-        (= (find_shortest_distance $from $to)
-           (let $dist_1hop (if (is_connected $from $to) 1 999)
-                (let $dist_2hop (check_2hop_distance $from $to)
-                     (let $dist_3hop (check_3hop_distance $from $to)
-                          (min3 $dist_1hop $dist_2hop $dist_3hop)))))
+        (= (path_hop_count $p)
+           (let $sz (size-atom $p) (- $sz 2)))
 
-        ; Check if 2-hop path exists and return distance (deterministic - first neighbor)
-        (= (check_2hop_distance $from $to)
-           (let $mid (get_first_neighbor $from)
-                (if (is_connected $mid $to) 2 999)))
+        (= (is_multihop $p) (> (size-atom $p) 3))
 
-        ; Check if 3-hop path exists and return distance (deterministic - first neighbors)
-        (= (check_3hop_distance $from $to)
-           (let $mid1 (get_first_neighbor $from)
-                (let $mid2 (get_first_neighbor $mid1)
-                     (if (is_connected $mid2 $to) 3 999))))
-
-        ; Distance is the minimum hop count between two rooms
         (= (distance_between $from $to)
-           (find_shortest_distance $from $to))
-
-        ; Count hops in a path using dynamic list counting (still used by validation)
-        (= (path_hop_count $path)
-           (let $waypoints (path_to_list $path)
-                (let $count (count_list $waypoints)
-                     (- $count 1))))
+           (path_hop_count (find_any_path $from $to)))
 
         ; ============================================================
-        ; TRANSPORT PLANNING: Using map-atom for dynamic step generation
+        ; TRANSPORT PLANNING: Dynamic step generation
         ; ============================================================
 
         ; Top-level: Transport object to destination
@@ -306,49 +175,52 @@ new stdoutAck(`rho:io:stdoutAck`),
                 (let $route (find_any_path $start $dest)
                      (build_plan $obj $route))))
 
-        ; Build action plan from path - patterns with explicit step tuples
-        (= (build_plan $obj (path $a $b))
-           (plan
-             (objective (transport $obj from $a to $b))
-             (route (waypoints $a $b))
-             (steps ((navigate $a) (pickup $obj) (navigate $b) (putdown)))))
+        ; ============================================================
+        ; DYNAMIC STEP GENERATION
+        ; ============================================================
+        ; For path (path a b c): waypoints=(a b c)
+        ; Steps: ((navigate a) (pickup obj) (navigate b) (navigate c) (putdown))
 
-        (= (build_plan $obj (path $a $b $c))
-           (plan
-             (objective (transport $obj from $a to $c))
-             (route (waypoints $a $b $c))
-             (steps ((navigate $a) (pickup $obj) (navigate $b) (navigate $c) (putdown)))))
+        (= (build_nav_steps $waypoints $obj)
+           (let* (
+               ($first (car-atom $waypoints))
+               ($rest (cdr-atom $waypoints))
+               ($prefix ((navigate $first) (pickup $obj)))
+               ($nav_rest (map-atom $rest $w (navigate $w)))
+               ($middle (union-atom $prefix $nav_rest))
+             )
+             (union-atom $middle ((putdown)))))
 
-        (= (build_plan $obj (path $a $b $c $d))
-           (plan
-             (objective (transport $obj from $a to $d))
-             (route (waypoints $a $b $c $d))
-             (steps ((navigate $a) (pickup $obj) (navigate $b) (navigate $c) (navigate $d) (putdown)))))
+        ; Dynamic build_plan for any path length
+        (= (build_plan $obj $p)
+           (let* (
+               ($waypoints (cdr-atom $p))
+               ($start (car-atom $waypoints))
+               ($wp_len (size-atom $waypoints))
+               ($last_wp_idx (- $wp_len 1))
+               ($dest (index-atom $waypoints $last_wp_idx))
+               ($steps (build_nav_steps $waypoints $obj))
+             )
+             (plan
+               (objective (transport $obj from $start to $dest))
+               (route (cons-atom waypoints $waypoints))
+               (steps $steps))))
 
         ; ============================================================
-        ; VALIDATION: Check path validity with CONDITIONAL LOGIC
+        ; VALIDATION: Check path validity
         ; ============================================================
-
-        ; Check if path is multi-hop using dynamic counting
-        (= (is_multihop $path)
-           (let $waypoints (path_to_list $path)
-                (let $count (count_list $waypoints)
-                     (> $count 2))))
-
-        ; Check if object exists at location (using if + match!)
-        (= (object_exists_at $obj $room)
-           (if (match &self (object_at $obj $room) True)
-               verified
-               not_found))
 
         ; Validate plan with conditional checks
         (= (validate_plan $obj $dest)
-           (let $obj_loc (locate $obj)
-                (let $path (find_any_path $obj_loc $dest)
-                     (let $plan (build_plan $obj $path)
-                          (if (is_multihop $path)
-                              (validated $plan multihop_required)
-                              (validated $plan direct_route))))))
+           (let* (
+               ($obj_loc (locate $obj))
+               ($path (find_any_path $obj_loc $dest))
+               ($plan (build_plan $obj $path))
+               ($multi (is_multihop $path))
+             )
+             (if $multi
+                 (validated $plan multihop_required)
+                 (validated $plan direct_route))))
 
         ; Extract route from plan (helper)
         (= (extract_route (plan $obj $route $steps)) $route)
@@ -631,7 +503,7 @@ new stdoutAck(`rho:io:stdoutAck`),
               for (_ <- ack) {
                 stdoutAck!(res, *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("  (Direct minimum calculation, no path construction!)", *ack) |
+                  stdoutAck!("  (Via shortest path hop count)", *ack) |
                   for (_ <- ack) {
                     done5!()
                   }
@@ -673,39 +545,32 @@ new stdoutAck(`rho:io:stdoutAck`),
 // Implementation Notes:
 // =====================================================================
 //
-// IMPROVEMENTS MADE:
-// ------------------
+// DESIGN DECISIONS:
+// -----------------
 // 1. PERSISTENT STATE CHANNEL
 //    - State initialized ONCE at startup
 //    - All query contracts read from and return to persistentState
 //    - Eliminates redundant initialization overhead
-//    - Performance: O(1) per query vs O(n) per query
 //
-// 2. DYNAMIC LIST OPERATIONS
-//    - count_list: Uses foldl-atom to count list elements
-//    - path_hop_count: Dynamic counting replaces fixed pattern matching
-//    - map_atom_to_navigate: Dynamic navigation step generation
+// 2. BFS SEARCH (A* with h=0)
+//    - Pure-functional BFS with visited-set cycle detection
+//    - All edges cost 1, so FIFO queue order = optimal A* order
+//    - Handles arbitrary-length paths (no fixed hop limit)
+//    - Deterministic: always returns the shortest path
+//    - Open list: tuple of (bfs_entry cost path) entries
+//    - Visited set: flat tuple of node atoms (closed set)
+//    - New entries appended to end (FIFO = BFS ordering)
 //
-// 3. ERROR HANDLING
-//    - safe_locate: Uses catch to handle missing objects
-//    - safe_find_path: Uses catch to handle unreachable destinations
-//    - is-error can be used to check for errors
-//
-// 4. CLEANER CODE STRUCTURE
-//    - Helper functions for path manipulation (path_first, path_last, path_to_list)
-//    - Reusable append and cons operations
-//    - Better separation of concerns
+// 3. DYNAMIC HELPERS
+//    - `path_to_list`, `path_hop_count`, `is_multihop` use
+//      size-atom and cdr-atom for any path length
+//    - `build_nav_steps` uses map-atom for dynamic step generation
+//    - No fixed-arity pattern rules needed
 //
 // PERFORMANCE IMPACT:
 // -------------------
 // Original:  Each query reinitializes ~100 rules/facts = ~500ms
 // Improved:  Single initialization + state reuse = ~5ms per query
 // Speedup:   ~100x on repeated queries
-//
-// MEMORY IMPACT:
-// --------------
-// Original:  N concurrent queries × state size = N × 200KB
-// Improved:  Single shared state = 200KB total
-// Savings:   ~99% memory reduction for high concurrency
 //
 // =====================================================================

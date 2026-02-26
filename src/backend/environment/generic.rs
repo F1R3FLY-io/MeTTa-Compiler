@@ -36,6 +36,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use lru::LruCache;
 use mork::space::Space;
 use mork_interning::{SharedMapping, SharedMappingHandle};
@@ -262,6 +263,16 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// deep-cloning the entire HashMap of rule entries (~2.3% wall time saved).
     /// Writes go through make_owned() which deep-clones into a new Arc.
     pub(crate) rule_index: Arc<RwLock<super::rule_management::RuleIndex<V>>>,
+
+    /// Phase 10.1: Inferred function return types from rule RHS analysis.
+    /// Maps function name → Vec of inferred return types (nondeterministic).
+    /// Separate from `types` to distinguish declared vs inferred.
+    ///
+    /// DashMap: lock-free per-shard reads/writes — no reader blocking.
+    /// Reads (during type inference) are high-frequency; writes (at add_rule)
+    /// are low-frequency. DashMap avoids writer-blocks-readers stalls.
+    /// Fork: iterate + clone into new DashMap (infrequent operation).
+    pub(crate) inferred_fn_types: DashMap<String, Vec<V>>,
 }
 
 /// Generic environment parameterized over value type and factory.
@@ -372,6 +383,8 @@ where
             fuzzy_matcher: Arc::new(RwLock::new(FuzzyMatcher::new())),
             scope_tracker: Arc::new(RwLock::new(ScopeTracker::new())),
             rule_index: Arc::new(RwLock::new(super::rule_management::RuleIndex::new())),
+            // Phase 10.1: Inferred function return types (initially empty)
+            inferred_fn_types: DashMap::new(),
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
@@ -439,12 +452,25 @@ where
                 let forked_var_atoms = forked.variable_atoms.read().clone();
                 let forked_type_btm = forked.type_btm.read().clone();
                 let forked_subtype_btm = forked.subtype_btm.read().clone();
+                let forked_inferred_type_btm = forked.inferred_type_btm.read().clone();
                 // Deep-clone bloom filter into a new Arc for exclusive mutation
                 super::atom_space::AtomSpace {
                     btm: RwLock::new(forked_btm),
                     wide_btm: RwLock::new(forked_wide),
                     type_btm: RwLock::new(forked_type_btm),
                     subtype_btm: RwLock::new(forked_subtype_btm),
+                    // Phase 10.1: deep-clone inferred type PathMap and bloom for exclusive mutation
+                    inferred_type_btm: RwLock::new(forked_inferred_type_btm),
+                    inferred_type_bloom: std::sync::Arc::new(
+                        self.shared.atom_space.inferred_type_bloom.snapshot(),
+                    ),
+                    // Phase 10.5: snapshot generation counters for exclusive mutation
+                    inferred_type_generation: AtomicU64::new(
+                        self.shared.atom_space.inferred_type_generation.load(Ordering::Acquire),
+                    ),
+                    fixpoint_generation: AtomicU64::new(
+                        self.shared.atom_space.fixpoint_generation.load(Ordering::Acquire),
+                    ),
                     shared_mapping: forked_mapping,
                     head_arity_bloom: std::sync::Arc::new(RwLock::new(
                         self.shared.atom_space.head_arity_bloom.read().clone(),
@@ -490,6 +516,10 @@ where
             scope_tracker: Arc::new(RwLock::new(self.shared.scope_tracker.read().clone())),
             // Deep-clone into new Arc so this owned env has an exclusive copy
             rule_index: Arc::new(RwLock::new(self.shared.rule_index.read().clone())),
+            // Phase 10.1: deep-clone DashMap into independent copy for exclusive mutation
+            inferred_fn_types: DashMap::from_iter(
+                self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+            ),
         });
 
         // Register new shared state as GC root provider
@@ -544,6 +574,10 @@ where
             fuzzy_matcher: Arc::clone(&self.shared.fuzzy_matcher),
             scope_tracker: Arc::clone(&self.shared.scope_tracker),
             rule_index: Arc::clone(&self.shared.rule_index),
+            // Phase 10.1: clone DashMap into independent copy (fork isolation)
+            inferred_fn_types: DashMap::from_iter(
+                self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+            ),
         });
 
         // Register forked shared state as GC root provider
@@ -758,6 +792,29 @@ where
                     &self.shared.atom_space.subtype_btm.read(),
                     &other.shared.atom_space.subtype_btm.read(),
                 )),
+                // Phase 10.1: merge inferred type PathMaps
+                inferred_type_btm: RwLock::new(merge_pathmaps_max(
+                    &self.shared.atom_space.inferred_type_btm.read(),
+                    &other.shared.atom_space.inferred_type_btm.read(),
+                )),
+                // Phase 10.1: merge inferred type bloom via bitwise OR
+                inferred_type_bloom: {
+                    let merged = std::sync::Arc::new(
+                        self.shared.atom_space.inferred_type_bloom.snapshot(),
+                    );
+                    merged.merge_from(&other.shared.atom_space.inferred_type_bloom);
+                    merged
+                },
+                // Phase 10.5: max(generation) forces fixpoint to see all new types;
+                // min(fixpoint_gen) forces re-fixpoint if either side had unprocessed types.
+                inferred_type_generation: AtomicU64::new(
+                    self.shared.atom_space.inferred_type_generation.load(Ordering::Acquire)
+                        .max(other.shared.atom_space.inferred_type_generation.load(Ordering::Acquire)),
+                ),
+                fixpoint_generation: AtomicU64::new(
+                    self.shared.atom_space.fixpoint_generation.load(Ordering::Acquire)
+                        .min(other.shared.atom_space.fixpoint_generation.load(Ordering::Acquire)),
+                ),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
             },
@@ -796,6 +853,21 @@ where
                     merged.add_rule(head.as_deref(), arity, entry.clone());
                 }
                 Arc::new(RwLock::new(merged))
+            },
+            // Phase 10.1: merge inferred function types (DashMap union with dedup)
+            inferred_fn_types: {
+                let merged: DashMap<String, Vec<V>> = DashMap::from_iter(
+                    self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+                );
+                for entry in other.shared.inferred_fn_types.iter() {
+                    let mut vec = merged.entry(entry.key().clone()).or_default();
+                    for t in entry.value() {
+                        if !vec.contains(t) {
+                            vec.push(t.clone());
+                        }
+                    }
+                }
+                merged
             },
         });
 
@@ -1098,6 +1170,39 @@ where
                     }
                     merged_subs
                 }),
+                // Phase 10.1: merge inferred type PathMaps from all environments
+                inferred_type_btm: RwLock::new({
+                    let mut merged_inf = self.shared.atom_space.inferred_type_btm.read().clone();
+                    for other_env in others.iter() {
+                        merged_inf = merge_pathmaps_max(&merged_inf, &other_env.shared.atom_space.inferred_type_btm.read());
+                    }
+                    merged_inf
+                }),
+                // Phase 10.1: merge inferred type bloom filters via bitwise OR
+                inferred_type_bloom: {
+                    let merged_bloom = std::sync::Arc::new(
+                        self.shared.atom_space.inferred_type_bloom.snapshot(),
+                    );
+                    for other_env in others.iter() {
+                        merged_bloom.merge_from(&other_env.shared.atom_space.inferred_type_bloom);
+                    }
+                    merged_bloom
+                },
+                // Phase 10.5: max(generation) across all envs; min(fixpoint_gen) forces re-fixpoint
+                inferred_type_generation: AtomicU64::new({
+                    let mut max_gen = self.shared.atom_space.inferred_type_generation.load(Ordering::Acquire);
+                    for other_env in others.iter() {
+                        max_gen = max_gen.max(other_env.shared.atom_space.inferred_type_generation.load(Ordering::Acquire));
+                    }
+                    max_gen
+                }),
+                fixpoint_generation: AtomicU64::new({
+                    let mut min_gen = self.shared.atom_space.fixpoint_generation.load(Ordering::Acquire);
+                    for other_env in others.iter() {
+                        min_gen = min_gen.min(other_env.shared.atom_space.fixpoint_generation.load(Ordering::Acquire));
+                    }
+                    min_gen
+                }),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
             },
@@ -1138,6 +1243,23 @@ where
                     }
                 }
                 Arc::new(RwLock::new(merged))
+            },
+            // Phase 10.1: merge inferred function types from all environments
+            inferred_fn_types: {
+                let merged: DashMap<String, Vec<V>> = DashMap::from_iter(
+                    self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+                );
+                for other_env in others {
+                    for entry in other_env.shared.inferred_fn_types.iter() {
+                        let mut vec = merged.entry(entry.key().clone()).or_default();
+                        for t in entry.value() {
+                            if !vec.contains(t) {
+                                vec.push(t.clone());
+                            }
+                        }
+                    }
+                }
+                merged
             },
         });
 

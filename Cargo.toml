@@ -161,7 +161,6 @@ semver = "1.0"
 
 tracing = "0.1"
 tracing-subscriber = "0.3"
-proptest = "1.9.0"
 
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
@@ -197,12 +196,6 @@ gxhash = "3"
 # Crossbeam - Lock-free channels for thread pools and GC pool
 crossbeam-channel = "0.5"
 
-# owning_ref - Safe abstraction for returning iterators that own their lock guards
-owning_ref = "0.4"
-
-# either - Left/Right iterator pattern for optional iteration paths
-either = "1.13"
-
 # phf - Compile-time perfect hash sets for O(1) lookup
 phf = { version = "0.11", features = ["macros"] }
 
@@ -226,9 +219,6 @@ portable-atomic = { version = "1", features = ["fallback"] }
 # memchr - SIMD-accelerated byte search for fast comment/string scanning in parser
 memchr = "2"
 
-# ouroboros - Safe self-referential structs for ArenaState
-# Enables ArenaValue<'a> to reference the arena it's allocated in within the same struct
-ouroboros = "0.18"
 
 # postcard — fast, compact binary serde format for evaluation traces (optional)
 postcard = { version = "1", features = ["alloc"], optional = true }
@@ -236,30 +226,12 @@ postcard = { version = "1", features = ["alloc"], optional = true }
 trace-format = { path = "trace-format", optional = true }
 
 [features]
-default = ["interning", "async"]
+default = ["interning", "async", "symbol-interning"]
 async = ["tokio"]
 interning = []
 # Symbol interning: O(1) symbol comparison via lasso crate
 # Provides 5-10% improvement for rule-heavy workloads
 symbol-interning = ["lasso"]
-
-# NOTE: Bytecode VM and JIT compilation are now ALWAYS ENABLED
-# The tiered compilation system provides automatic tier progression:
-#   Tier 0: Tree-walker (0-1 executions)
-#   Tier 1: Bytecode VM (2+ executions, compiled in background)
-#   Tier 2: JIT Stage 1 (100+ executions, native code)
-#   Tier 3: JIT Stage 2 (500+ executions, optimized native code)
-# All compilation happens in the background via Rayon, so the evaluator
-# is never blocked waiting for compilation.
-
-# Legacy feature flags for backwards compatibility (now no-ops)
-bytecode = []
-jit = []
-
-# Fuzzy suggestions: "Did you mean?" suggestions for typos
-# DISABLED by default because it adds significant overhead (10-20%)
-# Enable with: cargo build --release --features fuzzy-suggestions
-fuzzy-suggestions = []
 
 # Evaluation trace: binary tracing of every rewrite, type check, error,
 # bailout, and tier transition with full source location provenance.
@@ -286,7 +258,7 @@ divan = "0.1.21"
 paste = "1.0.15"
 clap = { version = "4.5", features = ["derive"] }
 # Property-based testing for thorough coverage
-proptest = "1.4"
+proptest = "1.9"
 # System info - RSS monitoring for memory leak stress tests
 sysinfo = "0.33"
 
@@ -337,7 +309,7 @@ debug = 1            # Line tables only (smaller than debug = true)
 inherits = "release"
 debug = 2            # Full debug info for GDB (level 2 = maximum)
 strip = false        # Keep symbols for debugging
-debug-assertions = true  # TEMP: Enable for MORK crash diagnosis
+debug-assertions = true
 
 # Debian package metadata
 [package.metadata.deb]

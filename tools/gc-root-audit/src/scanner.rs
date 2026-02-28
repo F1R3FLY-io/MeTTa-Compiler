@@ -70,6 +70,35 @@ pub struct ScanResult {
     /// Function-local Vec<MettaValue> variables that are live across
     /// eval_trampoline_generic calls without maybe_push_frame guards.
     pub frame_chain_findings: Vec<FrameChainFinding>,
+
+    /// Analysis of `collect_roots()` method bodies: which `self.field` accesses
+    /// and which sub-fields of iterated types are covered.
+    /// Maps RootProvider type name → CollectRootsAnalysis.
+    pub collect_roots_analyses: HashMap<String, CollectRootsAnalysis>,
+}
+
+/// Analysis of a single `collect_roots()` method body.
+///
+/// Records which fields of `self` are accessed and, for iterator chains
+/// over composite types, which sub-fields of the iterated type are accessed.
+#[derive(Debug, Clone, Default)]
+pub struct CollectRootsAnalysis {
+    /// Type name this analysis belongs to
+    pub type_name: String,
+    /// Fields accessed via `self.<field>` in the method body
+    pub covered_fields: HashMap<String, FieldCoverage>,
+}
+
+/// How a field is covered in `collect_roots()`.
+#[derive(Debug, Clone)]
+pub enum FieldCoverage {
+    /// Field fully delegated via `.collect_gc_roots(roots)` or similar
+    Delegated,
+    /// Field accessed directly (e.g., `self.field.read()`)
+    /// with specific sub-fields accessed in closures
+    Partial(Vec<String>),
+    /// Field accessed and all contents collected (e.g., roots.extend(self.field.iter()))
+    Full,
 }
 
 /// A finding from the frame chain safety checker.
@@ -136,6 +165,9 @@ pub struct StaticDecl {
     pub ty: String,
     pub kind: StaticKind,
     pub contains_metta_value: bool,
+    /// True when the type references MettaValue/MettaValueInner ONLY through
+    /// raw pointers (*const/*mut). Raw pointers are not GC roots.
+    pub only_raw_ptr_reference: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -383,6 +415,39 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     }
     result.frame_chain_findings = frame_chain_findings;
 
+    // Fifth pass: collect_roots() field coverage analysis — determine which
+    // self.field accesses and sub-field accesses occur in each RootProvider's
+    // collect_roots() method body. Used by classifier Phase 8 to detect
+    // MettaValue-bearing fields not covered by GC root collection.
+    let mut collect_roots_analyses = HashMap::new();
+    for entry in WalkDir::new(source_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "rs")
+                .unwrap_or(false)
+        })
+    {
+        let path = entry.path();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let file = match syn::parse_file(&content) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        let mut cr_visitor = CollectRootsFieldVisitor {
+            analyses: &mut collect_roots_analyses,
+        };
+        cr_visitor.visit_file(&file);
+    }
+    result.collect_roots_analyses = collect_roots_analyses;
+
     result
 }
 
@@ -584,6 +649,38 @@ fn type_references_metta_value(ty: &str) -> bool {
     ty.contains("MettaValue")
         || ty.contains("MettaValueInner")
         || ty.contains("MettaValueTrait")
+}
+
+/// Check if a type string references MettaValue/MettaValueInner ONLY through
+/// raw pointers (`*const` or `*mut`). In proc_macro2 tokenized output, `*const`
+/// becomes `* const` (with space). Returns false if any occurrence is NOT
+/// preceded by a raw pointer prefix, or if there are no occurrences.
+fn type_references_metta_value_only_via_raw_ptr(ty: &str) -> bool {
+    let keywords = ["MettaValueInner", "MettaValueTrait", "MettaValue"];
+    let mut positions: Vec<(usize, usize)> = Vec::new();
+
+    for keyword in &keywords {
+        let mut search_from = 0;
+        while let Some(pos) = ty[search_from..].find(keyword) {
+            let abs_start = search_from + pos;
+            let abs_end = abs_start + keyword.len();
+            // Skip if overlapping with already-found longer match
+            if !positions.iter().any(|&(s, e)| abs_start >= s && abs_start < e) {
+                positions.push((abs_start, abs_end));
+            }
+            search_from = abs_start + 1;
+        }
+    }
+
+    if positions.is_empty() {
+        return false;
+    }
+
+    // Every occurrence must be preceded by "* const" or "* mut"
+    positions.iter().all(|&(start, _)| {
+        let prefix = ty[..start].trim_end();
+        prefix.ends_with("* const") || prefix.ends_with("* mut")
+    })
 }
 
 /// Check if a type string references a generic V that might be MettaValue.
@@ -1119,9 +1216,10 @@ impl<'a, 'ast> Visit<'ast> for MettaValueVisitor<'a> {
             file: self.file_path.clone(),
             line: span_line(node.ident.span()),
             name,
-            ty: ty_str,
+            ty: ty_str.clone(),
             kind,
             contains_metta_value: contains,
+            only_raw_ptr_reference: contains && type_references_metta_value_only_via_raw_ptr(&ty_str),
         });
 
         syn::visit::visit_item_static(self, node);
@@ -1198,12 +1296,266 @@ impl<'a, 'ast> Visit<'ast> for MettaValueVisitor<'a> {
                     ty: tokens.clone(),
                     kind: StaticKind::ThreadLocal,
                     contains_metta_value: true,
+                    only_raw_ptr_reference: type_references_metta_value_only_via_raw_ptr(&tokens),
                 });
             }
         }
 
         syn::visit::visit_macro(self, node);
     }
+}
+
+// =========================================================================
+// collect_roots() Field Coverage Analyzer
+//
+// For each `impl RootProvider for X`, analyzes the `collect_roots()` method
+// body to determine which `self.field` accesses occur and, for iterator
+// chains like `.flat_map(|e| [e.lhs, e.rhs])`, which sub-fields of the
+// iterated type are accessed. This allows the classifier to detect
+// MettaValue-bearing fields not covered by root collection — the exact
+// class of bug that caused the PLN regression (rhs_type, inferred_fn_types).
+// =========================================================================
+
+/// Visitor that finds `impl RootProvider for X` blocks and analyzes
+/// the `collect_roots` method body for field coverage.
+struct CollectRootsFieldVisitor<'a> {
+    analyses: &'a mut HashMap<String, CollectRootsAnalysis>,
+}
+
+impl<'a, 'ast> Visit<'ast> for CollectRootsFieldVisitor<'a> {
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        // Only interested in `impl RootProvider for X`
+        let trait_name = node.trait_.as_ref().map(|(_, path, _)| {
+            path.segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::")
+        });
+
+        if trait_name.as_deref() == Some("RootProvider") {
+            let self_ty = type_to_string(&node.self_ty);
+            let base_ty = self_ty
+                .split('<')
+                .next()
+                .unwrap_or(&self_ty)
+                .trim()
+                .split("::")
+                .last()
+                .unwrap_or(&self_ty)
+                .to_string();
+
+            // Find the `collect_roots` method and analyze its body
+            for item in &node.items {
+                if let syn::ImplItem::Fn(method) = item {
+                    if method.sig.ident == "collect_roots" {
+                        let analysis = analyze_collect_roots_body(&base_ty, &method.block);
+                        self.analyses.insert(base_ty.clone(), analysis);
+                    }
+                }
+            }
+        }
+
+        syn::visit::visit_item_impl(self, node);
+    }
+}
+
+/// Analyze a `collect_roots()` method body to determine field coverage.
+///
+/// Extracts:
+/// 1. `self.<field>` accesses (direct field references)
+/// 2. For delegation patterns like `self.field.collect_gc_roots(roots)`, mark as Delegated
+/// 3. For iterator chains like `.flat_map(|e| [e.lhs, e.rhs])`, extract sub-field names
+/// 4. For direct iteration like `self.field.iter()` → Full coverage
+fn analyze_collect_roots_body(type_name: &str, block: &syn::Block) -> CollectRootsAnalysis {
+    let body_str = block.to_token_stream().to_string();
+    let mut analysis = CollectRootsAnalysis {
+        type_name: type_name.to_string(),
+        covered_fields: HashMap::new(),
+    };
+
+    // Strategy: tokenize the body string and look for patterns.
+    // This is more reliable than walking the AST for complex method chains.
+
+    // Pattern 1: self . <field> . collect_gc_roots ( roots )
+    // → Delegated coverage
+    for field_name in extract_self_field_names(&body_str) {
+        // Check if this field is delegated
+        let delegation_pattern = format!("self . {} . collect_gc_roots", field_name);
+        let delegation_pattern2 = format!("self . {} . collect_gc_roots", field_name);
+        if body_str.contains(&delegation_pattern) || body_str.contains(&delegation_pattern2) {
+            analysis
+                .covered_fields
+                .insert(field_name, FieldCoverage::Delegated);
+            continue;
+        }
+
+        // Pattern 2: Check for iterator chains with sub-field access
+        // e.g., rule_index . read () ... .flat_map(|e| [e.lhs, e.rhs])
+        // or: self . <field> . iter () ... roots.extend(...)
+        let sub_fields = extract_iterator_sub_fields(&body_str, &field_name);
+        if !sub_fields.is_empty() {
+            analysis
+                .covered_fields
+                .insert(field_name, FieldCoverage::Partial(sub_fields));
+        } else {
+            // Field is accessed but we can't determine sub-field coverage,
+            // assume full coverage for simple patterns like `self.field.iter()`
+            // or `self.field.read()` followed by direct iteration
+            analysis
+                .covered_fields
+                .insert(field_name, FieldCoverage::Full);
+        }
+    }
+
+    analysis
+}
+
+/// Extract all field names accessed via `self . <field>` in a token stream string.
+fn extract_self_field_names(body_str: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    // syn tokenizes `self.field` as `self . field`
+    let pattern = "self . ";
+    let mut search_from = 0;
+    while let Some(pos) = body_str[search_from..].find(pattern) {
+        let abs_pos = search_from + pos + pattern.len();
+        // Extract the identifier that follows
+        let rest = &body_str[abs_pos..];
+        let field_name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !field_name.is_empty()
+            && field_name != "collect_roots" // skip method name itself
+            && field_name != "len"
+            && !fields.contains(&field_name)
+        {
+            fields.push(field_name);
+        }
+        search_from = abs_pos;
+    }
+    fields
+}
+
+/// For a field accessed via iterator chain, extract which sub-fields of the
+/// iterated element are accessed in closures.
+///
+/// Looks for patterns like:
+/// - `.flat_map ( | e | [ e . lhs , e . rhs ] )` → ["lhs", "rhs"]
+/// - `.flat_map ( | e | { ... e . lhs ... e . rhs ... } )` → ["lhs", "rhs"]
+/// - `.map ( | e | e . value )` → ["value"]
+///
+/// Returns empty vec if no sub-field access pattern is found (indicating
+/// the field contents are collected in full, or the pattern is unrecognized).
+fn extract_iterator_sub_fields(body_str: &str, field_name: &str) -> Vec<String> {
+    // Look for the field name followed by a chain that includes flat_map or map
+    // with a closure that accesses sub-fields via `<param> . <sub_field>`
+    let field_region = find_field_chain_region(body_str, field_name);
+    let region = match field_region {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+
+    // Look for closure patterns: | <param> | followed by <param> . <sub_field>
+    let mut sub_fields = Vec::new();
+
+    // Find closure parameters: `| e |` or `| entry |`
+    let closure_params = extract_closure_params(&region);
+    for param in &closure_params {
+        // Find all `<param> . <sub_field>` patterns in the region
+        let param_pattern = format!("{} . ", param);
+        let mut search_from = 0;
+        while let Some(pos) = region[search_from..].find(&param_pattern) {
+            let abs_pos = search_from + pos + param_pattern.len();
+            let rest = &region[abs_pos..];
+            let sub_field: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !sub_field.is_empty()
+                && sub_field != "clone"
+                && sub_field != "iter"
+                && sub_field != "into_iter"
+                && sub_field != "len"
+                && !sub_fields.contains(&sub_field)
+            {
+                sub_fields.push(sub_field);
+            }
+            search_from = abs_pos;
+        }
+    }
+
+    sub_fields
+}
+
+/// Find the region of the body string that corresponds to a field's iterator chain.
+///
+/// Starting from `self . <field>`, captures everything up to the next semicolon
+/// or the end of the enclosing block.
+fn find_field_chain_region(body_str: &str, field_name: &str) -> Option<String> {
+    let pattern = format!("self . {}", field_name);
+    let pos = body_str.find(&pattern)?;
+    let rest = &body_str[pos..];
+
+    // Find the end of the statement (next semicolon at depth 0)
+    let mut depth = 0;
+    let mut end = rest.len();
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            ';' if depth == 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Some(rest[..end].to_string())
+}
+
+/// Extract closure parameter names from a code region.
+///
+/// Finds `| <param> |` patterns (syn tokenizes closures with spaces around pipes).
+fn extract_closure_params(region: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    // Look for `| <ident> |` pattern
+    let chars: Vec<char> = region.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '|' {
+            // Skip whitespace
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            // Collect identifier
+            let mut ident = String::new();
+            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                ident.push(chars[j]);
+                j += 1;
+            }
+            // Skip whitespace
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            // Check for closing pipe
+            if j < chars.len() && chars[j] == '|' && !ident.is_empty() {
+                if !params.contains(&ident) {
+                    params.push(ident);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    params
 }
 
 // =========================================================================
@@ -1934,5 +2286,46 @@ mod tests {
 
         assert_eq!(findings.len(), 1, "should detect unguarded Vec in impl method");
         assert_eq!(findings[0].function_name, "eval_with_vec");
+    }
+
+    #[test]
+    fn test_raw_ptr_only_reference_const() {
+        assert!(type_references_metta_value_only_via_raw_ptr(
+            "RefCell < Vec < * const MettaValueInner > >"
+        ));
+    }
+
+    #[test]
+    fn test_raw_ptr_only_reference_mut() {
+        assert!(type_references_metta_value_only_via_raw_ptr(
+            "Vec < * mut MettaValueInner >"
+        ));
+    }
+
+    #[test]
+    fn test_not_raw_ptr_owned() {
+        assert!(!type_references_metta_value_only_via_raw_ptr(
+            "Vec < MettaValue >"
+        ));
+    }
+
+    #[test]
+    fn test_not_raw_ptr_mixed() {
+        // One raw pointer + one owned — NOT raw-ptr-only
+        assert!(!type_references_metta_value_only_via_raw_ptr(
+            "( * const MettaValueInner , MettaValue )"
+        ));
+    }
+
+    #[test]
+    fn test_not_raw_ptr_no_reference() {
+        assert!(!type_references_metta_value_only_via_raw_ptr("Vec < u64 >"));
+    }
+
+    #[test]
+    fn test_raw_ptr_bare() {
+        assert!(type_references_metta_value_only_via_raw_ptr(
+            "* const MettaValueInner"
+        ));
     }
 }

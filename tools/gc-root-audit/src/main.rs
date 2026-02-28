@@ -91,6 +91,14 @@ fn main() {
         .iter()
         .filter(|l| matches!(l.category, classifier::Category::FrameChainMissing))
         .count();
+    let field_not_collected_count = classified
+        .iter()
+        .filter(|l| matches!(l.category, classifier::Category::FieldNotCollected))
+        .count();
+    let field_partial_count = classified
+        .iter()
+        .filter(|l| matches!(l.category, classifier::Category::FieldPartiallyCollected))
+        .count();
     let unknown_count = classified
         .iter()
         .filter(|l| matches!(l.category, classifier::Category::Unknown))
@@ -110,6 +118,20 @@ fn main() {
         );
         std::process::exit(1);
     }
+    if field_not_collected_count > 0 {
+        eprintln!(
+            "\nERROR: Found {} FIELD_NOT_COLLECTED — MettaValue-bearing field(s) not referenced in collect_roots()!",
+            field_not_collected_count
+        );
+        std::process::exit(1);
+    }
+    if field_partial_count > 0 {
+        eprintln!(
+            "\nWARNING: Found {} FIELD_PARTIALLY_COLLECTED — collect_roots() may not cover all sub-fields.",
+            field_partial_count
+        );
+        // Don't fail on partial — may be intentional
+    }
     if unknown_count > 0 {
         eprintln!(
             "\nWARNING: Found {} UNKNOWN GC root location(s) that need manual review.",
@@ -118,8 +140,9 @@ fn main() {
         // Don't fail on UNKNOWN — these are just informational
     }
 
-    if unregistered_count == 0 && frame_chain_count == 0 {
+    if unregistered_count == 0 && frame_chain_count == 0 && field_not_collected_count == 0 {
         eprintln!("\nAll detected persistent MettaValue storage locations have GC root coverage.");
         eprintln!("All Vec locals across eval_trampoline_generic calls are frame-chain guarded.");
+        eprintln!("All MettaValue-bearing fields in RootProvider types are covered by collect_roots().");
     }
 }

@@ -1449,13 +1449,26 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
             tokenizer.collect_gc_values_into(roots);
         }
 
-        // RuleIndex: cached LHS/RHS MettaValues for rule matching.
+        // RuleIndex: cached LHS/RHS/rhs_type MettaValues for rule matching.
         // Without collecting these, GC frees slab slots still referenced by
-        // RuleEntry.lhs and RuleEntry.rhs, causing use-after-free when
-        // match_rules_native() applies bindings to the RHS template.
+        // RuleEntry fields, causing use-after-free when match_rules_native()
+        // applies bindings to the RHS template or branch pruning reads rhs_type.
         {
             let rule_index = self.rule_index.read();
-            roots.extend(rule_index.get_all_rules().flat_map(|e| [e.lhs, e.rhs]));
+            roots.extend(rule_index.get_all_rules().flat_map(|e| {
+                let mut vals = vec![e.lhs, e.rhs];
+                if let Some(rt) = &e.rhs_type {
+                    vals.push(rt.clone());
+                }
+                vals
+            }));
+        }
+
+        // Inferred function types: Phase 10.1 caches return types from rule RHS analysis.
+        // Without collecting these, GC frees slab-allocated type atoms still referenced
+        // by type inference lookups (e.g., the $a atom from let*'s (-> Bindings $a $a)).
+        for entry in self.inferred_fn_types.iter() {
+            roots.extend(entry.value().iter().cloned());
         }
     }
 }

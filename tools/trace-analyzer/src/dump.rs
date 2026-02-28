@@ -128,9 +128,18 @@ fn print_kind_details(kind: &TraceEventKind) {
         TraceEventKind::ApplicativePreEval { operator, arg_indices, source } => {
             println!("  ApplicativePreEval {{ op: \"{}\", indices: {:?}, source: \"{}\" }}", operator, arg_indices, source);
         }
-        TraceEventKind::BranchPrune { expected_type, pruned_count, surviving_count } => {
+        TraceEventKind::BranchPrune { expected_type, pruned_count, surviving_count, pruned_types } => {
             println!("  BranchPrune {{ expected: {}, pruned: {}, surviving: {} }}",
                      format_trace_value(expected_type), pruned_count, surviving_count);
+            if !pruned_types.is_empty() {
+                for (i, pt) in pruned_types.iter().enumerate() {
+                    let ty_str = match pt {
+                        Some(tv) => format_trace_value(tv),
+                        None => "None".to_string(),
+                    };
+                    println!("    pruned[{}]: rhs_type={}", i, ty_str);
+                }
+            }
         }
         TraceEventKind::ErrorCreated { message, details } => {
             println!("  ErrorCreated {{ msg: \"{}\", details: {} }}", message, format_trace_value(details));
@@ -178,6 +187,25 @@ fn print_kind_details(kind: &TraceEventKind) {
         }
         TraceEventKind::GcSafepoint { root_count, allocation_delta_bytes } => {
             println!("  GcSafepoint {{ roots: {}, alloc_delta: {} bytes }}", root_count, allocation_delta_bytes);
+        }
+        TraceEventKind::TypeInference { expression, inferred_types, source } => {
+            let types_str: Vec<String> = inferred_types.iter().map(format_trace_value).collect();
+            println!("  TypeInference {{ expr: {}, types: [{}], source: \"{}\" }}",
+                     format_trace_value(expression), types_str.join(", "), source);
+        }
+        TraceEventKind::TypeMatch { actual, expected, result, reason } => {
+            println!("  TypeMatch {{ actual: {}, expected: {}, result: {}, reason: \"{}\" }}",
+                     format_trace_value(actual), format_trace_value(expected), result, reason);
+        }
+        TraceEventKind::RhsTypeComputed { head, arity, lhs, rhs, rhs_type } => {
+            let rt = rhs_type.as_ref().map(format_trace_value).unwrap_or_else(|| "None".to_string());
+            println!("  RhsTypeComputed {{ head: \"{}\", arity: {}, rhs_type: {} }}", head, arity, rt);
+            println!("    lhs: {}", format_trace_value(lhs));
+            println!("    rhs: {}", format_trace_value(rhs));
+        }
+        TraceEventKind::InferredTypeRegistered { function_name, registered_type, source } => {
+            println!("  InferredTypeRegistered {{ fn: \"{}\", type: {}, source: \"{}\" }}",
+                     function_name, format_trace_value(registered_type), source);
         }
     }
 }

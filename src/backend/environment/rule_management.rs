@@ -661,12 +661,52 @@ where
             if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
         };
 
+        // Trace: RhsTypeComputed
+        #[cfg(feature = "eval-trace")]
+        {
+            crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    crate::backend::trace::trace_value_generic(&lhs),
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::RhsTypeComputed {
+                        head: head_owned.as_deref().unwrap_or("<none>").to_string(),
+                        arity: arity as u32,
+                        lhs: crate::backend::trace::trace_value_generic(&lhs),
+                        rhs: crate::backend::trace::trace_value_generic(&rhs),
+                        rhs_type: rhs_type.as_ref().map(crate::backend::trace::trace_value_generic),
+                    },
+                );
+            });
+        }
+
         // Phase 10.1: Register inferred return type in function return type index.
         // Makes rhs_type queryable by infer_types_generic for user-defined functions
         // without explicit (: f (-> ...)) type declarations.
         if let Some(ref rt) = rhs_type {
             if let Some(ref head) = head_owned {
                 self.register_inferred_type(head, rt);
+
+                // Trace: InferredTypeRegistered (Phase 10.1)
+                #[cfg(feature = "eval-trace")]
+                {
+                    crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            0,
+                            crate::backend::trace::trace_value_generic(rt),
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::InferredTypeRegistered {
+                                function_name: head.clone(),
+                                registered_type: crate::backend::trace::trace_value_generic(rt),
+                                source: "phase-10.1-rhs".to_string(),
+                            },
+                        );
+                    });
+                }
             }
         }
 
@@ -690,6 +730,25 @@ where
                     self,
                 ) {
                     self.register_inferred_type(head, &arrow);
+
+                    // Trace: InferredTypeRegistered (Phase 10.4)
+                    #[cfg(feature = "eval-trace")]
+                    {
+                        crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker,
+                                0,
+                                crate::backend::trace::trace_value_generic(&arrow),
+                                vec![],
+                                None,
+                                trace_format::TraceEventKind::InferredTypeRegistered {
+                                    function_name: head.clone(),
+                                    registered_type: crate::backend::trace::trace_value_generic(&arrow),
+                                    source: "phase-10.4-arrow".to_string(),
+                                },
+                            );
+                        });
+                    }
                 }
             }
         }

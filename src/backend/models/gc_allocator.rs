@@ -1866,6 +1866,18 @@ pub(super) static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 /// one, wasting memory and CPU on redundant GC cycles.
 static GC_CYCLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+/// Read-locked by GC mark/sweep workers (shared access to page data).
+/// Write-locked by `release_empty_pages()` (exclusive, may munmap pages).
+///
+/// Prevents SIGSEGV from concurrent munmap during mark/sweep traversal:
+/// a GC worker executing mark_snapshot dereferences `*const MettaValueInner`
+/// pointers into slab pages. If another worker concurrently calls
+/// `release_empty_pages()` → `MmapPage::Drop` → munmap, the first worker
+/// faults on an unmapped address. The RwLock ensures release_empty_pages
+/// waits for all in-flight mark/sweep operations to complete.
+pub(crate) static PAGE_LIFECYCLE_LOCK: parking_lot::RwLock<()> =
+    parking_lot::RwLock::new(());
+
 // ============================================================================
 // Session GC Statistics — counters for diagnosing memory growth
 // ============================================================================
@@ -3452,9 +3464,14 @@ impl SlabAllocator {
         //    persistent (context_id=0), keeping their pages alive (live_count > 0).
         // 2. alloc() validates free-list pointers against the pages vector under
         //    read-lock. If a page was munmapped, the stale pointer is discarded.
-        self.values.release_empty_pages();
-        for dc in &self.data_classes {
-            dc.release_empty_pages();
+        // 3. PAGE_LIFECYCLE_LOCK write ensures no concurrent mark/sweep is
+        //    traversing page pointers that munmap would invalidate.
+        {
+            let _page_guard = PAGE_LIFECYCLE_LOCK.write();
+            self.values.release_empty_pages();
+            for dc in &self.data_classes {
+                dc.release_empty_pages();
+            }
         }
 
         // Phase 5: Update committed bytes
@@ -3630,6 +3647,10 @@ impl SlabAllocator {
     /// vector under a read-lock after `pop()`. Stale pointers to munmapped
     /// pages are discarded, falling through to bump allocation.
     pub fn release_empty_pages(&self) {
+        // Acquire exclusive lock: blocks until all in-flight mark/sweep
+        // operations (which hold read locks) complete. Prevents SIGSEGV
+        // from munmapping pages that mark_snapshot is currently traversing.
+        let _page_guard = PAGE_LIFECYCLE_LOCK.write();
         self.values.release_empty_pages();
         for dc in &self.data_classes {
             dc.release_empty_pages();

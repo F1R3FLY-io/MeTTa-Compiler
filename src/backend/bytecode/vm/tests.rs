@@ -6020,7 +6020,7 @@ fn test_vm_cons_atom_invalid_tail() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(err, VmError::TypeError { expected: "S-expression or Nil", .. }));
+    assert!(matches!(err, VmError::TypeError { expected: "S-expression or Unit", .. }));
 }
 
 /// Test Repr converts value to string.

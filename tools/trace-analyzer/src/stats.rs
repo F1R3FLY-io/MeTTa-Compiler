@@ -119,5 +119,9 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::EvalStart => "EvalStart",
         TraceEventKind::EvalEnd { .. } => "EvalEnd",
         TraceEventKind::GcSafepoint { .. } => "GcSafepoint",
+        TraceEventKind::TypeInference { .. } => "TypeInference",
+        TraceEventKind::TypeMatch { .. } => "TypeMatch",
+        TraceEventKind::RhsTypeComputed { .. } => "RhsTypeComputed",
+        TraceEventKind::InferredTypeRegistered { .. } => "InferredTypeRegistered",
     }
 }

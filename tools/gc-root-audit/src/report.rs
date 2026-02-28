@@ -60,6 +60,8 @@ fn category_str(cat: &Category) -> &'static str {
         Category::PersistentUnregistered => "PERSISTENT_UNREGISTERED",
         Category::GcInfrastructure => "GC_INFRASTRUCTURE",
         Category::FrameChainMissing => "FRAME_CHAIN_MISSING",
+        Category::FieldNotCollected => "FIELD_NOT_COLLECTED",
+        Category::FieldPartiallyCollected => "FIELD_PARTIALLY_COLLECTED",
         Category::Unknown => "UNKNOWN",
     }
 }
@@ -93,10 +95,12 @@ fn output_terminal(locations: &[ClassifiedLocation], verbose: bool) {
         by_category.entry(&loc.category).or_default().push(loc);
     }
 
-    // Always show PERSISTENT_UNREGISTERED, FRAME_CHAIN_MISSING, UNKNOWN, and GC_INFRASTRUCTURE
+    // Always show error/warning categories
     let priority_categories = [
         Category::PersistentUnregistered,
         Category::FrameChainMissing,
+        Category::FieldNotCollected,
+        Category::FieldPartiallyCollected,
         Category::Unknown,
         Category::GcInfrastructure,
     ];
@@ -104,9 +108,10 @@ fn output_terminal(locations: &[ClassifiedLocation], verbose: bool) {
         if let Some(locs) = by_category.get(cat) {
             let header = format!("\n=== {} ({}) ===", category_str(cat), locs.len());
             match cat {
-                Category::PersistentUnregistered | Category::FrameChainMissing => {
-                    println!("{}", header.red().bold())
-                }
+                Category::PersistentUnregistered
+                | Category::FrameChainMissing
+                | Category::FieldNotCollected => println!("{}", header.red().bold()),
+                Category::FieldPartiallyCollected => println!("{}", header.yellow().bold()),
                 Category::Unknown => println!("{}", header.yellow().bold()),
                 Category::GcInfrastructure => println!("{}", header.cyan()),
                 _ => println!("{}", header),
@@ -116,7 +121,9 @@ fn output_terminal(locations: &[ClassifiedLocation], verbose: bool) {
                 let name = location_name(&loc.context);
                 let ty = location_ty(&loc.context);
                 match cat {
-                    Category::PersistentUnregistered | Category::FrameChainMissing => {
+                    Category::PersistentUnregistered
+                    | Category::FrameChainMissing
+                    | Category::FieldNotCollected => {
                         println!(
                             "  {} {}:{} — {} [{}]",
                             "BUG".red().bold(),
@@ -126,6 +133,17 @@ fn output_terminal(locations: &[ClassifiedLocation], verbose: bool) {
                             ty
                         );
                         println!("      {}", loc.reason.red());
+                    }
+                    Category::FieldPartiallyCollected => {
+                        println!(
+                            "  {} {}:{} — {} [{}]",
+                            "WARN".yellow().bold(),
+                            loc.file,
+                            loc.line,
+                            name.yellow(),
+                            ty
+                        );
+                        println!("      {}", loc.reason.yellow());
                     }
                     Category::Unknown => {
                         println!(

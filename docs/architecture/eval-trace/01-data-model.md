@@ -176,7 +176,7 @@ Discriminated union of 23 event kind variants, organized into 9 categories.
 |---------|--------|-------------|
 | `TypeOperation` | `op`, `subject`, `result_type` | A type system operation (`"get-type"`, `"check-type"`, `"infer"`, `"validate-grounded-arg"`). |
 | `ApplicativePreEval` | `operator`, `arg_indices`, `source` | Arguments were pre-evaluated before rule matching. `source` is `"type-driven"` or `"bloom-filter"`. |
-| `BranchPrune` | `expected_type`, `pruned_count`, `surviving_count` | Type-driven branch pruning after rule matching. |
+| `BranchPrune` | `expected_type`, `pruned_count`, `surviving_count`, `pruned_types` | Type-driven branch pruning after rule matching. `pruned_types` records the rhs_type of each pruned match (`None` if the match had no rhs_type annotation). |
 
 ### Error/Exception Handling
 

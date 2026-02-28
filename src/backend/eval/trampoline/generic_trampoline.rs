@@ -102,6 +102,19 @@ where
         }
     }
 
+    // Set thread-local trace collector so that type inference (infer_types_generic,
+    // types_match_generic) and rule management (add_rule) can emit trace events
+    // without requiring an EvalContext parameter.
+    #[cfg(feature = "eval-trace")]
+    {
+        if let Some(tc) = ctx.trace_collector() {
+            // The trace collector is behind a shared reference with a 'static-like
+            // lifetime (Arc in SessionContext). We store a raw pointer in the
+            // thread-local; the trampoline outlives all type inference calls.
+            crate::backend::trace::thread_local_sink::set_thread_trace_collector_ref(tc);
+        }
+    }
+
     // Initialize work stack with the initial evaluation
     let mut work_stack: Vec<GenericWorkItem<C::Value, ContextEnv<C>>> = vec![GenericWorkItem::Eval {
         value,
@@ -410,12 +423,48 @@ where
                         // 8.7: Branch pruning — filter out matches whose rhs_type
                         // is known to be incompatible with the expected_type
                         if let Some(ref expected) = expected_type {
+                            let before_count = matches.len();
+
+                            #[cfg(feature = "eval-trace")]
+                            let mut pruned_types: Vec<Option<trace_format::TraceValue>> = Vec::new();
+
                             matches.retain(|(_rhs, _bindings, rhs_type)| {
-                                match rhs_type {
+                                let keep = match rhs_type {
                                     Some(rt) => types_match_generic(rt, expected),
                                     None => true, // Unknown type — don't prune (conservative)
+                                };
+                                #[cfg(feature = "eval-trace")]
+                                if !keep {
+                                    pruned_types.push(
+                                        rhs_type.as_ref().map(crate::backend::trace::trace_value_generic)
+                                    );
                                 }
+                                keep
                             });
+
+                            // Emit BranchPrune trace event when pruning occurred
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if before_count != matches.len() {
+                                    if let Some(tc) = ctx.trace_collector() {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            depth as u32,
+                                            crate::backend::trace::trace_value_generic(expected),
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::BranchPrune {
+                                                expected_type: crate::backend::trace::trace_value_generic(expected),
+                                                pruned_count: (before_count - matches.len()) as u32,
+                                                surviving_count: matches.len() as u32,
+                                                pruned_types,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+
+                            let _ = before_count; // suppress unused warning when eval-trace is off
                         }
 
                         if matches.is_empty() {
@@ -439,6 +488,30 @@ where
                             // Apply generic bindings to RHS - NO CONVERSION needed!
                             // Both rhs and bindings are already in generic type V
                             let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
+
+                            // Trace: RuleApplication (tree-walker, first match)
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
+                                        .iter()
+                                        .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                        .collect();
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&rhs),
+                                        vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
+                                        None,
+                                        trace_format::TraceEventKind::RuleApplication {
+                                            rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
+                                            rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
+                                            bindings: bindings_tv,
+                                            rule_span: None,
+                                        },
+                                    );
+                                }
+                            }
 
                             work_stack.push(GenericWorkItem::Eval {
                                 value: instantiated_rhs,
@@ -1324,6 +1397,12 @@ where
         }
     }
 
+    // Clear thread-local trace collector before returning.
+    #[cfg(feature = "eval-trace")]
+    {
+        crate::backend::trace::thread_local_sink::clear_thread_trace_collector();
+    }
+
     // Return final result
     final_result.unwrap_or_else(|| (vec![], env))
 }
@@ -1465,6 +1544,30 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // Apply generic bindings - no conversion needed
                 let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
+
+                // Trace: RuleApplication (tree-walker, subsequent match)
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                            .collect();
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(&rhs),
+                            vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
+                            None,
+                            trace_format::TraceEventKind::RuleApplication {
+                                rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
+                                rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
+                                bindings: bindings_tv,
+                                rule_span: None,
+                            },
+                        );
+                    }
+                }
 
                 work_stack.push(GenericWorkItem::Eval {
                     value: instantiated_rhs,
@@ -1669,6 +1772,25 @@ fn process_continuation_generic<C: EvalContext>(
             match pending_values {
                 None => {
                     // First resumption: result_values are values to pattern match
+
+                    // Trace: value-result phase
+                    #[cfg(feature = "eval-trace")]
+                    {
+                        if let Some(tc) = ctx.trace_collector() {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker,
+                                depth as u32,
+                                crate::backend::trace::trace_value_generic(&pattern),
+                                result_values.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                None,
+                                trace_format::TraceEventKind::SpecialForm {
+                                    form_name: "let".to_string(),
+                                    phase: "value-result".to_string(),
+                                },
+                            );
+                        }
+                    }
+
                     let mut values: VecDeque<C::Value> = result_values.into_iter().collect();
 
                     // Try to find a matching value
@@ -1689,6 +1811,24 @@ fn process_continuation_generic<C: EvalContext>(
                                 }
                                 // Use generic pattern matching - NO conversion needed
                                 if let Some(bindings) = pattern_match_generic(&pattern, &value) {
+                                    // Trace: pattern-match phase
+                                    #[cfg(feature = "eval-trace")]
+                                    {
+                                        if let Some(tc) = ctx.trace_collector() {
+                                            tc.emit_converted(
+                                                trace_format::TraceTier::TreeWalker,
+                                                depth as u32,
+                                                crate::backend::trace::trace_value_generic(&pattern),
+                                                vec![crate::backend::trace::trace_value_generic(&value)],
+                                                None,
+                                                trace_format::TraceEventKind::SpecialForm {
+                                                    form_name: "let".to_string(),
+                                                    phase: "pattern-match".to_string(),
+                                                },
+                                            );
+                                        }
+                                    }
+
                                     // Pattern matches - instantiate body and evaluate
                                     let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
 
@@ -1711,6 +1851,23 @@ fn process_continuation_generic<C: EvalContext>(
                                         expected_type: None,
                                     });
                                     return;
+                                }
+                                // Trace: pattern-no-match phase
+                                #[cfg(feature = "eval-trace")]
+                                {
+                                    if let Some(tc) = ctx.trace_collector() {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            depth as u32,
+                                            crate::backend::trace::trace_value_generic(&pattern),
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::SpecialForm {
+                                                form_name: "let".to_string(),
+                                                phase: "pattern-no-match".to_string(),
+                                            },
+                                        );
+                                    }
                                 }
                                 // Pattern doesn't match - continue to next value
                             }
@@ -1746,6 +1903,24 @@ fn process_continuation_generic<C: EvalContext>(
                                     }
                                 }
                                 if let Some(bindings) = pattern_match_generic(&pattern, &value) {
+                                    // Trace: pattern-match phase (subsequent resumption)
+                                    #[cfg(feature = "eval-trace")]
+                                    {
+                                        if let Some(tc) = ctx.trace_collector() {
+                                            tc.emit_converted(
+                                                trace_format::TraceTier::TreeWalker,
+                                                depth as u32,
+                                                crate::backend::trace::trace_value_generic(&pattern),
+                                                vec![crate::backend::trace::trace_value_generic(&value)],
+                                                None,
+                                                trace_format::TraceEventKind::SpecialForm {
+                                                    form_name: "let".to_string(),
+                                                    phase: "pattern-match".to_string(),
+                                                },
+                                            );
+                                        }
+                                    }
+
                                     // Pattern matches - evaluate body with bindings
                                     let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
 
@@ -1768,6 +1943,23 @@ fn process_continuation_generic<C: EvalContext>(
                                         expected_type: None,
                                     });
                                     return;
+                                }
+                                // Trace: pattern-no-match phase (subsequent resumption)
+                                #[cfg(feature = "eval-trace")]
+                                {
+                                    if let Some(tc) = ctx.trace_collector() {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            depth as u32,
+                                            crate::backend::trace::trace_value_generic(&pattern),
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::SpecialForm {
+                                                form_name: "let".to_string(),
+                                                phase: "pattern-no-match".to_string(),
+                                            },
+                                        );
+                                    }
                                 }
                                 // Pattern doesn't match - continue to next value
                             }
@@ -2362,6 +2554,24 @@ fn process_continuation_generic<C: EvalContext>(
             let (cond_results, env_after_cond) = result;
 
             if let Some(first) = cond_results.first() {
+                // Trace: condition-result phase
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(first),
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::SpecialForm {
+                                form_name: "if".to_string(),
+                                phase: "condition-result".to_string(),
+                            },
+                        );
+                    }
+                }
+
                 // Check for error in condition
                 if first.is_error() {
                     work_stack.push(GenericWorkItem::Resume {
@@ -2374,7 +2584,45 @@ fn process_continuation_generic<C: EvalContext>(
                 // Bool(true) → then branch, Bool(false) → else branch,
                 // Everything else (Unit, atoms, S-exprs) → return unreduced.
                 if let Some(is_true) = first.as_bool() {
-                    let branch = if is_true { then_branch } else { else_branch };
+                    let branch = if is_true {
+                        // Trace: then-branch phase
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            if let Some(tc) = ctx.trace_collector() {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    depth as u32,
+                                    crate::backend::trace::trace_value_generic(first),
+                                    vec![crate::backend::trace::trace_value_generic(&then_branch)],
+                                    None,
+                                    trace_format::TraceEventKind::SpecialForm {
+                                        form_name: "if".to_string(),
+                                        phase: "then-branch".to_string(),
+                                    },
+                                );
+                            }
+                        }
+                        then_branch
+                    } else {
+                        // Trace: else-branch phase
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            if let Some(tc) = ctx.trace_collector() {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    depth as u32,
+                                    crate::backend::trace::trace_value_generic(first),
+                                    vec![crate::backend::trace::trace_value_generic(&else_branch)],
+                                    None,
+                                    trace_format::TraceEventKind::SpecialForm {
+                                        form_name: "if".to_string(),
+                                        phase: "else-branch".to_string(),
+                                    },
+                                );
+                            }
+                        }
+                        else_branch
+                    };
                     work_stack.push(GenericWorkItem::Eval {
                         value: branch,
                         env: env_after_cond,
@@ -2384,6 +2632,23 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 } else {
                     // Non-boolean (including Unit) → return unreduced (if cond then else)
+                    // Trace: non-boolean phase
+                    #[cfg(feature = "eval-trace")]
+                    {
+                        if let Some(tc) = ctx.trace_collector() {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker,
+                                depth as u32,
+                                crate::backend::trace::trace_value_generic(first),
+                                vec![],
+                                None,
+                                trace_format::TraceEventKind::SpecialForm {
+                                    form_name: "if".to_string(),
+                                    phase: "non-boolean".to_string(),
+                                },
+                            );
+                        }
+                    }
                     let unreduced = ctx.factory().sexpr(vec![
                         ctx.factory().atom("if"),
                         first.clone(),
@@ -2395,16 +2660,11 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 }
             } else {
-                // No result from condition — return unreduced (HE: Empty doesn't match True/False)
-                let empty_atom = ctx.factory().atom("Empty");
-                let unreduced = ctx.factory().sexpr(vec![
-                    ctx.factory().atom("if"),
-                    empty_atom,
-                    then_branch,
-                    else_branch,
-                ]);
+                // MeTTa HE: if-condition produced zero results → entire if produces zero results.
+                // This is branch annihilation: an empty condition means the if-expression
+                // contributes nothing to the nondeterministic result set.
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![unreduced], env_after_cond),
+                    result: (vec![], env_after_cond),
                 });
             }
         }
@@ -2415,6 +2675,24 @@ fn process_continuation_generic<C: EvalContext>(
             depth,
         } => {
             let (atom_results, atom_env) = result;
+
+            // Trace: scrutinee-result phase
+            #[cfg(feature = "eval-trace")]
+            {
+                if let Some(tc) = ctx.trace_collector() {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        crate::backend::trace::trace_value_generic(&cases),
+                        atom_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        None,
+                        trace_format::TraceEventKind::SpecialForm {
+                            form_name: "case".to_string(),
+                            phase: "scrutinee-result".to_string(),
+                        },
+                    );
+                }
+            }
 
             // Filter out Empty sentinels
             let filtered_results: Vec<_> = atom_results
@@ -2663,6 +2941,24 @@ fn process_continuation_generic<C: EvalContext>(
 
                     match eval_switch_generic(&switch_atom, &cases, ctx.factory()) {
                         GenericSwitchResult::Match(template, _bindings) => {
+                            // Trace: case-match phase
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&switch_atom),
+                                        vec![crate::backend::trace::trace_value_generic(&template)],
+                                        None,
+                                        trace_format::TraceEventKind::SpecialForm {
+                                            form_name: "case".to_string(),
+                                            phase: "case-match".to_string(),
+                                        },
+                                    );
+                                }
+                            }
+
                             if eval_atoms.is_empty() {
                                 work_stack.push(GenericWorkItem::Eval {
                                     value: template,
@@ -2695,6 +2991,24 @@ fn process_continuation_generic<C: EvalContext>(
                             });
                         }
                         GenericSwitchResult::NoMatch => {
+                            // Trace: case-no-match phase
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&switch_atom),
+                                        vec![],
+                                        None,
+                                        trace_format::TraceEventKind::SpecialForm {
+                                            form_name: "case".to_string(),
+                                            phase: "case-no-match".to_string(),
+                                        },
+                                    );
+                                }
+                            }
+
                             // No case matched — prune branch (MeTTa HE returns Empty)
                             work_stack.push(GenericWorkItem::Resume {
                                 result: (vec![], eval_env),
@@ -2789,6 +3103,25 @@ fn process_continuation_generic<C: EvalContext>(
             depth,
         } => {
             let (expr_results, result_env) = result;
+
+            // Trace: expr-result or expr-empty phase
+            #[cfg(feature = "eval-trace")]
+            {
+                if let Some(tc) = ctx.trace_collector() {
+                    let phase = if expr_results.is_empty() { "expr-empty" } else { "expr-result" };
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        crate::backend::trace::trace_value_generic(&var),
+                        expr_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        None,
+                        trace_format::TraceEventKind::SpecialForm {
+                            form_name: "chain".to_string(),
+                            phase: phase.to_string(),
+                        },
+                    );
+                }
+            }
 
             if expr_results.is_empty() {
                 // Empty result — produce zero results (branch annihilation, HE-compatible)
@@ -3789,6 +4122,25 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 // All results evaluated — assemble the tuple
                 let result_list = ctx.factory().sexpr(evaluated);
+
+                // Trace: collapse-result phase
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(&result_list),
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::SpecialForm {
+                                form_name: "collapse".to_string(),
+                                phase: "collapse-result".to_string(),
+                            },
+                        );
+                    }
+                }
+
                 work_stack.push(GenericWorkItem::Resume {
                     result: (vec![result_list], result_env),
                 });
@@ -3982,6 +4334,25 @@ fn process_continuation_generic<C: EvalContext>(
                                 .flat_map(|m| std::iter::repeat(m.value).take(m.count))
                                 .collect()
                         };
+
+                        // Trace: space-result phase (&self / module space)
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            if let Some(tc) = ctx.trace_collector() {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    depth as u32,
+                                    crate::backend::trace::trace_value_generic(&pattern),
+                                    generic_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    None,
+                                    trace_format::TraceEventKind::SpecialForm {
+                                        form_name: "match".to_string(),
+                                        phase: "space-result".to_string(),
+                                    },
+                                );
+                            }
+                        }
+
                         work_stack.push(GenericWorkItem::Resume {
                             result: (generic_results, env_after),
                         });
@@ -3989,6 +4360,24 @@ fn process_continuation_generic<C: EvalContext>(
                         // Owned space - match against atoms in SpaceHandle via unified match_pattern_generic
                         let instantiated_templates: Vec<C::Value> =
                             handle.match_pattern_generic(&pattern, &template, ctx.factory());
+
+                        // Trace: space-result phase (owned space)
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            if let Some(tc) = ctx.trace_collector() {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    depth as u32,
+                                    crate::backend::trace::trace_value_generic(&pattern),
+                                    instantiated_templates.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    None,
+                                    trace_format::TraceEventKind::SpecialForm {
+                                        form_name: "match".to_string(),
+                                        phase: "space-result".to_string(),
+                                    },
+                                );
+                            }
+                        }
 
                         if instantiated_templates.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
@@ -4655,6 +5044,25 @@ fn process_continuation_generic<C: EvalContext>(
                 false
             };
 
+            // Trace: reduced / irreducible phase
+            #[cfg(feature = "eval-trace")]
+            {
+                if let Some(tc) = ctx.trace_collector() {
+                    let phase = if is_irreducible { "irreducible" } else { "reduced" };
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        crate::backend::trace::trace_value_generic(&original_expr),
+                        eval_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        None,
+                        trace_format::TraceEventKind::SpecialForm {
+                            form_name: "if-reducible".to_string(),
+                            phase: phase.to_string(),
+                        },
+                    );
+                }
+            }
+
             if is_irreducible {
                 // Expression didn't change — evaluate else branch
                 work_stack.push(GenericWorkItem::Eval {
@@ -4688,6 +5096,24 @@ fn process_continuation_generic<C: EvalContext>(
             let (space_results, env_after) = result;
 
             if space_results.is_empty() {
+                // Trace: default-branch phase (space empty)
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(&pattern),
+                            vec![crate::backend::trace::trace_value_generic(&default)],
+                            None,
+                            trace_format::TraceEventKind::SpecialForm {
+                                form_name: "match-or".to_string(),
+                                phase: "default-branch".to_string(),
+                            },
+                        );
+                    }
+                }
+
                 // Space evaluated to empty — use default
                 work_stack.push(GenericWorkItem::Eval {
                     value: default,
@@ -4708,6 +5134,24 @@ fn process_continuation_generic<C: EvalContext>(
                             .collect();
 
                         if generic_results.is_empty() {
+                            // Trace: default-branch phase (&self no match)
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&pattern),
+                                        vec![crate::backend::trace::trace_value_generic(&default)],
+                                        None,
+                                        trace_format::TraceEventKind::SpecialForm {
+                                            form_name: "match-or".to_string(),
+                                            phase: "default-branch".to_string(),
+                                        },
+                                    );
+                                }
+                            }
+
                             // No matches — evaluate default
                             work_stack.push(GenericWorkItem::Eval {
                                 value: default,
@@ -4752,6 +5196,24 @@ fn process_continuation_generic<C: EvalContext>(
                             handle.match_pattern_generic(&pattern, &template, ctx.factory());
 
                         if instantiated_templates.is_empty() {
+                            // Trace: default-branch phase (owned space no match)
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&pattern),
+                                        vec![crate::backend::trace::trace_value_generic(&default)],
+                                        None,
+                                        trace_format::TraceEventKind::SpecialForm {
+                                            form_name: "match-or".to_string(),
+                                            phase: "default-branch".to_string(),
+                                        },
+                                    );
+                                }
+                            }
+
                             // No matches — evaluate default
                             work_stack.push(GenericWorkItem::Eval {
                                 value: default,

@@ -31,191 +31,327 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
-    match expr.inner_raw() {
-        MettaValueInner::Bool(_) => vec![factory.atom("Bool")],
-        MettaValueInner::Long(_) | MettaValueInner::Float(_) => vec![factory.atom("Number")],
-        MettaValueInner::String(_) => vec![factory.atom("String")],
-        MettaValueInner::Unit => vec![factory.atom("Expression")],
-        MettaValueInner::Type(_) => vec![factory.atom("Type")],
-        MettaValueInner::Error(..) => vec![factory.atom("Error")],
-        MettaValueInner::Space(_) => vec![factory.atom("Space")],
-        MettaValueInner::State(_) => vec![factory.atom("State")],
-        MettaValueInner::Memo(_) => vec![factory.atom("Memo")],
-        MettaValueInner::Empty => vec![factory.atom("Empty")],
+    // Track the source code path for tracing (only allocated when eval-trace is enabled)
+    #[cfg(feature = "eval-trace")]
+    let mut _trace_source: &str = "";
+
+    let result = match expr.inner_raw() {
+        MettaValueInner::Bool(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-bool"; }
+            vec![factory.atom("Bool")]
+        }
+        MettaValueInner::Long(_) | MettaValueInner::Float(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-number"; }
+            vec![factory.atom("Number")]
+        }
+        MettaValueInner::String(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-string"; }
+            vec![factory.atom("String")]
+        }
+        MettaValueInner::Unit => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-unit"; }
+            vec![factory.atom("Expression")]
+        }
+        MettaValueInner::Type(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-type"; }
+            vec![factory.atom("Type")]
+        }
+        MettaValueInner::Error(..) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-error"; }
+            vec![factory.atom("Error")]
+        }
+        MettaValueInner::Space(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-space"; }
+            vec![factory.atom("Space")]
+        }
+        MettaValueInner::State(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-state"; }
+            vec![factory.atom("State")]
+        }
+        MettaValueInner::Memo(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-memo"; }
+            vec![factory.atom("Memo")]
+        }
+        MettaValueInner::Empty => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "literal-empty"; }
+            vec![factory.atom("Empty")]
+        }
         MettaValueInner::Atom(name) => {
             // Check if it's a variable (starts with $, &, or ')
             if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
-                return vec![factory.type_value(factory.atom(name))];
-            }
-
-            // Look up ALL types in environment (nondeterministic)
-            let types = env.get_types_generic(name);
-            if types.is_empty() {
-                vec![factory.atom("%Undefined%")]
+                #[cfg(feature = "eval-trace")]
+                { _trace_source = "variable"; }
+                vec![factory.type_value(factory.atom(name))]
             } else {
-                types
+                // Look up ALL types in environment (nondeterministic)
+                let types = env.get_types_generic(name);
+                if types.is_empty() {
+                    #[cfg(feature = "eval-trace")]
+                    { _trace_source = "fallback-undefined"; }
+                    vec![factory.atom("%Undefined%")]
+                } else {
+                    #[cfg(feature = "eval-trace")]
+                    { _trace_source = "env-atom-types"; }
+                    types
+                }
             }
         }
         MettaValueInner::SExpr(_) => {
             let items = expr.as_sexpr().expect("matched SExpr");
             if items.is_empty() {
-                return vec![factory.atom("Expression")];
-            }
-
-            // Get the operator/function
-            if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+                #[cfg(feature = "eval-trace")]
+                { _trace_source = "sexpr-empty"; }
+                vec![factory.atom("Expression")]
+            } else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
                 // Check the built-in signature registry
                 if let Some(sig) = get_signature(op) {
                     if let Some(ret_type) = get_return_type(&sig.type_sig) {
-                        return vec![type_expr_to_generic(ret_type, factory)];
+                        #[cfg(feature = "eval-trace")]
+                        { _trace_source = "builtin-signature"; }
+                        vec![type_expr_to_generic(ret_type, factory)]
+                    } else {
+                        // Builtin signature exists but no return type — fall through
+                        let (types, source) = infer_types_sexpr_body(op, items, factory, env);
+                        #[cfg(feature = "eval-trace")]
+                        { _trace_source = source; }
+                        let _ = source;
+                        types
                     }
+                } else if op == "->" {
+                    // Special case for arrow type constructor
+                    #[cfg(feature = "eval-trace")]
+                    { _trace_source = "arrow-constructor"; }
+                    vec![factory.atom("Type")]
+                } else {
+                    let (types, source) = infer_types_sexpr_body(op, items, factory, env);
+                    #[cfg(feature = "eval-trace")]
+                    { _trace_source = source; }
+                    let _ = source;
+                    types
                 }
-
-                // Special case for arrow type constructor
-                if op == "->" {
-                    return vec![factory.atom("Type")];
-                }
-
-                // Look up function type in environment (user-defined types)
-                // Collect return types from ALL arrow types (nondeterministic)
-                let op_types = env.get_types_generic(op);
-                let mut result_types = Vec::new();
-
-                let actual_args = &items[1..]; // Skip operator
-
-                for generic_type in &op_types {
-                    if let Some(type_items) = generic_type.as_sexpr() {
-                        if let Some(arrow) = type_items.first().and_then(|v| v.as_atom()) {
-                            if arrow == "->" && type_items.len() > 1 {
-                                let param_types = &type_items[1..type_items.len() - 1];
-                                let return_type = &type_items[type_items.len() - 1];
-
-                                // Phase 10.2: Match actual arg types against declared param
-                                // types, collecting type variable bindings for substitution.
-                                let mut bindings = HashMap::new();
-                                let mut all_match = true;
-
-                                for (i, param_type) in param_types.iter().enumerate() {
-                                    if i < actual_args.len() {
-                                        let arg_type = infer_type_generic(&actual_args[i], factory, env);
-                                        // Skip matching if arg type is %Undefined% (can't constrain)
-                                        if arg_type.as_atom() != Some("%Undefined%") {
-                                            if !match_types_with_bindings(param_type, &arg_type, &mut bindings) {
-                                                all_match = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                let resolved = if all_match && !bindings.is_empty() {
-                                    // Substitute bindings into return type
-                                    apply_type_bindings(return_type, &bindings, factory)
-                                } else {
-                                    return_type.clone()
-                                };
-
-                                if !result_types.contains(&resolved) {
-                                    result_types.push(resolved);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Also include non-arrow types as value types
-                for generic_type in &op_types {
-                    if generic_type.as_sexpr().map_or(true, |items| {
-                        items.first().and_then(|v| v.as_atom()) != Some("->")
-                    }) {
-                        if !result_types.contains(generic_type) {
-                            result_types.push(generic_type.clone());
-                        }
-                    }
-                }
-
-                if !result_types.is_empty() {
-                    return result_types;
-                }
-
-                // Phase 10.1: Check inferred function return type index.
-                // This catches user-defined functions whose RHS type was inferred
-                // at add_rule() time but which lack explicit (: f (-> ...)) declarations.
-                if env.has_inferred_type(op) {
-                    let inferred = env.get_inferred_fn_types(op);
-                    let mut inferred_results = Vec::new();
-
-                    for inferred_type in &inferred {
-                        // Check if this is an arrow type — process it like declared types
-                        if let Some(type_items) = inferred_type.as_sexpr() {
-                            if type_items.first().and_then(|v| v.as_atom()) == Some("->")
-                                && type_items.len() > 1
-                            {
-                                // Phase 10.2: Type variable substitution on inferred arrow
-                                let param_types = &type_items[1..type_items.len() - 1];
-                                let return_type = &type_items[type_items.len() - 1];
-
-                                let mut bindings = HashMap::new();
-                                let mut all_match = true;
-                                for (i, param_type) in param_types.iter().enumerate() {
-                                    if i < actual_args.len() {
-                                        let arg_type = infer_type_generic(
-                                            &actual_args[i], factory, env,
-                                        );
-                                        if arg_type.as_atom() != Some("%Undefined%") {
-                                            if !match_types_with_bindings(
-                                                param_type, &arg_type, &mut bindings,
-                                            ) {
-                                                all_match = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                let resolved = if all_match && !bindings.is_empty() {
-                                    apply_type_bindings(return_type, &bindings, factory)
-                                } else {
-                                    return_type.clone()
-                                };
-
-                                if !inferred_results.contains(&resolved) {
-                                    inferred_results.push(resolved);
-                                }
-                                continue;
-                            }
-                        }
-
-                        // Non-arrow type: direct return type from rhs_type
-                        if !inferred_results.contains(inferred_type) {
-                            inferred_results.push(inferred_type.clone());
-                        }
-                    }
-
-                    if !inferred_results.is_empty() {
-                        return inferred_results;
-                    }
-                }
+            } else {
+                // Operator is not an atom
+                #[cfg(feature = "eval-trace")]
+                { _trace_source = "fallback-undefined"; }
+                vec![factory.atom("%Undefined%")]
             }
-
-            vec![factory.atom("%Undefined%")]
         }
         MettaValueInner::Conjunction(_) => {
             let goals = expr.as_conjunction().expect("matched Conjunction");
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "conjunction"; }
             if goals.is_empty() {
-                return vec![factory.atom("Expression")];
+                vec![factory.atom("Expression")]
+            } else if let Some(last) = goals.last() {
+                infer_types_generic(last, factory, env)
+            } else {
+                vec![factory.atom("Expression")]
             }
-            if let Some(last) = goals.last() {
-                return infer_types_generic(last, factory, env);
-            }
+        }
+        MettaValueInner::Quoted(_) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "quoted"; }
             vec![factory.atom("Expression")]
         }
-        MettaValueInner::Quoted(_) => vec![factory.atom("Expression")],
         MettaValueInner::Spanned(..) => {
+            #[cfg(feature = "eval-trace")]
+            { _trace_source = "spanned-strip"; }
             let stripped = expr.strip_one_span();
             infer_types_generic(&stripped, factory, env)
         }
+    };
+
+    // Emit TypeInference trace event
+    #[cfg(feature = "eval-trace")]
+    {
+        crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
+            let trace_expr = crate::backend::trace::trace_value_generic(expr);
+            let trace_types: Vec<trace_format::TraceValue> = result
+                .iter()
+                .map(crate::backend::trace::trace_value_generic)
+                .collect();
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                0,
+                trace_expr.clone(),
+                vec![],
+                None,
+                trace_format::TraceEventKind::TypeInference {
+                    expression: trace_expr,
+                    inferred_types: trace_types,
+                    source: _trace_source.to_string(),
+                },
+            );
+        });
     }
+
+    result
+}
+
+/// Helper for S-expression type inference body (env-declared and Phase 10 paths).
+///
+/// Returns `(inferred_types, trace_source)` where `trace_source` identifies which
+/// code path produced the result (for eval-trace instrumentation).
+fn infer_types_sexpr_body<V, F>(
+    op: &str,
+    items: &[V],
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+) -> (Vec<V>, &'static str)
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    // Look up function type in environment (user-defined types)
+    // Collect return types from ALL arrow types (nondeterministic)
+    let op_types = env.get_types_generic(op);
+    let mut result_types = Vec::new();
+
+    let actual_args = &items[1..]; // Skip operator
+
+    for generic_type in &op_types {
+        if let Some(type_items) = generic_type.as_sexpr() {
+            if let Some(arrow) = type_items.first().and_then(|v| v.as_atom()) {
+                if arrow == "->" && type_items.len() > 1 {
+                    let param_types = &type_items[1..type_items.len() - 1];
+                    let return_type = &type_items[type_items.len() - 1];
+
+                    // Phase 10.2: Match actual arg types against declared param
+                    // types, collecting type variable bindings for substitution.
+                    let mut bindings = HashMap::new();
+                    let mut all_match = true;
+
+                    for (i, param_type) in param_types.iter().enumerate() {
+                        if i < actual_args.len() {
+                            let arg_type = infer_type_generic(&actual_args[i], factory, env);
+                            // Skip matching if arg type is %Undefined% (can't constrain)
+                            if arg_type.as_atom() != Some("%Undefined%") {
+                                if !match_types_with_bindings(param_type, &arg_type, &mut bindings) {
+                                    all_match = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    let resolved = if all_match && !bindings.is_empty() {
+                        // Substitute bindings into return type
+                        apply_type_bindings(return_type, &bindings, factory)
+                    } else {
+                        return_type.clone()
+                    };
+
+                    if !result_types.contains(&resolved) {
+                        result_types.push(resolved);
+                    }
+                }
+            }
+        }
+    }
+
+    // Also include non-arrow types as value types
+    for generic_type in &op_types {
+        if generic_type.as_sexpr().map_or(true, |sexpr_items| {
+            sexpr_items.first().and_then(|v| v.as_atom()) != Some("->")
+        }) {
+            if !result_types.contains(generic_type) {
+                result_types.push(generic_type.clone());
+            }
+        }
+    }
+
+    if !result_types.is_empty() {
+        // Determine trace source: arrow types vs value types
+        let has_arrow = op_types.iter().any(|t| {
+            t.as_sexpr()
+                .and_then(|items| items.first().and_then(|v| v.as_atom()))
+                == Some("->")
+        });
+        let source = if has_arrow {
+            "env-declared-arrow"
+        } else {
+            "env-declared-value"
+        };
+        return (result_types, source);
+    }
+
+    // Phase 10.1: Check inferred function return type index.
+    // This catches user-defined functions whose RHS type was inferred
+    // at add_rule() time but which lack explicit (: f (-> ...)) declarations.
+    if env.has_inferred_type(op) {
+        let inferred = env.get_inferred_fn_types(op);
+        let mut inferred_results = Vec::new();
+        let mut has_inferred_arrow = false;
+
+        for inferred_type in &inferred {
+            // Check if this is an arrow type — process it like declared types
+            if let Some(type_items) = inferred_type.as_sexpr() {
+                if type_items.first().and_then(|v| v.as_atom()) == Some("->")
+                    && type_items.len() > 1
+                {
+                    has_inferred_arrow = true;
+                    // Phase 10.2: Type variable substitution on inferred arrow
+                    let param_types = &type_items[1..type_items.len() - 1];
+                    let return_type = &type_items[type_items.len() - 1];
+
+                    let mut bindings = HashMap::new();
+                    let mut all_match = true;
+                    for (i, param_type) in param_types.iter().enumerate() {
+                        if i < actual_args.len() {
+                            let arg_type = infer_type_generic(
+                                &actual_args[i], factory, env,
+                            );
+                            if arg_type.as_atom() != Some("%Undefined%") {
+                                if !match_types_with_bindings(
+                                    param_type, &arg_type, &mut bindings,
+                                ) {
+                                    all_match = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    let resolved = if all_match && !bindings.is_empty() {
+                        apply_type_bindings(return_type, &bindings, factory)
+                    } else {
+                        return_type.clone()
+                    };
+
+                    if !inferred_results.contains(&resolved) {
+                        inferred_results.push(resolved);
+                    }
+                    continue;
+                }
+            }
+
+            // Non-arrow type: direct return type from rhs_type
+            if !inferred_results.contains(inferred_type) {
+                inferred_results.push(inferred_type.clone());
+            }
+        }
+
+        if !inferred_results.is_empty() {
+            let source = if has_inferred_arrow {
+                "phase-10-inferred-arrow"
+            } else {
+                "phase-10-inferred-value"
+            };
+            return (inferred_results, source);
+        }
+    }
+
+    (vec![factory.atom("%Undefined%")], "fallback-undefined")
 }
 
 /// Infer the type of an expression (deterministic convenience wrapper).
@@ -282,27 +418,57 @@ where
 /// Handles type variables, `%Undefined%` universal match, and structural equality.
 /// HE parity: `%Undefined%` matches any type on either side.
 pub fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool {
+    let (result, _reason) = types_match_generic_inner(actual, expected);
+
+    // Emit TypeMatch trace event
+    #[cfg(feature = "eval-trace")]
+    {
+        crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                0,
+                crate::backend::trace::trace_value_generic(actual),
+                vec![],
+                None,
+                trace_format::TraceEventKind::TypeMatch {
+                    actual: crate::backend::trace::trace_value_generic(actual),
+                    expected: crate::backend::trace::trace_value_generic(expected),
+                    result,
+                    reason: _reason.to_string(),
+                },
+            );
+        });
+    }
+
+    result
+}
+
+/// Inner implementation of `types_match_generic` that returns `(result, reason)`.
+///
+/// The `reason` string identifies which matching rule decided the outcome,
+/// for eval-trace instrumentation.
+fn types_match_generic_inner<V: MettaValueTrait>(actual: &V, expected: &V) -> (bool, &'static str) {
     // %Undefined% matches anything (HE parity)
     if let Some(name) = expected.as_atom() {
         if name == "%Undefined%" {
-            return true;
+            return (true, "expected-undefined");
         }
     }
     if let Some(name) = actual.as_atom() {
         if name == "%Undefined%" {
-            return true;
+            return (true, "actual-undefined");
         }
     }
 
     // Type variables match anything
     if let Some(name) = expected.as_atom() {
         if name.starts_with('$') {
-            return true;
+            return (true, "expected-typevar");
         }
     }
     if let Some(name) = actual.as_atom() {
         if name.starts_with('$') {
-            return true;
+            return (true, "actual-typevar");
         }
     }
 
@@ -311,57 +477,67 @@ pub fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool
         if let Some(inner) = expected.as_type() {
             if let Some(name) = inner.as_atom() {
                 if name.starts_with('$') {
-                    return true;
+                    return (true, "type-wrapper-typevar");
                 }
             }
             // Otherwise, unwrap and compare
             if actual.is_type() {
                 if let Some(actual_inner) = actual.as_type() {
-                    return types_match_generic(actual_inner, inner);
+                    let (r, _) = types_match_generic_inner(actual_inner, inner);
+                    return (r, if r { "type-wrapper-structural" } else { "type-wrapper-mismatch" });
                 }
             }
         }
-        return false;
+        return (false, "type-wrapper-mismatch");
     }
 
     // Exact atom matches
     if let (Some(a), Some(e)) = (actual.as_atom(), expected.as_atom()) {
-        return a == e;
+        return if a == e {
+            (true, "exact-atom-match")
+        } else {
+            (false, "exact-atom-mismatch")
+        };
     }
 
     // Bool matches
     if let (Some(a), Some(e)) = (actual.as_bool(), expected.as_bool()) {
-        return a == e;
+        return (a == e, "exact-bool");
     }
 
     // Long matches
     if let (Some(a), Some(e)) = (actual.as_long(), expected.as_long()) {
-        return a == e;
+        return (a == e, "exact-long");
     }
 
     // String matches
     if let (Some(a), Some(e)) = (actual.as_string(), expected.as_string()) {
-        return a == e;
+        return (a == e, "exact-string");
     }
 
     // S-expression matches (structural equality)
     if let (Some(a_items), Some(e_items)) = (actual.as_sexpr(), expected.as_sexpr()) {
         if a_items.len() != e_items.len() {
-            return false;
+            return (false, "sexpr-length-mismatch");
         }
-        return a_items
+        let all_match = a_items
             .iter()
             .zip(e_items.iter())
             .all(|(a, e)| types_match_generic(a, e));
+        return if all_match {
+            (true, "sexpr-structural-match")
+        } else {
+            (false, "sexpr-structural-mismatch")
+        };
     }
 
     // Unit matches Unit
     if actual.is_unit() && expected.is_unit() {
-        return true;
+        return (true, "unit-match");
     }
 
     // Default: no match
-    false
+    (false, "no-match")
 }
 
 /// Check if two types match with subtype awareness (generic version).

@@ -71,14 +71,18 @@ decrease as results propagate back up.
   GroundedOp { op: ">", args: [3, 2] }
 
 [#4 T0 D1 TreeWalker]
-  (if True (+ 1 2) (* 4 5))
+  True => []
+  SpecialForm { form: "if", phase: "condition-result" }
+
+[#5 T0 D1 TreeWalker]
+  True => [(+ 1 2)]
   SpecialForm { form: "if", phase: "then-branch" }
 
-[#5 T0 D2 TreeWalker]
+[#6 T0 D2 TreeWalker]
   (+ 1 2) => [3]
   GroundedOp { op: "+", args: [1, 2] }
 
-[#6 T0 D0 TreeWalker]
+[#7 T0 D0 TreeWalker]
   (! (if (> 3 2) (+ 1 2) (* 4 5))) => [3]
   EvalEnd { results: 1 }
 ```
@@ -89,9 +93,10 @@ Reading this trace:
 2. **#1**: The `!` special form is dispatched
 3. **#2**: Inside the `!`, the `if` special form is dispatched
 4. **#3**: The condition `(> 3 2)` is evaluated — produces `True`
-5. **#4**: The `if` form takes the then-branch because condition was `True`
-6. **#5**: The then-branch `(+ 1 2)` evaluates to `3`
-7. **#6**: Evaluation completes with result `[3]`
+5. **#4**: The condition result `True` is recorded (phase-progression event)
+6. **#5**: The `if` form takes the then-branch because condition was `True`
+7. **#6**: The then-branch `(+ 1 2)` evaluates to `3`
+8. **#7**: Evaluation completes with result `[3]`
 
 Note that `(* 4 5)` was never evaluated — lazy evaluation means the
 else-branch is skipped when the condition is `True`.
@@ -126,7 +131,9 @@ RuleApplication {
 
 A user-defined rule `(= lhs rhs)` was applied. The `bindings` show how
 pattern variables were bound. The `rule_span` (if present) identifies
-where the rule was defined in source.
+where the rule was defined in source. Both the tree-walker and bytecode
+VM emit this event — one `RuleApplication` per matching rule, immediately
+after binding substitution and before the instantiated body is evaluated.
 
 ```
 RuleMatchSet { match_count: 3 }
@@ -148,13 +155,44 @@ evaluated arguments passed to the operation.
 
 ```
 SpecialForm { form: "if", phase: "dispatch" }
-SpecialForm { form: "if", phase: "condition-eval" }
+SpecialForm { form: "if", phase: "condition-result" }
 SpecialForm { form: "if", phase: "then-branch" }
 ```
 
 Special forms produce events at different phases of their evaluation.
-Common phases include `"dispatch"` (initial recognition), phase-specific
-labels like `"condition-eval"`, `"then-branch"`, `"else-branch"`, etc.
+Every special form emits a `"dispatch"` event when first recognized, then
+one or more phase-progression events as the continuation handler processes
+results.
+
+#### Phase Reference Table
+
+| `form_name` | Phase | When Emitted |
+|------------|-------|-------------|
+| `"if"` | `"dispatch"` | `if` expression recognized |
+| `"if"` | `"condition-result"` | Condition evaluation completed |
+| `"if"` | `"then-branch"` | Condition was `True` — then-branch selected |
+| `"if"` | `"else-branch"` | Condition was `False` — else-branch selected |
+| `"if"` | `"non-boolean"` | Condition was not boolean — unreduced |
+| `"let"` | `"dispatch"` | `let` expression recognized |
+| `"let"` | `"value-result"` | Value expression evaluation completed |
+| `"let"` | `"pattern-match"` | Pattern matched a value |
+| `"let"` | `"pattern-no-match"` | Pattern did not match a value |
+| `"chain"` | `"dispatch"` | `chain` expression recognized |
+| `"chain"` | `"expr-result"` | Chain expr evaluated to result(s) |
+| `"chain"` | `"expr-empty"` | Chain expr evaluated to zero results |
+| `"case"` | `"dispatch"` | `case` expression recognized |
+| `"case"` | `"scrutinee-result"` | Scrutinee evaluation completed |
+| `"case"` | `"case-match"` | Scrutinee matched a case pattern |
+| `"case"` | `"case-no-match"` | No case pattern matched |
+| `"match"` | `"dispatch"` | `match` expression recognized |
+| `"match"` | `"space-result"` | Space query completed with template(s) |
+| `"match-or"` | `"dispatch"` | `match-or` expression recognized |
+| `"match-or"` | `"default-branch"` | No matches — default branch taken |
+| `"if-reducible"` | `"dispatch"` | `if-reducible` expression recognized |
+| `"if-reducible"` | `"reduced"` | Expression changed — then-branch taken |
+| `"if-reducible"` | `"irreducible"` | Expression unchanged — else-branch taken |
+| `"collapse"` | `"dispatch"` | `collapse` expression recognized |
+| `"collapse"` | `"collapse-result"` | All results evaluated, tuple assembled |
 
 ### Error Events
 
@@ -223,6 +261,32 @@ A garbage collection safepoint was reached. `roots` is the number of
 live values registered as GC roots. `alloc_delta` is the allocation
 pressure (bytes allocated since last safepoint check) that triggered
 the safepoint.
+
+### BranchPrune Events
+
+```
+BranchPrune { expected: Number, pruned: 2, surviving: 1 }
+    pruned[0]: rhs_type=String
+    pruned[1]: rhs_type=Bool
+```
+
+Type-driven branch pruning removed rule matches whose declared return
+type (`rhs_type`) is incompatible with the caller's `expected_type`.
+This event is emitted in the tree-walker's `EvalRuleMatchesLazy` handler
+after rule matching but before rule application.
+
+| Field | Meaning |
+|-------|---------|
+| `expected` | The type expected by the calling context (propagated via `expected_type`). |
+| `pruned` | Number of matches removed. |
+| `surviving` | Number of matches that passed the type filter. |
+| `pruned[i]: rhs_type=...` | The declared return type of each pruned match. `None` means the match had no type annotation (these are never pruned — they pass conservatively). |
+
+**Diagnostic use**: If a `RuleMatchSet` reports `match_count=N` but fewer
+than `N` `RuleApplication` events follow, a `BranchPrune` event between
+them explains how many matches were filtered by the type system and what
+types they had. If there is no `BranchPrune` event, the loss occurred
+elsewhere (e.g., pattern match failure during binding instantiation).
 
 ## Multi-Threaded Traces
 

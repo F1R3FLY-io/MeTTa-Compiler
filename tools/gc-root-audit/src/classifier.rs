@@ -45,6 +45,13 @@ pub enum Category {
     /// Function-local Vec<MettaValue> is live across an eval_trampoline_generic call
     /// without maybe_push_frame protection. GC safepoint could free referenced values.
     FrameChainMissing,
+    /// A MettaValue-bearing field of a RootProvider type is NOT referenced at all
+    /// in collect_roots(). GC will not see these values → use-after-free.
+    FieldNotCollected,
+    /// A MettaValue-bearing field is accessed in collect_roots() but not all
+    /// sub-fields of the iterated type are covered (e.g., only e.lhs/e.rhs
+    /// but not e.rhs_type). May be intentional — needs review.
+    FieldPartiallyCollected,
     /// Cannot be automatically classified — needs manual review
     Unknown,
 }
@@ -502,6 +509,32 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
             continue;
         }
 
+        // Raw-pointer-only: type string mentions MettaValue but only through *const/*mut.
+        // Raw pointers don't hold ownership — not GC roots.
+        if static_decl.only_raw_ptr_reference {
+            locations.push(ClassifiedLocation {
+                file: static_decl.file.display().to_string(),
+                line: static_decl.line,
+                context: match static_decl.kind {
+                    StaticKind::ThreadLocal => LocationContext::ThreadLocal {
+                        name: static_decl.name.clone(),
+                        ty: static_decl.ty.clone(),
+                    },
+                    _ => LocationContext::StaticVar {
+                        name: static_decl.name.clone(),
+                        ty: static_decl.ty.clone(),
+                    },
+                },
+                category: Category::GcInfrastructure,
+                reason: format!(
+                    "{:?} {} references MettaValue only via raw pointers (*const/*mut) — \
+                     no ownership, not a GC root",
+                    static_decl.kind, static_decl.name
+                ),
+            });
+            continue;
+        }
+
         // For the reason string, identify which type triggered transitive reachability
         let transitive_via = if transitively_contains_data && !static_decl.contains_metta_value {
             referenced_names
@@ -743,6 +776,96 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
                 finding.vec_local, finding.function_name, finding.trampoline_call_line
             ),
         });
+    }
+
+    // =========================================================================
+    // Phase 8: collect_roots() field coverage verification
+    //
+    // For each RegisteredRoot type that has a collect_roots_analysis, cross-
+    // reference its MettaValue-bearing fields against the fields accessed
+    // in collect_roots(). Flag:
+    //   - FieldNotCollected: MettaValue-bearing field not referenced at all
+    //   - FieldPartiallyCollected: field accessed but sub-fields of iterated
+    //     type are incomplete (e.g., e.lhs, e.rhs but not e.rhs_type)
+    //
+    // This is the exact class of bug that caused the PLN regression:
+    //   - inferred_fn_types: FieldNotCollected (not referenced in collect_roots)
+    //   - rule_index → RuleEntry.rhs_type: FieldPartiallyCollected (only lhs, rhs)
+    // =========================================================================
+    for type_def in &scan.type_defs {
+        let type_name = &type_def.name;
+
+        // Only check types that implement RootProvider
+        if !types_with_root_impl.contains(type_name) {
+            continue;
+        }
+
+        // Get the collect_roots analysis for this type (or its shared inner type).
+        // RootProvider is often implemented for `GenericEnvironmentShared<V>` while
+        // the type_def is `GenericEnvironmentShared` — try both.
+        let analysis = scan.collect_roots_analyses.get(type_name);
+        let analysis = match analysis {
+            Some(a) => a,
+            None => continue, // No analysis available (collect_roots not found or parse error)
+        };
+
+        // Check each MettaValue-bearing field
+        for field in &type_def.fields {
+            if !field.contains_metta_value {
+                continue;
+            }
+
+            let field_name = &field.name;
+
+            // Check if this field is covered in collect_roots
+            match analysis.covered_fields.get(field_name.as_str()) {
+                None => {
+                    // Field not referenced at all in collect_roots → FieldNotCollected
+                    locations.push(ClassifiedLocation {
+                        file: type_def.file.display().to_string(),
+                        line: field.line,
+                        context: LocationContext::StructField {
+                            struct_name: type_name.clone(),
+                            field_name: field_name.clone(),
+                            ty: field.ty.clone(),
+                        },
+                        category: Category::FieldNotCollected,
+                        reason: format!(
+                            "{}.{}: {} — MettaValue-bearing field not referenced in collect_roots(). \
+                             GC cannot see these values → potential use-after-free",
+                            type_name, field_name, field.ty
+                        ),
+                    });
+                }
+                Some(crate::scanner::FieldCoverage::Partial(sub_fields)) => {
+                    // Field accessed with specific sub-fields. Check if the field's type
+                    // has additional MettaValue-bearing fields not covered.
+                    // For now, report which sub-fields are covered as a warning.
+                    locations.push(ClassifiedLocation {
+                        file: type_def.file.display().to_string(),
+                        line: field.line,
+                        context: LocationContext::StructField {
+                            struct_name: type_name.clone(),
+                            field_name: field_name.clone(),
+                            ty: field.ty.clone(),
+                        },
+                        category: Category::FieldPartiallyCollected,
+                        reason: format!(
+                            "{}.{}: {} — collect_roots() only accesses sub-fields [{}]. \
+                             Other MettaValue-bearing sub-fields may be missed",
+                            type_name,
+                            field_name,
+                            field.ty,
+                            sub_fields.join(", ")
+                        ),
+                    });
+                }
+                Some(crate::scanner::FieldCoverage::Delegated)
+                | Some(crate::scanner::FieldCoverage::Full) => {
+                    // Fully covered — no issue
+                }
+            }
+        }
     }
 
     locations

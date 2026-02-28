@@ -16,7 +16,36 @@ evaluation path and handles the full MeTTa semantics.
 | 152–156 | `GcSafepoint` | GC safepoint reached during evaluation. Emitted after `perform_safepoint()` with root count and allocation delta. |
 | 253 | `GroundedOp` | Grounded operation succeeded. Emitted when a `ProcessGroundedArgs` continuation completes with `GenericGroundedWork::Results`. |
 | 301 | `GroundedOpError` | Grounded operation failed. Emitted when a `ProcessGroundedArgs` continuation completes with `GenericGroundedWork::Error`. Error kind is extracted from the error type (`"NoReduce"`, `"Runtime"`, `"Arithmetic"`, `"IncorrectArgument"`). |
-| 1312 | `EvalEnd` | Top-level evaluation completed. Emitted after the trampoline loop exits with the final result count. |
+| 418 | `BranchPrune` | Type-driven branch pruning. Emitted after `matches.retain()` in `EvalRuleMatchesLazy` when at least one match was pruned due to rhs_type incompatibility with expected_type. Records pruned count, surviving count, and the rhs_type of each pruned match. |
+| 480 | `RuleApplication` | Rule applied (first match). Emitted after `apply_bindings_generic` in `EvalRuleMatchesLazy`, recording the RHS template, instantiated body, and variable bindings. |
+| 1494 | `RuleApplication` | Rule applied (subsequent match). Same event emitted in the `ProcessRuleMatches` continuation for second and later matches. |
+| 1336 | `EvalEnd` | Top-level evaluation completed. Emitted after the trampoline loop exits with the final result count. |
+
+### Phase-Progression Events (`src/backend/eval/trampoline/generic_trampoline.rs`)
+
+Branching continuation handlers emit phase-progression events that record
+control-flow decisions after the initial `"dispatch"` event. All use
+`SpecialForm { form_name, phase }` with `TraceTier::TreeWalker`.
+
+| Continuation | Phase String | Description |
+|-------------|-------------|-------------|
+| `ProcessIfCondition` | `"condition-result"` | Emitted after condition evaluation completes, before branch decision. Input: evaluated condition value. |
+| `ProcessIfCondition` | `"then-branch"` | Condition was `Bool(true)` — then-branch selected. Output: the then-branch expression. |
+| `ProcessIfCondition` | `"else-branch"` | Condition was `Bool(false)` — else-branch selected. Output: the else-branch expression. |
+| `ProcessIfCondition` | `"non-boolean"` | Condition was not a boolean — returns unreduced `(if cond then else)`. |
+| `ProcessLet` | `"value-result"` | Value expression evaluation completed. Input: pattern. Outputs: evaluated value(s). |
+| `ProcessLet` | `"pattern-match"` | Pattern matched a value — body will be evaluated. Input: pattern. Output: matched value. |
+| `ProcessLet` | `"pattern-no-match"` | Pattern did not match a value — skipping. Input: pattern. |
+| `ProcessChainExpr` | `"expr-result"` | Chain expression evaluation completed with result(s). Input: chain variable. Outputs: result(s). |
+| `ProcessChainExpr` | `"expr-empty"` | Chain expression evaluation produced zero results (branch annihilation). Input: chain variable. |
+| `ProcessCaseAtom` | `"scrutinee-result"` | Scrutinee evaluation completed. Input: cases. Outputs: evaluated scrutinee value(s). |
+| `ProcessCaseEvalScrutineeResults` | `"case-match"` | A scrutinee value matched a case pattern. Input: scrutinee value. Output: matched template. |
+| `ProcessCaseEvalScrutineeResults` | `"case-no-match"` | No case pattern matched the scrutinee value. Input: scrutinee value. |
+| `ProcessMatchSpace` | `"space-result"` | Space query completed. Input: match pattern. Outputs: instantiated template(s). |
+| `ProcessMatchOrSpace` | `"default-branch"` | No space matches found — default branch taken. Input: match pattern. Output: default expression. |
+| `ProcessIfReducible` | `"reduced"` | Expression changed after evaluation — then-branch taken. Input: original expression. Outputs: eval result(s). |
+| `ProcessIfReducible` | `"irreducible"` | Expression unchanged after evaluation — else-branch taken. Input: original expression. Outputs: eval result(s). |
+| `ProcessCollapseEvalResults` | `"collapse-result"` | All nondeterministic results evaluated and assembled into final tuple. Input: assembled tuple. |
 
 ### S-Expression Step (`src/backend/eval/step/generic_sexpr.rs`)
 
@@ -99,16 +128,16 @@ GroundedOpError         ●           ●
 SpecialForm             ●
 ApplicativePreEval      ●
 RuleMatchSet            ●           ●
-RuleApplication                     ●
+RuleApplication         ●           ●
 NondeterministicFork                ●
 TierDispatch            ●
 BytecodeHalt                        ●
 JitBailout                                      ●
+BranchPrune             ●
 GcSafepoint             ●
 
 PatternMatch            (reserved — not currently emitted)
 TypeOperation           (reserved — not currently emitted)
-BranchPrune             (reserved — not currently emitted)
 ErrorCreated            (reserved — not currently emitted)
 ErrorCaught             (reserved — not currently emitted)
 ErrorPropagated         (reserved — not currently emitted)

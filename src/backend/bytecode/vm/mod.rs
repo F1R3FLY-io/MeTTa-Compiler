@@ -1898,21 +1898,18 @@ where
         let tail = self.pop()?;
         let head = self.pop()?;
 
-        if let Some(tail_items) = tail.as_sexpr() {
-            // Prepend head to existing S-expression
-            let mut items = Vec::with_capacity(tail_items.len() + 1);
-            items.push(head);
-            items.extend(tail_items.iter().cloned());
-            self.push(self.make_sexpr(items));
-        } else if tail.is_unit() {
-            // Create single-element S-expression
-            self.push(self.make_sexpr(vec![head]));
+        let tail_items: &[V] = if tail.is_unit() {
+            &[]
         } else {
-            return Err(VmError::TypeError {
-                expected: "S-expression or Nil",
+            tail.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
                 got: "other",
-            });
-        }
+            })?
+        };
+        let mut items = Vec::with_capacity(tail_items.len() + 1);
+        items.push(head);
+        items.extend(tail_items.iter().cloned());
+        self.push(self.make_sexpr(items));
         Ok(())
     }
 
@@ -2342,6 +2339,13 @@ where
     /// Stack: [list] -> [deduped_list]
     fn op_unique_atom(&mut self) -> VmResult<()> {
         let list = self.pop()?;
+
+        // Handle Unit as empty list
+        if list.is_unit() {
+            self.push(list);
+            return Ok(());
+        }
+
         let items = list.as_sexpr().ok_or(VmError::TypeError {
             expected: "S-expression",
             got: "other",
@@ -2365,14 +2369,23 @@ where
         let right = self.pop()?;
         let left = self.pop()?;
 
-        let left_items = left.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
-        let right_items = right.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
+        // Handle Unit as empty list
+        let left_items: &[V] = if left.is_unit() {
+            &[]
+        } else {
+            left.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
+        let right_items: &[V] = if right.is_unit() {
+            &[]
+        } else {
+            right.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
 
         let mut combined = Vec::with_capacity(left_items.len() + right_items.len());
         combined.extend(left_items.iter().cloned());
@@ -2387,14 +2400,23 @@ where
         let right = self.pop()?;
         let left = self.pop()?;
 
-        let left_items = left.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
-        let right_items = right.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
+        // Handle Unit as empty list
+        let left_items: &[V] = if left.is_unit() {
+            &[]
+        } else {
+            left.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
+        let right_items: &[V] = if right.is_unit() {
+            &[]
+        } else {
+            right.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
 
         // Build count map from right list (structural equality)
         let mut right_remaining: Vec<(V, usize)> = Vec::new();
@@ -2433,14 +2455,23 @@ where
         let right = self.pop()?;
         let left = self.pop()?;
 
-        let left_items = left.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
-        let right_items = right.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
+        // Handle Unit as empty list
+        let left_items: &[V] = if left.is_unit() {
+            &[]
+        } else {
+            left.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
+        let right_items: &[V] = if right.is_unit() {
+            &[]
+        } else {
+            right.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
 
         // Build count map from right list (structural equality)
         let mut right_remaining: Vec<(V, usize)> = Vec::new();
@@ -2484,14 +2515,25 @@ where
     fn op_tuple_concat(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let a_items = a.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
-        let b_items = b.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
+
+        // Handle Unit as empty list
+        let a_items: &[V] = if a.is_unit() {
+            &[]
+        } else {
+            a.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
+        let b_items: &[V] = if b.is_unit() {
+            &[]
+        } else {
+            b.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
+
         let mut combined = Vec::with_capacity(a_items.len() + b_items.len());
         combined.extend(a_items.iter().cloned());
         combined.extend(b_items.iter().cloned());
@@ -2503,10 +2545,16 @@ where
     /// Stack: [tuple] -> [count]
     fn op_tuple_count(&mut self) -> VmResult<()> {
         let tuple = self.pop()?;
-        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
+
+        // Handle Unit as empty list (count = 0)
+        let items: &[V] = if tuple.is_unit() {
+            &[]
+        } else {
+            tuple.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
         self.push(self.make_long(items.len() as i64));
         Ok(())
     }
@@ -2516,10 +2564,16 @@ where
     fn op_without(&mut self) -> VmResult<()> {
         let elem = self.pop()?;
         let tuple = self.pop()?;
-        let items = tuple.as_sexpr().ok_or(VmError::TypeError {
-            expected: "S-expression",
-            got: "other",
-        })?;
+
+        // Handle Unit as empty list
+        let items: &[V] = if tuple.is_unit() {
+            &[]
+        } else {
+            tuple.as_sexpr().ok_or(VmError::TypeError {
+                expected: "S-expression or Unit",
+                got: "other",
+            })?
+        };
         let filtered: Vec<V> = items.iter().filter(|item| **item != elem).cloned().collect();
         self.push(self.make_sexpr(filtered));
         Ok(())
@@ -2530,6 +2584,13 @@ where
     fn op_element_of(&mut self) -> VmResult<()> {
         let tuple = self.pop()?;
         let elem = self.pop()?;
+
+        // Handle Unit as empty list (nothing is an element of empty)
+        if tuple.is_unit() {
+            self.push(self.make_bool(false));
+            return Ok(());
+        }
+
         let items = tuple.as_sexpr().ok_or(VmError::TypeError {
             expected: "S-expression",
             got: "other",

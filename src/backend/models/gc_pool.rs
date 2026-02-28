@@ -402,6 +402,11 @@ fn gc_pool_worker_loop(
 
         match item {
             GcWorkItem::Collect(mut snapshot) => {
+                // Acquire read lock on PAGE_LIFECYCLE_LOCK: permits concurrent
+                // mark/sweep operations but blocks release_empty_pages() (which
+                // takes a write lock) from munmapping pages we're traversing.
+                let _page_guard = super::gc_allocator::PAGE_LIFECYCLE_LOCK.read();
+
                 // Wrap mark+sweep in catch_unwind. On panic: log, drop snapshot,
                 // continue loop. The caller will timeout waiting for a response.
                 let collect_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -411,6 +416,10 @@ fn gc_pool_worker_loop(
                     // Sweep phase: build response (full sweep, no watermark)
                     sweep_snapshot(&snapshot)
                 }));
+
+                // Release read lock before sending response — munmap can proceed
+                // once mark/sweep is done.
+                drop(_page_guard);
 
                 match collect_result {
                     Ok(response) => {

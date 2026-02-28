@@ -178,6 +178,8 @@ pub enum TraceEventKind {
         expected_type: TraceValue,
         pruned_count: u32,
         surviving_count: u32,
+        /// The rhs_type of each pruned match (`None` if the match had no rhs_type).
+        pruned_types: Vec<Option<TraceValue>>,
     },
 
     // ---- Error/Exception Handling ----
@@ -272,6 +274,56 @@ pub enum TraceEventKind {
     GcSafepoint {
         root_count: u32,
         allocation_delta_bytes: u64,
+    },
+
+    // ---- Type Inference ----
+    /// Type inference determined the type(s) of an expression.
+    TypeInference {
+        /// The expression whose type was inferred.
+        expression: TraceValue,
+        /// All inferred types (nondeterministic — may have multiple).
+        inferred_types: Vec<TraceValue>,
+        /// Which code path produced the result (e.g., "literal-bool",
+        /// "builtin-signature:{op}", "env-declared-arrow:{op}",
+        /// "phase-10-inferred-arrow:{op}", "fallback-undefined", etc.).
+        source: String,
+    },
+
+    /// A type match comparison was performed.
+    TypeMatch {
+        /// The actual type (e.g., from a rule's rhs_type).
+        actual: TraceValue,
+        /// The expected type (e.g., Bool from if-condition).
+        expected: TraceValue,
+        /// Whether the match succeeded.
+        result: bool,
+        /// Which matching rule decided the outcome (e.g., "expected-undefined",
+        /// "exact-atom-match", "sexpr-structural-match", "no-match", etc.).
+        reason: String,
+    },
+
+    /// RHS type was computed for a rule entry at insertion time.
+    RhsTypeComputed {
+        /// The rule's head symbol (e.g., "fact", "|-").
+        head: String,
+        /// The rule's arity.
+        arity: u32,
+        /// The LHS pattern.
+        lhs: TraceValue,
+        /// The RHS template.
+        rhs: TraceValue,
+        /// The computed rhs_type (None = %Undefined% → filtered out).
+        rhs_type: Option<TraceValue>,
+    },
+
+    /// A new inferred type was registered (Phase 10.1 or 10.4).
+    InferredTypeRegistered {
+        /// Function name.
+        function_name: String,
+        /// The registered type.
+        registered_type: TraceValue,
+        /// "phase-10.1-rhs" or "phase-10.4-arrow".
+        source: String,
     },
 }
 

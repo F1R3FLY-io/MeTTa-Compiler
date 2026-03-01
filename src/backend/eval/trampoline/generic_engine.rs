@@ -105,6 +105,14 @@ where
         return value.clone();
     }
 
+    // Fast path: if value contains no variables, bindings cannot affect it.
+    // This avoids O(N) recursion + Vec allocation + factory.sexpr() for ground
+    // values like (+ 1 2). MettaValue::clone() is O(1) pointer copy.
+    // Uses O(1) tagged pointer flag check instead of O(depth) tree walk.
+    if !value.has_variables_fast() {
+        return value.clone();
+    }
+
     // Type variants do NOT recurse (matching heap behavior in helpers.rs)
     // Types are returned as-is without substitution
     if value.is_type() {

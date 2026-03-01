@@ -38,9 +38,10 @@ use crate::backend::eval::mork_forms_generic::{
     eval_coalg_generic, eval_exec_generic, eval_lookup_generic, eval_rulify_generic,
 };
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
-use crate::backend::eval::types_generic::{eval_check_type_generic, eval_get_type_generic};
+use crate::backend::eval::types_generic::{eval_check_type_generic, eval_get_type_generic, types_match_generic};
 use crate::backend::grounded::{has_generic_grounded_op, GenericGroundedState};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait, SpaceHandle};
+use crate::backend::models::metta_value::MettaValueInner;
 
 /// Generic S-expression step evaluation.
 ///
@@ -78,6 +79,11 @@ where
         return GenericEvalStep::Done((vec![ctx.factory().sexpr(vec![])], env));
     }
 
+    // Cached parent operator types: computed once in the catch-all arm (Phase 1),
+    // reused by find_typed_arg_indices_generic (Step 2) and
+    // is_declared_value_type (Step 2.5) to avoid redundant RwLock reads.
+    let mut cached_parent_op_types: Option<Vec<C::Value>> = None;
+
     // Check for special forms - these are handled directly
     if let Some(op) = items.first().and_then(|v| v.as_atom()) {
         // Trace: SpecialForm dispatch
@@ -86,13 +92,14 @@ where
             if let Some(tc) = ctx.trace_collector() {
                 let is_special = matches!(op,
                     "=" | "!" | "quote" | "unquote" | "if" | "if-reducible" | "error" | "Error"
-                    | "is-error" | "catch" | "eval" | "chain" | "let" | "let*" | ":" | "get-type"
-                    | "check-type" | "match" | "match-or" | "superpose" | "amb" | "collapse"
+                    | "is-error" | "catch" | "eval" | "chain" | "let" | "let*" | ":" | ":<"
+                    | "get-type" | "check-type" | "match" | "match-or" | "superpose" | "amb" | "collapse"
                     | "map-atom" | "filter-atom" | "foldl-atom" | "add-atom" | "remove-atom"
                     | "get-atoms" | "new-space" | "new-state" | "get-state" | "change-state!"
                     | "pragma!" | "println!" | "import!" | "include" | "mod-space!"
                     | "print-mods!" | "unique" | "subtraction" | "intersection" | "union"
-                    | "assertEqual" | "assertEqualToResult"
+                    | "assertEqual" | "assertEqualToResult" | "is-function" | "type-cast"
+                    | "match-types" | "match-type-or" | "first-from-pair" | "metta"
                 );
                 if is_special {
                     let input_tv = crate::backend::trace::trace_value_generic(&ctx.factory().sexpr(items.clone()));
@@ -624,6 +631,54 @@ where
                 return GenericEvalStep::Done((results, env));
             }
 
+            // Subtype declaration - native generic implementation (zero-conversion)
+            // (:< SubType SuperType) registers a subtype relation used by the type checker.
+            // HE parity: this is a declaration form like (:), not evaluated as a rule.
+            ":<" => {
+                if items.len() != 3 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            ":< requires exactly 2 arguments, got {}. Usage: (:< SubType SuperType)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+
+                // Extract sub and super type names
+                let sub_name = match items[1].as_atom() {
+                    Some(atom) => atom.to_string(),
+                    None => {
+                        let err = ctx.factory().error(
+                            ":< requires atom arguments. Usage: (:< SubType SuperType)",
+                            items[1].clone(),
+                        );
+                        return GenericEvalStep::Done((vec![err], env));
+                    }
+                };
+                let super_name = match items[2].as_atom() {
+                    Some(atom) => atom.to_string(),
+                    None => {
+                        let err = ctx.factory().error(
+                            ":< requires atom arguments. Usage: (:< SubType SuperType)",
+                            items[2].clone(),
+                        );
+                        return GenericEvalStep::Done((vec![err], env));
+                    }
+                };
+
+                let mut new_env = env.clone();
+                new_env.add_subtype_generic(&sub_name, &super_name);
+
+                // Also add the (:< ...) atom to space so match/get-atoms can see it
+                let atom = ctx.factory().sexpr(items);
+                new_env.add_to_space(&atom);
+
+                // Subtype declarations return empty list (like type assertions)
+                return GenericEvalStep::Done((vec![], new_env));
+            }
+
             // Type assertion - native generic implementation (zero-conversion)
             ":" => {
                 if items.len() != 3 {
@@ -681,6 +736,223 @@ where
                     &items, ctx.factory(), &env,
                 );
                 return GenericEvalStep::Done((results, env));
+            }
+
+            // is-function - check if a type is an arrow type (Phase G, HE parity)
+            "is-function" => {
+                if items.len() != 2 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "is-function requires exactly 1 argument, got {}. Usage: (is-function type)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                let typ = &items[1];
+                let is_fn = if let Some(type_items) = typ.as_sexpr() {
+                    type_items.first().and_then(|v| v.as_atom()) == Some("->")
+                } else {
+                    false
+                };
+                return GenericEvalStep::Done((vec![ctx.factory().bool(is_fn)], env));
+            }
+
+            // type-cast - validate atom against expected type (Phase H, HE parity)
+            "type-cast" => {
+                if items.len() != 4 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "type-cast requires exactly 3 arguments, got {}. Usage: (type-cast atom type space)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                let results = crate::backend::eval::types_generic::eval_type_cast_generic(
+                    &items, ctx.factory(), &env,
+                );
+                return GenericEvalStep::Done((results, env));
+            }
+
+            // metta - interpreter operation (HE stdlib parity)
+            // (metta atom type space) — evaluates atom with type constraint in space
+            "metta" => {
+                if items.len() != 4 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "metta requires exactly 3 arguments, got {}. Usage: (metta atom type space)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+
+                let atom = &items[1];
+                let typ = &items[2];
+                // items[3] is space — accepted but we use env's type system (same as type-cast)
+
+                // %Undefined% type constraint → evaluate without type checking
+                if let Some(name) = typ.as_atom() {
+                    if name == "%Undefined%" || name == "Atom" {
+                        // Evaluate the atom; no type constraint to enforce
+                        return GenericEvalStep::EvalEval {
+                            arg: atom.clone(),
+                            env,
+                            depth,
+                        };
+                    }
+                }
+
+                // Variables pass through unchanged (HE: variables are never evaluated)
+                if atom.as_atom().map_or(false, |s| s.starts_with('$')) {
+                    return GenericEvalStep::Done((vec![atom.clone()], env));
+                }
+
+                // Check metatype match (Symbol/Variable/Expression/Grounded)
+                if let Some(type_name) = typ.as_atom() {
+                    let meta_match = match type_name {
+                        "Symbol" => atom.as_atom().map_or(false, |s| !s.starts_with('$')),
+                        "Variable" => atom.as_atom().map_or(false, |s| s.starts_with('$')),
+                        "Expression" => atom.as_sexpr().is_some() || atom.is_unit(),
+                        "Grounded" => matches!(
+                            atom.inner_raw(),
+                            MettaValueInner::Bool(_)
+                                | MettaValueInner::Long(_)
+                                | MettaValueInner::Float(_)
+                                | MettaValueInner::String(_)
+                        ),
+                        _ => false,
+                    };
+                    if meta_match {
+                        return GenericEvalStep::Done((vec![atom.clone()], env));
+                    }
+                }
+
+                // For non-expression atoms (symbols, grounded): type-cast check only
+                if atom.as_sexpr().is_none() && !atom.is_unit() {
+                    let results = crate::backend::eval::types_generic::eval_type_cast_generic(
+                        &items, ctx.factory(), &env,
+                    );
+                    return GenericEvalStep::Done((results, env));
+                }
+
+                // For expressions: evaluate first, then type-cast each result.
+                // Desugar to: (let $__metta_result (eval atom) (type-cast $__metta_result type space))
+                let fresh_var = ctx.factory().atom("$__metta_result");
+                let type_cast_expr = ctx.factory().sexpr(vec![
+                    ctx.factory().atom("type-cast"),
+                    fresh_var.clone(),
+                    typ.clone(),
+                    items[3].clone(),
+                ]);
+                return GenericEvalStep::StartLetBinding {
+                    pattern: fresh_var,
+                    value_expr: atom.clone(),
+                    body: type_cast_expr,
+                    env,
+                    depth,
+                };
+            }
+
+            // match-types - structural type matching (HE stdlib parity)
+            "match-types" => {
+                if items.len() != 5 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "match-types requires 4 arguments, got {}. Usage: (match-types type1 type2 then else)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().atom("BadArity"),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                let type1 = &items[1];
+                let type2 = &items[2];
+                let then_branch = &items[3];
+                let else_branch = &items[4];
+
+                // %Undefined% and Atom match anything, per HE semantics
+                let undefined = ctx.factory().atom("%Undefined%");
+                let atom_type = ctx.factory().atom("Atom");
+
+                let matched = *type1 == undefined
+                    || *type2 == undefined
+                    || *type1 == atom_type
+                    || *type2 == atom_type
+                    || types_match_generic(type1, type2);
+
+                let branch = if matched { then_branch } else { else_branch };
+                return GenericEvalStep::EvalIfBranch {
+                    branch: branch.clone(),
+                    env,
+                    depth,
+                };
+            }
+
+            // match-type-or - fold helper for type matching (HE stdlib parity)
+            // (match-type-or $folded $next $type) = (or $folded (match-types $next $type True False))
+            "match-type-or" => {
+                if items.len() != 4 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "match-type-or requires 3 arguments, got {}. Usage: (match-type-or folded next type)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().atom("BadArity"),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                let folded = &items[1];
+                let next = &items[2];
+                let target_type = &items[3];
+
+                // Check if next matches type
+                let undefined = ctx.factory().atom("%Undefined%");
+                let atom_type = ctx.factory().atom("Atom");
+                let matched = *next == undefined
+                    || *target_type == undefined
+                    || *next == atom_type
+                    || *target_type == atom_type
+                    || types_match_generic(next, target_type);
+
+                // or(folded, matched)
+                let folded_bool = folded.as_bool().unwrap_or_else(|| folded.as_atom() == Some("True"));
+                let result = folded_bool || matched;
+                return GenericEvalStep::Done((vec![ctx.factory().bool(result)], env));
+            }
+
+            // first-from-pair - extract first element from a pair (HE stdlib parity)
+            // (first-from-pair ($first $second)) = $first
+            "first-from-pair" => {
+                if items.len() != 2 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "first-from-pair requires 1 argument, got {}. Usage: (first-from-pair pair)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+                let pair = &items[1];
+                if let Some(pair_items) = pair.as_sexpr() {
+                    if pair_items.len() == 2 {
+                        return GenericEvalStep::Done((vec![pair_items[0].clone()], env));
+                    }
+                }
+                // Not a valid pair — return error per HE
+                let err = ctx.factory().error(
+                    "incorrect pair format",
+                    ctx.factory().sexpr(vec![
+                        ctx.factory().atom("first-from-pair"),
+                        pair.clone(),
+                    ]),
+                );
+                return GenericEvalStep::Done((vec![err], env));
             }
 
             // map-atom - defers iteration to trampoline
@@ -1521,6 +1793,40 @@ where
 
             // Step 1: Try grounded operations with RAW (unevaluated) arguments
             _ => {
+                // Phase 9.1: Variable-head guard.
+                // Variable-headed S-expressions (e.g. ($f x y)) cannot match any
+                // rule or grounded op. Send directly to tuple path (evaluate
+                // sub-elements independently). This is HE-equivalent behavior
+                // (interpreter.rs:604–611).
+                if op.starts_with('$') {
+                    return GenericEvalStep::EvalSExpr { items, env, depth };
+                }
+
+                // Phase 9.6 + Phase 1 cache: Compute parent op types ONCE.
+                // This result is reused by Phase 9.6 (all-error-types check),
+                // find_typed_arg_indices_generic (Step 2), and
+                // is_declared_value_type (Step 2.5) — avoids 3x redundant
+                // RwLock reads + bloom hash + supertype closure.
+                let op_types = if env.may_have_type(op) {
+                    env.get_types_generic(op)
+                } else {
+                    Vec::new()
+                };
+
+                // Phase 9.6: All-error-types early exit.
+                // If ALL declared types for this operator are error types,
+                // skip rule matching and return an error immediately.
+                if !op_types.is_empty() && op_types.iter().all(|t| {
+                    t.as_sexpr().map_or(false, |type_items|
+                        type_items.first().and_then(|v| v.as_atom()) == Some("Error"))
+                }) {
+                    let err = ctx.factory().error(
+                        &format!("All types for '{}' are errors", op),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((vec![err], env));
+                }
+
                 // Try generic grounded operation (zero-conversion path)
                 // Uses static dispatch - works with any V: MettaValueTrait
                 if has_generic_grounded_op(op) {
@@ -1534,6 +1840,9 @@ where
                     let state = GenericGroundedState::new(op.to_string(), args);
                     return GenericEvalStep::StartGroundedOp { state, env, depth };
                 }
+
+                // Store cached types for Steps 2 & 2.5 (outside this match arm)
+                cached_parent_op_types = Some(op_types);
             }
         }
     }
@@ -1554,7 +1863,7 @@ where
     // This MUST fire BEFORE rule matching (Step 3). Otherwise, rules match
     // with unevaluated args (e.g., `(g (f))` matches `(g $x)` binding
     // `$x = (f)` instead of pre-evaluating `(f)` → {1,2,3} first).
-    match find_typed_arg_indices_generic(&items, &env) {
+    match find_typed_arg_indices_generic(&items, &env, cached_parent_op_types.as_deref()) {
         Some(typed_indices) => {
             // Type system was consulted. Use only its result.
             if !typed_indices.is_empty() {
@@ -1623,7 +1932,7 @@ where
     // (no arrow types), it can't have rules. Skip to tuple path directly.
     // This avoids unnecessary rule matching for known data constructors.
     if let Some(op) = items.first().and_then(|v| v.as_atom()) {
-        if is_declared_value_type(op, &env) {
+        if is_declared_value_type(op, &env, cached_parent_op_types.as_deref()) {
             return GenericEvalStep::EvalSExpr { items, env, depth };
         }
     }

@@ -116,7 +116,7 @@ where
     }
 
     // Complex types: store a pointer to the slab-allocated MettaValueInner.
-    // MettaValue.inner is &'static MettaValueInner, so inner_ptr() gives
+    // MettaValue.inner_ref() is &'static MettaValueInner, so inner_ptr() gives
     // a persistent pointer that survives across function returns.
     // The GC handles memory management — no cleanup needed here.
     let ptr = val.inner_ptr();

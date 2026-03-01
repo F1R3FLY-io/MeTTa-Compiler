@@ -684,4 +684,132 @@ mod regression_tests {
             assert_eq!(env.get_atom_multiplicity(fact), 1);
         }
     }
+
+    /// Regression test: match_space with SExpr containing Long(-501)
+    /// Reproduces proptest failure: fact = SExpr([Atom("a"), Long(-501)]), n = 1
+    #[test]
+    fn test_match_space_long_negative() {
+        let mut env = MettaEnvironment::default();
+
+        let fact = MettaValue::SExpr(vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Long(-501),
+        ]);
+
+        env.add_to_space(&fact);
+
+        let template = MettaValue::Atom("found".to_string());
+        let results: Vec<MettaValue> = env
+            .match_space(&fact, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+
+        eprintln!("fact = {:?}", fact);
+        eprintln!("results.len() = {}", results.len());
+        eprintln!("results = {:?}", results);
+
+        // Also test Bool(true) (another known failing case)
+        let mut env2 = MettaEnvironment::default();
+        let fact2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Bool(true),
+        ]);
+
+        env2.add_to_space(&fact2);
+
+        let results2: Vec<MettaValue> = env2
+            .match_space(&fact2, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+
+        eprintln!("fact2 = {:?}", fact2);
+        eprintln!("results2.len() = {}", results2.len());
+        eprintln!("results2 = {:?}", results2);
+
+        assert_eq!(results.len(), 1, "Expected 1 result for Long(-501)");
+        assert_eq!(results2.len(), 1, "Expected 1 result for Bool(true)");
+    }
+
+    /// Reproduce proptest failure: rule = (SExpr([Atom("s3as83"), String("imeq0q29")]), Bool(false))
+    #[test]
+    fn test_proptest_regression_string_rule() {
+        let mut env = MettaEnvironment::default();
+        let lhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("s3as83".to_string()),
+            MettaValue::String("imeq0q29".to_string()),
+        ]);
+        let rhs = MettaValue::Bool(false);
+        env.add_rule(lhs.clone(), rhs.clone());
+
+        let matching = env.get_matching_rules_for_expr(&lhs);
+        eprintln!("matching = {:?}", matching);
+        eprintln!("rule_count = {}", env.rule_count());
+        assert!(!matching.is_empty(), "Should find at least one matching rule for (s3as83 \"imeq0q29\") -> false");
+    }
+
+    /// Test that symbol cache invalidation works across multiple environments.
+    /// Simulates proptest running multiple iterations (each with a fresh env).
+    #[test]
+    fn test_cross_env_symbol_cache_isolation() {
+        // Env 1: add rule and query
+        {
+            let mut env = MettaEnvironment::default();
+            let lhs = MettaValue::SExpr(vec![
+                MettaValue::Atom("foo".to_string()),
+                MettaValue::Atom("bar".to_string()),
+            ]);
+            env.add_rule(lhs.clone(), MettaValue::Bool(true));
+            let matching = env.get_matching_rules_for_expr(&lhs);
+            assert!(!matching.is_empty(), "Env1: should find rule for (foo bar)");
+        }
+
+        // Env 2: different env, same symbol names — must get its OWN symbol IDs
+        {
+            let mut env = MettaEnvironment::default();
+            let lhs = MettaValue::SExpr(vec![
+                MettaValue::Atom("foo".to_string()),
+                MettaValue::Atom("bar".to_string()),
+            ]);
+            env.add_rule(lhs.clone(), MettaValue::Bool(false));
+            let matching = env.get_matching_rules_for_expr(&lhs);
+            assert!(!matching.is_empty(), "Env2: should find rule for (foo bar) with different SM");
+        }
+
+        // Env 3: with String children (the actual proptest failure pattern)
+        {
+            let mut env = MettaEnvironment::default();
+            let lhs = MettaValue::SExpr(vec![
+                MettaValue::Atom("s3as83".to_string()),
+                MettaValue::String("imeq0q29".to_string()),
+            ]);
+            env.add_rule(lhs.clone(), MettaValue::Bool(false));
+            let matching = env.get_matching_rules_for_expr(&lhs);
+            assert!(!matching.is_empty(), "Env3: should find rule with String child");
+        }
+
+        // Run 20 iterations to ensure no cross-contamination.
+        // This regression test catches the ABA pointer reuse bug: when a
+        // SharedMapping is dropped and the allocator reuses the same heap
+        // address for a new one, the symbol cache must still invalidate.
+        // With monotonic epochs (not pointer identity), this always works.
+        for i in 0..20 {
+            let mut env = MettaEnvironment::default();
+            let lhs = MettaValue::SExpr(vec![
+                MettaValue::Atom(format!("head{}", i)),
+                MettaValue::String(format!("str{}", i)),
+            ]);
+            env.add_rule(lhs.clone(), MettaValue::Long(i as i64));
+
+            // Use match_rules_native — this is the actual code path used by the evaluator
+            // (not the legacy get_matching_rules_for_expr trie traversal path)
+            let matching = env.match_rules_native(
+                &lhs,
+                |v: &MettaValue, _: &crate::backend::GenericBindings<MettaValue>,
+                 _: &crate::backend::models::GcFactory| v.clone(),
+            );
+            assert!(!matching.is_empty(), "Iteration {}: should find rule", i);
+        }
+    }
 }

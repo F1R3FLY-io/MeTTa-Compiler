@@ -36,6 +36,7 @@ mod context;
 mod generic_engine;
 mod generic_trampoline;
 mod generic_types;
+pub(crate) mod dispatch_hints;
 pub mod session_context;
 
 // Primary entry points
@@ -69,6 +70,9 @@ pub use generic_engine::{
 // Re-export the unified generic trampoline engine
 #[allow(unused_imports)]
 pub use generic_trampoline::eval_trampoline_generic;
+
+// Phase 9.5: Normal-form memoization (check, insert, invalidate)
+pub use dispatch_hints::{invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form};
 
 // Re-export session context (dual-arena model)
 pub use session_context::SessionContext;

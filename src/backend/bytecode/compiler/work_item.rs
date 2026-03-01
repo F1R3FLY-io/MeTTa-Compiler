@@ -360,6 +360,7 @@ pub enum UnaryOp {
     GetType,
     GetMetaType,
     ValidateAtom,
+    IsFunction,
     Repr,
 
     // State operations
@@ -404,6 +405,7 @@ impl UnaryOp {
             UnaryOp::MaxAtom => Opcode::MaxAtom,
             UnaryOp::GetType => Opcode::GetType,
             UnaryOp::GetMetaType => Opcode::GetMetaType,
+            UnaryOp::IsFunction => Opcode::IsFunction,
             UnaryOp::Repr => Opcode::Repr,
             UnaryOp::NewState => Opcode::NewState,
             UnaryOp::GetState => Opcode::GetState,

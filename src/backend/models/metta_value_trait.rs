@@ -287,6 +287,53 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     fn hash_value(&self) -> u64;
 
     // =========================================================================
+    // Variable detection
+    // =========================================================================
+
+    /// Check if this value contains any variables (`$x`, `&y`, `'z`, or `_`).
+    ///
+    /// O(1) flag check: does this value (or any sub-value) contain variables?
+    ///
+    /// Default implementation falls back to the O(depth) `contains_variables()` tree walk.
+    /// Concrete types with tagged pointer flags (e.g., `MettaValue`) should override this
+    /// for true O(1) behavior via a single bitwise AND instruction.
+    #[inline]
+    fn has_variables_fast(&self) -> bool {
+        self.contains_variables()
+    }
+
+    /// Space references (`&self`, `&kb`, `&stack`) are NOT variables.
+    /// Ground types (Bool, Long, Float, String, Unit, Space, State, Memo, Empty)
+    /// never contain variables.
+    ///
+    /// Used by `apply_bindings_generic_inner` to short-circuit recursion and
+    /// avoid allocating new S-expressions for variable-free values.
+    fn contains_variables(&self) -> bool {
+        if let Some(s) = self.as_atom() {
+            if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                return false;
+            }
+            return s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'');
+        }
+        if let Some(items) = self.as_sexpr() {
+            return items.iter().any(|item| item.contains_variables());
+        }
+        if let Some(goals) = self.as_conjunction() {
+            return goals.iter().any(|g| g.contains_variables());
+        }
+        if let Some((_, details)) = self.as_error() {
+            return details.contains_variables();
+        }
+        if let Some(t) = self.as_type() {
+            return t.contains_variables();
+        }
+        if let Some(q) = self.as_quoted_ref() {
+            return q.contains_variables();
+        }
+        false // Ground types: Bool, Long, Float, String, Unit, Space, State, Memo, Empty
+    }
+
+    // =========================================================================
     // Comparison methods
     // =========================================================================
 

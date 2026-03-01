@@ -405,7 +405,7 @@ impl Compiler {
         work_stack: &mut Vec<CompileWork>,
         _continuations: &mut Vec<Continuation>,
     ) -> CompileResult<()> {
-        match expr.inner {
+        match expr.inner_ref() {
             // ================================================================
             // Literals - direct emit, no recursion
             // ================================================================
@@ -1307,6 +1307,41 @@ impl Compiler {
                     right: args[1].clone(),
                     folded: None,
                     cont_id,
+                });
+                Ok(Some(()))
+            }
+            "is-function" => {
+                self.check_arity("is-function", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::IsFunction,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "type-cast" => {
+                self.check_arity("type-cast", args.len(), 3)?;
+                // type-cast is ternary: compile all 3 args then emit opcode
+                // Halts to tree-walker for environment-dependent type checking
+                work_stack.push(CompileWork::EmitOpcode {
+                    opcode: Opcode::TypeCast,
+                });
+                // Push in reverse order (stack discipline: last pushed = first compiled)
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[2].clone(),
+                    in_tail_position: false,
+                    cont_id: 0,
+                });
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[1].clone(),
+                    in_tail_position: false,
+                    cont_id: 0,
+                });
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[0].clone(),
+                    in_tail_position: false,
+                    cont_id: 0,
                 });
                 Ok(Some(()))
             }
@@ -2590,7 +2625,7 @@ impl Compiler {
         cont_id: usize,
         work_stack: &mut Vec<CompileWork>,
     ) -> CompileResult<()> {
-        match expr.inner {
+        match expr.inner_ref() {
             MettaValueInner::Atom(name) => {
                 let idx = self.builder.add_constant(MettaValue::Atom(name));
                 if name.starts_with('$') {
@@ -2702,7 +2737,7 @@ impl Compiler {
     ) -> CompileResult<()> {
         match state {
             PatternBindingState::Binding => {
-                match pattern.inner {
+                match pattern.inner_ref() {
                     MettaValueInner::Atom(name) if name.starts_with('$') => {
                         let var_name = (*name)[1..].to_string();
                         let slot = self.context.declare_local(var_name)?;

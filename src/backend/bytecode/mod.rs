@@ -292,7 +292,7 @@ impl std::error::Error for BytecodeEvalError {}
 /// can also be compiled. This prevents the bytecode VM from returning wrong results
 /// when a subexpression needs rule resolution.
 pub fn can_compile(expr: &MettaValue) -> bool {
-    match expr.inner {
+    match expr.inner_ref() {
         // Always compilable literals
         MettaValueInner::Unit
         | MettaValueInner::Bool(_)
@@ -429,7 +429,7 @@ pub fn can_compile_cached(expr: &MettaValue) -> bool {
 /// Use this when bytecode execution will have access to an Environment for
 /// rule lookup and definition (e.g., mmverify workloads).
 pub fn can_compile_with_env(expr: &MettaValue) -> bool {
-    match expr.inner {
+    match expr.inner_ref() {
         // Always compilable literals
         MettaValueInner::Unit
         | MettaValueInner::Bool(_)

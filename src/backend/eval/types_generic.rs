@@ -14,9 +14,17 @@
 
 use std::collections::HashMap;
 
+use smallvec::SmallVec;
+
 use crate::backend::builtin_signatures::{get_return_type, get_signature, TypeExpr};
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
+
+/// Tracks S-expression pointers currently being inferred through control-flow tracing.
+/// Uses raw slab pointer identity for O(1) comparison. SmallVec<8> avoids heap
+/// allocation for typical nesting depths (1-4 levels). Linear scan is faster
+/// than HashSet for n ≤ ~20 due to cache locality.
+type InferenceSeen = SmallVec<[*const MettaValueInner; 8]>;
 
 /// Infer ALL possible types of an expression (nondeterministic, HE parity).
 ///
@@ -27,6 +35,24 @@ use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait
 /// For function applications `(f x)`, returns the return type from each
 /// matching arrow type, plus tuple types from value types.
 pub fn infer_types_generic<V, F>(expr: &V, factory: &F, env: &GenericEnvironment<V, F>) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    let mut seen = InferenceSeen::new();
+    infer_types_generic_inner(expr, factory, env, &mut seen)
+}
+
+/// Inner implementation of `infer_types_generic` that threads `seen` for cycle detection.
+///
+/// The `seen` set tracks S-expression pointers currently being inferred through
+/// control-flow tracing, preventing infinite recursion on cyclic type expansions.
+fn infer_types_generic_inner<V, F>(
+    expr: &V,
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+    seen: &mut InferenceSeen,
+) -> Vec<V>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
@@ -113,12 +139,65 @@ where
                 { _trace_source = "sexpr-empty"; }
                 vec![factory.atom("Expression")]
             } else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+                // Phase 10.6: Control-flow tracing first (let, let*, if, if-reducible, case)
+                if let Some((types, source)) =
+                    infer_types_control_flow(op, items, factory, env, seen)
+                {
+                    #[cfg(feature = "eval-trace")]
+                    { _trace_source = source; }
+                    let _ = source;
+                    types
+                }
                 // Check the built-in signature registry
-                if let Some(sig) = get_signature(op) {
+                else if let Some(sig) = get_signature(op) {
                     if let Some(ret_type) = get_return_type(&sig.type_sig) {
-                        #[cfg(feature = "eval-trace")]
-                        { _trace_source = "builtin-signature"; }
-                        vec![type_expr_to_generic(ret_type, factory)]
+                        // Phase E: Validate actual arg types against builtin arrow params.
+                        // If args don't match, skip this signature (return empty).
+                        if let TypeExpr::Arrow(ref param_types, _) = sig.type_sig {
+                            let actual_args = &items[1..];
+                            let mut all_match = true;
+                            let mut bindings = HashMap::new();
+                            for (i, param_type_expr) in param_types.iter().enumerate() {
+                                if i < actual_args.len() {
+                                    let arg_type = infer_type_generic(&actual_args[i], factory, env);
+                                    // Skip validation for unconstrained types:
+                                    // - %Undefined% (untyped atom)
+                                    // - Type($x) (type variable wrapper)
+                                    // - $x (variable atom)
+                                    let is_unconstrained = arg_type.as_atom() == Some("%Undefined%")
+                                        || arg_type.as_atom().map_or(false, |n| n.starts_with('$'))
+                                        || arg_type.as_type().and_then(|inner| inner.as_atom()).map_or(false, |n| n.starts_with('$'));
+                                    if !is_unconstrained {
+                                        let param_type_val = type_expr_to_generic(param_type_expr, factory);
+                                        if !match_types_with_bindings(&param_type_val, &arg_type, &mut bindings) {
+                                            all_match = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if !all_match {
+                                // Phase E: Arg types don't match builtin signature — return empty
+                                // (HE parity: get-type (+ 5 "4") returns empty, not Number)
+                                #[cfg(feature = "eval-trace")]
+                                { _trace_source = "builtin-arg-mismatch"; }
+                                vec![]
+                            } else {
+                                #[cfg(feature = "eval-trace")]
+                                { _trace_source = "builtin-signature"; }
+                                let resolved = if !bindings.is_empty() {
+                                    let ret_val = type_expr_to_generic(ret_type, factory);
+                                    apply_type_bindings(&ret_val, &bindings, factory)
+                                } else {
+                                    type_expr_to_generic(ret_type, factory)
+                                };
+                                vec![resolved]
+                            }
+                        } else {
+                            #[cfg(feature = "eval-trace")]
+                            { _trace_source = "builtin-signature"; }
+                            vec![type_expr_to_generic(ret_type, factory)]
+                        }
                     } else {
                         // Builtin signature exists but no return type — fall through
                         let (types, source) = infer_types_sexpr_body(op, items, factory, env);
@@ -140,10 +219,11 @@ where
                     types
                 }
             } else {
-                // Operator is not an atom
+                // Phase 10.6: Non-atom head (e.g., ((Inheritance $B $A) (Truth_inversion $TV)))
+                // These are data tuples — type is Expression
                 #[cfg(feature = "eval-trace")]
-                { _trace_source = "fallback-undefined"; }
-                vec![factory.atom("%Undefined%")]
+                { _trace_source = "non-atom-head-expression"; }
+                vec![factory.atom("Expression")]
             }
         }
         MettaValueInner::Conjunction(_) => {
@@ -153,7 +233,7 @@ where
             if goals.is_empty() {
                 vec![factory.atom("Expression")]
             } else if let Some(last) = goals.last() {
-                infer_types_generic(last, factory, env)
+                infer_types_generic_inner(last, factory, env, seen)
             } else {
                 vec![factory.atom("Expression")]
             }
@@ -167,7 +247,7 @@ where
             #[cfg(feature = "eval-trace")]
             { _trace_source = "spanned-strip"; }
             let stripped = expr.strip_one_span();
-            infer_types_generic(&stripped, factory, env)
+            infer_types_generic_inner(&stripped, factory, env, seen)
         }
     };
 
@@ -219,12 +299,16 @@ where
 
     let actual_args = &items[1..]; // Skip operator
 
-    for generic_type in &op_types {
+    for (idx, generic_type) in op_types.iter().enumerate() {
         if let Some(type_items) = generic_type.as_sexpr() {
             if let Some(arrow) = type_items.first().and_then(|v| v.as_atom()) {
                 if arrow == "->" && type_items.len() > 1 {
-                    let param_types = &type_items[1..type_items.len() - 1];
-                    let return_type = &type_items[type_items.len() - 1];
+                    // Phase D: Freshen type variables to prevent cross-contamination
+                    // between multiple arrow declarations for the same operator.
+                    let freshened = freshen_type_variables(generic_type, idx, factory);
+                    let fresh_items = freshened.as_sexpr().expect("freshened arrow is SExpr");
+                    let param_types = &fresh_items[1..fresh_items.len() - 1];
+                    let return_type = &fresh_items[fresh_items.len() - 1];
 
                     // Phase 10.2: Match actual arg types against declared param
                     // types, collecting type variable bindings for substitution.
@@ -244,7 +328,13 @@ where
                         }
                     }
 
-                    let resolved = if all_match && !bindings.is_empty() {
+                    // Phase E: Skip this arrow if arg types don't match
+                    // (HE parity: `get-type (+ 5 "4")` returns empty, not Number)
+                    if !all_match {
+                        continue;
+                    }
+
+                    let resolved = if !bindings.is_empty() {
                         // Substitute bindings into return type
                         apply_type_bindings(return_type, &bindings, factory)
                     } else {
@@ -259,24 +349,35 @@ where
         }
     }
 
-    // Also include non-arrow types as value types
-    for generic_type in &op_types {
-        if generic_type.as_sexpr().map_or(true, |sexpr_items| {
-            sexpr_items.first().and_then(|v| v.as_atom()) != Some("->")
-        }) {
-            if !result_types.contains(generic_type) {
-                result_types.push(generic_type.clone());
+    let has_arrow = op_types.iter().any(|t| {
+        t.as_sexpr()
+            .and_then(|items| items.first().and_then(|v| v.as_atom()))
+            == Some("->")
+    });
+
+    // For operators with only value types (no arrow types), check if
+    // this is a data constructor (no rules) — if so, fall through to
+    // the tuple-type construction path below. Otherwise (has rules),
+    // return the value types as-is (it's a function with a value type).
+    let has_value_types_only = !has_arrow && !op_types.is_empty();
+    let is_data_constructor = has_value_types_only
+        && !env.may_have_rules_for(op, items.len() - 1);
+
+    // Include non-arrow types as value types (unless this is a data
+    // constructor, which uses the tuple-type path instead).
+    if !is_data_constructor {
+        for generic_type in &op_types {
+            if generic_type.as_sexpr().map_or(true, |sexpr_items| {
+                sexpr_items.first().and_then(|v| v.as_atom()) != Some("->")
+            }) {
+                if !result_types.contains(generic_type) {
+                    result_types.push(generic_type.clone());
+                }
             }
         }
     }
 
     if !result_types.is_empty() {
-        // Determine trace source: arrow types vs value types
-        let has_arrow = op_types.iter().any(|t| {
-            t.as_sexpr()
-                .and_then(|items| items.first().and_then(|v| v.as_atom()))
-                == Some("->")
-        });
         let source = if has_arrow {
             "env-declared-arrow"
         } else {
@@ -293,16 +394,18 @@ where
         let mut inferred_results = Vec::new();
         let mut has_inferred_arrow = false;
 
-        for inferred_type in &inferred {
+        for (idx, inferred_type) in inferred.iter().enumerate() {
             // Check if this is an arrow type — process it like declared types
             if let Some(type_items) = inferred_type.as_sexpr() {
                 if type_items.first().and_then(|v| v.as_atom()) == Some("->")
                     && type_items.len() > 1
                 {
                     has_inferred_arrow = true;
-                    // Phase 10.2: Type variable substitution on inferred arrow
-                    let param_types = &type_items[1..type_items.len() - 1];
-                    let return_type = &type_items[type_items.len() - 1];
+                    // Phase D: Freshen type variables to prevent cross-contamination
+                    let freshened = freshen_type_variables(inferred_type, idx, factory);
+                    let fresh_items = freshened.as_sexpr().expect("freshened arrow is SExpr");
+                    let param_types = &fresh_items[1..fresh_items.len() - 1];
+                    let return_type = &fresh_items[fresh_items.len() - 1];
 
                     let mut bindings = HashMap::new();
                     let mut all_match = true;
@@ -322,7 +425,12 @@ where
                         }
                     }
 
-                    let resolved = if all_match && !bindings.is_empty() {
+                    // Phase E: Skip this arrow if arg types don't match
+                    if !all_match {
+                        continue;
+                    }
+
+                    let resolved = if !bindings.is_empty() {
                         apply_type_bindings(return_type, &bindings, factory)
                     } else {
                         return_type.clone()
@@ -351,7 +459,364 @@ where
         }
     }
 
-    (vec![factory.atom("%Undefined%")], "fallback-undefined")
+    // Phase 10.6: If the head has no rules (not in bloom filter), it's a
+    // data constructor (e.g., stv, sentence, Concept, Inheritance).
+    if !env.may_have_rules_for(op, items.len() - 1) {
+        // Phase B: Tuple type construction (HE parity).
+        // For data constructors, construct structural tuple types from element
+        // types. E.g., (a b) where (: a A) and (: b B) → tuple type (A B).
+        // With nondeterministic types, produces the Cartesian product.
+        let element_type_sets: Vec<Vec<V>> = items.iter()
+            .map(|item| {
+                let types = infer_types_generic(item, factory, env);
+                // Filter out %Undefined% — elements with no type don't
+                // contribute to tuple construction
+                types.into_iter()
+                    .filter(|t| t.as_atom() != Some("%Undefined%"))
+                    .collect()
+            })
+            .collect();
+
+        // Only construct tuple types if ALL elements have at least one concrete type
+        if element_type_sets.iter().all(|s| !s.is_empty()) {
+            // Cartesian product of element types
+            let mut tuple_types: Vec<Vec<V>> = vec![vec![]];
+            for type_set in &element_type_sets {
+                let mut new_tuples = Vec::with_capacity(tuple_types.len() * type_set.len());
+                for existing in &tuple_types {
+                    for t in type_set {
+                        let mut extended = existing.clone();
+                        extended.push(t.clone());
+                        new_tuples.push(extended);
+                    }
+                }
+                tuple_types = new_tuples;
+            }
+
+            let result: Vec<V> = tuple_types.into_iter()
+                .map(|elements| factory.sexpr(elements))
+                .collect();
+
+            if !result.is_empty() {
+                return (result, "tuple-type-construction");
+            }
+        }
+
+        // Fallback: at least one element has no type → generic Expression
+        (vec![factory.atom("Expression")], "data-constructor")
+    } else {
+        (vec![factory.atom("%Undefined%")], "fallback-undefined")
+    }
+}
+
+/// Filter out `%Undefined%` entries from a type list.
+fn filter_undefined<V: MettaValueTrait + Clone>(types: &[V]) -> Vec<V> {
+    types
+        .iter()
+        .filter(|t| t.as_atom() != Some("%Undefined%"))
+        .cloned()
+        .collect()
+}
+
+/// Compute the union of two type lists (deduplicating via PartialEq).
+fn union_types<V: MettaValueTrait + Clone>(a: &[V], b: &[V]) -> Vec<V> {
+    let mut result = a.to_vec();
+    for t in b {
+        if !result.contains(t) {
+            result.push(t.clone());
+        }
+    }
+    result
+}
+
+/// Trace through control-flow forms to infer result types structurally.
+///
+/// Handles `let`, `let*`, `if`, `if-reducible`, and `case` by recursively
+/// inferring the types of their body/branch expressions.
+///
+/// Returns `Some((types, source))` if tracing produces at least one
+/// non-`%Undefined%` type. Returns `None` if not a control-flow form
+/// or all branches yield `%Undefined%`.
+fn infer_types_control_flow<V, F>(
+    op: &str,
+    items: &[V],
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+    seen: &mut InferenceSeen,
+) -> Option<(Vec<V>, &'static str)>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    match op {
+        // (let $var expr body) → type(body)
+        "let" if items.len() == 4 => {
+            let body = &items[3];
+            let types = infer_types_with_cycle_check(body, factory, env, seen);
+            let filtered = filter_undefined(&types);
+            if filtered.is_empty() {
+                None
+            } else {
+                Some((filtered, "control-flow-let"))
+            }
+        }
+
+        // (let* (bindings...) body) → type(body)
+        "let*" if items.len() == 3 => {
+            let body = &items[2];
+            let types = infer_types_with_cycle_check(body, factory, env, seen);
+            let filtered = filter_undefined(&types);
+            if filtered.is_empty() {
+                None
+            } else {
+                Some((filtered, "control-flow-let*"))
+            }
+        }
+
+        // (if cond then else) → type(then) ∪ type(else)
+        "if" if items.len() == 4 => {
+            let then_branch = &items[2];
+            let else_branch = &items[3];
+            let then_types = infer_types_with_cycle_check(then_branch, factory, env, seen);
+            let else_types = infer_types_with_cycle_check(else_branch, factory, env, seen);
+            let then_filtered = filter_undefined(&then_types);
+            let else_filtered = filter_undefined(&else_types);
+            let combined = union_types(&then_filtered, &else_filtered);
+            if combined.is_empty() {
+                None
+            } else {
+                Some((combined, "control-flow-if"))
+            }
+        }
+
+        // (if-reducible expr then else) → type(then) ∪ type(else)
+        "if-reducible" if items.len() == 4 => {
+            let then_branch = &items[2];
+            let else_branch = &items[3];
+            let then_types = infer_types_with_cycle_check(then_branch, factory, env, seen);
+            let else_types = infer_types_with_cycle_check(else_branch, factory, env, seen);
+            let then_filtered = filter_undefined(&then_types);
+            let else_filtered = filter_undefined(&else_types);
+            let combined = union_types(&then_filtered, &else_filtered);
+            if combined.is_empty() {
+                None
+            } else {
+                Some((combined, "control-flow-if-reducible"))
+            }
+        }
+
+        // (case expr ((pat1 body1) (pat2 body2) ...)) → ∪ type(body_i)
+        "case" if items.len() == 3 => {
+            if let Some(branches) = items[2].as_sexpr() {
+                let mut combined: Vec<V> = Vec::new();
+                for branch in branches {
+                    if let Some(branch_items) = branch.as_sexpr() {
+                        if branch_items.len() == 2 {
+                            let body = &branch_items[1];
+                            let body_types =
+                                infer_types_with_cycle_check(body, factory, env, seen);
+                            let filtered = filter_undefined(&body_types);
+                            combined = union_types(&combined, &filtered);
+                        }
+                    }
+                }
+                if combined.is_empty() {
+                    None
+                } else {
+                    Some((combined, "control-flow-case"))
+                }
+            } else {
+                None
+            }
+        }
+
+        // (chain expr $var body) → type(body)
+        // Semantically identical to `let` for type purposes.
+        "chain" if items.len() == 4 => {
+            let body = &items[3];
+            let types = infer_types_with_cycle_check(body, factory, env, seen);
+            let filtered = filter_undefined(&types);
+            if filtered.is_empty() {
+                None
+            } else {
+                Some((filtered, "control-flow-chain"))
+            }
+        }
+
+        // (function body) → type of inner return expressions
+        // Traces into the body AST to find `(return expr)` nodes and infers
+        // the type of `expr`. Handles the common HE pattern
+        // `(function (chain ... (return result)))`.
+        "function" if items.len() == 2 => {
+            let body = &items[1];
+            let return_types = collect_return_types(body, factory, env, seen);
+            let filtered = filter_undefined(&return_types);
+            if filtered.is_empty() {
+                None
+            } else {
+                Some((filtered, "control-flow-function"))
+            }
+        }
+
+        // (superpose (elem1 elem2 ...)) → ∪ type(elem_i)
+        // Union of all element types (nondeterministic result).
+        "superpose" if items.len() == 2 => {
+            if let Some(elements) = items[1].as_sexpr() {
+                let mut combined: Vec<V> = Vec::new();
+                for elem in elements {
+                    let elem_types = infer_types_with_cycle_check(elem, factory, env, seen);
+                    let filtered = filter_undefined(&elem_types);
+                    combined = union_types(&combined, &filtered);
+                }
+                if combined.is_empty() {
+                    None
+                } else {
+                    Some((combined, "control-flow-superpose"))
+                }
+            } else {
+                None
+            }
+        }
+
+        // (match space pattern template) → type(template)
+        "match" if items.len() >= 4 => {
+            let template = &items[3];
+            let types = infer_types_with_cycle_check(template, factory, env, seen);
+            let filtered = filter_undefined(&types);
+            if filtered.is_empty() {
+                None
+            } else {
+                Some((filtered, "control-flow-match"))
+            }
+        }
+
+        // (unify a b then else) → type(then) ∪ type(else)
+        // Structurally like `if`: the result type is the union of both branches.
+        "unify" if items.len() == 5 => {
+            let then_branch = &items[3];
+            let else_branch = &items[4];
+            let then_types = infer_types_with_cycle_check(then_branch, factory, env, seen);
+            let else_types = infer_types_with_cycle_check(else_branch, factory, env, seen);
+            let then_filtered = filter_undefined(&then_types);
+            let else_filtered = filter_undefined(&else_types);
+            let combined = union_types(&then_filtered, &else_filtered);
+            if combined.is_empty() {
+                None
+            } else {
+                Some((combined, "control-flow-unify"))
+            }
+        }
+
+        _ => None,
+    }
+}
+
+/// Recursively collect return types from a `(function ...)` body.
+///
+/// Walks the body AST looking for `(return expr)` nodes. For each one,
+/// infers the type of `expr`. Recurses through control-flow forms
+/// (`chain`, `if`, `case`, `let`, `let*`) to find deeply nested returns.
+fn collect_return_types<V, F>(
+    expr: &V,
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+    seen: &mut InferenceSeen,
+) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    let items = match expr.as_sexpr() {
+        Some(items) if !items.is_empty() => items,
+        _ => return vec![], // Leaf node — no return form
+    };
+
+    let op = match items.first().and_then(|v| v.as_atom()) {
+        Some(op) => op,
+        None => return vec![], // Non-atom head — no return form
+    };
+
+    match op {
+        // (return expr) → infer type of expr
+        "return" if items.len() == 2 => {
+            infer_types_with_cycle_check(&items[1], factory, env, seen)
+        }
+        // (chain expr $var body) → recurse into body
+        "chain" if items.len() == 4 => {
+            collect_return_types(&items[3], factory, env, seen)
+        }
+        // (if cond then else) → recurse into both branches
+        "if" if items.len() == 4 => {
+            let then_types = collect_return_types(&items[2], factory, env, seen);
+            let else_types = collect_return_types(&items[3], factory, env, seen);
+            union_types(&then_types, &else_types)
+        }
+        // (let $var expr body) → recurse into body
+        "let" if items.len() == 4 => {
+            collect_return_types(&items[3], factory, env, seen)
+        }
+        // (let* (bindings...) body) → recurse into body
+        "let*" if items.len() == 3 => {
+            collect_return_types(&items[2], factory, env, seen)
+        }
+        // (case expr ((pat1 body1) ...)) → recurse into each branch body
+        "case" if items.len() == 3 => {
+            if let Some(branches) = items[2].as_sexpr() {
+                let mut combined = Vec::new();
+                for branch in branches {
+                    if let Some(branch_items) = branch.as_sexpr() {
+                        if branch_items.len() == 2 {
+                            let types = collect_return_types(&branch_items[1], factory, env, seen);
+                            combined = union_types(&combined, &types);
+                        }
+                    }
+                }
+                combined
+            } else {
+                vec![]
+            }
+        }
+        _ => vec![], // Unknown form — no return info
+    }
+}
+
+/// Cycle-detecting variant of `infer_types_generic_inner` for control-flow tracing.
+///
+/// For S-expressions with an atom head, tries `infer_types_control_flow` first.
+/// If that returns `None`, falls through to `infer_types_generic_inner`.
+/// For non-S-expressions, delegates directly to `infer_types_generic_inner`.
+///
+/// Uses pointer identity (`inner_ptr()`) to detect cycles: if the same expression
+/// is already being inferred in the current chain, returns `[]` (no type info).
+/// Push/pop bracketing ensures `seen` tracks only the current inference chain.
+fn infer_types_with_cycle_check<V, F>(
+    expr: &V,
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+    seen: &mut InferenceSeen,
+) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    // Cycle detection: if we're already inferring this exact expression, bail out
+    let ptr = expr.inner_ptr();
+    if seen.contains(&ptr) {
+        return vec![]; // cycle → no type info from this path
+    }
+
+    if let Some(items) = expr.as_sexpr() {
+        if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+            seen.push(ptr);
+            let result = infer_types_control_flow(op, items, factory, env, seen);
+            seen.pop();
+            if let Some((types, _source)) = result {
+                return types;
+            }
+        }
+    }
+    // Fall through to full inference (threading `seen`)
+    infer_types_generic_inner(expr, factory, env, seen)
 }
 
 /// Infer the type of an expression (deterministic convenience wrapper).
@@ -457,6 +922,13 @@ fn types_match_generic_inner<V: MettaValueTrait>(actual: &V, expected: &V) -> (b
     if let Some(name) = actual.as_atom() {
         if name == "%Undefined%" {
             return (true, "actual-undefined");
+        }
+    }
+
+    // Meta-types match anything (HE parity)
+    if let Some(name) = expected.as_atom() {
+        if is_meta_type(name) {
+            return (true, "expected-metatype");
         }
     }
 
@@ -566,11 +1038,48 @@ where
         return env.is_subtype_of(actual_name, expected_name);
     }
 
-    // For S-expression types (e.g., arrow types), check structural subtyping
-    // component-wise. This handles cases like (-> Dog Bool) matching where
-    // (-> Animal Bool) is expected (contravariant args, covariant return).
-    // For now, we only do simple subtype check on atoms.
+    // Phase I: Arrow structural subtyping.
+    // Arrows are CONTRAVARIANT in parameter types and COVARIANT in return type.
+    // (-> Dog Bool) matches where (-> Animal Bool) is expected if Dog <: Animal.
+    if let (Some(a_items), Some(e_items)) = (actual.as_sexpr(), expected.as_sexpr()) {
+        let a_is_arrow = a_items.first().and_then(|v| v.as_atom()) == Some("->");
+        let e_is_arrow = e_items.first().and_then(|v| v.as_atom()) == Some("->");
+        if a_is_arrow && e_is_arrow && a_items.len() == e_items.len() && a_items.len() >= 3 {
+            // Parameters: CONTRAVARIANT (expected param <: actual param)
+            let params_match = a_items[1..a_items.len() - 1]
+                .iter()
+                .zip(e_items[1..e_items.len() - 1].iter())
+                .all(|(a_param, e_param)| types_match_with_subtypes(e_param, a_param, env));
+            // Return type: COVARIANT (actual return <: expected return)
+            let ret_matches = types_match_with_subtypes(
+                &a_items[a_items.len() - 1],
+                &e_items[e_items.len() - 1],
+                env,
+            );
+            if params_match && ret_matches {
+                return true;
+            }
+        }
+    }
+
     false
+}
+
+/// Check if a type name is a MeTTa meta-type.
+///
+/// Meta-types represent syntactic categories rather than semantic types:
+/// - `Atom` — matches any atom (universal meta-type)
+/// - `Symbol` — matches any symbol (non-variable atom)
+/// - `Variable` — matches any variable (`$x`, etc.)
+/// - `Expression` — matches any S-expression
+/// - `Grounded` — matches grounded values (Bool, Number, String)
+///
+/// When a function parameter is declared with a meta-type, the type system
+/// accepts any argument of the corresponding syntactic category without
+/// checking its semantic type. This matches HE behavior where stdlib
+/// operations like `match`, `let`, `case`, etc. use `Atom` parameters.
+pub fn is_meta_type(name: &str) -> bool {
+    matches!(name, "Atom" | "Symbol" | "Variable" | "Expression" | "Grounded")
 }
 
 /// Bidirectional type matching with variable binding.
@@ -584,6 +1093,8 @@ where
 /// - Structural matching: `(List $t)` matches `(List Number)` with `{$t: Number}`
 /// - Arrow types: `(-> $t $u)` matches `(-> Number Bool)` with `{$t: Number, $u: Bool}`
 /// - Consistency: if `$t` is already bound to `Number`, it only matches `Number`
+/// - Meta-types: `Atom` accepts any type, `Symbol`/`Variable`/`Expression`/`Grounded`
+///   accept their respective syntactic categories (conservative: always accept at type level)
 pub fn match_types_with_bindings<V: MettaValueTrait + Clone>(
     pattern: &V,
     actual: &V,
@@ -598,6 +1109,10 @@ pub fn match_types_with_bindings<V: MettaValueTrait + Clone>(
                 bindings.insert(name.to_string(), actual.clone());
                 return true;
             }
+        }
+        // Meta-type in pattern — always accept (conservative: no false rejections)
+        if is_meta_type(name) {
+            return true;
         }
     }
 
@@ -628,6 +1143,124 @@ pub fn match_types_with_bindings<V: MettaValueTrait + Clone>(
 
     // Ground type equality
     pattern == actual
+}
+
+/// Try to reduce grounded operations in a type expression (dependent type support).
+///
+/// After `apply_type_bindings()` substitutes concrete values, expressions like
+/// `(+ 0 1)` may appear in type positions. This function reduces them to `1`.
+///
+/// Only handles fully-concrete grounded expressions (all args are ground values).
+/// Returns the original expression unchanged if reduction is not possible.
+fn try_reduce_type_expr<V, F>(expr: &V, factory: &F) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    let items = match expr.as_sexpr() {
+        Some(items) if items.len() >= 2 => items,
+        _ => return expr.clone(),
+    };
+
+    let op = match items[0].as_atom() {
+        Some(op) => op,
+        None => return expr.clone(),
+    };
+
+    // First, recursively reduce all sub-expressions
+    let reduced_args: Vec<V> = items[1..]
+        .iter()
+        .map(|arg| try_reduce_type_expr(arg, factory))
+        .collect();
+
+    // Try to evaluate the grounded operation with reduced args
+    match op {
+        "+" | "-" | "*" | "/" | "%" => {
+            if reduced_args.len() == 2 {
+                try_eval_binary_arith(op, &reduced_args[0], &reduced_args[1], factory)
+                    .unwrap_or_else(|| {
+                        // Rebuild with reduced args
+                        let mut new_items = Vec::with_capacity(items.len());
+                        new_items.push(items[0].clone());
+                        new_items.extend(reduced_args);
+                        factory.sexpr(new_items)
+                    })
+            } else {
+                expr.clone()
+            }
+        }
+        _ => {
+            // Not a reducible op — check if any args were reduced
+            let any_changed = items[1..]
+                .iter()
+                .zip(reduced_args.iter())
+                .any(|(orig, red)| orig != red);
+            if any_changed {
+                let mut new_items = Vec::with_capacity(items.len());
+                new_items.push(items[0].clone());
+                new_items.extend(reduced_args);
+                factory.sexpr(new_items)
+            } else {
+                expr.clone()
+            }
+        }
+    }
+}
+
+/// Try to evaluate a binary arithmetic operation on two ground values.
+/// Returns `None` if either operand is not a ground number.
+fn try_eval_binary_arith<V, F>(op: &str, a: &V, b: &V, factory: &F) -> Option<V>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    // Try integer arithmetic first
+    if let (Some(x), Some(y)) = (a.as_long(), b.as_long()) {
+        return match op {
+            "+" => x.checked_add(y).map(|r| factory.long(r)),
+            "-" => x.checked_sub(y).map(|r| factory.long(r)),
+            "*" => x.checked_mul(y).map(|r| factory.long(r)),
+            "/" => {
+                if y != 0 {
+                    Some(factory.long(x / y))
+                } else {
+                    None
+                }
+            }
+            "%" => {
+                if y != 0 {
+                    Some(factory.long(x % y))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+    }
+
+    // Try float arithmetic (promote integers to float if mixed)
+    let af = a.as_float().or_else(|| a.as_long().map(|l| l as f64))?;
+    let bf = b.as_float().or_else(|| b.as_long().map(|l| l as f64))?;
+    match op {
+        "+" => Some(factory.float(af + bf)),
+        "-" => Some(factory.float(af - bf)),
+        "*" => Some(factory.float(af * bf)),
+        "/" => {
+            if bf != 0.0 {
+                Some(factory.float(af / bf))
+            } else {
+                None
+            }
+        }
+        "%" => {
+            if bf != 0.0 {
+                Some(factory.float(af % bf))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Substitute type variable bindings into a type expression (Phase 10.2).
@@ -670,16 +1303,45 @@ where
         return typ.clone();
     }
 
-    // S-expression: recurse into all children
+    // S-expression: recurse into all children, then try to reduce grounded ops
     if let Some(items) = typ.as_sexpr() {
         let substituted: Vec<V> = items
             .iter()
             .map(|item| apply_type_bindings(item, bindings, factory))
             .collect();
-        return factory.sexpr(substituted);
+        let result = factory.sexpr(substituted);
+        return try_reduce_type_expr(&result, factory);
     }
 
     // Ground types, errors, etc.: return as-is
+    typ.clone()
+}
+
+/// Freshen type variables in a type expression to prevent cross-contamination.
+///
+/// Renames `$t` → `$t__0`, `$u` → `$u__0`, etc. (appending a unique index).
+/// This ensures that type variable `$t` in one arrow declaration doesn't
+/// accidentally unify with `$t` in another. Mirrors HE's `make_variables_unique()`.
+///
+/// The double-underscore separator (`__`) avoids collisions with user-defined
+/// type variable names (which don't conventionally use `__`).
+pub fn freshen_type_variables<V, F>(typ: &V, index: usize, factory: &F) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if let Some(name) = typ.as_atom() {
+        if name.starts_with('$') {
+            return factory.atom(&format!("{}__{}", name, index));
+        }
+        return typ.clone();
+    }
+    if let Some(items) = typ.as_sexpr() {
+        let freshened: Vec<V> = items.iter()
+            .map(|item| freshen_type_variables(item, index, factory))
+            .collect();
+        return factory.sexpr(freshened);
+    }
     typ.clone()
 }
 
@@ -1077,6 +1739,90 @@ where
 
     // No types found in the specified space
     vec![factory.atom("%Undefined%")]
+}
+
+/// Evaluate `(type-cast atom expected-type space)` — validate atom against type (HE parity).
+///
+/// Checks if the atom's type matches the expected type. Returns the atom if it matches,
+/// or `(Error atom BadType)` if it doesn't. Special handling:
+/// - `%Undefined%` expected type matches anything
+/// - Untyped atoms (type is `%Undefined%`) match anything
+/// - Meta-types (`Atom`, `Symbol`, `Variable`, `Expression`, `Grounded`) check syntactic category
+/// - The space argument is accepted but we use the environment's type system
+pub fn eval_type_cast_generic<V, F>(
+    items: &[V],
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    if items.len() != 4 {
+        return vec![factory.error(
+            &format!(
+                "type-cast requires exactly 3 arguments, got {}. Usage: (type-cast atom type space)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+
+    let atom = &items[1];
+    let expected_type = &items[2];
+    // items[3] is space — accepted but we use env's type system
+
+    // %Undefined% expected type matches anything
+    if let Some(name) = expected_type.as_atom() {
+        if name == "%Undefined%" {
+            return vec![atom.clone()];
+        }
+    }
+
+    // Check meta-type match first
+    if let Some(name) = expected_type.as_atom() {
+        let meta_match = match name {
+            "Atom" => true,
+            "Symbol" => atom.as_atom().map_or(false, |s| !s.starts_with('$')),
+            "Variable" => atom.as_atom().map_or(false, |s| s.starts_with('$')),
+            "Expression" => atom.as_sexpr().is_some() || atom.is_unit(),
+            "Grounded" => matches!(
+                atom.inner_raw(),
+                MettaValueInner::Bool(_)
+                    | MettaValueInner::Long(_)
+                    | MettaValueInner::Float(_)
+                    | MettaValueInner::String(_)
+            ),
+            _ => false,
+        };
+        if meta_match {
+            return vec![atom.clone()];
+        }
+    }
+
+    // Infer atom's types and check against expected
+    let actual_types = infer_types_generic(atom, factory, env);
+
+    // Untyped atoms (%Undefined%) match anything (HE parity)
+    let all_undefined = actual_types.iter().all(|t| t.as_atom() == Some("%Undefined%"));
+    if all_undefined {
+        return vec![atom.clone()];
+    }
+
+    // Check if any actual type matches the expected type (with subtype awareness)
+    let matches = actual_types
+        .iter()
+        .any(|actual| types_match_with_subtypes(actual, expected_type, env));
+
+    if matches {
+        vec![atom.clone()]
+    } else {
+        vec![factory.sexpr(vec![
+            factory.atom("Error"),
+            atom.clone(),
+            factory.atom("BadType"),
+        ])]
+    }
 }
 
 // ====================================================================
@@ -1854,5 +2600,278 @@ mod tests {
         // Type variables match anything
         assert!(types_match_generic(&number, &var));
         assert!(types_match_generic(&var, &number));
+    }
+
+    // =========================================================================
+    // Phase 10.6: Control-flow type tracing + data constructor inference tests
+    // =========================================================================
+
+    #[test]
+    fn test_infer_type_let_traces_body() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (let $x 42 (+ $x 1)) → Number (traced through body)
+        let expr = factory.sexpr(vec![
+            factory.atom("let"),
+            factory.atom("$x"),
+            factory.long(42),
+            factory.sexpr(vec![
+                factory.atom("+"),
+                factory.atom("$x"),
+                factory.long(1),
+            ]),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "let body (+ $x 1) should infer Number, got: {:?}",
+            types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_infer_type_let_star_traces_body() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (let* (($x 1) ($y 2)) (+ $x $y)) → Number (traced through body)
+        let bindings = factory.sexpr(vec![
+            factory.sexpr(vec![factory.atom("$x"), factory.long(1)]),
+            factory.sexpr(vec![factory.atom("$y"), factory.long(2)]),
+        ]);
+        let expr = factory.sexpr(vec![
+            factory.atom("let*"),
+            bindings,
+            factory.sexpr(vec![
+                factory.atom("+"),
+                factory.atom("$x"),
+                factory.atom("$y"),
+            ]),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "let* body (+ $x $y) should infer Number, got: {:?}",
+            types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_infer_types_if_branches_union() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (if True 42 "hello") → {Number, String}
+        let expr = factory.sexpr(vec![
+            factory.atom("if"),
+            factory.bool(true),
+            factory.long(42),
+            factory.string("hello"),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "if then-branch 42 should contribute Number"
+        );
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("String")),
+            "if else-branch \"hello\" should contribute String"
+        );
+    }
+
+    #[test]
+    fn test_infer_type_if_branches_same_type() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (if True 42 99) → Number (both branches same type, deduplicated)
+        let expr = factory.sexpr(vec![
+            factory.atom("if"),
+            factory.bool(true),
+            factory.long(42),
+            factory.long(99),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert_eq!(types.len(), 1, "both branches Number should deduplicate to 1");
+        assert_eq!(types[0].as_atom(), Some("Number"));
+    }
+
+    #[test]
+    fn test_infer_types_case_branches_union() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (case $x (($a 42) ($b "hello"))) → {Number, String}
+        let branches = factory.sexpr(vec![
+            factory.sexpr(vec![factory.atom("$a"), factory.long(42)]),
+            factory.sexpr(vec![factory.atom("$b"), factory.string("hello")]),
+        ]);
+        let expr = factory.sexpr(vec![
+            factory.atom("case"),
+            factory.atom("$x"),
+            branches,
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "case branch 42 should contribute Number"
+        );
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("String")),
+            "case branch \"hello\" should contribute String"
+        );
+    }
+
+    #[test]
+    fn test_infer_types_if_reducible_branches() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (if-reducible (f $x) 42 "fallback") → {Number, String}
+        let expr = factory.sexpr(vec![
+            factory.atom("if-reducible"),
+            factory.sexpr(vec![factory.atom("f"), factory.atom("$x")]),
+            factory.long(42),
+            factory.string("fallback"),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "if-reducible then-branch 42 should contribute Number"
+        );
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("String")),
+            "if-reducible else-branch \"fallback\" should contribute String"
+        );
+    }
+
+    #[test]
+    fn test_infer_type_non_atom_head_returns_expression() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // ((Inheritance $B $A) (Truth_inversion $TV)) → Expression
+        let expr = factory.sexpr(vec![
+            factory.sexpr(vec![
+                factory.atom("Inheritance"),
+                factory.atom("$B"),
+                factory.atom("$A"),
+            ]),
+            factory.sexpr(vec![
+                factory.atom("Truth_inversion"),
+                factory.atom("$TV"),
+            ]),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert_eq!(types.len(), 1);
+        assert_eq!(
+            types[0].as_atom(),
+            Some("Expression"),
+            "non-atom head should infer Expression"
+        );
+    }
+
+    #[test]
+    fn test_infer_type_nested_let_if() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (let $x 1 (if (> $x 0) 42 99)) → Number
+        let expr = factory.sexpr(vec![
+            factory.atom("let"),
+            factory.atom("$x"),
+            factory.long(1),
+            factory.sexpr(vec![
+                factory.atom("if"),
+                factory.sexpr(vec![
+                    factory.atom(">"),
+                    factory.atom("$x"),
+                    factory.long(0),
+                ]),
+                factory.long(42),
+                factory.long(99),
+            ]),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "nested let→if should trace through to Number, got: {:?}",
+            types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_infer_type_deep_nesting_no_cycle() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // Build a 20-deep nested let: (let $x0 1 (let $x1 2 (let $x2 3 ... 42)))
+        // With cycle detection (no arbitrary depth limit), the full acyclic chain
+        // is traced through to the innermost expression (42 → Number).
+        let mut inner: MettaValue = factory.long(42);
+        for i in (0..20).rev() {
+            inner = factory.sexpr(vec![
+                factory.atom("let"),
+                factory.atom(&format!("$x{}", i)),
+                factory.long(i as i64),
+                inner,
+            ]);
+        }
+        let types = infer_types_generic(&inner, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "20-deep nested let should trace through to Number, got: {:?}",
+            types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_infer_type_cycle_detection_via_seen() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // Build a 100-deep acyclic nested let: (let $x0 1 (let $x1 2 ... (+ $x99 1)))
+        // This proves the absence of arbitrary depth limiting — all 100 levels
+        // are traced through to the innermost body (+ → Number).
+        let mut inner: MettaValue = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.atom("$x99"),
+            factory.long(1),
+        ]);
+        for i in (0..100).rev() {
+            inner = factory.sexpr(vec![
+                factory.atom("let"),
+                factory.atom(&format!("$x{}", i)),
+                factory.long(i as i64),
+                inner,
+            ]);
+        }
+        let types = infer_types_generic(&inner, &factory, &env);
+        assert!(
+            types.iter().any(|t| t.as_atom() == Some("Number")),
+            "100-deep acyclic nested let should trace through to Number, got: {:?}",
+            types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_infer_type_data_constructor() {
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
+
+        // (stv 0.5 0.8) → Expression (no rules for stv, so it's a data constructor)
+        let expr = factory.sexpr(vec![
+            factory.atom("stv"),
+            factory.float(0.5),
+            factory.float(0.8),
+        ]);
+        let types = infer_types_generic(&expr, &factory, &env);
+        assert_eq!(types.len(), 1);
+        assert_eq!(
+            types[0].as_atom(),
+            Some("Expression"),
+            "data constructor (stv) should infer Expression"
+        );
     }
 }

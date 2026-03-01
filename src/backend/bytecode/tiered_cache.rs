@@ -162,6 +162,12 @@ pub struct ExprCompilationState {
     /// Original expression hash for identification and tracing.
     /// Stored as hash to avoid cloning large expressions.
     pub expr_hash: u64,
+
+    /// Cached `TypeSignatureRegistry` with epoch invalidation.
+    ///
+    /// Stores `(epoch, registry)` — rebuilt only when `RULE_EPOCH` changes.
+    /// Reduces JIT entry overhead from O(types + inferred_types) to O(1) amortized.
+    type_registry_cache: parking_lot::Mutex<Option<(u64, Arc<super::jit::TypeSignatureRegistry>)>>,
 }
 
 impl ExprCompilationState {
@@ -176,7 +182,32 @@ impl ExprCompilationState {
             jit2_status: AtomicU8::new(TierStatusKind::NotStarted as u8),
             jit2_code: OnceLock::new(),
             expr_hash,
+            type_registry_cache: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Get or build a cached `TypeSignatureRegistry` for JIT execution.
+    ///
+    /// Returns the cached registry if the current `RULE_EPOCH` matches the
+    /// cached epoch. Otherwise rebuilds from the environment and caches it.
+    /// O(1) amortized — only rebuilds when rules/types change.
+    pub fn get_or_build_type_registry(
+        &self,
+        env: &crate::backend::eval::trampoline::MettaEnvironment,
+    ) -> Arc<super::jit::TypeSignatureRegistry> {
+        let current_epoch = crate::backend::environment::rule_management::RULE_EPOCH
+            .load(Ordering::Acquire);
+        let mut guard = self.type_registry_cache.lock();
+        if let Some((cached_epoch, ref registry)) = *guard {
+            if cached_epoch == current_epoch {
+                return Arc::clone(registry);
+            }
+        }
+        let registry = Arc::new(
+            super::jit::TypeSignatureRegistry::from_env(env),
+        );
+        *guard = Some((current_epoch, Arc::clone(&registry)));
+        registry
     }
 
     /// Get the current execution count
@@ -1022,7 +1053,7 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
     const UNIT_HASH: u64 = 0x756e6974_68617368; // "unit_hash" as bytes
 
     // Fast path for primitives, slow path for complex types
-    match expr.inner {
+    match expr.inner_ref() {
         MettaValueInner::Unit => UNIT_HASH,
         MettaValueInner::Bool(b) => if *b {
             BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
@@ -1049,7 +1080,7 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
 
 /// Recursively hash an MettaValue for complex types.
 fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H) {
-    match expr.inner {
+    match expr.inner_ref() {
         MettaValueInner::Unit => 0u8.hash(hasher),
         MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
         MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }

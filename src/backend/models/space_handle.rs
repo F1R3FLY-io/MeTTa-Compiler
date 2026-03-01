@@ -165,7 +165,7 @@ impl SpaceHandle {
             let mut pm = atom_space.btm.write();
             let mut wbtm = atom_space.wide_btm.write();
             for atom in &atoms {
-                match with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
+                match with_mork_bytes(atom, &atom_space.shared_mapping, atom_space.mork_cache_epoch, |bytes| {
                     multiplicity::add_atom(&mut pm, bytes);
                 }) {
                     Ok(()) => {}
@@ -248,7 +248,7 @@ impl SpaceHandle {
                     let mut pm = atom_space.btm.write();
                     let mut wbtm = atom_space.wide_btm.write();
                     for atom in &module_atoms {
-                        match with_mork_bytes(atom, &atom_space.shared_mapping, |bytes| {
+                        match with_mork_bytes(atom, &atom_space.shared_mapping, atom_space.mork_cache_epoch, |bytes| {
                             multiplicity::add_atom(&mut pm, bytes);
                         }) {
                             Ok(()) => {}
@@ -321,7 +321,7 @@ impl SpaceHandle {
                     }
                 } else {
                     // Ground atom → MORK PathMap
-                    match with_mork_bytes(&atom, &space.shared_mapping, |bytes| {
+                    match with_mork_bytes(&atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
                         let mut pm = space.btm.write();
                         multiplicity::add_atom(&mut pm, bytes);
                     }) {
@@ -368,7 +368,7 @@ impl SpaceHandle {
                     }
                 } else {
                     // Ground atom → MORK PathMap
-                    match with_mork_bytes(atom, &space.shared_mapping, |bytes| {
+                    match with_mork_bytes(atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
                         let mut pm = space.btm.write();
                         let old_count = multiplicity::get_multiplicity(&pm, bytes);
                         if old_count > 0 {
@@ -610,7 +610,7 @@ impl SpaceHandle {
                     var_atoms.iter().any(|(v, _)| v == atom)
                 } else {
                     // Check PathMap
-                    match with_mork_bytes(atom, &space.shared_mapping, |bytes| {
+                    match with_mork_bytes(atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
                         let pm = space.btm.read();
                         multiplicity::get_multiplicity(&pm, bytes) > 0
                     }) {
@@ -647,7 +647,7 @@ impl SpaceHandle {
                         .unwrap_or(0)
                 } else {
                     // Check PathMap
-                    match with_mork_bytes(atom, &space.shared_mapping, |bytes| {
+                    match with_mork_bytes(atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
                         let pm = space.btm.read();
                         multiplicity::get_multiplicity(&pm, bytes) as usize
                     }) {

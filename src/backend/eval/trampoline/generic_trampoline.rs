@@ -43,6 +43,7 @@ use crate::backend::eval::types_generic::{
 };
 use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
 use crate::backend::models::{GenericMultiplicityMatch, MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::models::metta_value::is_variable_str;
 
 /// Cached check for the `METTA_DEBUG_EVAL` environment variable.
 /// Uses `OnceLock` so the syscall happens at most once per process.
@@ -51,6 +52,13 @@ static METTA_DEBUG_EVAL_CACHED: OnceLock<bool> = OnceLock::new();
 fn is_debug_eval() -> bool {
     *METTA_DEBUG_EVAL_CACHED.get_or_init(|| std::env::var("METTA_DEBUG_EVAL").is_ok())
 }
+
+// Evaluation memoization and type-driven dispatch helpers extracted to `dispatch_hints`
+// module for icache locality. Re-import the functions used in this file.
+use super::dispatch_hints::{
+    is_memoized_normal_form, memoize_normal_form,
+    derive_arg_expected_type,
+};
 
 /// Generic trampoline evaluation entry point.
 ///
@@ -130,14 +138,15 @@ where
     // Final result storage
     let mut final_result: Option<GenericEvalResult<C::Value, ContextEnv<C>>> = None;
 
-    // GC safepoint counter: wrapping u8 overflows every 256 iterations
-    let mut gc_counter: u8 = 0;
+    // GC safepoint counter: wrapping u16 overflows every 4096 iterations (mask 0xFFF).
+    // Increased from u8 (256) to reduce maybe_process_gc_response overhead (4.9% → ~1%).
+    let mut gc_counter: u16 = 0;
 
     // Main trampoline loop
     while let Some(work) = work_stack.pop() {
-        // Periodic GC safepoint check (every 256 trampoline iterations)
+        // Periodic GC safepoint check (every 4096 trampoline iterations)
         gc_counter = gc_counter.wrapping_add(1);
-        if gc_counter == 0 && ctx.should_safepoint() {
+        if gc_counter & 0xFFF == 0 && ctx.should_safepoint() {
             // Collect all live values from trampoline state as GC roots.
             // This ensures values in the work stack and continuations survive
             // the mark-sweep cycle that runs during the safepoint pause.
@@ -208,6 +217,20 @@ where
                     }
                 }
 
+                // Phase 9.5: Normal-form memoization check.
+                // If this S-expression has been previously evaluated and reached
+                // fixpoint (evaluated to itself), skip evaluation entirely.
+                let is_sexpr = value.as_sexpr().is_some();
+                if is_sexpr && is_memoized_normal_form(&value) {
+                    work_stack.push(GenericWorkItem::Resume {
+                        result: (vec![value], env),
+                    });
+                    continue;
+                }
+
+                // Save input pointer for fixpoint detection (Phase 9.5)
+                let input_ptr = if is_sexpr { value.inner_ptr() } else { std::ptr::null() };
+
                 // Perform one step of evaluation using generic step function
                 let step_result = eval_step_generic(value, env.clone(), depth, ctx);
                 let _ = is_tail_call; // Used to determine depth in push sites
@@ -217,6 +240,14 @@ where
                 match step_result {
                     // Direct result - resume continuation
                     GenericEvalStep::Done(result) => {
+                        // Phase 9.5: Fixpoint detection — if eval returned
+                        // the same S-expression (by pointer), memoize it
+                        if !input_ptr.is_null()
+                            && result.0.len() == 1
+                            && result.0[0].inner_ptr() == input_ptr
+                        {
+                            memoize_normal_form(&result.0[0]);
+                        }
                         work_stack.push(GenericWorkItem::Resume { result });
                     }
 
@@ -537,6 +568,12 @@ where
                             let first_idx = grounded_indices[0];
                             let arg_to_eval = items[first_idx].clone();
 
+                            // Phase 9.2: Derive expected_type from parent op's
+                            // builtin signature for branch pruning (Phase 8.7).
+                            let arg_expected_type = derive_arg_expected_type::<C>(
+                                &items, first_idx, &env, ctx.factory(),
+                            );
+
                             continuations.push(GenericContinuation::CollectGroundedArg {
                                 items,
                                 grounded_indices,
@@ -551,7 +588,7 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
-                                expected_type: None,
+                                expected_type: arg_expected_type,
                             });
                         }
                     }
@@ -620,7 +657,8 @@ where
                                 env,
                                 depth: depth + 1,
                                 is_tail_call: false,
-                                expected_type: None,
+                                // Phase 9.2d: filter-atom predicate should return Bool
+                                expected_type: Some(ctx.factory().atom("Bool")),
                             });
                         }
                     }
@@ -2000,6 +2038,11 @@ fn process_continuation_generic<C: EvalContext>(
                 let arg_idx = grounded_indices[next_idx];
                 let arg_to_eval = items[arg_idx].clone();
 
+                // Phase 9.2: Derive expected_type for next arg
+                let arg_expected_type = derive_arg_expected_type::<C>(
+                    &items, arg_idx, &result_env, ctx.factory(),
+                );
+
                 continuations.push(GenericContinuation::CollectGroundedArg {
                     items,
                     grounded_indices,
@@ -2014,7 +2057,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env: result_env,
                     depth: depth + 1,
                     is_tail_call: false,
-                    expected_type: None,
+                    expected_type: arg_expected_type,
                 });
             } else {
                 // All grounded args evaluated — compute Cartesian product of
@@ -4973,6 +5016,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let first = &atom_results[0];
                 let metatype = match first.inner_raw() {
                     MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
+                    MettaValueInner::Atom(s) if is_variable_str(s) => "Variable",
                     MettaValueInner::Atom(_) => "Symbol",
                     MettaValueInner::Bool(_) | MettaValueInner::Long(_)
                     | MettaValueInner::Float(_) | MettaValueInner::String(_) => "Grounded",
@@ -4982,6 +5026,7 @@ fn process_continuation_generic<C: EvalContext>(
                         // Re-dispatch on the stripped value
                         match stripped.inner_raw() {
                             MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
+                            MettaValueInner::Atom(s) if is_variable_str(s) => "Variable",
                             MettaValueInner::Atom(_) => "Symbol",
                             MettaValueInner::Bool(_) | MettaValueInner::Long(_)
                             | MettaValueInner::Float(_) | MettaValueInner::String(_) => "Grounded",

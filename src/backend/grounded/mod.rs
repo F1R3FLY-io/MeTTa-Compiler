@@ -113,7 +113,7 @@ pub(crate) fn find_error(results: &[MettaValue]) -> Option<&MettaValue> {
 
 /// Helper function to get a friendly type name for error messages
 pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
-    match value.inner {
+    match value.inner_ref() {
         MettaValueInner::Long(_) => "Number (integer)",
         MettaValueInner::Float(_) => "Number (float)",
         MettaValueInner::Bool(_) => "Bool",

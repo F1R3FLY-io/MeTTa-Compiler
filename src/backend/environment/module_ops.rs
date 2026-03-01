@@ -23,12 +23,12 @@ where
 {
     /// Get the current module path (directory of the executing module).
     pub fn current_module_dir(&self) -> Option<&std::path::Path> {
-        self.current_module_path.as_deref()
+        self.current_module_path.as_deref().map(|p| p.as_path())
     }
 
     /// Set the current module path
     pub fn set_current_module_path(&mut self, path: Option<PathBuf>) {
-        self.current_module_path = path;
+        self.current_module_path = path.map(Arc::new);
     }
 
     /// Enable or disable strict mode.

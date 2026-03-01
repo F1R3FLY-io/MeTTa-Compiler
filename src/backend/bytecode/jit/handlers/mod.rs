@@ -126,7 +126,8 @@ pub use mork::{
 pub use debug::{compile_breakpoint, compile_trace, DebugHandlerContext};
 
 pub use type_ops::{
-    compile_assert_type, compile_check_type, compile_get_type, TypeOpsHandlerContext,
+    compile_assert_type, compile_check_type, compile_get_type, compile_is_function,
+    TypeOpsHandlerContext,
 };
 
 pub use globals::{

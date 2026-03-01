@@ -79,7 +79,7 @@ impl MettaEnvironment {
         let space = self.create_space();
 
         // Convert pattern to MORK query bytes and run query_multi in callback
-        let query_result = with_mork_query_bytes(pattern, &self.shared_mapping, |pattern_bytes, ctx| {
+        let query_result = with_mork_query_bytes(pattern, &self.shared_mapping, self.mork_cache_epoch, |pattern_bytes, ctx| {
             let pattern_expr = Expr {
                 ptr: pattern_bytes.as_ptr().cast_mut(),
             };

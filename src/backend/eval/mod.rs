@@ -39,6 +39,26 @@ pub use trampoline::eval_trampoline;
 // Re-export arena context types for external use
 pub use trampoline::{MettaEnvironment, StaticEvalContext};
 
+// Type system re-exports for benchmarking
+pub use types_generic::{
+    infer_types_generic, infer_type_generic,
+    types_match_generic, types_match_with_subtypes,
+    match_types_with_bindings, apply_type_bindings,
+    freshen_type_variables, is_meta_type,
+    eval_get_type_generic, eval_check_type_generic,
+    eval_type_cast_generic, eval_validate_atom_generic,
+    eval_get_type_space_generic,
+    infer_arrow_type_from_rule,
+    extract_type_constraint, get_ground_type, is_pattern_type_compatible,
+};
+pub use type_fixpoint::run_type_fixpoint;
+pub use step::{
+    find_typed_arg_indices_generic, find_grounded_arg_indices_generic,
+    is_declared_value_type, validate_grounded_arg_types,
+    extract_arg_types, extract_return_type, is_arrow_type,
+    is_meta_type_value,
+};
+
 // =============================================================================
 // Arena-based Evaluation with Bytecode/JIT Tiering
 // =============================================================================

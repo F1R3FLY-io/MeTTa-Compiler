@@ -114,6 +114,37 @@ impl TypeSignatureRegistry {
             }
         }
 
+        // Phase 9.4: Also register inferred arrow types from Phase 10 deep type inference.
+        // Declared types take priority — skip operators already registered above.
+        for entry in env.shared.inferred_fn_types.iter() {
+            let name = entry.key();
+            if registry.entries.contains_key(name.as_str()) {
+                continue;
+            }
+            for typ in entry.value().iter() {
+                if let Some(arg_types) = extract_arg_types(typ) {
+                    let classifications: Vec<TypeClassification> = arg_types
+                        .iter()
+                        .map(|t| {
+                            if is_meta_type(t) {
+                                TypeClassification::PassThrough
+                            } else {
+                                TypeClassification::Evaluate
+                            }
+                        })
+                        .collect();
+                    registry.insert(
+                        name.clone(),
+                        FunctionTypeInfo {
+                            arity: classifications.len(),
+                            arg_types: classifications,
+                        },
+                    );
+                    break; // Use first inferred arrow type
+                }
+            }
+        }
+
         registry
     }
 }

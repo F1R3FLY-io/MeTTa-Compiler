@@ -44,7 +44,7 @@ pub fn metta_to_varint_key(value: &MettaValue) -> Vec<u8> {
 
 /// Encode a MettaValue recursively into the buffer
 fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
-    match value.inner {
+    match value.inner_ref() {
         MettaValueInner::SExpr(items) => {
             buf.push(tags::SEXPR);
             encode_varint(buf, items.len() as u64); // No 63 limit!

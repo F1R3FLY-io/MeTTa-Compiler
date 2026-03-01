@@ -115,6 +115,11 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
     /// Vec and matching them with `space_match_bidirectional_generic()`, we get correct
     /// bidirectional matching semantics.
     pub(crate) variable_atoms: RwLock<Vec<(V, usize)>>,
+
+    /// Monotonic epoch for MORK byte-conversion cache invalidation.
+    /// Allocated once from `next_mork_epoch()` at construction time.
+    /// Propagated unchanged on `fork()` (same symbol mapping, same epoch).
+    pub(crate) mork_cache_epoch: u64,
 }
 
 impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
@@ -140,6 +145,7 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             inferred_type_generation: AtomicU64::new(0),
             fixpoint_generation: AtomicU64::new(0),
             variable_atoms: RwLock::new(Vec::new()),
+            mork_cache_epoch: crate::backend::mork_convert::next_mork_epoch(),
         }
     }
 
@@ -169,6 +175,8 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
                 self.fixpoint_generation.load(Ordering::Acquire),
             ),
             variable_atoms: RwLock::new(self.variable_atoms.read().clone()),
+            // Same symbol mapping → same epoch (cache entries remain valid)
+            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 

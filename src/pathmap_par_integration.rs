@@ -39,7 +39,7 @@ const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arit
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
     trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?value, "MeTTa value");
 
-    let par = match value.inner {
+    let par = match value.inner_ref() {
         MettaValueInner::Atom(s) => {
             // Atoms are plain strings (no quotes)
             create_string_par(s.to_string())

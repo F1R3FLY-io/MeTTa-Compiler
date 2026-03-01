@@ -502,6 +502,20 @@ where
                 self.builder.emit(Opcode::GetTypeSpace);
                 Ok(Some(()))
             }
+            "is-function" => {
+                self.check_arity("is-function", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::IsFunction);
+                Ok(Some(()))
+            }
+            "type-cast" => {
+                self.check_arity("type-cast", args.len(), 3)?;
+                self.compile(&args[0])?;  // atom
+                self.compile(&args[1])?;  // expected type
+                self.compile(&args[2])?;  // space
+                self.builder.emit(Opcode::TypeCast);
+                Ok(Some(()))
+            }
 
             // Nondeterminism
             "superpose" => {

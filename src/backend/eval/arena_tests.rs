@@ -206,7 +206,8 @@ mod tests {
     eval_test!(get_type_bool, "!(get-type True)", &["Bool"]);
     eval_test!(get_type_string, "!(get-type \"hello\")", &["String"]);
     eval_test!(get_type_symbol, "!(get-type foo)", &["%Undefined%"]);
-    eval_test!(get_type_expr, "!(get-type (a b c))", &["%Undefined%"]);
+    // Phase 10.6: (a b c) where `a` has no rules is a data constructor → Expression
+    eval_test!(get_type_expr, "!(get-type (a b c))", &["Expression"]);
     eval_test!(get_type_nil, "!(get-type Nil)", &["%Undefined%"]);
     eval_test!(metatype_expr, "!(get-metatype (a b c))", &["Expression"]);
 
@@ -214,9 +215,53 @@ mod tests {
     fn metatype_variable() {
         let results = run_eval("!(get-metatype $x)");
         assert!(!results.is_empty(), "get-metatype should return a result");
-        // Arena treats variables as symbols at the metatype level
-        assert_eq!(results[0], "Symbol");
+        // Variables should be classified as "Variable" per MeTTa HE semantics
+        assert_eq!(results[0], "Variable");
     }
+
+    // Gap 1: get-metatype correctly classifies all metatypes
+    eval_test!(metatype_variable_dollar, "!(get-metatype $x)", &["Variable"]);
+    eval_test!(metatype_symbol, "!(get-metatype foo)", &["Symbol"]);
+    eval_test!(metatype_grounded, "!(get-metatype 42)", &["Grounded"]);
+
+    // Gap 2: dependent type reduction (structural)
+    eval_test!(
+        deptype_structural,
+        "(: S (-> Nat Nat)) (: Z Nat) !(get-type (S (S Z)))",
+        &["Nat"]
+    );
+
+    // Gap 3: match-types
+    eval_test!(
+        match_types_same,
+        "!(match-types Number Number yes no)",
+        &["yes"]
+    );
+    eval_test!(
+        match_types_diff,
+        "!(match-types Number String yes no)",
+        &["no"]
+    );
+    eval_test!(
+        match_types_undefined_lhs,
+        "!(match-types %Undefined% Number yes no)",
+        &["yes"]
+    );
+    eval_test!(
+        match_types_undefined_rhs,
+        "!(match-types Number %Undefined% yes no)",
+        &["yes"]
+    );
+    eval_test!(
+        match_types_atom_lhs,
+        "!(match-types Atom Number yes no)",
+        &["yes"]
+    );
+    eval_test!(
+        match_types_atom_rhs,
+        "!(match-types Number Atom yes no)",
+        &["yes"]
+    );
 
     // =========================================================================
     // Nondeterminism
@@ -1891,5 +1936,840 @@ mod tests {
             "Expected Number in fixpoint-propagated type for (a 5), got: {:?}",
             results
         );
+    }
+
+    // =========================================================================
+    // Phase A: Supertype Closure in get-type (HE Parity)
+    // =========================================================================
+
+    /// (: a Dog), (:< Dog Animal) → get-type a should include both Dog and Animal
+    #[test]
+    fn test_get_type_includes_supertypes() {
+        let results = run_eval(r#"
+            (: a Dog)
+            (:< Dog Animal)
+            !(get-type a)
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Dog"),
+            "Expected Dog in results, got: {:?}", results
+        );
+        assert!(
+            results.iter().any(|r| r == "Animal"),
+            "Expected Animal (supertype) in results, got: {:?}", results
+        );
+    }
+
+    /// (:< Dog Animal), (:< Animal LivingThing) → transitive supertype closure
+    #[test]
+    fn test_get_type_includes_transitive_supertypes() {
+        let results = run_eval(r#"
+            (: a Dog)
+            (:< Dog Animal)
+            (:< Animal LivingThing)
+            !(get-type a)
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Dog"),
+            "Expected Dog, got: {:?}", results
+        );
+        assert!(
+            results.iter().any(|r| r == "Animal"),
+            "Expected Animal, got: {:?}", results
+        );
+        assert!(
+            results.iter().any(|r| r == "LivingThing"),
+            "Expected LivingThing (transitive), got: {:?}", results
+        );
+    }
+
+    /// Same type declared directly and via supertype → no duplicates
+    #[test]
+    fn test_get_type_no_duplicate_supertypes() {
+        let results = run_eval(r#"
+            (: a Dog)
+            (: a Animal)
+            (:< Dog Animal)
+            !(get-type a)
+        "#);
+        let dog_count = results.iter().filter(|r| r.as_str() == "Dog").count();
+        let animal_count = results.iter().filter(|r| r.as_str() == "Animal").count();
+        assert_eq!(dog_count, 1, "Dog should appear exactly once, got: {:?}", results);
+        assert_eq!(animal_count, 1, "Animal should appear exactly once, got: {:?}", results);
+    }
+
+    // =========================================================================
+    // Phase B: Tuple Type Construction (HE Parity)
+    // =========================================================================
+
+    /// (: a A), (: b B) → get-type (a b) = (A B)
+    #[test]
+    fn test_tuple_type_simple() {
+        let results = run_eval(r#"
+            (: a A)
+            (: b B)
+            !(get-type (a b))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "(A B)"),
+            "Expected (A B) tuple type, got: {:?}", results
+        );
+    }
+
+    /// Nondeterministic types → Cartesian product
+    #[test]
+    fn test_tuple_type_cartesian() {
+        let results = run_eval(r#"
+            (: a A)
+            (: a AA)
+            (: b B)
+            !(get-type (a b))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "(A B)"),
+            "Expected (A B) in results, got: {:?}", results
+        );
+        assert!(
+            results.iter().any(|r| r == "(AA B)"),
+            "Expected (AA B) in results, got: {:?}", results
+        );
+    }
+
+    /// Nested tuple type
+    #[test]
+    fn test_tuple_type_nested() {
+        let results = run_eval(r#"
+            (: a A)
+            (: b B)
+            (: c C)
+            !(get-type (a b c))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "(A B C)"),
+            "Expected (A B C) tuple type, got: {:?}", results
+        );
+    }
+
+    /// Element with no type → falls back to Expression
+    #[test]
+    fn test_tuple_type_untyped_element_falls_back() {
+        let results = run_eval(r#"
+            (: a A)
+            !(get-type (a untyped_thing))
+        "#);
+        // untyped_thing has no type, so tuple construction can't proceed
+        // Falls back to Expression
+        assert!(
+            results.iter().any(|r| r == "Expression"),
+            "Expected Expression fallback, got: {:?}", results
+        );
+    }
+
+    /// Data constructor with typed literals → tuple type includes literal types
+    #[test]
+    fn test_tuple_type_with_literals() {
+        let results = run_eval(r#"
+            (: stv DataCtor)
+            !(get-type (stv 0.5 0.8))
+        "#);
+        // stv has type DataCtor (not an arrow), 0.5 and 0.8 are Number
+        // Tuple type should be (DataCtor Number Number)
+        assert!(
+            results.iter().any(|r| r == "(DataCtor Number Number)"),
+            "Expected (DataCtor Number Number) tuple type, got: {:?}", results
+        );
+    }
+
+    // =========================================================================
+    // Phase C: Control-Flow Tracing Extensions
+    // =========================================================================
+
+    /// (chain (+ 1 2) $x (+ $x 1)) → Number (body type)
+    #[test]
+    fn test_infer_type_chain_traces_body() {
+        let results = run_eval(r#"
+            !(get-type (chain (+ 1 2) $x (+ $x 1)))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number for chain body type, got: {:?}", results
+        );
+    }
+
+    /// (function (chain (+ 1 2) $x (return (+ $x 1)))) → Number
+    #[test]
+    fn test_infer_type_function_return() {
+        let results = run_eval(r#"
+            !(get-type (function (chain (+ 1 2) $x (return (+ $x 1)))))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number for function return type, got: {:?}", results
+        );
+    }
+
+    /// (superpose (42 "hello")) → {Number, String}
+    #[test]
+    fn test_infer_type_superpose_union() {
+        let results = run_eval(r#"
+            !(get-type (superpose (42 "hello")))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number in superpose type union, got: {:?}", results
+        );
+        assert!(
+            results.iter().any(|r| r == "String"),
+            "Expected String in superpose type union, got: {:?}", results
+        );
+    }
+
+    /// (superpose (1 2 3)) → Number (deduplicated)
+    #[test]
+    fn test_infer_type_superpose_dedup() {
+        let results = run_eval(r#"
+            !(get-type (superpose (1 2 3)))
+        "#);
+        let number_count = results.iter().filter(|r| r.as_str() == "Number").count();
+        assert_eq!(
+            number_count, 1,
+            "Expected exactly one Number (deduplicated), got: {:?}", results
+        );
+    }
+
+    /// (match &self ($x) (+ $x 1)) → Number (template type)
+    #[test]
+    fn test_infer_type_match_template() {
+        let results = run_eval(r#"
+            !(get-type (match &self ($x) (+ $x 1)))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number for match template type, got: {:?}", results
+        );
+    }
+
+    /// (unify $a $b 42 "hello") → {Number, String}
+    #[test]
+    fn test_infer_type_unify_branches() {
+        let results = run_eval(r#"
+            !(get-type (unify $a $b 42 "hello"))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number in unify branch types, got: {:?}", results
+        );
+        assert!(
+            results.iter().any(|r| r == "String"),
+            "Expected String in unify branch types, got: {:?}", results
+        );
+    }
+
+    /// Nested chain inside function with return — return type traced from
+    /// the innermost (return expr), inferring its type structurally.
+    #[test]
+    fn test_infer_type_nested_chain_function() {
+        // (function (chain (+ 1 2) $r (return (+ $r 1)))) — return arg is
+        // (+ $r 1) which has type Number from the builtin signature.
+        let results = run_eval(r#"
+            !(get-type (function (chain (+ 1 2) $r (return (+ $r 1)))))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number for nested chain→function→return, got: {:?}", results
+        );
+    }
+
+    // =========================================================================
+    // Phase D: Variable Freshening in Type Lookup
+    // =========================================================================
+
+    /// Two arrows with same type variable name shouldn't cross-contaminate
+    #[test]
+    fn test_type_variable_freshening_no_cross_contamination() {
+        let results = run_eval(r#"
+            (: f (-> $t $t))
+            (: g (-> $t Bool))
+            (= (f $x) $x)
+            (= (g $x) True)
+            !(get-type (f (g 42)))
+        "#);
+        // g returns Bool, so f(Bool) should return Bool (via $t=Bool)
+        assert!(
+            results.iter().any(|r| r == "Bool"),
+            "Expected Bool for (f (g 42)), got: {:?}", results
+        );
+    }
+
+    /// Within a single arrow, type variables should still be consistently bound
+    #[test]
+    fn test_freshening_preserves_intra_arrow_binding() {
+        let results = run_eval(r#"
+            (: id (-> $t $t))
+            (= (id $x) $x)
+            !(get-type (id 42))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number for (id 42) via intra-arrow binding, got: {:?}", results
+        );
+    }
+
+    // ====================================================================
+    // Phase F: Meta-type awareness tests
+    // ====================================================================
+
+    /// Meta-type Atom in parameter position should accept any argument type
+    #[test]
+    fn test_meta_type_atom_matches_anything() {
+        let results = run_eval(r#"
+            (: f (-> Atom Bool))
+            (= (f $x) True)
+            !(check-type (f 42) Bool)
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    /// Meta-type Symbol should accept symbol arguments
+    #[test]
+    fn test_meta_type_symbol_match() {
+        let results = run_eval(r#"
+            (: f (-> Symbol Bool))
+            (= (f $x) True)
+            !(check-type (f foo) Bool)
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    /// Meta-type Expression should accept S-expression arguments
+    #[test]
+    fn test_meta_type_expression_match() {
+        let results = run_eval(r#"
+            (: f (-> Expression Bool))
+            (= (f $x) True)
+            !(check-type (f (a b)) Bool)
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    /// get-type with meta-type Atom parameter should not be filtered out
+    #[test]
+    fn test_get_type_with_atom_param_not_filtered() {
+        let results = run_eval(r#"
+            (: myop (-> Atom Number))
+            !(get-type (myop anything))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number for (myop anything) with Atom param, got: {:?}", results
+        );
+    }
+
+    // ====================================================================
+    // Phase E: Argument type validation in get-type
+    // ====================================================================
+
+    /// get-type should return empty for arg type mismatch (HE parity)
+    #[test]
+    fn test_get_type_arg_mismatch_returns_empty() {
+        let results = run_eval(r#"
+            !(get-type (+ 5 "hello"))
+        "#);
+        // HE returns empty (no results) for type mismatch
+        assert!(
+            results.is_empty() || results.iter().all(|r| r == "%Undefined%"),
+            "Expected empty or %Undefined% for (+ 5 \"hello\"), got: {:?}", results
+        );
+    }
+
+    /// get-type should filter to matching arrows only
+    #[test]
+    fn test_get_type_partial_match_filters() {
+        let results = run_eval(r#"
+            (: f (-> Number Bool))
+            (: f (-> String Number))
+            !(get-type (f 5))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Bool"),
+            "Expected Bool for (f 5) with Number arg, got: {:?}", results
+        );
+        assert!(
+            !results.iter().any(|r| r == "Number"),
+            "Should NOT return Number for (f 5) since 5 is not String, got: {:?}", results
+        );
+    }
+
+    /// get-type with correct args should still work
+    #[test]
+    fn test_get_type_correct_args_unchanged() {
+        let results = run_eval(r#"
+            !(get-type (+ 1 2))
+        "#);
+        assert!(
+            results.iter().any(|r| r == "Number"),
+            "Expected Number for (+ 1 2), got: {:?}", results
+        );
+    }
+
+    // ====================================================================
+    // Phase G: is-function tests
+    // ====================================================================
+
+    /// is-function should return True for arrow types
+    #[test]
+    fn test_is_function_arrow_true() {
+        let results = run_eval_tiered(r#"
+            !(is-function (-> A B))
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    /// is-function should return False for non-arrow atoms
+    #[test]
+    fn test_is_function_atom_false() {
+        let results = run_eval_tiered(r#"
+            !(is-function Number)
+        "#);
+        assert_eq!(results, vec!["False"]);
+    }
+
+    /// is-function should handle nested arrows
+    #[test]
+    fn test_is_function_nested_arrow() {
+        let results = run_eval_tiered(r#"
+            !(is-function (-> (-> A B) C))
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    /// is-function should return False for empty expression
+    #[test]
+    fn test_is_function_empty_expr() {
+        let results = run_eval_tiered(r#"
+            !(is-function ())
+        "#);
+        assert_eq!(results, vec!["False"]);
+    }
+
+    // ====================================================================
+    // Phase H: type-cast tests
+    // ====================================================================
+
+    /// type-cast should return atom when type matches
+    #[test]
+    fn test_type_cast_match_returns_atom() {
+        let results = run_eval_tiered(r#"
+            (: a A)
+            !(type-cast a A &self)
+        "#);
+        assert_eq!(results, vec!["a"]);
+    }
+
+    /// type-cast should return (Error atom BadType) when type doesn't match
+    #[test]
+    fn test_type_cast_mismatch_returns_error() {
+        let results = run_eval_tiered(r#"
+            (: a A)
+            !(type-cast a B &self)
+        "#);
+        assert_eq!(results, vec!["(Error a BadType)"]);
+    }
+
+    /// type-cast with %Undefined% expected type should accept anything
+    #[test]
+    fn test_type_cast_undefined_matches() {
+        let results = run_eval_tiered(r#"
+            (: a A)
+            !(type-cast a %Undefined% &self)
+        "#);
+        assert_eq!(results, vec!["a"]);
+    }
+
+    /// type-cast with untyped atom should accept (untyped = %Undefined%)
+    #[test]
+    fn test_type_cast_untyped_matches() {
+        let results = run_eval_tiered(r#"
+            !(type-cast a B &self)
+        "#);
+        assert_eq!(results, vec!["a"]);
+    }
+
+    /// type-cast with grounded type
+    #[test]
+    fn test_type_cast_grounded() {
+        let results = run_eval_tiered(r#"
+            !(type-cast 42 Number &self)
+        "#);
+        assert_eq!(results, vec!["42"]);
+    }
+
+    /// type-cast with meta-type Atom
+    #[test]
+    fn test_type_cast_meta_atom() {
+        let results = run_eval_tiered(r#"
+            (: a A)
+            !(type-cast a Atom &self)
+        "#);
+        assert_eq!(results, vec!["a"]);
+    }
+
+    /// type-cast with meta-type Symbol
+    #[test]
+    fn test_type_cast_meta_symbol() {
+        let results = run_eval_tiered(r#"
+            (: a A)
+            !(type-cast a Symbol &self)
+        "#);
+        assert_eq!(results, vec!["a"]);
+    }
+
+    /// type-cast with meta-type Grounded
+    #[test]
+    fn test_type_cast_meta_grounded() {
+        let results = run_eval_tiered(r#"
+            !(type-cast 42 Grounded &self)
+        "#);
+        assert_eq!(results, vec!["42"]);
+    }
+
+    /// type-cast with meta-type Expression
+    #[test]
+    fn test_type_cast_meta_expression() {
+        let results = run_eval_tiered(r#"
+            !(type-cast (a b) Expression &self)
+        "#);
+        assert_eq!(results, vec!["(a b)"]);
+    }
+
+    /// type-cast with meta-type Variable
+    #[test]
+    fn test_type_cast_meta_variable() {
+        let results = run_eval_tiered(r#"
+            !(type-cast $v Variable &self)
+        "#);
+        assert_eq!(results, vec!["$v"]);
+    }
+
+    // ====================================================================
+    // Phase I: Arrow structural subtyping tests (unit tests)
+    // ====================================================================
+
+    /// Arrow covariant return: (-> Number Dog) should match (-> Number Animal) if Dog <: Animal
+    #[test]
+    fn test_arrow_covariant_return() {
+        use crate::backend::eval::types_generic::types_match_with_subtypes;
+        use crate::backend::models::GcFactory;
+        use crate::backend::environment::MettaEnvironment;
+        use crate::backend::models::MettaValueFactory;
+
+        let factory = GcFactory::default();
+        let mut env = MettaEnvironment::new(GcFactory::default());
+        env.add_subtype_generic("Dog", "Animal");
+
+        // (-> Number Dog) vs (-> Number Animal)
+        let actual = factory.sexpr(vec![
+            factory.atom("->"), factory.atom("Number"), factory.atom("Dog"),
+        ]);
+        let expected = factory.sexpr(vec![
+            factory.atom("->"), factory.atom("Number"), factory.atom("Animal"),
+        ]);
+        assert!(
+            types_match_with_subtypes(&actual, &expected, &env),
+            "Arrow covariant return: (-> Number Dog) should match (-> Number Animal)"
+        );
+    }
+
+    /// Arrow contravariant param: (-> Animal Bool) should match (-> Dog Bool) if Dog <: Animal
+    #[test]
+    fn test_arrow_contravariant_param() {
+        use crate::backend::eval::types_generic::types_match_with_subtypes;
+        use crate::backend::models::GcFactory;
+        use crate::backend::environment::MettaEnvironment;
+        use crate::backend::models::MettaValueFactory;
+
+        let factory = GcFactory::default();
+        let mut env = MettaEnvironment::new(GcFactory::default());
+        env.add_subtype_generic("Dog", "Animal");
+
+        // (-> Animal Bool) vs (-> Dog Bool)
+        // Contravariant: expected param Dog <: actual param Animal => match
+        let actual = factory.sexpr(vec![
+            factory.atom("->"), factory.atom("Animal"), factory.atom("Bool"),
+        ]);
+        let expected = factory.sexpr(vec![
+            factory.atom("->"), factory.atom("Dog"), factory.atom("Bool"),
+        ]);
+        assert!(
+            types_match_with_subtypes(&actual, &expected, &env),
+            "Arrow contravariant param: (-> Animal Bool) should match (-> Dog Bool)"
+        );
+    }
+
+    /// Arrow variance mismatch: (-> Dog Bool) should NOT match (-> Animal Bool)
+    /// with covariant params (would be unsound)
+    #[test]
+    fn test_arrow_invariant_mismatch() {
+        use crate::backend::eval::types_generic::types_match_with_subtypes;
+        use crate::backend::models::GcFactory;
+        use crate::backend::environment::MettaEnvironment;
+        use crate::backend::models::MettaValueFactory;
+
+        let factory = GcFactory::default();
+        let mut env = MettaEnvironment::new(GcFactory::default());
+        env.add_subtype_generic("Dog", "Animal");
+
+        // (-> Dog Bool) vs (-> Animal Bool)
+        // WRONG to accept with covariant params: Animal is NOT <: Dog
+        let actual = factory.sexpr(vec![
+            factory.atom("->"), factory.atom("Dog"), factory.atom("Bool"),
+        ]);
+        let expected = factory.sexpr(vec![
+            factory.atom("->"), factory.atom("Animal"), factory.atom("Bool"),
+        ]);
+        assert!(
+            !types_match_with_subtypes(&actual, &expected, &env),
+            "Arrow invariant mismatch: (-> Dog Bool) should NOT match (-> Animal Bool)"
+        );
+    }
+
+    // ====================================================================
+    // Gap A: (:< SubType SuperType) subtype declaration dispatch
+    // ====================================================================
+
+    /// (:< Dog Animal) should register subtype so type-cast succeeds
+    #[test]
+    fn test_subtype_decl_type_cast() {
+        let results = run_eval_tiered(r#"
+            (: rex Dog)
+            (:< Dog Animal)
+            !(type-cast rex Animal &self)
+        "#);
+        assert_eq!(results, vec!["rex"]);
+    }
+
+    /// (:< ...) should return empty list (like : declarations)
+    #[test]
+    fn test_subtype_decl_returns_empty() {
+        let results = run_eval_tiered(r#"
+            !(:< Dog Animal)
+        "#);
+        assert!(results.is_empty(), "Subtype declaration should return empty, got: {:?}", results);
+    }
+
+    /// Transitive subtype: Dog <: Animal, Animal <: LivingThing
+    #[test]
+    fn test_subtype_decl_transitive() {
+        let results = run_eval_tiered(r#"
+            (: rex Dog)
+            (:< Dog Animal)
+            (:< Animal LivingThing)
+            !(type-cast rex LivingThing &self)
+        "#);
+        assert_eq!(results, vec!["rex"]);
+    }
+
+    /// (:< ...) should fail for non-subtype type-cast
+    #[test]
+    fn test_subtype_decl_mismatch() {
+        let results = run_eval_tiered(r#"
+            (: rex Dog)
+            (:< Dog Animal)
+            !(type-cast rex Plant &self)
+        "#);
+        assert_eq!(results, vec!["(Error rex BadType)"]);
+    }
+
+    /// (:< ...) should reject non-atom arguments
+    #[test]
+    fn test_subtype_decl_bad_args() {
+        let results = run_eval_tiered(r#"
+            !(:< (a b) Animal)
+        "#);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("Error"), "Should error on non-atom arg");
+    }
+
+    // ====================================================================
+    // Gap B: match-type-or fold helper
+    // ====================================================================
+
+    /// match-type-or with False folded, matching type → True
+    #[test]
+    fn test_match_type_or_match() {
+        let results = run_eval_tiered(r#"
+            !(match-type-or False Number Number)
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    /// match-type-or with True folded, non-matching type → True (or semantics)
+    #[test]
+    fn test_match_type_or_folded_true() {
+        let results = run_eval_tiered(r#"
+            !(match-type-or True Number String)
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    /// match-type-or with False folded, non-matching type → False
+    #[test]
+    fn test_match_type_or_no_match() {
+        let results = run_eval_tiered(r#"
+            !(match-type-or False Number String)
+        "#);
+        assert_eq!(results, vec!["False"]);
+    }
+
+    /// match-type-or with %Undefined% → always True
+    #[test]
+    fn test_match_type_or_undefined() {
+        let results = run_eval_tiered(r#"
+            !(match-type-or False %Undefined% String)
+        "#);
+        assert_eq!(results, vec!["True"]);
+    }
+
+    // ====================================================================
+    // Gap C: (metta atom type space) interpreter operation
+    // ====================================================================
+
+    /// metta with %Undefined% type → evaluates expression normally
+    #[test]
+    fn test_metta_undefined_type_evaluates() {
+        let results = run_eval_tiered(r#"
+            (= (double $x) (* 2 $x))
+            !(metta (double 5) %Undefined% &self)
+        "#);
+        assert_eq!(results, vec!["10"]);
+    }
+
+    /// metta with Atom type → evaluates expression normally
+    #[test]
+    fn test_metta_atom_type_evaluates() {
+        let results = run_eval_tiered(r#"
+            (= (double $x) (* 2 $x))
+            !(metta (double 5) Atom &self)
+        "#);
+        assert_eq!(results, vec!["10"]);
+    }
+
+    /// metta with Variable → passes through unchanged
+    #[test]
+    fn test_metta_variable_passthrough() {
+        let results = run_eval_tiered(r#"
+            !(metta $x Number &self)
+        "#);
+        assert_eq!(results, vec!["$x"]);
+    }
+
+    /// metta with Symbol and matching meta-type → passes through
+    #[test]
+    fn test_metta_symbol_metatype() {
+        let results = run_eval_tiered(r#"
+            !(metta foo Symbol &self)
+        "#);
+        assert_eq!(results, vec!["foo"]);
+    }
+
+    /// metta with Expression and Expression meta-type → passes through
+    #[test]
+    fn test_metta_expression_metatype() {
+        let results = run_eval_tiered(r#"
+            !(metta (a b) Expression &self)
+        "#);
+        assert_eq!(results, vec!["(a b)"]);
+    }
+
+    /// metta with Grounded and Grounded meta-type → passes through
+    #[test]
+    fn test_metta_grounded_metatype() {
+        let results = run_eval_tiered(r#"
+            !(metta 42 Grounded &self)
+        "#);
+        assert_eq!(results, vec!["42"]);
+    }
+
+    /// metta with typed symbol → type-cast check
+    #[test]
+    fn test_metta_symbol_typed_match() {
+        let results = run_eval_tiered(r#"
+            (: foo Foo)
+            !(metta foo Foo &self)
+        "#);
+        assert_eq!(results, vec!["foo"]);
+    }
+
+    /// metta with typed symbol mismatch → error
+    #[test]
+    fn test_metta_symbol_typed_mismatch() {
+        let results = run_eval_tiered(r#"
+            (: foo Foo)
+            !(metta foo Bar &self)
+        "#);
+        assert_eq!(results, vec!["(Error foo BadType)"]);
+    }
+
+    /// metta evaluates expression and type-checks result
+    #[test]
+    fn test_metta_eval_and_typecheck() {
+        let results = run_eval_tiered(r#"
+            (: inc (-> Number Number))
+            (= (inc $n) (+ $n 1))
+            !(metta (inc 5) Number &self)
+        "#);
+        assert_eq!(results, vec!["6"]);
+    }
+
+    // ====================================================================
+    // Gap D: first-from-pair
+    // ====================================================================
+
+    /// first-from-pair extracts first element from a pair
+    #[test]
+    fn test_first_from_pair_basic() {
+        let results = run_eval_tiered(r#"
+            !(first-from-pair (hello world))
+        "#);
+        assert_eq!(results, vec!["hello"]);
+    }
+
+    /// first-from-pair with numeric pair
+    #[test]
+    fn test_first_from_pair_numeric() {
+        let results = run_eval_tiered(r#"
+            !(first-from-pair (42 99))
+        "#);
+        assert_eq!(results, vec!["42"]);
+    }
+
+    /// first-from-pair with non-pair → error
+    #[test]
+    fn test_first_from_pair_not_pair_single() {
+        let results = run_eval_tiered(r#"
+            !(first-from-pair (only))
+        "#);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("Error"), "Should error on non-pair: {:?}", results);
+    }
+
+    /// first-from-pair with non-pair (triple) → error
+    #[test]
+    fn test_first_from_pair_not_pair_triple() {
+        let results = run_eval_tiered(r#"
+            !(first-from-pair (a b c))
+        "#);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("Error"), "Should error on triple: {:?}", results);
+    }
+
+    /// first-from-pair with non-expression → error
+    #[test]
+    fn test_first_from_pair_non_expr() {
+        let results = run_eval_tiered(r#"
+            !(first-from-pair hello)
+        "#);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("Error"), "Should error on atom: {:?}", results);
     }
 }

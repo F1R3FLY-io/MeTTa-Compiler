@@ -252,6 +252,36 @@ pub unsafe extern "C" fn jit_runtime_call(
         }
     };
 
+    // Phase 9.6: All-error-types early exit — if every declared type for
+    // the head is an Error type, short-circuit with an error value.
+    if !ctx_ref.env_ptr.is_null() {
+        let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+        let op_types = env.get_types_generic(head);
+        if !op_types.is_empty()
+            && op_types.iter().all(|t| {
+                t.as_sexpr().map_or(false, |ti| {
+                    ti.first().and_then(|v| v.as_atom()) == Some("Error")
+                })
+            })
+        {
+            use crate::backend::models::MettaValueFactory;
+            let factory = crate::backend::models::global_factory();
+            // Build a minimal error expression
+            let mut items = Vec::with_capacity(arity + 1);
+            items.push(MettaValue::Atom(head));
+            for i in 0..arity {
+                items.push(JitValue::from_raw(*args_ptr.add(i)).to_metta());
+            }
+            let call_expr = MettaValue::SExpr(items);
+            let err = factory.error(
+                &format!("All types for '{}' are errors", head),
+                call_expr,
+            );
+            let ptr = err.inner_ptr();
+            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        }
+    }
+
     // Optimization 3.2: Fast path for grounded functions
     // Try to execute grounded ops directly without MorkBridge lookup
     if !args_ptr.is_null() {
@@ -300,6 +330,12 @@ pub unsafe extern "C" fn jit_runtime_call(
     // Create the call expression
     let expr = MettaValue::SExpr(items);
 
+    // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
+    if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
+        let ptr = expr.inner_ptr();
+        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+    }
+
     // Try native rule dispatch if bridge is available
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
@@ -307,6 +343,8 @@ pub unsafe extern "C" fn jit_runtime_call(
 
         if matches.is_empty() {
             // No rules match - return expression unchanged (irreducible)
+            // Phase 9.5: Memoize as normal form for future fast-path.
+            crate::backend::eval::trampoline::memoize_normal_form(&expr);
             // This is a major optimization: no bailout needed!
             let ptr = expr.inner_ptr();
             return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
@@ -513,6 +551,12 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
     // Create the call expression
     let expr = MettaValue::SExpr(items);
 
+    // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
+    if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
+        let ptr = expr.inner_ptr();
+        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+    }
+
     // Try native rule dispatch if bridge is available
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
@@ -520,6 +564,8 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
 
         if matches.is_empty() {
             // No rules match - return expression unchanged (irreducible)
+            // Phase 9.5: Memoize as normal form for future fast-path.
+            crate::backend::eval::trampoline::memoize_normal_form(&expr);
             // This is a major optimization: no bailout needed!
             let ptr = expr.inner_ptr();
             return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
@@ -584,6 +630,22 @@ pub unsafe extern "C" fn jit_runtime_call_n(
     let head_jit = JitValue::from_raw(head_val);
     let head_metta = head_jit.to_metta();
 
+    // Phase 9.1: Variable-head guard — ($f x) is data, not callable
+    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
+        if head_str.starts_with('$') {
+            // Variable head — return as data S-expression
+            let mut items = Vec::with_capacity(arity + 1);
+            items.push(head_metta);
+            for i in 0..arity {
+                let arg_raw = *args_ptr.add(i);
+                items.push(JitValue::from_raw(arg_raw).to_metta());
+            }
+            let expr = MettaValue::SExpr(items);
+            let ptr = expr.inner_ptr();
+            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        }
+    }
+
     // Optimization 3.2: Fast path for grounded functions
     // Try to execute grounded ops directly without MorkBridge lookup
     if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
@@ -608,6 +670,12 @@ pub unsafe extern "C" fn jit_runtime_call_n(
     // Create the call expression
     let expr = MettaValue::SExpr(items);
 
+    // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
+    if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
+        let ptr = expr.inner_ptr();
+        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+    }
+
     // Try native rule dispatch if bridge is available
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
@@ -615,6 +683,8 @@ pub unsafe extern "C" fn jit_runtime_call_n(
 
         if matches.is_empty() {
             // No rules match - return expression unchanged (irreducible)
+            // Phase 9.5: Memoize as normal form for future fast-path.
+            crate::backend::eval::trampoline::memoize_normal_form(&expr);
             let ptr = expr.inner_ptr();
             return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
         }
@@ -673,6 +743,22 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
     let head_jit = JitValue::from_raw(head_val);
     let head_metta = head_jit.to_metta();
 
+    // Phase 9.1: Variable-head guard — ($f x) is data, not callable
+    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
+        if head_str.starts_with('$') {
+            // Variable head — return as data S-expression
+            let mut items = Vec::with_capacity(arity + 1);
+            items.push(head_metta);
+            for i in 0..arity {
+                let arg_raw = *args_ptr.add(i);
+                items.push(JitValue::from_raw(arg_raw).to_metta());
+            }
+            let expr = MettaValue::SExpr(items);
+            let ptr = expr.inner_ptr();
+            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        }
+    }
+
     // Optimization 3.2: Fast path for grounded functions
     // Try to execute grounded ops directly without MorkBridge lookup
     if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
@@ -697,6 +783,12 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
     // Create the call expression
     let expr = MettaValue::SExpr(items);
 
+    // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
+    if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
+        let ptr = expr.inner_ptr();
+        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+    }
+
     // Try native rule dispatch if bridge is available
     if !ctx_ref.bridge_ptr.is_null() {
         let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
@@ -704,6 +796,8 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
 
         if matches.is_empty() {
             // No rules match - return expression unchanged (irreducible)
+            // Phase 9.5: Memoize as normal form for future fast-path.
+            crate::backend::eval::trampoline::memoize_normal_form(&expr);
             let ptr = expr.inner_ptr();
             return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
         }

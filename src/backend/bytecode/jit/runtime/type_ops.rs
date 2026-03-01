@@ -301,8 +301,8 @@ where
                     MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
                     // Spanned: strip span and inspect inner value
                     MettaValueInner::Spanned(inner, _) => {
-                        // Recurse through inner — use .inner field (raw access)
-                        match inner.inner {
+                        // Recurse through inner — use .inner_ref() field (raw access)
+                        match inner.inner_ref() {
                             MettaValueInner::SExpr(_) => TYPE_NAME_EXPRESSION,
                             MettaValueInner::String(_) => TYPE_NAME_STRING,
                             MettaValueInner::Type(_) => TYPE_NAME_TYPE,
@@ -389,5 +389,45 @@ unsafe fn get_type_name(val: u64) -> &'static str {
         }
         _ => TYPE_NAME_UNKNOWN,
     }
+}
+
+// =============================================================================
+// is-function Runtime (Phase G)
+// =============================================================================
+
+/// Check if a value is an arrow type (S-expression starting with "->").
+/// Returns TAG_BOOL | 1 (true) or TAG_BOOL | 0 (false).
+///
+/// # Safety
+/// `val` must be a valid NaN-boxed JIT value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_is_function(
+    _ctx: *mut JitContext,
+    val: u64,
+    _ip: u64,
+) -> u64 {
+    let tag = val & TAG_MASK;
+    let is_fn = if tag == TAG_PTR {
+        let ptr = (val & PAYLOAD_MASK) as *const MettaValueInner;
+        if !ptr.is_null() {
+            match &*ptr {
+                MettaValueInner::SExpr(items) => {
+                    items.first().and_then(|v| v.as_atom()) == Some("->")
+                }
+                MettaValueInner::Spanned(inner, _) => match &inner.inner_ref() {
+                    MettaValueInner::SExpr(items) => {
+                        items.first().and_then(|v| v.as_atom()) == Some("->")
+                    }
+                    _ => false,
+                },
+                _ => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    TAG_BOOL | (is_fn as u64)
 }
 

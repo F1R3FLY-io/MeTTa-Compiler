@@ -94,6 +94,10 @@ harness = false
 name = "match_space_multiplicity"
 harness = false
 
+[[bench]]
+name = "type_system"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }

@@ -111,6 +111,7 @@ pub use type_predicates::{
 // Type operations
 pub use type_ops::{
     jit_runtime_assert_type, jit_runtime_check_type, jit_runtime_get_type,
+    jit_runtime_is_function,
     // Generic variants (zero-conversion support)
     get_type_generic,
 };

@@ -85,8 +85,18 @@ impl HeadArityBloomFilter {
     /// xxh3 provides 3-5× faster hashing than SipHash (DefaultHasher) by using
     /// SIMD instructions (SSE2/AVX2 on x86_64, NEON on ARM). This reduces bloom filter
     /// overhead from ~27% to ~5-10% of total CPU time in match_space().
+    ///
+    /// Uses a thread-local cache to skip xxh3 recomputation for repeated lookups
+    /// with the same atom string (stable slab-allocated pointers).
     #[inline]
     fn hash_pair(head: &[u8], arity: u8) -> (usize, usize) {
+        // Compute hash directly — xxh3 is SIMD-accelerated and fast enough
+        // without caching. The previous pointer-based cache (`BloomHashCache`)
+        // used `head.as_ptr() as usize` as the cache key, which is subject to
+        // the ABA pointer reuse problem: when a String is dropped and a new one
+        // allocated at the same address, the cache returns a stale hash computed
+        // from different content. This caused false negatives in may_contain(),
+        // making match_rules_native() miss valid rules.
         let mut hasher = Xxh3::with_seed(0);
         head.hash(&mut hasher);
         arity.hash(&mut hasher);
@@ -156,8 +166,12 @@ impl TypeBloomFilter {
     }
 
     /// Compute two hash values for double hashing using xxh3 (SIMD-accelerated).
+    ///
+    /// Uses a thread-local cache to skip xxh3 recomputation for repeated lookups.
     #[inline]
     fn hash_name(name: &[u8]) -> (usize, usize) {
+        // Compute hash directly — no pointer-based caching (ABA-unsafe).
+        // See HeadArityBloomFilter::hash_pair for rationale.
         let mut hasher = Xxh3::with_seed(0x7470); // seed = "tp" (type)
         name.hash(&mut hasher);
         let h = hasher.finish();
@@ -221,6 +235,18 @@ impl AtomicBloomFilter {
         })
     }
 
+    /// Clear all bits in the filter (zeroing all atomic words).
+    ///
+    /// Used to invalidate the normal-form memoization bloom filter when
+    /// new rules are added (Phase 9.5). Uses `Relaxed` ordering since
+    /// this is called from `add_rule()` which is O(N) during loading
+    /// and never during concurrent evaluation.
+    pub fn clear(&self) {
+        for word in self.bits.iter() {
+            word.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// Snapshot for fork: clone all atomic words into a new filter.
     pub fn snapshot(&self) -> Self {
         let bits: Vec<AtomicU64> = self
@@ -246,8 +272,12 @@ impl AtomicBloomFilter {
     /// Compute two hash values for double hashing using xxh3 (SIMD-accelerated).
     /// Uses a different seed (0x6966 = "if" for inferred) to avoid collisions
     /// with the TypeBloomFilter.
+    ///
+    /// Uses a thread-local cache to skip xxh3 recomputation for repeated lookups.
     #[inline]
     fn hash_key(key: &[u8]) -> (usize, usize) {
+        // Compute hash directly — no pointer-based caching (ABA-unsafe).
+        // See HeadArityBloomFilter::hash_pair for rationale.
         let mut hasher = Xxh3::with_seed(0x6966); // seed = "if" (inferred function)
         key.hash(&mut hasher);
         let h = hasher.finish();

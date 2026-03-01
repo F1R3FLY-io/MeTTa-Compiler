@@ -768,12 +768,32 @@ impl JitCompiler {
             // =====================================================================
             // Phase 1: Type Operations (delegated to handlers module)
             // =====================================================================
+            // is-function: structural arrow check — uses runtime FFI call
+            Opcode::IsFunction => {
+                let mut ctx = handlers::TypeOpsHandlerContext {
+                    module: &mut self.module,
+                    get_type_func_id: self.type_ops.get_type_func_id,
+                    check_type_func_id: self.type_ops.check_type_func_id,
+                    assert_type_func_id: self.type_ops.assert_type_func_id,
+                    is_function_func_id: self.type_ops.is_function_func_id,
+                };
+                return handlers::compile_is_function(&mut ctx, codegen, offset);
+            }
+
+            // type-cast: requires environment type inference — bail out to tree-walker
+            Opcode::TypeCast => {
+                return Err(crate::backend::bytecode::jit::JitError::NotCompilable(
+                    "type-cast requires environment access".into(),
+                ));
+            }
+
             Opcode::GetType => {
                 let mut ctx = handlers::TypeOpsHandlerContext {
                     module: &mut self.module,
                     get_type_func_id: self.type_ops.get_type_func_id,
                     check_type_func_id: self.type_ops.check_type_func_id,
                     assert_type_func_id: self.type_ops.assert_type_func_id,
+                    is_function_func_id: self.type_ops.is_function_func_id,
                 };
                 return handlers::compile_get_type(&mut ctx, codegen, offset);
             }
@@ -784,6 +804,7 @@ impl JitCompiler {
                     get_type_func_id: self.type_ops.get_type_func_id,
                     check_type_func_id: self.type_ops.check_type_func_id,
                     assert_type_func_id: self.type_ops.assert_type_func_id,
+                    is_function_func_id: self.type_ops.is_function_func_id,
                 };
                 return handlers::compile_check_type(&mut ctx, codegen, offset);
             }
@@ -794,6 +815,7 @@ impl JitCompiler {
                     get_type_func_id: self.type_ops.get_type_func_id,
                     check_type_func_id: self.type_ops.check_type_func_id,
                     assert_type_func_id: self.type_ops.assert_type_func_id,
+                    is_function_func_id: self.type_ops.is_function_func_id,
                 };
                 return handlers::compile_assert_type(&mut ctx, codegen, offset);
             }

@@ -143,6 +143,15 @@ where
                     else if should_pre_eval_by_type(op, env) {
                         indices.push(i);
                     }
+                    // Tier 2.5: Phase 10 inferred type feedback (Phase 9.4).
+                    // If the operator has inferred arrow types from Phase 10
+                    // deep type inference, pre-evaluate it. Uses AtomicBloomFilter
+                    // for O(1) rejection before DashMap lookup.
+                    else if env.has_inferred_type(op)
+                        && env.get_inferred_fn_types(op).iter().any(|t| is_arrow_type(t))
+                    {
+                        indices.push(i);
+                    }
                     // Tier 3: Bloom filter fallback for untyped operators with rules.
                     // False positives are handled by fixpoint detection in
                     // CollectGroundedArg (generic_trampoline.rs).
@@ -166,16 +175,24 @@ where
 ///
 /// Returns `None` if the parent operator has no arrow type (caller should
 /// fall back to `find_grounded_arg_indices_generic`).
+///
+/// If `precomputed_parent_types` is `Some`, uses it directly instead of
+/// querying `env.get_types_generic(parent_op)` — avoids redundant RwLock
+/// reads when the caller already fetched types for Phase 9.6 checks.
 pub fn find_typed_arg_indices_generic<V, F>(
     items: &[V],
     env: &GenericEnvironment<V, F>,
+    precomputed_parent_types: Option<&[V]>,
 ) -> Option<Vec<usize>>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
     let parent_op = items.first().and_then(|v| v.as_atom())?;
-    let parent_types = env.get_types_generic(parent_op);
+    let parent_types = match precomputed_parent_types {
+        Some(types) => types.to_vec(),
+        None => env.get_types_generic(parent_op),
+    };
 
     // Collect all arrow types for this operator
     let all_arg_types: Vec<Vec<V>> = parent_types
@@ -222,12 +239,23 @@ where
 ///
 /// Used to skip rule matching entirely for data constructors (Step 2.5 in
 /// generic_sexpr.rs), sending them directly to the tuple path.
-pub fn is_declared_value_type<V, F>(op: &str, env: &GenericEnvironment<V, F>) -> bool
+///
+/// If `precomputed_types` is `Some`, uses it directly instead of querying
+/// `env.get_types_generic(op)` — avoids redundant RwLock reads when the
+/// caller already fetched types for Phase 9.6 checks.
+pub fn is_declared_value_type<V, F>(
+    op: &str,
+    env: &GenericEnvironment<V, F>,
+    precomputed_types: Option<&[V]>,
+) -> bool
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
-    let types = env.get_types_generic(op);
+    let types = match precomputed_types {
+        Some(t) => std::borrow::Cow::Borrowed(t),
+        None => std::borrow::Cow::Owned(env.get_types_generic(op)),
+    };
     !types.is_empty() && !types.iter().any(|t| is_arrow_type(t))
 }
 
@@ -424,7 +452,7 @@ mod tests {
             f.sexpr(vec![f.atom("+"), f.long(3), f.long(4)]),
         ];
 
-        let indices = find_typed_arg_indices_generic(&items, &e)
+        let indices = find_typed_arg_indices_generic(&items, &e, None)
             .expect("should find typed indices");
         // Only index 2 (second arg, Number type) should be selected
         assert_eq!(indices, vec![2]);
@@ -441,7 +469,7 @@ mod tests {
             f.sexpr(vec![f.atom("+"), f.long(1), f.long(2)]),
         ];
 
-        assert!(find_typed_arg_indices_generic(&items, &e).is_none());
+        assert!(find_typed_arg_indices_generic(&items, &e, None).is_none());
     }
 
     #[test]

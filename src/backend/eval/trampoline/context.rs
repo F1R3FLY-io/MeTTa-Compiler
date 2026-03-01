@@ -60,7 +60,7 @@ pub trait EvalContext {
 
     /// Check if a GC safepoint should be taken.
     ///
-    /// Called every 256 trampoline iterations. Returns `true` if the evaluator
+    /// Called every 4096 trampoline iterations. Returns `true` if the evaluator
     /// should pause, register trampoline roots, release the EvalGuard, and
     /// allow the quiescent GC to fire.
     ///

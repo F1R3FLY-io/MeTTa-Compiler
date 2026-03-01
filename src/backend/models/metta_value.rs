@@ -30,11 +30,48 @@ use self::serialize_tags::*;
 
 /// Arena-allocated MeTTa value with O(1) clone (just copies the pointer).
 ///
-/// This is a thin wrapper around a reference to MettaValueInner, providing
+/// This is a thin wrapper around a tagged pointer to MettaValueInner, providing
 /// the same interface as MettaValue but using arena allocation.
+///
+/// ## Tagged Pointer Layout
+///
+/// ```text
+/// bits [63:4] = *const MettaValueInner (slab-allocated, 'static lifetime)
+/// bits [3:0]  = flags (available because SLOT_ALIGN = 16 guarantees 4 zero bits)
+/// ```
+///
+/// ### Flag Bits
+///
+/// | Bit | Constant              | Meaning                                     |
+/// |-----|-----------------------|---------------------------------------------|
+/// |  0  | `FLAG_HAS_VARIABLES`  | Value (or any sub-value) contains variables  |
+/// |  1  | reserved              | Future use                                   |
+/// |  2  | reserved              | Future use                                   |
+/// |  3  | reserved              | Future use                                   |
+///
+/// Flags are computed once at construction time (bottom-up propagation) and
+/// provide O(1) queries vs. the O(depth) recursive tree walk of `contains_variables()`.
 #[derive(Clone, Copy)]
 pub struct MettaValue {
-    pub(crate) inner: &'static MettaValueInner,
+    /// Tagged pointer: bits [63:4] = *const MettaValueInner, bits [3:0] = flags.
+    /// SLOT_ALIGN=16 guarantees bits [3:0] are always zero in the raw slab address.
+    pub(crate) tagged: usize,
+}
+
+/// Mask to extract the pointer from a tagged MettaValue (clears low 4 flag bits).
+pub(crate) const PTR_MASK: usize = !0xF;
+
+/// Flag bit 0: this value (or any sub-value) contains variables.
+pub(crate) const FLAG_HAS_VARIABLES: usize = 0x01;
+
+/// Check if a string represents a MeTTa variable (for tagged pointer flag computation).
+/// Variables: `$x`, `&name` (but NOT `&`, `&self`, `&kb`, `&stack`), `'x`, `_`.
+#[inline]
+pub(crate) fn is_variable_str(s: &str) -> bool {
+    s == "_"
+        || s.starts_with('$')
+        || (s.starts_with('&') && s != "&" && s != "&self" && s != "&kb" && s != "&stack")
+        || s.starts_with('\'')
 }
 
 /// The actual value enum, allocated in the arena.
@@ -116,6 +153,35 @@ unsafe impl Send for MettaValueInner {}
 unsafe impl Sync for MettaValueInner {}
 
 impl MettaValue {
+    /// Dereference the tagged pointer to get the inner value.
+    /// Masks off flag bits before dereferencing.
+    #[inline]
+    pub(crate) fn inner_ref(&self) -> &'static MettaValueInner {
+        unsafe { &*((self.tagged & PTR_MASK) as *const MettaValueInner) }
+    }
+
+    /// O(1) flag check: does this value (or any sub-value) contain variables?
+    ///
+    /// Uses a single AND instruction on the tagged pointer — replaces the
+    /// O(depth) recursive `contains_variables()` tree walk.
+    #[inline]
+    pub fn has_variables_fast(&self) -> bool {
+        self.tagged & FLAG_HAS_VARIABLES != 0
+    }
+
+    /// Construct from inner reference with computed flags.
+    #[inline]
+    pub(crate) fn from_inner_tagged(inner: &'static MettaValueInner, flags: u8) -> Self {
+        debug_assert!(flags < 16, "tagged pointer flags must fit in 4 bits");
+        debug_assert!(
+            (inner as *const MettaValueInner as usize) & 0xF == 0,
+            "inner pointer must be 16-byte aligned (SLOT_ALIGN=16)"
+        );
+        Self {
+            tagged: inner as *const MettaValueInner as usize | flags as usize,
+        }
+    }
+
     /// Access the inner enum for pattern matching.
     ///
     /// **Automatically strips all `Spanned` layers**, so existing pattern matches
@@ -123,10 +189,10 @@ impl MettaValue {
     /// any Spanned wrapper.
     #[inline]
     pub fn inner(&self) -> &'static MettaValueInner {
-        let mut current = self.inner;
+        let mut current = self.inner_ref();
         loop {
             match current {
-                MettaValueInner::Spanned(v, _) => current = v.inner,
+                MettaValueInner::Spanned(v, _) => current = v.inner_ref(),
                 _ => return current,
             }
         }
@@ -138,7 +204,7 @@ impl MettaValue {
     /// Most code should use `inner()` instead.
     #[inline]
     pub fn inner_raw(&self) -> &'static MettaValueInner {
-        self.inner
+        self.inner_ref()
     }
 
     /// Get the outermost source span, if this value is wrapped in `Spanned`.
@@ -147,7 +213,7 @@ impl MettaValue {
     /// Returns `None` for bare values without span annotations.
     #[inline]
     pub fn span(&self) -> Option<&'static Span> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Spanned(_, span) => Some(span),
             _ => None,
         }
@@ -162,12 +228,12 @@ impl MettaValue {
     /// Returns an empty Vec for bare values without span annotations.
     pub fn spans(&self) -> Vec<&'static Span> {
         let mut spans = Vec::with_capacity(2);
-        let mut current = self.inner;
+        let mut current = self.inner_ref();
         loop {
             match current {
                 MettaValueInner::Spanned(v, span) => {
                     spans.push(*span);
-                    current = v.inner;
+                    current = v.inner_ref();
                 }
                 _ => break,
             }
@@ -188,25 +254,29 @@ impl MettaValue {
     /// If the value is not Spanned, returns `(self, None)`.
     #[inline]
     pub fn peel_span(&self) -> (MettaValue, Option<&'static Span>) {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Spanned(v, span) => (*v, Some(span)),
             _ => (*self, None),
         }
     }
 
     /// Construct an MettaValue from a reference to an MettaValueInner.
+    /// Flags default to 0 — use `from_inner_tagged` to set flags.
     #[inline]
     pub fn from_inner(inner: &'static MettaValueInner) -> Self {
-        Self { inner }
+        Self {
+            tagged: inner as *const MettaValueInner as usize,
+        }
     }
 
     /// Get a raw pointer to the inner value (used by GC for slot identification).
     ///
     /// Returns the pointer to the **outermost** MettaValueInner (which may be Spanned).
     /// This is correct for GC marking, which needs to track the actual slab slot.
+    /// Masks off tag bits before returning.
     #[inline]
     pub fn inner_ptr(&self) -> *const MettaValueInner {
-        self.inner as *const MettaValueInner
+        (self.tagged & PTR_MASK) as *const MettaValueInner
     }
 
     // ========================================================================
@@ -216,7 +286,7 @@ impl MettaValue {
     /// Check if this is an Atom variant (transparent through Spanned)
     #[inline]
     pub fn is_atom(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_atom(),
             _ => false,
@@ -226,7 +296,7 @@ impl MettaValue {
     /// Check if this is a Bool variant (transparent through Spanned)
     #[inline]
     pub fn is_bool(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Bool(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_bool(),
             _ => false,
@@ -236,7 +306,7 @@ impl MettaValue {
     /// Check if this is a Long variant (transparent through Spanned)
     #[inline]
     pub fn is_long(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Long(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_long(),
             _ => false,
@@ -246,7 +316,7 @@ impl MettaValue {
     /// Check if this is a Float variant (transparent through Spanned)
     #[inline]
     pub fn is_float(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Float(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_float(),
             _ => false,
@@ -256,7 +326,7 @@ impl MettaValue {
     /// Check if this is a String variant (transparent through Spanned)
     #[inline]
     pub fn is_string(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::String(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_string(),
             _ => false,
@@ -266,7 +336,7 @@ impl MettaValue {
     /// Check if this is an SExpr variant (transparent through Spanned)
     #[inline]
     pub fn is_sexpr(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::SExpr(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_sexpr(),
             _ => false,
@@ -276,7 +346,7 @@ impl MettaValue {
     /// Check if this is an Error variant (transparent through Spanned)
     #[inline]
     pub fn is_error(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Error(_, _) => true,
             MettaValueInner::Spanned(v, _) => v.is_error(),
             _ => false,
@@ -286,7 +356,7 @@ impl MettaValue {
     /// Check if this is a Type variant (transparent through Spanned)
     #[inline]
     pub fn is_type(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Type(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_type(),
             _ => false,
@@ -296,7 +366,7 @@ impl MettaValue {
     /// Check if this is a Conjunction variant (transparent through Spanned)
     #[inline]
     pub fn is_conjunction(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Conjunction(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_conjunction(),
             _ => false,
@@ -306,7 +376,7 @@ impl MettaValue {
     /// Check if this is a Space variant (transparent through Spanned)
     #[inline]
     pub fn is_space(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Space(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_space(),
             _ => false,
@@ -316,7 +386,7 @@ impl MettaValue {
     /// Check if this is a State variant (transparent through Spanned)
     #[inline]
     pub fn is_state(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::State(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_state(),
             _ => false,
@@ -326,7 +396,7 @@ impl MettaValue {
     /// Check if this is a Unit variant (transparent through Spanned)
     #[inline]
     pub fn is_unit(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Unit => true,
             MettaValueInner::Spanned(v, _) => v.is_unit(),
             _ => false,
@@ -336,7 +406,7 @@ impl MettaValue {
     /// Check if this is a Memo variant (transparent through Spanned)
     #[inline]
     pub fn is_memo(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Memo(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_memo(),
             _ => false,
@@ -346,7 +416,7 @@ impl MettaValue {
     /// Check if this is a Quoted variant (transparent through Spanned)
     #[inline]
     pub fn is_quoted(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Quoted(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_quoted(),
             _ => false,
@@ -356,7 +426,7 @@ impl MettaValue {
     /// Check if this is an Empty variant (transparent through Spanned)
     #[inline]
     pub fn is_empty(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Empty => true,
             MettaValueInner::Spanned(v, _) => v.is_empty(),
             _ => false,
@@ -366,7 +436,7 @@ impl MettaValue {
     /// Check if this value is a variable (Atom starting with $) (transparent through Spanned)
     #[inline]
     pub fn is_variable(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) if s.starts_with('$') => true,
             MettaValueInner::Spanned(v, _) => v.is_variable(),
             _ => false,
@@ -376,7 +446,7 @@ impl MettaValue {
     /// Check if this value is a Spanned variant
     #[inline]
     pub fn is_spanned(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Spanned(_, _))
+        matches!(self.inner_ref(), MettaValueInner::Spanned(_, _))
     }
 
     // ========================================================================
@@ -386,7 +456,7 @@ impl MettaValue {
     /// Try to extract as atom string (transparent through Spanned)
     #[inline]
     pub fn as_atom(&self) -> Option<&'static str> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_atom(),
             _ => None,
@@ -396,7 +466,7 @@ impl MettaValue {
     /// Try to extract as bool (transparent through Spanned)
     #[inline]
     pub fn as_bool(&self) -> Option<bool> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Bool(b) => Some(*b),
             MettaValueInner::Spanned(v, _) => v.as_bool(),
             _ => None,
@@ -406,7 +476,7 @@ impl MettaValue {
     /// Try to extract as i64 (transparent through Spanned)
     #[inline]
     pub fn as_long(&self) -> Option<i64> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Long(n) => Some(*n),
             MettaValueInner::Spanned(v, _) => v.as_long(),
             _ => None,
@@ -416,7 +486,7 @@ impl MettaValue {
     /// Try to extract as f64 (transparent through Spanned)
     #[inline]
     pub fn as_float(&self) -> Option<f64> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Float(f) => Some(*f),
             MettaValueInner::Spanned(v, _) => v.as_float(),
             _ => None,
@@ -426,7 +496,7 @@ impl MettaValue {
     /// Try to extract as string (transparent through Spanned)
     #[inline]
     pub fn as_string(&self) -> Option<&'static str> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::String(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_string(),
             _ => None,
@@ -436,7 +506,7 @@ impl MettaValue {
     /// Try to extract as sexpr items (transparent through Spanned)
     #[inline]
     pub fn as_sexpr(&self) -> Option<&[MettaValue]> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::SExpr(items) => Some(items),
             MettaValueInner::Spanned(v, _) => v.as_sexpr(),
             _ => None,
@@ -446,7 +516,7 @@ impl MettaValue {
     /// Try to extract as error (message, details) (transparent through Spanned)
     #[inline]
     pub fn as_error(&self) -> Option<(&'static str, MettaValue)> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Error(msg, details) => Some((msg, *details)),
             MettaValueInner::Spanned(v, _) => v.as_error(),
             _ => None,
@@ -456,7 +526,7 @@ impl MettaValue {
     /// Try to extract as type inner value (transparent through Spanned)
     #[inline]
     pub fn as_type(&self) -> Option<MettaValue> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Type(inner) => Some(*inner),
             MettaValueInner::Spanned(v, _) => v.as_type(),
             _ => None,
@@ -466,7 +536,7 @@ impl MettaValue {
     /// Try to extract as conjunction goals (transparent through Spanned)
     #[inline]
     pub fn as_conjunction(&self) -> Option<&[MettaValue]> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Conjunction(goals) => Some(goals),
             MettaValueInner::Spanned(v, _) => v.as_conjunction(),
             _ => None,
@@ -476,7 +546,7 @@ impl MettaValue {
     /// Try to extract as space handle (transparent through Spanned)
     #[inline]
     pub fn as_space(&self) -> Option<&SpaceHandle> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Space(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_space(),
             _ => None,
@@ -486,7 +556,7 @@ impl MettaValue {
     /// Try to extract as state id (transparent through Spanned)
     #[inline]
     pub fn as_state(&self) -> Option<u64> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::State(id) => Some(*id),
             MettaValueInner::Spanned(v, _) => v.as_state(),
             _ => None,
@@ -496,7 +566,7 @@ impl MettaValue {
     /// Try to extract as memo handle (transparent through Spanned)
     #[inline]
     pub fn as_memo(&self) -> Option<&MemoHandle> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Memo(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_memo(),
             _ => None,
@@ -506,7 +576,7 @@ impl MettaValue {
     /// Try to extract the inner value of a Quoted variant (owned copy) (transparent through Spanned)
     #[inline]
     pub fn as_quoted(&self) -> Option<MettaValue> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(*inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted(),
             _ => None,
@@ -516,7 +586,7 @@ impl MettaValue {
     /// Try to extract a reference to the inner value of a Quoted variant (transparent through Spanned)
     #[inline]
     pub fn as_quoted_ref(&self) -> Option<&MettaValue> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted_ref(),
             _ => None,
@@ -525,7 +595,7 @@ impl MettaValue {
 
     /// Get the type name of this value as a string slice (transparent through Spanned)
     pub fn type_name(&self) -> &'static str {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
             MettaValueInner::Atom(_) => "Symbol",
             MettaValueInner::Bool(_) => "Bool",
@@ -711,7 +781,7 @@ impl MettaValue {
     /// Produces syntax that can be round-trip parsed by the MeTTa parser.
     /// Guarantees: parse(to_metta_string(value)) == value
     pub fn to_metta_string(&self) -> String {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) => s.to_string(),
             MettaValueInner::Bool(true) => "True".to_string(),
             MettaValueInner::Bool(false) => "False".to_string(),
@@ -766,7 +836,7 @@ impl MettaValue {
 
     /// Convert to MORK s-expression string format.
     pub fn to_mork_string(&self) -> String {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) => {
                 if *s == "&" || *s == "&self" || *s == "&kb" || *s == "&stack" {
                     s.to_string()
@@ -814,7 +884,7 @@ impl MettaValue {
 
     /// Convert to a JSON-like string representation.
     pub fn to_json_string(&self) -> String {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) => {
                 format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s))
             }
@@ -916,14 +986,14 @@ pub fn escape_metta_string(s: &str) -> String {
 
 impl fmt::Debug for MettaValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(f)
+        self.inner_ref().fmt(f)
     }
 }
 
 impl fmt::Display for MettaValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Display is span-transparent: Spanned delegates to inner value
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) => write!(f, "{}", s),
             MettaValueInner::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
             MettaValueInner::Long(n) => write!(f, "{}", n),
@@ -961,10 +1031,14 @@ impl fmt::Display for MettaValue {
 
 impl PartialEq for MettaValue {
     fn eq(&self, other: &Self) -> bool {
-        // Fast path: pointer equality (works even if both point to same Spanned slot)
-        std::ptr::eq(self.inner, other.inner)
-            // Compare through inner() which strips Spanned — span-transparent equality
-            || self.inner() == other.inner()
+        // Fast path: pointer equality — mask off tag bits before comparing
+        let a = self.tagged & PTR_MASK;
+        let b = other.tagged & PTR_MASK;
+        if a == b {
+            return true;
+        }
+        // Compare through inner() which strips Spanned — span-transparent equality
+        self.inner() == other.inner()
     }
 }
 
@@ -1004,7 +1078,7 @@ fn strip_spanned(inner: &MettaValueInner) -> &MettaValueInner {
     let mut current = inner;
     loop {
         match current {
-            MettaValueInner::Spanned(v, _) => current = v.inner,
+            MettaValueInner::Spanned(v, _) => current = v.inner_ref(),
             _ => return current,
         }
     }
@@ -1096,13 +1170,20 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn inner_raw(&self) -> &MettaValueInner {
-        self.inner // Raw field, no Spanned stripping
+        self.inner_ref() // Raw field, no Spanned stripping
     }
 
     #[inline]
     fn inner_ptr(&self) -> *const MettaValueInner {
         // Returns pointer to the OUTERMOST inner (may be Spanned) — correct for GC
-        self.inner as *const MettaValueInner
+        // Uses the MettaValue::inner_ptr() method which masks off tag bits
+        (self.tagged & PTR_MASK) as *const MettaValueInner
+    }
+
+    /// O(1) check via tagged pointer flag — single AND instruction.
+    #[inline]
+    fn has_variables_fast(&self) -> bool {
+        self.tagged & FLAG_HAS_VARIABLES != 0
     }
 
     #[inline]
@@ -1113,7 +1194,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_atom(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_atom(),
             _ => false,
@@ -1122,7 +1203,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_bool(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Bool(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_bool(),
             _ => false,
@@ -1131,7 +1212,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_long(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Long(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_long(),
             _ => false,
@@ -1140,7 +1221,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_float(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Float(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_float(),
             _ => false,
@@ -1149,7 +1230,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_string(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::String(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_string(),
             _ => false,
@@ -1158,7 +1239,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_sexpr(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::SExpr(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_sexpr(),
             _ => false,
@@ -1167,7 +1248,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_error(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Error(_, _) => true,
             MettaValueInner::Spanned(v, _) => v.is_error(),
             _ => false,
@@ -1176,7 +1257,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_type(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Type(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_type(),
             _ => false,
@@ -1185,7 +1266,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_conjunction(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Conjunction(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_conjunction(),
             _ => false,
@@ -1194,7 +1275,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_space(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Space(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_space(),
             _ => false,
@@ -1203,7 +1284,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_state(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::State(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_state(),
             _ => false,
@@ -1212,7 +1293,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_unit(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Unit => true,
             MettaValueInner::Spanned(v, _) => v.is_unit(),
             _ => false,
@@ -1221,7 +1302,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_memo(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Memo(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_memo(),
             _ => false,
@@ -1230,7 +1311,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_quoted(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Quoted(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_quoted(),
             _ => false,
@@ -1239,7 +1320,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_empty(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Empty => true,
             MettaValueInner::Spanned(v, _) => v.is_empty(),
             _ => false,
@@ -1248,12 +1329,12 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_spanned(&self) -> bool {
-        matches!(self.inner, MettaValueInner::Spanned(_, _))
+        matches!(self.inner_ref(), MettaValueInner::Spanned(_, _))
     }
 
     #[inline]
     fn span(&self) -> Option<&'static crate::ir::Span> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Spanned(_, span) => Some(span),
             _ => None,
         }
@@ -1261,7 +1342,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn strip_one_span(&self) -> Self {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Spanned(v, _) => *v,
             _ => *self,
         }
@@ -1269,7 +1350,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_variable(&self) -> bool {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) if s.starts_with('$') => true,
             MettaValueInner::Spanned(v, _) => v.is_variable(),
             _ => false,
@@ -1279,7 +1360,7 @@ impl MettaValueTrait for MettaValue {
     #[inline]
     fn is_ground_type(&self) -> bool {
         // Unit/() is NOT a ground type — it's an expression in MeTTa HE
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Bool(_)
                 | MettaValueInner::Long(_)
                 | MettaValueInner::Float(_)
@@ -1291,7 +1372,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_atom(&self) -> Option<&str> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_atom(),
             _ => None,
@@ -1300,7 +1381,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_bool(&self) -> Option<bool> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Bool(b) => Some(*b),
             MettaValueInner::Spanned(v, _) => v.as_bool(),
             _ => None,
@@ -1309,7 +1390,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_long(&self) -> Option<i64> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Long(n) => Some(*n),
             MettaValueInner::Spanned(v, _) => v.as_long(),
             _ => None,
@@ -1318,7 +1399,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_float(&self) -> Option<f64> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Float(f) => Some(*f),
             MettaValueInner::Spanned(v, _) => v.as_float(),
             _ => None,
@@ -1327,7 +1408,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_string(&self) -> Option<&str> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::String(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_string(),
             _ => None,
@@ -1336,7 +1417,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_sexpr(&self) -> Option<&[Self]> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::SExpr(items) => Some(items),
             MettaValueInner::Spanned(v, _) => v.as_sexpr(),
             _ => None,
@@ -1345,7 +1426,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_error(&self) -> Option<(&str, &Self)> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Error(msg, details) => Some((msg, details)),
             MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_error(v),
             _ => None,
@@ -1354,7 +1435,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_type(&self) -> Option<&Self> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Type(inner) => Some(inner),
             MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_type(v),
             _ => None,
@@ -1363,7 +1444,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_conjunction(&self) -> Option<&[Self]> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Conjunction(goals) => Some(goals),
             MettaValueInner::Spanned(v, _) => v.as_conjunction(),
             _ => None,
@@ -1372,7 +1453,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_space(&self) -> Option<&SpaceHandle> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Space(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_space(),
             _ => None,
@@ -1381,7 +1462,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_state(&self) -> Option<u64> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::State(id) => Some(*id),
             MettaValueInner::Spanned(v, _) => v.as_state(),
             _ => None,
@@ -1390,7 +1471,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_memo(&self) -> Option<&MemoHandle> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Memo(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_memo(),
             _ => None,
@@ -1399,7 +1480,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_quoted(&self) -> Option<Self> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(*inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted(),
             _ => None,
@@ -1408,7 +1489,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_quoted_ref(&self) -> Option<&Self> {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted_ref(),
             _ => None,
@@ -1416,7 +1497,7 @@ impl MettaValueTrait for MettaValue {
     }
 
     fn type_name(&self) -> &'static str {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
             MettaValueInner::Atom(_) => "Symbol",
             MettaValueInner::Bool(_) => "Bool",
@@ -1438,7 +1519,7 @@ impl MettaValueTrait for MettaValue {
     }
 
     fn friendly_type_name(&self) -> &'static str {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::Long(_) => "Number (integer)",
             MettaValueInner::Float(_) => "Number (float)",
             MettaValueInner::Bool(_) => "Bool",
@@ -1464,9 +1545,9 @@ impl MettaValueTrait for MettaValue {
             s == "&" || s == "&self" || s == "&kb" || s == "&stack"
         }
 
-        match self.inner {
+        match self.inner_ref() {
             // For s-expressions like (double $x), extract "double"
-            MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner {
+            MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner_ref() {
                 MettaValueInner::Atom(head)
                     if !head.starts_with('$')
                         && (!head.starts_with('&') || is_space_ref(head))
@@ -1493,7 +1574,7 @@ impl MettaValueTrait for MettaValue {
     }
 
     fn get_arity(&self) -> usize {
-        match self.inner {
+        match self.inner_ref() {
             MettaValueInner::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
             MettaValueInner::Spanned(v, _) => v.get_arity(),
             _ => 0,
@@ -1555,7 +1636,7 @@ impl MettaValueTrait for MettaValue {
 
         while let Some(work) = work_stack.pop() {
             match work {
-                ReprWork::Process(val) => match val.inner {
+                ReprWork::Process(val) => match val.inner_ref() {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                     MettaValueInner::Float(f) => result_stack.push(f.to_string()),
                     MettaValueInner::Bool(b) => {
@@ -1665,7 +1746,7 @@ impl MettaValueTrait for MettaValue {
 
         while let Some(work) = work_stack.pop() {
             match work {
-                ReprWork::Process(val) => match val.inner {
+                ReprWork::Process(val) => match val.inner_ref() {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                     MettaValueInner::Float(f) => result_stack.push(f.to_string()),
                     MettaValueInner::Bool(b) => {
@@ -1816,7 +1897,7 @@ pub(crate) fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::S
 ///
 /// Used by `MettaValue::hash_value()` for complex types (strings, atoms, s-expressions).
 fn hash_value_for_trait<H: Hasher>(value: &MettaValue, hasher: &mut H) {
-    match value.inner {
+    match value.inner_ref() {
         MettaValueInner::Unit => 0u8.hash(hasher),
         MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
         MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
@@ -1842,7 +1923,7 @@ fn hash_value_for_trait<H: Hasher>(value: &MettaValue, hasher: &mut H) {
 
 /// Serialize an MettaValue to bytes
 fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
-    match value.inner {
+    match value.inner_ref() {
         MettaValueInner::Atom(s) => {
             buf.push(ATOM);
             write_varint(buf, s.len());

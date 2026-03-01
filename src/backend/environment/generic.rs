@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -313,13 +313,27 @@ where
     /// CoW: Tracks if this environment has been modified
     pub(crate) modified: AtomicBool,
 
-    /// Current module path for relative path resolution
-    pub(crate) current_module_path: Option<PathBuf>,
+    /// Current module path for relative path resolution.
+    /// Arc-wrapped for O(1) clone — module path is semantically immutable after construction.
+    pub(crate) current_module_path: Option<Arc<PathBuf>>,
 
     /// Cached MORK byte prefix for rules: [Arity(3)] + "=" symbol bytes.
     /// Computed once at construction. Constant for the lifetime of the environment.
     /// Used by `get_matching_rules_for_expr()` for trie prefix navigation.
-    pub(crate) rule_prefix: Vec<u8>,
+    /// Arc-wrapped for O(1) clone — prefix is semantically immutable after construction.
+    pub(crate) rule_prefix: Arc<[u8]>,
+
+    /// Monotonic epoch for MORK symbol cache invalidation.
+    ///
+    /// Assigned from `next_mork_epoch()` at construction. Environments that share
+    /// the same `SharedMapping` (clones, forks) keep the same epoch, since cached
+    /// symbol IDs remain valid. A new epoch is only allocated for a truly new
+    /// `SharedMapping` (i.e., `GenericEnvironment::new()`).
+    ///
+    /// Unlike pointer-based identity, epochs are never reused — this eliminates
+    /// the ABA problem where a dropped `SharedMapping` has its heap address
+    /// recycled by a new allocation.
+    pub(crate) mork_cache_epoch: u64,
 }
 
 impl<V, F> GenericEnvironment<V, F>
@@ -390,6 +404,11 @@ where
         // Register as GC root provider (no-op if V != MettaValue)
         try_register_env_roots(&shared);
 
+        // Use the AtomSpace's epoch — it was already allocated from next_mork_epoch()
+        // during AtomSpace::new(). Reusing it ensures env and atom_space share the
+        // same epoch for the same SharedMapping, preventing cache mismatches.
+        let mork_cache_epoch = shared.atom_space.mork_cache_epoch;
+
         // Compute the MORK byte prefix for rules: [Arity(3)] + "=" symbol bytes.
         // This is constant for the lifetime of the environment (determined by shared_mapping).
         let rule_prefix = {
@@ -397,6 +416,7 @@ where
             crate::backend::mork_convert::with_mork_bytes(
                 &eq_atom,
                 &shared_mapping,
+                mork_cache_epoch,
                 |eq_bytes| {
                     let mut prefix = Vec::with_capacity(1 + eq_bytes.len());
                     prefix.push(0x03); // Arity(3) — compile-time constant for (= lhs rhs)
@@ -414,7 +434,8 @@ where
             owns_data: true,
             modified: AtomicBool::new(false),
             current_module_path: None,
-            rule_prefix,
+            rule_prefix: rule_prefix.into(), // Vec<u8> → Arc<[u8]>
+            mork_cache_epoch,
         }
     }
 
@@ -422,6 +443,12 @@ where
     #[inline]
     pub fn factory(&self) -> &F {
         &self.factory
+    }
+
+    /// Get the monotonic epoch for MORK symbol cache invalidation.
+    #[inline]
+    pub fn mork_cache_epoch(&self) -> u64 {
+        self.mork_cache_epoch
     }
 
     /// Mark this environment as modified.
@@ -480,6 +507,8 @@ where
                     )),
                     total_atoms: AtomicUsize::new(forked_count),
                     variable_atoms: RwLock::new(forked_var_atoms),
+                    // Same symbol mapping → same epoch (cache entries remain valid)
+                    mork_cache_epoch: self.shared.atom_space.mork_cache_epoch,
                 }
             },
             // RwLock<HashMap> - read lock + clone
@@ -591,6 +620,7 @@ where
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
             rule_prefix: self.rule_prefix.clone(),
+            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -623,6 +653,7 @@ where
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
                 rule_prefix: self.rule_prefix.clone(),
+                mork_cache_epoch: self.mork_cache_epoch,
             };
         }
 
@@ -639,6 +670,7 @@ where
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
                 rule_prefix: self.rule_prefix.clone(),
+                mork_cache_epoch: self.mork_cache_epoch,
             };
         }
 
@@ -652,6 +684,7 @@ where
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
                 rule_prefix: self.rule_prefix.clone(),
+                mork_cache_epoch: self.mork_cache_epoch,
             };
         }
 
@@ -665,6 +698,7 @@ where
                 modified: AtomicBool::new(false),
                 current_module_path: other.current_module_path.clone(),
                 rule_prefix: self.rule_prefix.clone(),
+                mork_cache_epoch: other.mork_cache_epoch,
             };
         }
 
@@ -817,6 +851,8 @@ where
                 ),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
+                // Same SharedMapping as self → same epoch (cache entries remain valid)
+                mork_cache_epoch: self.mork_cache_epoch,
             },
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
@@ -891,6 +927,7 @@ where
             modified: AtomicBool::new(true),
             current_module_path: other.current_module_path.clone().or_else(|| self.current_module_path.clone()),
             rule_prefix: self.rule_prefix.clone(),
+            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -996,6 +1033,7 @@ where
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
             rule_prefix: self.rule_prefix.clone(),
+            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -1205,6 +1243,8 @@ where
                 }),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
+                // Same SharedMapping as self → same epoch (cache entries remain valid)
+                mork_cache_epoch: self.mork_cache_epoch,
             },
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
@@ -1283,6 +1323,7 @@ where
             modified: AtomicBool::new(true),
             current_module_path: last_env.current_module_path.clone().or_else(|| self.current_module_path.clone()),
             rule_prefix: self.rule_prefix.clone(),
+            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -1301,8 +1342,8 @@ where
     }
 
     /// Get the current module path.
-    pub fn current_module_path(&self) -> Option<&PathBuf> {
-        self.current_module_path.as_ref()
+    pub fn current_module_path(&self) -> Option<&Path> {
+        self.current_module_path.as_deref().map(|p| p.as_path())
     }
 
     // Note: set_current_module_path is defined in module_ops.rs
@@ -1363,6 +1404,7 @@ where
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
             rule_prefix: self.rule_prefix.clone(),
+            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 }
@@ -1621,7 +1663,7 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
             let mut btm = self.shared.atom_space.btm.write();
             add_atom(&mut btm, mork_bytes);
             drop(btm);
@@ -1729,7 +1771,7 @@ where
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
             // Rule removal: use De Bruijn encoding to match PathMap entry
             let sm = self.shared_mapping.clone();
-            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
                 let mut btm = self.shared.atom_space.btm.write();
 
                 let current_count = get_multiplicity(&btm, mork_bytes);
@@ -1777,7 +1819,7 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
             let mut btm = self.shared.atom_space.btm.write();
 
             let current_count = get_multiplicity(&btm, mork_bytes);
@@ -1890,7 +1932,7 @@ where
         // to be consistent with add_rule() which stores in RuleIndex + PathMap with De Bruijn.
         if let Some((_lhs, _rhs)) = extract_rule_parts(value) {
             let sm = self.shared_mapping.clone();
-            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
                 let mut btm = self.shared.atom_space.btm.write();
                 add_atom(&mut btm, mork_bytes);
                 drop(btm);
@@ -1919,7 +1961,7 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
             let mut btm = self.shared.atom_space.btm.write();
             add_atom(&mut btm, mork_bytes);
             drop(btm);
@@ -1967,7 +2009,7 @@ where
         // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
             let sm = self.shared_mapping.clone();
-            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
                 let mut btm = self.shared.atom_space.btm.write();
 
                 let current_count = get_multiplicity(&btm, mork_bytes);
@@ -2016,7 +2058,7 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
             let mut btm = self.shared.atom_space.btm.write();
 
             let current_count = get_multiplicity(&btm, mork_bytes);

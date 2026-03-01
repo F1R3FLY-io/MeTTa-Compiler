@@ -442,6 +442,21 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
         // is-function: (-> Type Bool)
         BuiltinSignature { name: "is-function", min_arity: 1, max_arity: 1,
             type_sig: arrow(vec![Type], Bool) },
+        // type-cast: (-> $a Type Atom $a)
+        BuiltinSignature { name: "type-cast", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Var("a"), Type, Atom], Var("a")) },
+        // metta: (-> Atom Type SpaceType Atom) — interpreter operation (HE parity)
+        BuiltinSignature { name: "metta", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Atom, Type, Atom], Atom) },
+        // match-type-or: (-> Bool Atom Atom Bool) — fold helper for type matching
+        BuiltinSignature { name: "match-type-or", min_arity: 3, max_arity: 3,
+            type_sig: arrow(vec![Bool, Atom, Atom], Bool) },
+        // first-from-pair: (-> Atom Atom) — extract first element from pair
+        BuiltinSignature { name: "first-from-pair", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Atom], Atom) },
+        // :<: (-> Atom Atom Unit) — subtype declaration
+        BuiltinSignature { name: ":<", min_arity: 2, max_arity: 2,
+            type_sig: arrow(vec![Atom, Atom], Atom) },
         // ====================================================================
         // Error handling (HE-aligned)
         // ====================================================================
@@ -598,6 +613,21 @@ pub fn get_expected_type_at_position(sig: &BuiltinSignature, position: usize) ->
     get_arg_types(&sig.type_sig).and_then(|args| args.get(position))
 }
 
+/// Convert a `TypeExpr` to its expected_type atom name for branch pruning.
+///
+/// Returns `Some("Number")`, `Some("Bool")`, or `Some("String")` for concrete
+/// value types. Returns `None` for meta-types (`Atom`, `Expression`, etc.),
+/// polymorphic type variables, and structural types — these don't constrain
+/// the result type enough to enable branch pruning.
+pub fn type_expr_to_expected_type_name(te: &TypeExpr) -> Option<&'static str> {
+    match te {
+        TypeExpr::Number => Some("Number"),
+        TypeExpr::Bool => Some("Bool"),
+        TypeExpr::String => Some("String"),
+        _ => None, // Meta-types/polymorphic/structural: don't constrain
+    }
+}
+
 /// Get all built-in names (useful for fuzzy matching initialization)
 pub fn builtin_names() -> impl Iterator<Item = &'static str> {
     BUILTIN_SIGNATURES.iter().map(|sig| sig.name)
@@ -731,7 +761,7 @@ mod tests {
             "collapse", "collapse-bind", "get-atoms",
             // Type ops
             "get-type", "check-type", "get-metatype", "validate-atom", "get-type-space",
-            "is-function",
+            "is-function", "type-cast", "metta", "match-type-or", "first-from-pair", ":<",
             // List/Expression ops
             "car-atom", "cdr-atom", "cons-atom", "decons-atom",
             "size-atom", "max-atom", "min-atom", "index-atom", "empty",
@@ -869,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_type_operations_have_signatures() {
-        for op in [":", "get-type", "check-type", "get-metatype", "validate-atom", "get-type-space", "is-function"] {
+        for op in [":", "get-type", "check-type", "get-metatype", "validate-atom", "get-type-space", "is-function", "type-cast", "metta", "match-type-or", "first-from-pair", ":<"] {
             let sig = get_signature(op);
             assert!(
                 sig.is_some(),

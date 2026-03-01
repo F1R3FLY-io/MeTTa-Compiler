@@ -53,6 +53,13 @@ pub unsafe extern "C" fn jit_runtime_dispatch_rules(
     let expr_val = JitValue::from_raw(expr);
     let expr_metta = expr_val.to_metta();
 
+    // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
+    if expr_metta.as_sexpr().is_some()
+        && crate::backend::eval::trampoline::is_memoized_normal_form(&expr_metta)
+    {
+        return box_long(0);
+    }
+
     // Get the MorkBridge and call dispatch_rules
     let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
     let rules = bridge.dispatch_rules(&expr_metta);

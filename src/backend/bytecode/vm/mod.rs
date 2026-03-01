@@ -189,6 +189,11 @@ where
 
     /// Memoization cache for CallCached opcode
     pub(crate) memo_cache: Arc<super::generic_memo_cache::GenericMemoCache<V>>,
+
+    /// Phase 9.2/9.3: Expected return type for the current dispatch, used for branch pruning.
+    /// Set before sub-expression evaluation in `vm_type_driven_pre_eval()`, consumed
+    /// after `match_rules_native()` to filter out type-incompatible rule matches.
+    pub(crate) expected_type: Option<V>,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
@@ -236,6 +241,7 @@ where
             memo_cache: get_or_create_memo_cache::<V, F>(),
             factory,
             env: None,
+            expected_type: None,
         }
     }
 
@@ -259,6 +265,7 @@ where
             memo_cache: get_or_create_memo_cache::<V, F>(),
             factory,
             env: Some(env),
+            expected_type: None,
         }
     }
 
@@ -285,6 +292,7 @@ where
             native_registry,
             external_registry,
             memo_cache,
+            expected_type: None,
         }
     }
 
@@ -1156,6 +1164,11 @@ where
             Opcode::ValidateAtom | Opcode::GetTypeSpace => {
                 return Err(VmError::Halted);
             }
+            Opcode::IsFunction => self.op_is_function()?,
+            // type-cast requires full type inference with environment access
+            Opcode::TypeCast => {
+                return Err(VmError::Halted);
+            }
             Opcode::ConsAtom => self.op_cons_atom()?,
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
@@ -1889,6 +1902,25 @@ where
         let value = self.pop()?;
         let metatype = metatype_of(value.inner_raw());
         self.push(self.make_atom(metatype));
+        Ok(())
+    }
+
+    /// is-function: check if a value is an arrow type (-> ...)
+    fn op_is_function(&mut self) -> VmResult<()> {
+        let value = self.pop()?;
+        let is_fn = match value.inner_raw() {
+            MettaValueInner::SExpr(items) => {
+                items.first().and_then(|v| v.as_atom()) == Some("->")
+            }
+            MettaValueInner::Spanned(inner, _) => match &inner.inner_ref() {
+                MettaValueInner::SExpr(items) => {
+                    items.first().and_then(|v| v.as_atom()) == Some("->")
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        self.push(self.make_bool(is_fn));
         Ok(())
     }
 
@@ -3332,6 +3364,14 @@ where
         // Pop the call expression from the stack
         let expr = self.pop()?;
 
+        // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
+        if expr.as_sexpr().is_some()
+            && crate::backend::eval::trampoline::is_memoized_normal_form(&expr)
+        {
+            self.push(expr);
+            return Ok(());
+        }
+
         // Guard: only dispatch on callable expressions (s-exprs with atom head, or bare atoms)
         if let Some(items) = expr.as_sexpr() {
             if items.is_empty() {
@@ -3344,10 +3384,43 @@ where
                 self.push(expr);
                 return Ok(());
             }
+            // Phase 9.1: Variable-head guard — expressions like ($f x) are data,
+            // not callable. Rule dispatch only applies to concrete-headed S-exprs.
+            if let Some(head_atom) = items[0].as_atom() {
+                if head_atom.starts_with('$') {
+                    self.push(expr);
+                    return Ok(());
+                }
+            }
         } else if expr.as_atom().is_none() {
             // Not a callable expression - return unchanged
             self.push(expr);
             return Ok(());
+        }
+
+        // Phase 9.6: All-error-types early exit — if every declared type for
+        // the head is an Error type, the expression can never produce a useful
+        // result. Short-circuit with an error value.
+        if let Some(items) = expr.as_sexpr() {
+            if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+                if let Some(env) = &self.env {
+                    let op_types = env.get_types_generic(head);
+                    if !op_types.is_empty()
+                        && op_types.iter().all(|t| {
+                            t.as_sexpr().map_or(false, |ti| {
+                                ti.first().and_then(|v| v.as_atom()) == Some("Error")
+                            })
+                        })
+                    {
+                        let err = self.factory.error(
+                            &format!("All types for '{}' are errors", head),
+                            expr,
+                        );
+                        self.push(err);
+                        return Ok(());
+                    }
+                }
+            }
         }
 
         // Type-driven applicative evaluation (MeTTa HE parity):
@@ -3367,6 +3440,22 @@ where
 
         // Use native byte-level matching via RuleIndex + extract_data
         let matches = env.match_rules_native(&expr, apply_bindings_generic);
+
+        // Phase 9.2/9.3: expected_type branch pruning — filter out rule matches
+        // whose rhs_type is incompatible with the expected return type.
+        let matches = if let Some(ref expected) = self.expected_type {
+            use crate::backend::eval::types_generic::types_match_generic;
+            matches
+                .into_iter()
+                .filter(|m| match &m.rhs_type {
+                    Some(rt) => types_match_generic(rt, expected),
+                    None => true, // No rhs_type → can't prune, keep it
+                })
+                .collect()
+        } else {
+            matches
+        };
+        self.expected_type = None; // Clear after use
 
         // Trace: Emit RuleMatchSet for all matching rules
         #[cfg(feature = "eval-trace")]
@@ -3389,6 +3478,11 @@ where
         }
 
         if matches.is_empty() {
+            // Phase 9.5: Memoize as normal form — no rules matched, so this
+            // S-expression is irreducible. Future dispatches will skip it.
+            if expr.as_sexpr().is_some() {
+                crate::backend::eval::trampoline::memoize_normal_form(&expr);
+            }
             // No rules match - return expression unchanged
             self.push(expr);
             return Ok(());
@@ -3525,14 +3619,24 @@ where
         let op_types = env.get_types_generic(head);
 
         // Collect all arrow types for this operator
-        let all_arg_types: Vec<Vec<V>> = op_types
+        let mut all_arg_types: Vec<Vec<V>> = op_types
             .iter()
             .filter_map(|t| extract_arg_types(t))
             .collect();
 
-        // No arrow types found → no type-driven pre-eval
+        // Phase 9.4: Inferred-type fallback from Phase 10 deep type inference.
+        // If no declared arrow types exist, check inferred function types.
         if all_arg_types.is_empty() {
-            return Ok(expr);
+            if env.has_inferred_type(head) {
+                let inferred = env.get_inferred_fn_types(head);
+                all_arg_types = inferred
+                    .iter()
+                    .filter_map(|t| extract_arg_types(t))
+                    .collect();
+            }
+            if all_arg_types.is_empty() {
+                return Ok(expr);
+            }
         }
 
         // Pre-evaluate non-meta-typed S-expr arguments
@@ -3554,6 +3658,18 @@ where
             // Only pre-evaluate S-expression arguments
             if item.as_sexpr().is_none() {
                 continue;
+            }
+
+            // Phase 9.2/9.3: Derive expected_type for this argument position.
+            // Tier 1: Builtin signatures. Tier 2: User-declared arrow types.
+            {
+                use crate::backend::builtin_signatures;
+                let arg_pos = i - 1;
+                self.expected_type = builtin_signatures::get_signature(head)
+                    .and_then(|sig| builtin_signatures::get_expected_type_at_position(sig, arg_pos))
+                    .and_then(builtin_signatures::type_expr_to_expected_type_name)
+                    .map(|name| self.factory.atom(name));
+                // TODO: Tier 2 user-arrow fallback (extract_consistent_arg_type equivalent)
             }
 
             // Evaluate sub-expression using a recursive VM invocation.

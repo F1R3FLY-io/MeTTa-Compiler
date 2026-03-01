@@ -1,7 +1,7 @@
 //! Type operations function initialization for JIT compiler
 //!
 //! Handles symbol registration and function declaration for type operations
-//! runtime functions: get_type, check_type, assert_type.
+//! runtime functions: get_type, check_type, assert_type, is_function.
 
 use cranelift::prelude::*;
 use cranelift_jit::JITBuilder;
@@ -21,6 +21,8 @@ pub struct TypeOpsFuncIds {
     pub check_type_func_id: FuncId,
     /// Assert value has type (error if not)
     pub assert_type_func_id: FuncId,
+    /// Check if type is an arrow type (-> ...)
+    pub is_function_func_id: FuncId,
 }
 
 /// Trait for type operations initialization - zero-cost static dispatch
@@ -48,11 +50,13 @@ impl<T> TypeOpsInit for T {
             "jit_runtime_assert_type",
             runtime::jit_runtime_assert_type as *const u8,
         );
+        builder.symbol(
+            "jit_runtime_is_function",
+            runtime::jit_runtime_is_function as *const u8,
+        );
     }
 
     fn declare_type_ops_funcs<M: Module>(module: &mut M) -> JitResult<TypeOpsFuncIds> {
-
-
         // get_type: fn(ctx, value, ip) -> type
         let mut get_type_sig = module.make_signature();
         get_type_sig.params.push(AbiParam::new(types::I64)); // ctx
@@ -100,10 +104,27 @@ impl<T> TypeOpsInit for T {
                 ))
             })?;
 
+        // is_function: fn(ctx, value, ip) -> bool
+        let mut is_function_sig = module.make_signature();
+        is_function_sig.params.push(AbiParam::new(types::I64)); // ctx
+        is_function_sig.params.push(AbiParam::new(types::I64)); // value
+        is_function_sig.params.push(AbiParam::new(types::I64)); // ip
+        is_function_sig.returns.push(AbiParam::new(types::I64)); // bool
+
+        let is_function_func_id = module
+            .declare_function("jit_runtime_is_function", Linkage::Import, &is_function_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_is_function: {}",
+                    e
+                ))
+            })?;
+
         Ok(TypeOpsFuncIds {
             get_type_func_id,
             check_type_func_id,
             assert_type_func_id,
+            is_function_func_id,
         })
     }
 }

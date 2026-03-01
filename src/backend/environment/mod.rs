@@ -25,7 +25,7 @@
 //! - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>` (slab-allocated)
 
 pub(crate) mod atom_space;
-mod bloom;
+pub(crate) mod bloom;
 mod fact_storage;
 pub(crate) mod generic;
 mod grounded_ops;
@@ -35,7 +35,7 @@ pub(crate) mod multiplicity;
 mod mutable_state;
 mod named_spaces;
 mod pattern_matching;
-mod rule_management;
+pub(crate) mod rule_management;
 mod scope;
 mod scope_ops;
 mod suggestions;

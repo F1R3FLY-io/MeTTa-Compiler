@@ -63,7 +63,7 @@ thread_local! {
 /// # Safety contract
 ///
 /// The raw `*const MettaValueInner` pointers stored on the work stack
-/// are safe because every `MettaValue.inner` points to `'static` slab
+/// are safe because every `MettaValue.inner_ref()` points to `'static` slab
 /// memory.  The pointers are only dereferenced within the scope of this
 /// function call.
 pub fn trace_value(root: &MettaValue) -> TraceValue {

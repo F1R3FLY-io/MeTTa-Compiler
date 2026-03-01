@@ -44,13 +44,21 @@ where
         // Update type bloom filter for O(1) early rejection
         self.shared.atom_space.type_bloom.write().insert(name.as_bytes());
 
+        // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
+        super::rule_management::increment_rule_epoch();
+
         self.modified.store(true, Ordering::Release);
     }
 
     /// Get all types for a symbol (generic version, nondeterministic).
     ///
-    /// Returns all declared types for the given name. Returns an empty Vec
-    /// if no type assertions exist. HE parity: an atom can have multiple types.
+    /// Returns all declared types for the given name, plus the transitive
+    /// supertype closure for each declared type. Returns an empty Vec if no
+    /// type assertions exist.
+    ///
+    /// HE parity: mirrors `add_super_types()` in HE's `query_types()`.
+    /// If `(: a Dog)` and `(:< Dog Animal)` and `(:< Animal LivingThing)`,
+    /// then `get_types_generic("a")` returns `[Dog, Animal, LivingThing]`.
     ///
     /// For MettaValue environments, prefer `Environment::get_type` which
     /// uses the optimized MORK index.
@@ -59,7 +67,34 @@ where
         if !self.shared.atom_space.type_bloom.read().may_have_type(name.as_bytes()) {
             return Vec::new();
         }
-        self.shared.types.read().get(name).cloned().unwrap_or_default()
+        let mut types: Vec<V> = self.shared.types.read().get(name).cloned().unwrap_or_default();
+
+        // HE parity: append transitive supertypes for each declared type.
+        // Iterate over direct types (snapshot len), appending supertypes.
+        let original_len = types.len();
+        for i in 0..original_len {
+            if let Some(type_name) = types[i].as_atom() {
+                for supertype in self.get_all_supertypes(type_name) {
+                    let super_val = self.factory.atom(&supertype);
+                    if !types.contains(&super_val) {
+                        types.push(super_val);
+                    }
+                }
+            }
+        }
+
+        types
+    }
+
+    /// O(1) bloom filter check: does this atom name *possibly* have type declarations?
+    ///
+    /// Returns `false` only if the name definitely has no type (no false negatives).
+    /// Returns `true` if the name may have types (possible false positive at ~1% FPR).
+    /// Much cheaper than `get_types_generic` — no RwLock on the types HashMap,
+    /// no supertype closure computation, no Vec allocation.
+    #[inline]
+    pub fn may_have_type(&self, name: &str) -> bool {
+        self.shared.atom_space.type_bloom.read().may_have_type(name.as_bytes())
     }
 
     /// Get all atom names that have a specific declared type.
@@ -110,6 +145,10 @@ where
 
         // Invalidate type index cache
         self.shared.type_index_dirty.store(true, Ordering::Release);
+
+        // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
+        super::rule_management::increment_rule_epoch();
+
         self.modified.store(true, Ordering::Release);
     }
 

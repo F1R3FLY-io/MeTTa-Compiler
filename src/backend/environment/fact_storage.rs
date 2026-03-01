@@ -98,20 +98,10 @@ impl MettaEnvironment {
 
     /// Check if a MettaValue contains variables ($x, &y, 'z, or _)
     /// Space references like &self, &kb, &stack are NOT variables
+    ///
+    /// Delegates to `MettaValueTrait::contains_variables()`.
     pub(crate) fn contains_variables(value: &MettaValue) -> bool {
-        match value.inner() {
-            MettaValueInner::Atom(s) => {
-                // Space references are NOT variables
-                if *s == "&" || *s == "&self" || *s == "&kb" || *s == "&stack" {
-                    return false;
-                }
-                *s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
-            }
-            MettaValueInner::SExpr(items) => (*items).iter().any(Self::contains_variables),
-            MettaValueInner::Error(_, details) => Self::contains_variables(details),
-            MettaValueInner::Type(t) => Self::contains_variables(t),
-            _ => false, // Ground types: Bool, Long, Float, String, Unit
-        }
+        value.contains_variables()
     }
 
     /// Try exact match lookup using ReadZipper::descend_to_check()
@@ -287,7 +277,7 @@ impl MettaEnvironment {
         let mut wide_fact_trie: PathMap<Multiplicity> = PathMap::new();
 
         for fact in facts {
-            match with_mork_bytes(fact, sm, |mork_bytes| {
+            match with_mork_bytes(fact, sm, self.mork_cache_epoch, |mork_bytes| {
                 fact_trie.insert(mork_bytes, Multiplicity::new(1));
             }) {
                 Ok(()) => {}

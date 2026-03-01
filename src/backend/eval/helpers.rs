@@ -83,6 +83,8 @@ static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
     "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
     // Alpha equivalence
     "=alpha",
+    // Type matching (HE stdlib parity)
+    "match-types",
     // Testing/assertion operations
     "assertEqual", "assertAlphaEqual",
     "assertEqualMsg", "assertAlphaEqualMsg",
@@ -178,7 +180,7 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
     }
 
     // For simple cases without nesting, use fast path
-    match value.inner {
+    match value.inner_ref() {
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
         MettaValueInner::Atom(s)
@@ -251,7 +253,7 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
     while let Some(work) = work_stack.pop() {
         match work {
             ApplyBindingsWork::Process(val) => {
-                match val.inner {
+                match val.inner_ref() {
                     // Variable substitution
                     MettaValueInner::Atom(s)
                         if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\''))

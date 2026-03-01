@@ -49,6 +49,40 @@ use super::metta_value::{MettaValue, MettaValueInner};
 use super::metta_value_trait::MettaValueFactory;
 
 // ============================================================================
+// Fibonacci Hash for Pointer HashSets
+// ============================================================================
+
+/// Fast identity-like hasher for slab-allocated pointers.
+/// Uses Fibonacci hashing to spread aligned pointers across hash table buckets.
+/// SipHash (~50 cycles/hash) is overkill for pointer keys; this costs ~3 cycles.
+pub(crate) struct PtrHasher(u64);
+
+impl std::hash::Hasher for PtrHasher {
+    #[inline(always)]
+    fn finish(&self) -> u64 { self.0 }
+    #[inline(always)]
+    fn write(&mut self, _bytes: &[u8]) { unreachable!("PtrHasher only supports usize") }
+    #[inline(always)]
+    fn write_usize(&mut self, i: usize) {
+        // Fibonacci hashing: multiply by golden ratio constant, then use
+        // upper bits (which have maximal entropy after multiplication).
+        self.0 = (i as u64).wrapping_mul(0x517cc1b727220a95);
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct PtrBuildHasher;
+
+impl std::hash::BuildHasher for PtrBuildHasher {
+    type Hasher = PtrHasher;
+    #[inline(always)]
+    fn build_hasher(&self) -> PtrHasher { PtrHasher(0) }
+}
+
+/// HashSet for slab pointers using Fibonacci hashing instead of SipHash.
+pub(crate) type PtrHashSet = std::collections::HashSet<*const u8, PtrBuildHasher>;
+
+// ============================================================================
 // GC Trace Flag (METTA_GC_TRACE environment variable)
 // ============================================================================
 
@@ -542,6 +576,75 @@ impl TreiberStack {
         }
     }
 
+    /// Push a batch of freed slots as a linked chain with a single CAS.
+    ///
+    /// Builds the chain locally (zero contention), then atomically splices
+    /// the entire chain onto the stack head. Reduces N individual CAS ops to 1.
+    ///
+    /// # Safety
+    /// All pointers must be valid slab slots with at least `size_of::<FreeNode>()` bytes.
+    fn push_batch(&self, ptrs: &[*mut u8]) {
+        if ptrs.is_empty() {
+            return;
+        }
+
+        // Single-element optimization: fall back to regular push
+        if ptrs.len() == 1 {
+            self.push(ptrs[0]);
+            return;
+        }
+
+        // Build internal chain: ptrs[0] → ptrs[1] → ... → ptrs[N-2]
+        // No atomics needed for internal links — this is thread-local data.
+        for i in 0..ptrs.len() - 1 {
+            debug_assert!(
+                !ptrs[i].is_null() && (ptrs[i] as usize) % SLOT_ALIGN == 0,
+                "TreiberStack::push_batch: invalid pointer {:?} at index {}",
+                ptrs[i], i,
+            );
+            let node = ptrs[i] as *mut FreeNode;
+            let next_packed = treiber_pack(ptrs[i + 1], 0);
+            // Relaxed is fine: these internal links are invisible to other threads
+            // until the CAS below publishes the chain head.
+            unsafe {
+                (*node).next.store(next_packed, Ordering::Relaxed);
+            }
+        }
+
+        debug_assert!(
+            !ptrs.last().unwrap().is_null()
+                && (*ptrs.last().unwrap() as usize) % SLOT_ALIGN == 0,
+            "TreiberStack::push_batch: invalid last pointer {:?}",
+            ptrs.last().unwrap(),
+        );
+
+        let first = ptrs[0];
+        let last = ptrs[ptrs.len() - 1] as *mut FreeNode;
+
+        // CAS loop: splice chain onto head
+        loop {
+            let old_head = self.head.load(Ordering::Acquire);
+            Self::validate_packed(old_head, "push_batch(old_head)");
+            // Last node in chain points to current stack head
+            unsafe {
+                (*last).next.store(old_head, Ordering::Release);
+            }
+            let old_counter = treiber_unpack_counter(old_head);
+            let new_head =
+                treiber_pack(first, old_counter.wrapping_add(ptrs.len() as u64));
+            Self::validate_packed(new_head, "push_batch(new_head)");
+            match self.head.compare_exchange_weak(
+                old_head,
+                new_head,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(_) => continue,
+            }
+        }
+    }
+
     /// Atomically drain the entire free list, returning the old packed head.
     ///
     /// After this call, the stack is empty. Concurrent `pop()` returns `None`
@@ -770,6 +873,9 @@ impl DataClassAllocator {
     // }
 
     /// Return a slot to the free list (lock-free).
+    /// Note: single-slot free is now handled by SlabAllocator::free_data_slot()
+    /// with thread-local caching. This method is retained for batch-free paths.
+    #[allow(dead_code)]
     fn free(&self, ptr: *mut u8) {
         // Decrement page live_count
         {
@@ -883,7 +989,11 @@ impl DataClassAllocator {
             current = next;
         }
 
-        // Phase 5: Remove empty pages (triggers munmap via MmapPage::Drop)
+        // Phase 5: Bump data cache generation BEFORE releasing pages.
+        // All thread-local data caches will discard their pointers on next access.
+        DATA_CACHE_GENERATION.fetch_add(1, Ordering::Release);
+
+        // Phase 6: Remove empty pages (triggers munmap via MmapPage::Drop)
         // Iterate in reverse so swap_remove indices remain valid.
         let mut i = pages.len();
         while i > 0 {
@@ -894,13 +1004,233 @@ impl DataClassAllocator {
             }
         }
 
-        // Phase 6: Update current_page if all pages were released
+        // Phase 7: Update current_page if all pages were released
         if pages.is_empty() {
             self.current_page.store(ptr::null_mut(), Ordering::Release);
         }
         // Otherwise current_page is still valid — we excluded it from release,
         // and Box<DataPage> heap address is stable across swap_remove.
     }
+}
+
+// ============================================================================
+// Thread-Local Free-List Cache (TreiberStack Contention Reduction)
+// ============================================================================
+
+/// Maximum number of validated pointers in the thread-local cache.
+const THREAD_CACHE_CAPACITY: usize = 64;
+
+/// Number of slots to batch-pop from global TreiberStack when the cache is empty.
+const THREAD_CACHE_REFILL: usize = 32;
+
+/// Global generation counter, incremented when pages are munmapped.
+/// Thread caches compare against this to detect stale pointers.
+static CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// A cached allocation slot with pre-computed page pointer and slot index.
+///
+/// Storing `*const ValuePage` eliminates `pages.read()` + O(P) linear scan on
+/// Tier 1 cache hits. The raw page pointer is valid as long as the generation
+/// matches — pages are only freed in `release_empty_pages()` which bumps
+/// `CACHE_GENERATION`, invalidating all caches before any stale pointer is used.
+#[derive(Clone, Copy)]
+struct CachedSlot {
+    /// Raw pointer to the allocated slot memory.
+    ptr: *mut u8,
+    /// Raw pointer to the owning ValuePage (stable within a generation).
+    page: *const ValuePage,
+    /// Slot index within the page (for epoch/context stamping).
+    slot_idx: u16,
+}
+
+/// Thread-local cache of pre-validated free-list slots.
+///
+/// Each slot has been popped from the global TreiberStack and validated
+/// against the pages vector. Allocations from the cache are O(1) with
+/// no CAS, no page validation, and no RwLock acquisition.
+#[derive(Clone, Copy)]
+struct ThreadFreeCache {
+    /// Pre-validated slots. Only `slots[0..len]` are valid.
+    slots: [CachedSlot; THREAD_CACHE_CAPACITY],
+    /// Number of valid slots in `slots`.
+    len: usize,
+    /// Generation at which these pointers were validated.
+    /// If `CACHE_GENERATION` has advanced, all pointers must be discarded.
+    generation: u64,
+}
+
+// SAFETY: Raw pointers in the cache are only used by the owning thread.
+// The cache is thread-local (never shared).
+unsafe impl Send for ThreadFreeCache {}
+
+impl ThreadFreeCache {
+    const EMPTY_SLOT: CachedSlot = CachedSlot {
+        ptr: ptr::null_mut(),
+        page: ptr::null(),
+        slot_idx: 0,
+    };
+
+    const fn new() -> Self {
+        Self {
+            slots: [Self::EMPTY_SLOT; THREAD_CACHE_CAPACITY],
+            len: 0,
+            generation: 0,
+        }
+    }
+
+    /// Pop a cached slot from the cache. Returns None if empty.
+    #[inline(always)]
+    fn pop(&mut self) -> Option<CachedSlot> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.slots[self.len])
+    }
+
+    /// Push a cached slot into the cache. Returns the slot back if full.
+    #[inline(always)]
+    fn push(&mut self, slot: CachedSlot) -> Option<CachedSlot> {
+        if self.len >= THREAD_CACHE_CAPACITY {
+            return Some(slot);
+        }
+        self.slots[self.len] = slot;
+        self.len += 1;
+        None
+    }
+
+    /// Drain all cached slot pointers (as raw `*mut u8`) for pushing back
+    /// to the global TreiberStack. After this call, the cache is empty.
+    #[inline]
+    fn drain_ptrs(&mut self) -> impl Iterator<Item = *mut u8> + '_ {
+        let len = self.len;
+        self.len = 0;
+        self.slots[..len].iter().map(|s| s.ptr)
+    }
+
+    /// Check if the generation matches the global generation.
+    /// If not, all cached pointers are stale and must be discarded.
+    #[inline(always)]
+    fn is_valid_generation(&self) -> bool {
+        self.generation == CACHE_GENERATION.load(Ordering::Acquire)
+    }
+
+    /// Update the cached generation to the current global generation.
+    #[inline(always)]
+    fn sync_generation(&mut self) {
+        self.generation = CACHE_GENERATION.load(Ordering::Acquire);
+    }
+}
+
+thread_local! {
+    /// Thread-local free-list cache for value slots.
+    static VALUE_CACHE: Cell<ThreadFreeCache> = const { Cell::new(ThreadFreeCache::new()) };
+}
+
+/// Flush the thread-local value cache back to the global free list.
+/// Called on thread exit via `Drop` and on generation mismatch.
+fn flush_value_cache_to_global(cache: &mut ThreadFreeCache, free_list: &TreiberStack) {
+    for ptr in cache.drain_ptrs() {
+        free_list.push(ptr);
+    }
+}
+
+// ============================================================================
+// Thread-Local Data Free-List Cache (DataClassAllocator Contention Reduction)
+// ============================================================================
+
+/// Maximum number of cached pointers per data size class.
+const DATA_CACHE_CAPACITY: usize = 32;
+
+/// Number of slots to batch-pop from global TreiberStack when the data cache is empty.
+const DATA_CACHE_REFILL: usize = 16;
+
+/// Global generation counter for data pages, incremented when data pages are munmapped.
+/// Data caches compare against this to detect stale pointers.
+static DATA_CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Thread-local cache of free-list pointers for a single data size class.
+///
+/// Unlike `ThreadFreeCache` (for values), data slots don't need epoch/context
+/// stamping or page pointer pre-computation — they don't participate in GC
+/// marking. Only raw pointer caching is needed.
+#[derive(Clone, Copy)]
+struct ThreadDataCache {
+    /// Cached free-list pointers. Only `ptrs[0..len]` are valid.
+    ptrs: [*mut u8; DATA_CACHE_CAPACITY],
+    /// Number of valid pointers in `ptrs`.
+    len: usize,
+    /// Generation at which these pointers were validated.
+    generation: u64,
+}
+
+// SAFETY: Raw pointers in the cache are only used by the owning thread.
+// The cache is thread-local (never shared).
+unsafe impl Send for ThreadDataCache {}
+
+impl ThreadDataCache {
+    const fn new() -> Self {
+        Self {
+            ptrs: [ptr::null_mut(); DATA_CACHE_CAPACITY],
+            len: 0,
+            generation: 0,
+        }
+    }
+
+    /// Pop a cached pointer. Returns None if empty.
+    #[inline(always)]
+    fn pop(&mut self) -> Option<*mut u8> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.ptrs[self.len])
+    }
+
+    /// Push a pointer into the cache. Returns true if full (caller should flush).
+    #[inline(always)]
+    fn push(&mut self, ptr: *mut u8) -> bool {
+        if self.len >= DATA_CACHE_CAPACITY {
+            return true; // full
+        }
+        self.ptrs[self.len] = ptr;
+        self.len += 1;
+        false
+    }
+
+    /// Check if the generation matches the global data generation.
+    #[inline(always)]
+    fn is_valid_generation(&self) -> bool {
+        self.generation == DATA_CACHE_GENERATION.load(Ordering::Acquire)
+    }
+
+    /// Update the cached generation to the current global data generation.
+    #[inline(always)]
+    fn sync_generation(&mut self) {
+        self.generation = DATA_CACHE_GENERATION.load(Ordering::Acquire);
+    }
+}
+
+/// Thread-local data caches: one `ThreadDataCache` per size class (9 total).
+///
+/// Stored as a flat array indexed by size class index (0..9).
+/// Uses `Cell` for interior mutability without locking (single-threaded access).
+#[derive(Clone, Copy)]
+struct ThreadDataCacheSet {
+    caches: [ThreadDataCache; 9],
+}
+
+impl ThreadDataCacheSet {
+    const fn new() -> Self {
+        Self {
+            caches: [ThreadDataCache::new(); 9],
+        }
+    }
+}
+
+thread_local! {
+    /// Thread-local free-list caches for data size classes (9 caches, one per class).
+    static DATA_CACHES: Cell<ThreadDataCacheSet> = const { Cell::new(ThreadDataCacheSet::new()) };
 }
 
 // ============================================================================
@@ -936,45 +1266,141 @@ impl ValueAllocator {
 
     /// Allocate a value slot (lock-free hot path).
     ///
+    /// Uses a three-tier allocation strategy:
+    /// 1. **Thread-local cache** — O(1), no CAS, no page validation
+    /// 2. **Global TreiberStack** — CAS pop + batch page validation
+    /// 3. **Bump allocation** — atomic bump pointer from current page
+    ///
     /// Free-list allocations increment the epoch and tag the slot.
     /// Bump allocations don't need epoch tagging.
     /// All paths stamp the current thread's session context ID.
-    ///
-    /// After popping from the free list, validates the pointer against the
-    /// pages vector under a read-lock. If the page was munmapped by
-    /// `release_empty_pages()` between the pop and the lock acquisition,
-    /// the stale pointer is discarded and allocation falls through to the
-    /// bump allocator. The epoch is only incremented for valid allocations.
     fn alloc(&self) -> *mut u8 {
         let ctx_id = current_context_id();
+        let slot_size = self.slot_size;
 
-        // Fast path: pop from Treiber stack free list
+        // Tier 1: Thread-local cache (O(1), no CAS, no RwLock, no page scan)
+        //
+        // Phase 9 optimization: CachedSlot stores a raw `*const ValuePage` pointer
+        // and pre-computed slot_idx, eliminating both `pages.read()` and O(P) scan.
+        // Safety: generation check invalidates the entire cache before any page is freed.
+        let cached = VALUE_CACHE.try_with(|cell| {
+            // SAFETY: Cell<ThreadFreeCache> is only accessed from this thread.
+            // We take ownership, modify, and put back — no concurrent access.
+            let mut cache = cell.get();
+
+            // Check generation validity
+            if !cache.is_valid_generation() {
+                // Pages were munmapped — discard all cached pointers and refill
+                flush_value_cache_to_global(&mut cache, &self.free_list);
+                cache.sync_generation();
+            }
+
+            if let Some(slot) = cache.pop() {
+                cell.set(cache);
+                // SAFETY: Generation check above guarantees the page hasn't been freed.
+                // Pages are append-only within a generation — only release_empty_pages()
+                // modifies the Vec, which bumps generation and invalidates all caches first.
+                let page = unsafe { &*slot.page };
+                let new_epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                page.set_slot_epoch(slot.slot_idx as usize, new_epoch);
+                page.set_context_id(slot.slot_idx as usize, ctx_id);
+                page.live_count.fetch_add(1, Ordering::Relaxed);
+                unsafe { asan_unpoison_slab_slot(slot.ptr, slot_size); }
+                return Some(slot.ptr);
+            }
+
+            // Cache empty — batch-refill from global TreiberStack
+            let mut batch: [*mut u8; THREAD_CACHE_REFILL] = [ptr::null_mut(); THREAD_CACHE_REFILL];
+            let mut batch_len = 0;
+            for slot in batch.iter_mut() {
+                if let Some(ptr) = self.free_list.pop() {
+                    *slot = ptr;
+                    batch_len += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if batch_len > 0 {
+                // Validate entire batch under a single pages.read() lock.
+                // Record (page_ptr, slot_idx) for each valid pointer — these are stored
+                // in CachedSlot so future Tier 1 hits avoid pages.read() entirely.
+                let pages = self.pages.read();
+                let mut first_slot: Option<CachedSlot> = None;
+
+                for i in 0..batch_len {
+                    let ptr = batch[i];
+                    let mut found = false;
+                    for page in pages.iter() {
+                        if let Some(idx) = page.slot_index(ptr as *const u8, slot_size) {
+                            let cached_slot = CachedSlot {
+                                ptr,
+                                page: &**page as *const ValuePage,
+                                slot_idx: idx as u16,
+                            };
+                            if first_slot.is_none() {
+                                first_slot = Some(cached_slot);
+                            } else {
+                                let _ = cache.push(cached_slot);
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        // Invalid pointer (from munmapped page) — silently discarded
+                    }
+                }
+                drop(pages);
+
+                if let Some(slot) = first_slot {
+                    cache.sync_generation();
+                    cell.set(cache);
+
+                    // Complete allocation metadata using the pre-computed page/slot_idx
+                    // SAFETY: We just validated the page above under pages.read().
+                    // Generation hasn't changed (we're in the same alloc call).
+                    let page = unsafe { &*slot.page };
+                    let new_epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                    page.set_slot_epoch(slot.slot_idx as usize, new_epoch);
+                    page.set_context_id(slot.slot_idx as usize, ctx_id);
+                    page.live_count.fetch_add(1, Ordering::Relaxed);
+                    unsafe { asan_unpoison_slab_slot(slot.ptr, slot_size); }
+                    return Some(slot.ptr);
+                }
+            }
+
+            cache.sync_generation();
+            cell.set(cache);
+            None
+        });
+
+        // If thread-local access succeeded and returned a pointer, use it
+        if let Ok(Some(ptr)) = cached {
+            return ptr;
+        }
+
+        // Tier 2: Direct global TreiberStack pop (fallback when thread-local fails)
         if let Some(ptr) = self.free_list.pop() {
-            // Validate that the page still exists — it may have been munmapped
-            // by release_empty_pages() between our pop() and this read-lock.
             let pages = self.pages.read();
             for page in pages.iter() {
-                if let Some(idx) = page.slot_index(ptr as *const u8, self.slot_size) {
-                    // Page still mapped — safe to reuse this slot
+                if let Some(idx) = page.slot_index(ptr as *const u8, slot_size) {
                     let new_epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
                     page.set_slot_epoch(idx, new_epoch);
                     page.set_context_id(idx, ctx_id);
                     page.live_count.fetch_add(1, Ordering::Relaxed);
-                    // ASAN: mark slot as accessible (was poisoned on free)
-                    unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
+                    unsafe { asan_unpoison_slab_slot(ptr, slot_size); }
                     return ptr;
                 }
             }
-            // Page was munmapped between pop() and read-lock — discard stale
-            // pointer and fall through to bump allocation.
+            // Page was munmapped — discard stale pointer
         }
 
-        // Try bump-allocating from the current page
+        // Tier 3: Bump-allocate from the current page
         let page_ptr = self.current_page.load(Ordering::Acquire);
         if !page_ptr.is_null() {
             let page = unsafe { &*page_ptr };
-            if let Some((ptr, idx)) = page.bump_alloc(self.slot_size) {
-                // NOTE: page.live_count already incremented inside bump_alloc()
+            if let Some((ptr, idx)) = page.bump_alloc(slot_size) {
                 page.set_context_id(idx, ctx_id);
                 return ptr;
             }
@@ -1138,7 +1564,13 @@ impl ValueAllocator {
             }
         }
 
-        // Phase 6: Update current_page if all pages were released
+        // Phase 6: Invalidate thread-local caches.
+        // Any cached pointers to munmapped pages are now stale. Bumping the
+        // generation counter causes all threads to discard their caches on
+        // the next allocation attempt.
+        CACHE_GENERATION.fetch_add(1, Ordering::Release);
+
+        // Phase 7: Update current_page if all pages were released
         if pages.is_empty() {
             self.current_page.store(ptr::null_mut(), Ordering::Release);
         }
@@ -1374,6 +1806,10 @@ impl SlabAllocator {
 
     /// Allocate variable-length data. Selects the appropriate size class
     /// or falls back to system allocator for large data.
+    ///
+    /// Uses a two-tier allocation strategy for size-class allocations:
+    /// 1. **Thread-local cache** — O(1), no CAS, no RwLock
+    /// 2. **DataClassAllocator** — TreiberStack pop + page validation + bump alloc
     fn alloc_data(&self, size: usize) -> *mut u8 {
         if size == 0 {
             return SLOT_ALIGN as *mut u8;
@@ -1381,6 +1817,102 @@ impl SlabAllocator {
         // Find the smallest size class that fits
         for (i, &class_size) in DATA_SIZE_CLASSES.iter().enumerate() {
             if size <= class_size {
+                // Tier 1: Thread-local data cache (O(1), no CAS)
+                let cached = DATA_CACHES.try_with(|cell| {
+                    let mut set = cell.get();
+                    let cache = &mut set.caches[i];
+
+                    // Check generation validity
+                    if !cache.is_valid_generation() {
+                        // Stale pointers may be in munmapped pages — silently discard.
+                        // Cannot push back to global free list because push() writes
+                        // FreeNode::next at the pointer's address, which would SIGSEGV
+                        // if the page was munmapped by release_empty_pages().
+                        cache.len = 0;
+                        cache.sync_generation();
+                    }
+
+                    if let Some(ptr) = cache.pop() {
+                        cell.set(set);
+                        // Validate and increment live_count (same as DataClassAllocator::alloc)
+                        let pages = self.data_classes[i].pages.read();
+                        for page in pages.iter() {
+                            if page.contains(ptr as *const u8, class_size) {
+                                page.live_count.fetch_add(1, Ordering::Relaxed);
+                                unsafe { asan_unpoison_slab_slot(ptr, class_size); }
+                                return Some(ptr);
+                            }
+                        }
+                        // Stale pointer (page munmapped between cache and validation)
+                        // — discard and fall through
+                        return None;
+                    }
+
+                    // Cache empty — batch-refill from global TreiberStack
+                    let mut batch_len = 0usize;
+                    let mut batch: [*mut u8; DATA_CACHE_REFILL] = [ptr::null_mut(); DATA_CACHE_REFILL];
+                    for slot in batch.iter_mut() {
+                        if let Some(ptr) = self.data_classes[i].free_list.pop() {
+                            *slot = ptr;
+                            batch_len += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if batch_len > 0 {
+                        // Validate batch and cache survivors
+                        let pages = self.data_classes[i].pages.read();
+                        let mut first_ptr: Option<*mut u8> = None;
+
+                        for idx in 0..batch_len {
+                            let ptr = batch[idx];
+                            let mut valid = false;
+                            for page in pages.iter() {
+                                if page.contains(ptr as *const u8, class_size) {
+                                    valid = true;
+                                    break;
+                                }
+                            }
+                            if valid {
+                                if first_ptr.is_none() {
+                                    first_ptr = Some(ptr);
+                                } else {
+                                    let _ = cache.push(ptr);
+                                }
+                            }
+                            // Invalid pointers silently discarded
+                        }
+                        drop(pages);
+
+                        if let Some(ptr) = first_ptr {
+                            cache.sync_generation();
+                            cell.set(set);
+                            // Complete allocation: validate page + increment live_count
+                            let pages = self.data_classes[i].pages.read();
+                            for page in pages.iter() {
+                                if page.contains(ptr as *const u8, class_size) {
+                                    page.live_count.fetch_add(1, Ordering::Relaxed);
+                                    unsafe { asan_unpoison_slab_slot(ptr, class_size); }
+                                    return Some(ptr);
+                                }
+                            }
+                            // Extremely unlikely: page released between validation and here
+                            return None;
+                        }
+                    }
+
+                    cache.sync_generation();
+                    cell.set(set);
+                    None
+                });
+
+                // If thread-local access succeeded and returned a pointer, use it
+                if let Ok(Some(ptr)) = cached {
+                    return ptr;
+                }
+
+                // Tier 2: Fall through to DataClassAllocator (TreiberStack + bump)
                 return self.data_classes[i].alloc();
             }
         }
@@ -1396,13 +1928,66 @@ impl SlabAllocator {
     }
 
     /// Free a data slot.
+    ///
+    /// Uses thread-local data cache to avoid TreiberStack CAS on free.
+    /// When the cache is full, flushes half to the global free list.
     fn free_data_slot(&self, ptr: *mut u8, size: usize) {
         if size == 0 {
             return;
         }
         for (i, &class_size) in DATA_SIZE_CLASSES.iter().enumerate() {
             if size <= class_size {
-                self.data_classes[i].free(ptr);
+                // Decrement page live_count first (same as DataClassAllocator::free)
+                {
+                    let pages = self.data_classes[i].pages.read();
+                    for page in pages.iter() {
+                        if page.contains(ptr as *const u8, class_size) {
+                            page.live_count.fetch_sub(1, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+                // ASAN: poison the freed slot
+                unsafe { asan_poison_slab_slot(ptr, class_size); }
+
+                // Try to cache in thread-local data cache
+                let cached = DATA_CACHES.try_with(|cell| {
+                    let mut set = cell.get();
+                    let cache = &mut set.caches[i];
+
+                    // Check generation: if stale, flush all before caching new pointer
+                    if !cache.is_valid_generation() {
+                        for j in 0..cache.len {
+                            self.data_classes[i].free_list.push(cache.ptrs[j]);
+                        }
+                        cache.len = 0;
+                        cache.sync_generation();
+                    }
+
+                    let full = cache.push(ptr);
+                    if full {
+                        // Flush half the cache to global free list (batch amortization)
+                        let flush_count = cache.len / 2;
+                        for j in 0..flush_count {
+                            self.data_classes[i].free_list.push(cache.ptrs[j]);
+                        }
+                        // Compact: move remaining to front
+                        let remaining = cache.len - flush_count;
+                        for j in 0..remaining {
+                            cache.ptrs[j] = cache.ptrs[flush_count + j];
+                        }
+                        cache.len = remaining;
+                        // Now push the new pointer (guaranteed space)
+                        let _ = cache.push(ptr);
+                    }
+
+                    cell.set(set);
+                });
+
+                // If thread-local cache not accessible (thread shutdown), fall through
+                if cached.is_err() {
+                    self.data_classes[i].free_list.push(ptr);
+                }
                 return;
             }
         }
@@ -2561,7 +3146,7 @@ fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
 /// The DFS traversal matches `trace_surviving_set()` but operates only on
 /// safepoint roots (not all environment roots), keeping cost proportional
 /// to the trampoline's working set rather than the entire live heap.
-fn trace_safepoint_live_set() -> Option<std::collections::HashSet<*const u8>> {
+fn trace_safepoint_live_set() -> Option<PtrHashSet> {
     let registry_ref = SAFEPOINT_ROOTS.get()?;
     let safepoint_roots: Vec<MettaValue> = {
         let guard = registry_ref.lock();
@@ -2576,7 +3161,7 @@ fn trace_safepoint_live_set() -> Option<std::collections::HashSet<*const u8>> {
         roots
     };
 
-    let mut live_set = std::collections::HashSet::with_capacity(safepoint_roots.len() * 2);
+    let mut live_set = PtrHashSet::with_capacity_and_hasher(safepoint_roots.len() * 2, PtrBuildHasher);
     let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(safepoint_roots.len());
 
     // Seed worklist with safepoint root inner pointers
@@ -2778,10 +3363,37 @@ pub fn alloc_count_snapshot() -> u64 {
 ///
 /// Without this ordering, the previous approach alternated between trigger
 /// and process, effectively halving GC throughput.
+/// Fast version of `maybe_process_gc_response`: skip channel poll when no GC
+/// cycle is in-flight. This avoids 4 atomic operations per call (GcInProgressGuard
+/// CAS, channel poll, bump_gc_reachable, OnceLock check) when GC is idle.
+///
+/// Ultra-fast path: when neither GC_REQUESTED nor GC_CYCLE_IN_FLIGHT is set,
+/// skip all atomics (bump_gc_reachable, global_gc_cron). This reduces the
+/// per-call cost from ~3 atomics to 2 Relaxed loads (~1ns vs ~10ns).
+#[inline]
+pub fn maybe_process_gc_response_fast() -> bool {
+    // Ultra-fast path: if no GC is requested AND no cycle is in-flight,
+    // there's nothing to do — skip reachability bumping and cron check entirely.
+    // Uses Relaxed ordering: false negatives (stale read) are harmless — we'll
+    // catch the state on the next call (within 4096 trampoline iterations).
+    if !GC_REQUESTED.load(Ordering::Relaxed) && !GC_CYCLE_IN_FLIGHT.load(Ordering::Relaxed) {
+        return false;
+    }
+    // GC is active (requested or in-flight): bump reachability and ensure cron is spawned
+    bump_gc_reachable();
+    let _ = global_gc_cron();
+    if !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+        return false;
+    }
+    // Slow path: GC is in-flight, check for response
+    maybe_process_gc_response()
+}
+
 pub fn safepoint_wait_for_quiescence() {
     // Phase 1: Process any pending response from a previous GC cycle.
     // This clears GC_CYCLE_IN_FLIGHT, enabling a new trigger below.
-    maybe_process_gc_response();
+    // Use fast version: skips expensive CAS+channel poll when GC is idle.
+    maybe_process_gc_response_fast();
 
     // Phase 2: Trigger a new GC cycle (if quiescent and requested)
     maybe_quiescent_gc();
@@ -2789,14 +3401,17 @@ pub fn safepoint_wait_for_quiescence() {
     // Phase 3: If a GC cycle was just triggered, wait briefly for the
     // GC thread to complete mark+sweep and send a response.
     if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-        // Brief spin-wait for GC response (mark+sweep is typically < 1ms
+        // Try to process response immediately (mark+sweep is typically < 1ms
         // for bounded live sets like PLN's task/belief queues)
-        let deadline = std::time::Instant::now() + Duration::from_millis(50);
-        while std::time::Instant::now() < deadline {
-            if maybe_process_gc_response() {
-                break; // Response processed, done
+        if !maybe_process_gc_response() {
+            // Park on condvar — woken by maybe_process_gc_response() calling
+            // GC_CYCLE_CONDVAR.notify_all() when response arrives.
+            let mut lock = GC_CYCLE_MUTEX.lock();
+            if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+                let _result = GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(50));
             }
-            std::thread::yield_now();
+            drop(lock);
+            maybe_process_gc_response();
         }
     }
 
@@ -2812,18 +3427,25 @@ pub fn safepoint_wait_for_quiescence() {
         let _result = QUIESCENT_CONDVAR.wait_for(&mut lock, Duration::from_millis(10));
         drop(lock);
 
+        // Early exit: if GC_REQUESTED was cleared while we waited,
+        // another thread handled it — no need to retry.
+        if !GC_REQUESTED.load(Ordering::Acquire) {
+            return;
+        }
+
         // Retry after wakeup (either quiescent or timeout)
-        maybe_process_gc_response();
+        maybe_process_gc_response_fast();
         maybe_quiescent_gc();
 
-        // Brief wait for the new GC response
+        // Wait for the new GC response via condvar parking
         if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-            let deadline = std::time::Instant::now() + Duration::from_millis(10);
-            while std::time::Instant::now() < deadline {
-                if maybe_process_gc_response() {
-                    break;
+            if !maybe_process_gc_response() {
+                let mut lock = GC_CYCLE_MUTEX.lock();
+                if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+                    let _result = GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(10));
                 }
-                std::thread::yield_now();
+                drop(lock);
+                maybe_process_gc_response();
             }
         }
     }
@@ -2978,7 +3600,7 @@ pub struct PageSnapshot {
 pub struct GcSnapshot {
     pub page_snapshots: Vec<PageSnapshot>,
     pub slot_size: usize,
-    pub free_set: std::collections::HashSet<*const u8>,
+    pub free_set: PtrHashSet,
     pub snapshot_epoch: u64,
     pub roots: Vec<MettaValue>,
     pub marks: Vec<Vec<u64>>,
@@ -3100,7 +3722,7 @@ impl SlabAllocator {
         // free_set is no longer needed — the sweep now uses epoch snapshots
         // to skip freed slots (epoch == u64::MAX) instead of relying on a
         // drain of the Treiber stack.
-        let free_set = std::collections::HashSet::new();
+        let free_set = PtrHashSet::with_hasher(PtrBuildHasher);
 
         let marks: Vec<Vec<u64>> = page_snapshots.iter().map(|ps| {
             let mark_words = (ps.capacity + 63) / 64;
@@ -3219,6 +3841,13 @@ impl SlabAllocator {
             let quarantine = gc_quarantine_enabled();
             let cycle = GC_CYCLE_COUNT.fetch_add(1, Ordering::Relaxed);
 
+            // Collect pointers for batch push (standard mode only)
+            let mut batch_ptrs: Vec<*mut u8> = if quarantine {
+                Vec::new()
+            } else {
+                Vec::with_capacity(non_filtered_dead.len())
+            };
+
             for entry in &non_filtered_dead {
                 // SAFETY: slot content is still valid — not yet pushed to free list.
                 let variant = if trace || quarantine {
@@ -3254,10 +3883,17 @@ impl SlabAllocator {
                         gc_cycle: cycle,
                     });
                 } else {
-                    // Standard mode: poison after FreeNode header, push to free list.
+                    // Standard mode: poison after FreeNode header, collect for batch push.
                     unsafe { asan_poison_slab_slot(entry.ptr, self.values.slot_size); }
-                    self.values.free_list.push(entry.ptr);
+                    batch_ptrs.push(entry.ptr);
                 }
+            }
+
+            // Batch push: splice all freed slots onto the free list with a single CAS
+            // instead of N individual CAS operations. Reduces contention significantly
+            // when hundreds/thousands of slots are freed per GC cycle.
+            if !batch_ptrs.is_empty() {
+                self.values.free_list.push_batch(&batch_ptrs);
             }
         } // read lock released
 
@@ -3271,9 +3907,14 @@ impl SlabAllocator {
         // === Phase 5: Release empty pages ===
         // Safe: free-list entries from released pages are filtered out via
         // atomic drain + rebuild in release_empty_pages().
-        self.values.release_empty_pages();
-        for dc in &self.data_classes {
-            dc.release_empty_pages();
+        // PAGE_LIFECYCLE_LOCK prevents races with mark_snapshot() and other
+        // page-traversing operations (matches release_session_with_surviving).
+        {
+            let _page_guard = PAGE_LIFECYCLE_LOCK.write();
+            self.values.release_empty_pages();
+            for dc in &self.data_classes {
+                dc.release_empty_pages();
+            }
         }
 
         // Update committed bytes
@@ -3352,7 +3993,7 @@ impl SlabAllocator {
     pub fn release_session_with_surviving(
         &self,
         context_id: u32,
-        surviving: &std::collections::HashSet<*const u8>,
+        surviving: &PtrHashSet,
     ) {
         if context_id == 0 {
             return; // Never release persistent values
@@ -3487,19 +4128,19 @@ impl SlabAllocator {
 
     /// Trace the surviving set: DFS from all registered GC roots.
     ///
-    /// Returns a `HashSet<*const u8>` of all value slot pointers reachable
+    /// Returns a `PtrHashSet` of all value slot pointers reachable
     /// from the root registry. Same traversal logic as `mark_snapshot()` but
     /// builds a HashSet instead of setting mark bits.
     ///
     /// Public because the async session release thread calls this to batch
     /// multiple session releases with a single root trace.
-    pub fn trace_surviving_set(&self) -> std::collections::HashSet<*const u8> {
+    pub fn trace_surviving_set(&self) -> PtrHashSet {
         let trace = gc_trace_enabled();
         let roots = collect_all_roots();
         if trace {
             eprintln!("[GC-TRACE] trace_surviving_set: {} root values collected", roots.len());
         }
-        let mut surviving = std::collections::HashSet::with_capacity(roots.len() * 4);
+        let mut surviving = PtrHashSet::with_capacity_and_hasher(roots.len() * 4, PtrBuildHasher);
         let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
 
         // Seed worklist with root inner pointers
@@ -4030,8 +4671,11 @@ impl std::fmt::Debug for GcFactory {
 impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     #[inline]
     fn atom(&self, s: &str) -> MettaValue {
+        let has_vars = super::metta_value::is_variable_str(s);
         let s = self.alloc.alloc_str(s);
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Atom(s)))
+        let inner = self.alloc.alloc_value(MettaValueInner::Atom(s));
+        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
@@ -4060,8 +4704,11 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
         if items.is_empty() {
             return self.unit();
         }
+        let has_vars = items.iter().any(|i| i.has_variables_fast());
         let slice = self.alloc.alloc_slice_from_iter(items);
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::SExpr(slice)))
+        let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
+        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
@@ -4069,25 +4716,35 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
         if items.is_empty() {
             return self.unit();
         }
+        let has_vars = items.iter().any(|i| i.has_variables_fast());
         let slice = self.alloc.alloc_slice_copy(items);
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::SExpr(slice)))
+        let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
+        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
     fn error(&self, msg: &str, details: MettaValue) -> MettaValue {
         let msg = self.alloc.alloc_str(msg);
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Error(msg, details)))
+        let inner = self.alloc.alloc_value(MettaValueInner::Error(msg, details));
+        let flags = if details.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
-    fn type_value(&self, inner: MettaValue) -> MettaValue {
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Type(inner)))
+    fn type_value(&self, value: MettaValue) -> MettaValue {
+        let inner = self.alloc.alloc_value(MettaValueInner::Type(value));
+        let flags = if value.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
     fn conjunction(&self, goals: Vec<MettaValue>) -> MettaValue {
+        let has_vars = goals.iter().any(|g| g.has_variables_fast());
         let slice = self.alloc.alloc_slice_from_iter(goals);
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Conjunction(slice)))
+        let inner = self.alloc.alloc_value(MettaValueInner::Conjunction(slice));
+        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
@@ -4111,14 +4768,19 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     }
 
     #[inline]
-    fn quote(&self, inner: MettaValue) -> MettaValue {
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Quoted(inner)))
+    fn quote(&self, value: MettaValue) -> MettaValue {
+        let inner = self.alloc.alloc_value(MettaValueInner::Quoted(value));
+        let flags = if value.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
     fn spanned(&self, value: MettaValue, span: crate::ir::Span) -> MettaValue {
         let span = self.alloc.alloc_span(span);
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Spanned(value, span)))
+        let inner = self.alloc.alloc_value(MettaValueInner::Spanned(value, span));
+        // Propagate variable flag through Spanned wrapper
+        let flags = if value.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]

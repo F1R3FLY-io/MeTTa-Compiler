@@ -15,6 +15,7 @@ pub struct TypeOpsHandlerContext<'a> {
     pub get_type_func_id: FuncId,
     pub check_type_func_id: FuncId,
     pub assert_type_func_id: FuncId,
+    pub is_function_func_id: FuncId,
 }
 
 /// Compile GetType opcode
@@ -64,6 +65,33 @@ pub fn compile_check_type(
         .builder
         .ins()
         .call(func_ref, &[ctx_ptr, val, type_atom, ip_val]);
+    let result = codegen.builder.inst_results(call_inst)[0];
+    codegen.push(result)?;
+
+    Ok(())
+}
+
+/// Compile IsFunction opcode
+/// Stack: [value] -> [bool]
+/// Checks if the value is an arrow type (S-expression starting with "->")
+pub fn compile_is_function(
+    ctx: &mut TypeOpsHandlerContext<'_>,
+    codegen: &mut CodegenContext<'_, '_>,
+    offset: usize,
+) -> JitResult<()> {
+    let val = codegen.pop()?;
+
+    let func_ref = ctx
+        .module
+        .declare_func_in_func(ctx.is_function_func_id, codegen.builder.func);
+
+    // Call jit_runtime_is_function(ctx, val, ip)
+    let ctx_ptr = codegen.ctx_ptr();
+    let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, val, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
 

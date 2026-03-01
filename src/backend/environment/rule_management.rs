@@ -23,7 +23,23 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Global epoch counter for rule/type mutations.
+///
+/// Incremented on `add_rule()`, `add_type_generic()`, and `remove_type_generic()`.
+/// Used by `ExprCompilationState` to cache `TypeSignatureRegistry` across JIT
+/// entries — the registry is rebuilt only when the epoch changes.
+pub static RULE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Increment the global rule/type epoch counter.
+///
+/// Must be called after any mutation that could change type signatures:
+/// adding/removing rules, adding/removing type declarations.
+#[inline]
+pub fn increment_rule_epoch() {
+    RULE_EPOCH.fetch_add(1, Ordering::Release);
+}
 
 use mork::space::Space;
 use mork_expr::{maybe_byte_item, Expr, ExprZipper, Tag};
@@ -38,6 +54,18 @@ thread_local! {
     /// Reusable buffer for MORK-serialized expressions in `match_rules_native`.
     /// Grows as needed but is never freed — amortized zero allocation after warmup.
     static MATCH_EXPR_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(256));
+
+    /// Reusable ExprZipper for `extract_data()` calls in `match_rules_native`.
+    /// The `trace` Vec capacity grows monotonically — `reset()` uses `set_len(0)` to
+    /// clear without deallocating, so after warmup all match attempts are zero-alloc.
+    /// Pre-allocated with capacity 16 for typical PLN expression depths (6-8).
+    static MATCH_ZIPPER: RefCell<ExprZipper> = RefCell::new({
+        let trace = Vec::with_capacity(16);
+        // ExprZipper::new() would push a Breadcrumb based on the root's first byte,
+        // but with a null root, we skip that and just set up the capacity.
+        // The actual root and trace initialization happen via reset() before each use.
+        ExprZipper { root: Expr { ptr: std::ptr::null_mut() }, loc: 0, trace }
+    });
 }
 
 use super::generic::GenericEnvironment;
@@ -131,6 +159,9 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// Used by Phase 8 optimizations for rule pre-filtering by expected type.
     /// `None` if RHS type couldn't be inferred (e.g., variable RHS, untyped operators).
     pub rhs_type: Option<V>,
+    /// Cached result of `rhs.contains_variables()`, computed once at insertion time.
+    /// When `false`, `apply_bindings` can skip the RHS entirely (O(1) clone).
+    pub rhs_has_variables: bool,
 }
 
 /// Lightweight in-memory index for O(1) rule lookup + MORK byte-level matching.
@@ -239,6 +270,12 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         self.by_head_arity.values()
             .flat_map(|v| v.iter())
             .chain(self.wildcard.iter())
+    }
+
+    /// Check if there are any wildcard rules (rules with variable heads).
+    #[inline]
+    pub fn has_wildcard_rules(&self) -> bool {
+        !self.wildcard.is_empty()
     }
 
     /// Get the number of rules in the index.
@@ -570,6 +607,7 @@ fn build_head_arity_prefix<V, F>(
     arity: usize,
     factory: &F,
     sm: &mork_interning::SharedMappingHandle,
+    cache_epoch: u64,
 ) -> Option<Vec<u8>>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -585,7 +623,7 @@ where
 
     // Serialize head symbol to get its MORK bytes (SymbolSize tag + interned key)
     let head_atom = factory.atom(head);
-    with_mork_bytes(&head_atom, sm, |head_bytes| {
+    with_mork_bytes(&head_atom, sm, cache_epoch, |head_bytes| {
         let mut prefix = Vec::with_capacity(rule_prefix.len() + 1 + head_bytes.len());
         prefix.extend_from_slice(rule_prefix);
         // Arity tag: upper 2 bits = 00, lower 6 bits = arity value
@@ -648,6 +686,13 @@ where
     pub fn add_rule(&mut self, lhs: V, rhs: V) {
         trace!(target: "mettatron::environment::add_rule", "Adding rule");
         self.make_owned(); // CoW: ensure we own data before modifying
+
+        // Phase 9.5: Invalidate normal-form memoization — new rules may make
+        // previously normal-form expressions reducible.
+        crate::backend::eval::trampoline::invalidate_normal_form_memo();
+
+        // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
+        increment_rule_epoch();
 
         // Get head symbol and arity for bloom filter (clone head string before moving lhs)
         let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());
@@ -770,6 +815,7 @@ where
         let result = with_mork_query_bytes(
             &rule_sexpr,
             &self.shared_mapping,
+            self.mork_cache_epoch,
             |debruijn_bytes, ctx| {
                 // 1. Insert De Bruijn bytes into PathMap (increment multiplicity)
                 {
@@ -857,6 +903,7 @@ where
                 // 4. Populate RuleIndex
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
+                    rhs_has_variables: rhs.contains_variables(),
                     rhs: rhs.clone(),
                     lhs_debruijn,
                     lhs_wide_debruijn: Vec::new(), // Narrow path — MORK encoding succeeded
@@ -901,6 +948,7 @@ where
 
             let entry = RuleEntry {
                 lhs: lhs.clone(),
+                rhs_has_variables: rhs.contains_variables(),
                 rhs: rhs.clone(),
                 lhs_debruijn: Vec::new(), // Empty — this is a wide rule
                 lhs_wide_debruijn,
@@ -955,14 +1003,16 @@ where
         let head = expr.get_head_symbol().unwrap_or("");
         let arity = expr.get_arity();
 
-        // Bloom filter O(1) rejection
+        // Bloom filter O(1) rejection: skip MORK serialization entirely when
+        // the bloom filter says no head-specific rules exist for this head+arity
+        // AND there are no wildcard rules (which match any head).
         if !head.is_empty() {
-            if !self
+            let bloom_says_no = !self
                 .shared
                 .atom_space.head_arity_bloom
                 .read()
-                .may_contain(head.as_bytes(), arity as u8)
-            {
+                .may_contain(head.as_bytes(), arity as u8);
+            if bloom_says_no && !self.shared.rule_index.read().has_wildcard_rules() {
                 return Vec::new();
             }
         }
@@ -982,7 +1032,7 @@ where
         // performed inside the thread-local borrow to avoid copying the buffer out.
         MATCH_EXPR_BUFFER.with(|buf_cell| {
             let mut buf = buf_cell.borrow_mut();
-            let serialize_ok = with_mork_bytes(expr, &self.shared_mapping, |bytes| {
+            let serialize_ok = with_mork_bytes(expr, &self.shared_mapping, self.mork_cache_epoch, |bytes| {
                 buf.clear();
                 buf.reserve(bytes.len() + 1);
                 buf.extend_from_slice(bytes);
@@ -1031,7 +1081,14 @@ where
                     };
 
                     if let Some(bindings) = matched_bindings {
-                        let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);
+                        // Phase 6: Skip apply_bindings for ground RHS (no variables).
+                        // Cached at insertion time — avoids contains_variables() tree walk
+                        // and apply_bindings recursion for rules with ground RHS.
+                        let instantiated_rhs = if entry.rhs_has_variables {
+                            apply_bindings(&entry.rhs, &bindings, &self.factory)
+                        } else {
+                            entry.rhs.clone()
+                        };
                         let multiplicity = entry.multiplicity.max(1);
                         if multiplicity == 1 {
                             results.push(RuleMatchResult {
@@ -1089,6 +1146,13 @@ where
             // Lazily-computed wide storage encoding of expr (only allocated if needed)
             let mut expr_wide_storage: Option<Vec<u8>> = None;
 
+            // Phase 7: Borrow the thread-local ExprZipper for reuse across match candidates.
+            // reset() uses set_len(0) to clear the trace Vec without deallocating — after
+            // warmup, the capacity grows to max expression depth and all subsequent matches
+            // are zero-alloc (no jemalloc calls for Vec<Breadcrumb>).
+            MATCH_ZIPPER.with(|zipper_cell| {
+            let mut input_zipper = zipper_cell.borrow_mut();
+
             // Inline macro to avoid duplicating the match body for both iterator paths
             macro_rules! try_match_entry {
                 ($entry:expr) => {
@@ -1109,9 +1173,9 @@ where
                             );
                         } else {
                             let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
-                            let mut input_zipper = ExprZipper::new(
-                                Expr { ptr: buf.as_ptr().cast_mut() }
-                            );
+                            // Phase 7: Reuse thread-local zipper — reset() preserves Vec capacity
+                            input_zipper.root = Expr { ptr: buf.as_ptr().cast_mut() };
+                            input_zipper.reset();
                             if lhs_expr.extract_data(&mut input_zipper).is_ok() {
                                 hits.push(MatchHit { entry, is_wide: false });
                             }
@@ -1143,6 +1207,8 @@ where
                     try_match_entry!(entry);
                 }
             }
+
+            }); // end MATCH_ZIPPER.with — drop zipper borrow before Phase 3
 
             if hits.is_empty() {
                 return Vec::new();
@@ -1178,8 +1244,13 @@ where
                     )
                 };
 
-                // Apply bindings to the cached RHS template
-                let instantiated_rhs = apply_bindings(&entry.rhs, &bindings, &self.factory);
+                // Apply bindings to the cached RHS template.
+                // Phase 6: Skip apply_bindings for ground RHS (no variables).
+                let instantiated_rhs = if entry.rhs_has_variables {
+                    apply_bindings(&entry.rhs, &bindings, &self.factory)
+                } else {
+                    entry.rhs.clone()
+                };
 
                 // Expand by multiplicity — fast path for common case (multiplicity=1)
                 // avoids cloning bindings/instantiated_rhs when a move suffices
@@ -1223,14 +1294,15 @@ where
         let head = expr.get_head_symbol().unwrap_or("");
         let arity = expr.get_arity();
 
-        // Bloom filter O(1) rejection
+        // Bloom filter O(1) rejection: skip when no head-specific rules exist
+        // AND there are no wildcard rules (which match any head).
         if !head.is_empty() {
-            if !self
+            let bloom_says_no = !self
                 .shared
                 .atom_space.head_arity_bloom
                 .read()
-                .may_contain(head.as_bytes(), arity as u8)
-            {
+                .may_contain(head.as_bytes(), arity as u8);
+            if bloom_says_no && !self.shared.rule_index.read().has_wildcard_rules() {
                 return Vec::new();
             }
         }
@@ -1247,6 +1319,7 @@ where
                 arity,
                 &self.factory,
                 &self.shared_mapping,
+                self.mork_cache_epoch,
             ) {
                 self.collect_rules_from_prefix(
                     &space,
@@ -1502,7 +1575,7 @@ impl MettaEnvironment {
         ]);
 
         let sm = self.shared_mapping.clone();
-        match with_mork_query_bytes(&rule_sexpr, &sm, |mork_bytes, _ctx| {
+        match with_mork_query_bytes(&rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
             let btm = self.shared.atom_space.btm.read();
             let count = get_multiplicity(&btm, mork_bytes);
             if count == 0 { 1 } else { count as usize }
@@ -1601,7 +1674,7 @@ impl MettaEnvironment {
                     ]);
 
                     let sm = self.shared_mapping.clone();
-                    let _ = with_mork_query_bytes(&rule_sexpr, &sm, |debruijn_bytes, ctx| {
+                    let _ = with_mork_query_bytes(&rule_sexpr, &sm, self.mork_cache_epoch, |debruijn_bytes, ctx| {
                         // Split De Bruijn bytes to get LHS range
                         if debruijn_bytes.len() <= rule_prefix_len {
                             return;
@@ -1654,6 +1727,7 @@ impl MettaEnvironment {
 
                         let entry = RuleEntry {
                             lhs: lhs.clone(),
+                            rhs_has_variables: rhs.contains_variables(),
                             rhs: rhs.clone(),
                             lhs_debruijn,
                             lhs_wide_debruijn: Vec::new(), // Bulk path uses MORK encoding
@@ -1692,7 +1766,7 @@ impl MettaEnvironment {
         self.make_owned();
 
         let sm = self.shared_mapping.clone();
-        match with_mork_query_bytes(rule_sexpr, &sm, |mork_bytes, _ctx| {
+        match with_mork_query_bytes(rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
             let mut btm = self.shared.atom_space.btm.write();
             let new_count = increment_multiplicity(&mut btm, mork_bytes);
             drop(btm);
@@ -1742,7 +1816,7 @@ impl MettaEnvironment {
         self.make_owned();
 
         let sm = self.shared_mapping.clone();
-        match with_mork_query_bytes(rule_sexpr, &sm, |mork_bytes, _ctx| {
+        match with_mork_query_bytes(rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
             let old_count = {
                 let btm = self.shared.atom_space.btm.read();
                 get_multiplicity(&btm, mork_bytes)
@@ -1795,7 +1869,7 @@ impl MettaEnvironment {
     pub fn increment_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
             let mut btm = self.shared.atom_space.btm.write();
             let new_count = increment_multiplicity(&mut btm, mork_bytes);
             drop(btm);
@@ -1825,7 +1899,7 @@ impl MettaEnvironment {
     pub fn decrement_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
             let old_count = {
                 let btm = self.shared.atom_space.btm.read();
                 get_multiplicity(&btm, mork_bytes)
@@ -1866,7 +1940,7 @@ impl MettaEnvironment {
         // Rules are stored with De Bruijn encoding, so we must look them up the same way.
         if extract_rule_parts(value).is_some() {
             let sm = self.shared_mapping.clone();
-            match with_mork_query_bytes(value, &sm, |mork_bytes, _ctx| {
+            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
                 let btm = self.shared.atom_space.btm.read();
                 let count = get_multiplicity(&btm, mork_bytes);
                 if count == 0 { 1 } else { count as usize }
@@ -1882,7 +1956,7 @@ impl MettaEnvironment {
                 }
             }
         } else {
-            match with_mork_bytes(value, &self.shared_mapping, |mork_bytes| {
+            match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
                 let btm = self.shared.atom_space.btm.read();
                 let count = get_multiplicity(&btm, mork_bytes);
                 if count == 0 { 1 } else { count as usize }

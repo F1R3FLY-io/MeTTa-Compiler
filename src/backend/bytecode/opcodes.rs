@@ -374,7 +374,11 @@ pub enum Opcode {
     /// Exclusive or: [a, b] -> [a ^ b]
     Xor = 0xE3,
 
-    // === Type Operations (0xE8-0xEF) ===
+    // === Type Operations (0xE4-0xEF) ===
+    /// Check if a type is an arrow type (-> ...) — returns Bool
+    IsFunction = 0xE4,
+    /// Validate atom against expected type — returns atom or (Error atom BadType)
+    TypeCast = 0xE5,
     /// Get type of value
     GetType = 0xE8,
     /// Check type matches
@@ -515,6 +519,8 @@ impl Opcode {
             | Self::Or
             | Self::Not
             | Self::Xor
+            | Self::IsFunction
+            | Self::TypeCast
             | Self::GetType
             | Self::CheckType
             | Self::IsType
@@ -819,6 +825,8 @@ impl Opcode {
             Self::Or => "or",
             Self::Not => "not",
             Self::Xor => "xor",
+            Self::IsFunction => "is_function",
+            Self::TypeCast => "type_cast",
             Self::GetType => "get_type",
             Self::CheckType => "check_type",
             Self::IsType => "is_type",
@@ -1090,6 +1098,8 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xE3] = Some(Opcode::Xor);
 
     // Type operations
+    table[0xE4] = Some(Opcode::IsFunction);
+    table[0xE5] = Some(Opcode::TypeCast);
     table[0xE8] = Some(Opcode::GetType);
     table[0xE9] = Some(Opcode::CheckType);
     table[0xEA] = Some(Opcode::IsType);

@@ -75,6 +75,16 @@ pub struct ScanResult {
     /// and which sub-fields of iterated types are covered.
     /// Maps RootProvider type name → CollectRootsAnalysis.
     pub collect_roots_analyses: HashMap<String, CollectRootsAnalysis>,
+
+    /// Map from type name → generic bounds inferred from function/impl-block scope.
+    /// E.g., if `fn foo<V: MettaValueTrait>() { let x: SubstituteWorkGeneric<V> = ...; }`,
+    /// then SubstituteWorkGeneric → [GenericBound { param: "V", bound: "MettaValueTrait" }].
+    pub function_scope_bounds: HashMap<String, Vec<GenericBound>>,
+
+    /// Types that are never instantiated with a MettaValue carrier type in the codebase.
+    /// Built by scanning for concrete instantiations like `TypeName<MettaValue>`
+    /// or `TypeName<V>` where V is a carrier param.
+    pub types_never_instantiated_with_metta: HashSet<String>,
 }
 
 /// Analysis of a single `collect_roots()` method body.
@@ -447,6 +457,108 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
         cr_visitor.visit_file(&file);
     }
     result.collect_roots_analyses = collect_roots_analyses;
+
+    // Sixth pass: Function-scope bound propagation — capture MettaValueTrait
+    // bounds from function/impl-block generics and propagate them to types
+    // instantiated within those scopes. This catches types like
+    // SubstituteWorkGeneric<V> where V is bounded at the function level.
+    let type_def_names: HashSet<String> = result.type_defs.iter().map(|td| td.name.clone()).collect();
+    let type_def_params: HashMap<String, Vec<String>> = result
+        .type_defs
+        .iter()
+        .map(|td| (td.name.clone(), td.type_params.clone()))
+        .collect();
+    let mut function_scope_bounds: HashMap<String, Vec<GenericBound>> = HashMap::new();
+
+    for entry in WalkDir::new(source_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "rs")
+                .unwrap_or(false)
+        })
+    {
+        let path = entry.path();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let file = match syn::parse_file(&content) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        let mut fn_bound_visitor = FunctionScopeBoundVisitor {
+            type_def_names: &type_def_names,
+            type_def_params: &type_def_params,
+            function_scope_bounds: &mut function_scope_bounds,
+            type_level_bounds: &result.generic_bounds,
+        };
+        fn_bound_visitor.visit_file(&file);
+    }
+    result.function_scope_bounds = function_scope_bounds;
+
+    // Seventh pass: Detect types that are never instantiated with a MettaValue
+    // carrier. For each Unknown-candidate type, search all files for concrete
+    // instantiations like `TypeName<MettaValue>` or `TypeName<KnownCarrier>`.
+    // Types without any such instantiation are false positives.
+    let unknown_candidate_types: HashSet<String> = result
+        .type_defs
+        .iter()
+        .filter(|td| {
+            // Candidate if it has generic params and isn't already a known carrier
+            !td.type_params.is_empty()
+                && !result.generic_bounds.contains_key(&td.name)
+                && !result.function_scope_bounds.contains_key(&td.name)
+        })
+        .map(|td| td.name.clone())
+        .collect();
+
+    if !unknown_candidate_types.is_empty() {
+        let mut types_with_metta_instantiation: HashSet<String> = HashSet::new();
+
+        for entry in WalkDir::new(source_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "rs")
+                    .unwrap_or(false)
+            })
+        {
+            let path = entry.path();
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            for type_name in &unknown_candidate_types {
+                if types_with_metta_instantiation.contains(type_name) {
+                    continue;
+                }
+                // Check for concrete instantiation patterns
+                if content.contains(&format!("{}<MettaValue", type_name))
+                    || content.contains(&format!("{}< MettaValue", type_name))
+                    || content.contains(&format!("{} < MettaValue", type_name))
+                {
+                    types_with_metta_instantiation.insert(type_name.clone());
+                }
+            }
+        }
+
+        // Types NOT in types_with_metta_instantiation are never instantiated with MettaValue
+        for type_name in &unknown_candidate_types {
+            if !types_with_metta_instantiation.contains(type_name) {
+                result
+                    .types_never_instantiated_with_metta
+                    .insert(type_name.clone());
+            }
+        }
+    }
 
     result
 }
@@ -913,6 +1025,279 @@ impl<'a, 'ast> Visit<'ast> for DataAccessVisitor<'a> {
         }
         syn::visit::visit_item_impl(self, node);
     }
+}
+
+/// Visitor that captures MettaValueTrait bounds from function/impl-block generics
+/// and propagates them to types instantiated within those scopes.
+///
+/// This catches types like `SubstituteWorkGeneric<V>` where V is bounded at
+/// the function level (`fn foo<V: MettaValueTrait>(...)`) rather than at the
+/// type definition level. Also catches types used as return/parameter types in
+/// impl blocks where the struct definition already constrains V: MettaValueTrait.
+struct FunctionScopeBoundVisitor<'a> {
+    /// All known type_def names (types we want to classify)
+    type_def_names: &'a HashSet<String>,
+    /// Type name → ordered list of type params
+    type_def_params: &'a HashMap<String, Vec<String>>,
+    /// Output: type_name → inferred bounds from function/impl scope
+    function_scope_bounds: &'a mut HashMap<String, Vec<GenericBound>>,
+    /// Type-level generic bounds (from struct/enum definitions)
+    type_level_bounds: &'a HashMap<String, Vec<GenericBound>>,
+}
+
+impl<'a> FunctionScopeBoundVisitor<'a> {
+    /// Search text fragments for known type_def usages that pass MettaValueTrait-
+    /// bounded params as type arguments. Called for both function bodies and
+    /// method signatures (parameter types, return types).
+    fn scan_text_for_type_args(&mut self, text: &str, metta_params: &HashSet<String>) {
+        for type_name in self.type_def_names.iter() {
+            if !text.contains(type_name.as_str()) {
+                continue;
+            }
+
+            if let Some(target_params) = self.type_def_params.get(type_name) {
+                // Try to extract type arguments from patterns like `TypeName < V >`
+                // in the text. syn tokenizes generics with spaces around < >.
+                if let Some(args) = extract_type_args_from_body(text, type_name) {
+                    for (i, arg) in args.iter().enumerate() {
+                        let arg_trimmed = arg.trim();
+                        if metta_params.contains(arg_trimmed) {
+                            if let Some(target_param) = target_params.get(i) {
+                                self.function_scope_bounds
+                                    .entry(type_name.clone())
+                                    .or_default()
+                                    .push(GenericBound {
+                                        param: target_param.clone(),
+                                        bound: "MettaValueTrait".to_string(),
+                                    });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Given a set of generic bounds, find params with MettaValueTrait bound,
+    /// then search the body and signature text for known type_def usages.
+    fn process_generics(&mut self, generics: &syn::Generics, body_str: &str) {
+        let bounds = collect_generic_bounds(generics);
+
+        // Collect params that have MettaValueTrait (or EvalContext, which implies V)
+        let metta_params: HashSet<String> = bounds
+            .iter()
+            .filter(|b| {
+                b.bound.contains("MettaValueTrait")
+                    || b.bound.contains("EvalContext")
+                    || b.bound.contains("MettaValueFactory")
+            })
+            .map(|b| b.param.clone())
+            .collect();
+
+        if metta_params.is_empty() {
+            return;
+        }
+
+        self.scan_text_for_type_args(body_str, &metta_params);
+    }
+
+    /// Process an impl block: extract bounds from the struct's type definition
+    /// (via self_ty), merge with impl-level and method-level generics, then
+    /// scan method bodies AND method signatures.
+    fn process_impl_methods(
+        &mut self,
+        node: &syn::ItemImpl,
+        metta_params: &HashSet<String>,
+    ) {
+        for item in &node.items {
+            if let syn::ImplItem::Fn(method) = item {
+                let body_str = method.block.to_token_stream().to_string();
+
+                // Also scan the method signature (return type + parameter types)
+                let sig_str = method.sig.to_token_stream().to_string();
+
+                // Merge impl-level and method-level generics
+                let method_bounds = collect_generic_bounds(&method.sig.generics);
+                let all_metta_params: HashSet<String> = metta_params
+                    .iter()
+                    .cloned()
+                    .chain(
+                        method_bounds
+                            .iter()
+                            .filter(|b| {
+                                b.bound.contains("MettaValueTrait")
+                                    || b.bound.contains("EvalContext")
+                                    || b.bound.contains("MettaValueFactory")
+                            })
+                            .map(|b| b.param.clone()),
+                    )
+                    .collect();
+
+                self.scan_text_for_type_args(&body_str, &all_metta_params);
+                self.scan_text_for_type_args(&sig_str, &all_metta_params);
+            }
+        }
+    }
+}
+
+impl<'a, 'ast> Visit<'ast> for FunctionScopeBoundVisitor<'a> {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        let body_str = node.block.to_token_stream().to_string();
+        // Also scan function signature (return type, parameter types)
+        let sig_str = node.sig.to_token_stream().to_string();
+        let combined = format!("{} {}", sig_str, body_str);
+        self.process_generics(&node.sig.generics, &combined);
+        syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        // Capture impl-block-level generics (e.g., `impl<V: MettaValueTrait> Foo<V>`)
+        let impl_bounds = collect_generic_bounds(&node.generics);
+        let mut impl_metta_params: HashSet<String> = impl_bounds
+            .iter()
+            .filter(|b| {
+                b.bound.contains("MettaValueTrait")
+                    || b.bound.contains("EvalContext")
+                    || b.bound.contains("MettaValueFactory")
+            })
+            .map(|b| b.param.clone())
+            .collect();
+
+        // Also infer bounds from the type definition of self_ty.
+        // E.g., `impl GenericEnvironmentShared<V>` where GenericEnvironmentShared
+        // has `V: MettaValueTrait` on the struct definition. The impl block may
+        // only list `<V>` without repeating the bound, but the struct definition
+        // constrains V, so all methods in this impl block effectively have V bounded.
+        if impl_metta_params.is_empty() {
+            let self_ty_str = type_to_string(&node.self_ty);
+            let base_type = self_ty_str
+                .split('<')
+                .next()
+                .unwrap_or(&self_ty_str)
+                .trim()
+                .split("::")
+                .last()
+                .unwrap_or(&self_ty_str)
+                .trim()
+                .to_string();
+
+            // Check if the base type has MettaValueTrait bounds in its struct/enum definition
+            if let Some(struct_bounds) = self.type_level_bounds.get(&base_type) {
+                let struct_metta_params: HashSet<String> = struct_bounds
+                    .iter()
+                    .filter(|b| {
+                        b.bound.contains("MettaValueTrait")
+                            || b.bound.contains("EvalContext")
+                            || b.bound.contains("MettaValueFactory")
+                    })
+                    .map(|b| b.param.clone())
+                    .collect();
+
+                if !struct_metta_params.is_empty() {
+                    // Map struct params → impl params via type args in self_ty
+                    if let Some(type_args) = extract_type_args_from_body(&self_ty_str, &base_type) {
+                        if let Some(struct_param_list) = self.type_def_params.get(&base_type) {
+                            for struct_param in &struct_metta_params {
+                                if let Some(pos) =
+                                    struct_param_list.iter().position(|p| p == struct_param)
+                                {
+                                    if let Some(impl_arg) = type_args.get(pos) {
+                                        let impl_arg_trimmed = impl_arg.trim().to_string();
+                                        impl_metta_params.insert(impl_arg_trimmed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Always process methods: even if impl_metta_params is empty, individual
+        // methods may introduce their own generic params with MettaValueTrait bounds
+        // (e.g., `fn foo<V: MettaValueTrait>(...) -> GenericMultiplicityMatch<V>`).
+        self.process_impl_methods(node, &impl_metta_params);
+
+        syn::visit::visit_item_impl(self, node);
+    }
+}
+
+/// Extract type arguments from a body string for a given type name.
+///
+/// Searches for patterns like `TypeName < V , F >` in syn's tokenized output
+/// (which adds spaces around punctuation). Returns the arguments as a Vec<String>
+/// if found, or None.
+fn extract_type_args_from_body(body_str: &str, type_name: &str) -> Option<Vec<String>> {
+    // Find the type name in the body string
+    let mut search_start = 0;
+    while let Some(pos) = body_str[search_start..].find(type_name) {
+        let abs_pos = search_start + pos;
+        let after = &body_str[abs_pos + type_name.len()..];
+        let trimmed = after.trim_start();
+
+        if trimmed.starts_with('<') {
+            // Parse the angle bracket content
+            let rest = &trimmed[1..]; // skip '<'
+            let mut args = Vec::new();
+            let mut current_arg = String::new();
+            let mut angle_depth = 1i32;
+            let mut paren_depth = 0i32;
+            let mut bracket_depth = 0i32;
+
+            for ch in rest.chars() {
+                match ch {
+                    '<' => {
+                        angle_depth += 1;
+                        current_arg.push(ch);
+                    }
+                    '>' => {
+                        angle_depth -= 1;
+                        if angle_depth == 0 {
+                            let arg = current_arg.trim().to_string();
+                            if !arg.is_empty() {
+                                args.push(arg);
+                            }
+                            if !args.is_empty() {
+                                return Some(args);
+                            }
+                            break;
+                        }
+                        current_arg.push(ch);
+                    }
+                    '(' => {
+                        paren_depth += 1;
+                        current_arg.push(ch);
+                    }
+                    ')' => {
+                        paren_depth -= 1;
+                        current_arg.push(ch);
+                    }
+                    '[' => {
+                        bracket_depth += 1;
+                        current_arg.push(ch);
+                    }
+                    ']' => {
+                        bracket_depth -= 1;
+                        current_arg.push(ch);
+                    }
+                    ',' if angle_depth == 1 && paren_depth == 0 && bracket_depth == 0 => {
+                        let arg = current_arg.trim().to_string();
+                        if !arg.is_empty() {
+                            args.push(arg);
+                        }
+                        current_arg.clear();
+                    }
+                    _ => {
+                        current_arg.push(ch);
+                    }
+                }
+            }
+        }
+
+        search_start = abs_pos + type_name.len();
+    }
+
+    None
 }
 
 /// Extract generic bounds from both inline type params and `where` clauses.

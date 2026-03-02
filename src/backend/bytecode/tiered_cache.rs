@@ -39,6 +39,7 @@ use xxhash_rust::xxh3::Xxh3;
 use dashmap::DashMap;
 
 use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::environment::generic::MettaEnvironment;
 use crate::backend::models::work_pool::global_compile_pool;
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
@@ -91,7 +92,7 @@ pub const FLUSH_INTERVAL: u32 = 1024;
 // Analogous to per-CPU counters in the Linux kernel, but per-slot instead
 // of per-thread to avoid pointer-keyed map overhead.
 
-/// Cached page metadata for O(1) hot-path exec_count increment.
+/// Cached page metadata for O(1) hot-path exec_count increment and hash lookup.
 #[derive(Clone, Copy)]
 struct CachedExecPage {
     /// Page data region start address.
@@ -100,6 +101,8 @@ struct CachedExecPage {
     end: usize,
     /// Raw pointer to the page's exec_counts[0].
     counters_ptr: *const AtomicU32,
+    /// Raw pointer to the page's compilation_hashes[0].
+    hashes_ptr: *const AtomicU64,
     /// Slot size in bytes (for index computation).
     slot_size: usize,
     /// CACHE_GENERATION snapshot at cache time for invalidation.
@@ -166,6 +169,7 @@ fn increment_exec_count_slow(
                 base,
                 end,
                 counters_ptr: page.exec_counts_ptr(),
+                hashes_ptr: page.compilation_hashes_ptr(),
                 slot_size,
                 generation,
             }));
@@ -173,6 +177,28 @@ fn increment_exec_count_slow(
         }
     }
     // Pointer not in any page — ignore (shouldn't happen for slab values)
+}
+
+/// Read the cached compilation hash for a slab-allocated value.
+/// Returns 0 if not yet computed (cron hasn't flushed this slot yet).
+/// Hot path: ~3-5 cycles on CachedExecPage hit.
+#[inline]
+pub fn get_slot_compilation_hash(ptr: *const MettaValueInner) -> u64 {
+    let addr = ptr as usize;
+    EXEC_PAGE_CACHE.with(|cell| {
+        if let Some(cached) = cell.get() {
+            let current_gen = crate::backend::models::gc_allocator::global_allocator()
+                .page_generation();
+            if cached.generation == current_gen && addr >= cached.base && addr < cached.end {
+                let slot_idx = (addr - cached.base) / cached.slot_size;
+                // SAFETY: slot_idx is within bounds (addr range-checked above),
+                // page is still live (generation matches), hashes_ptr is AtomicU64.
+                return unsafe { &*cached.hashes_ptr.add(slot_idx) }
+                    .load(Ordering::Relaxed);
+            }
+        }
+        0 // Cache miss — return 0 (no hash available)
+    })
 }
 
 /// Compilation status for a tier
@@ -527,7 +553,7 @@ pub enum ExecutionTier {
 /// Uses DashMap for lock-free concurrent access.
 pub struct TieredCache {
     /// Map from expression hash to compilation state
-    entries: DashMap<u64, Arc<ExprCompilationState>>,
+    pub(crate) entries: DashMap<u64, Arc<ExprCompilationState>>,
 
     /// Threshold for bytecode compilation
     pub bytecode_threshold: u32,
@@ -1249,6 +1275,82 @@ fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H)
 }
 
 
+
+// =============================================================================
+// Sub-Expression Dispatch
+// =============================================================================
+
+/// Attempt to dispatch a sub-expression to its highest compiled tier.
+///
+/// Reads the cached compilation hash from the slab slot, looks up the
+/// `ExprCompilationState` in the global `TieredCache`, and dispatches to
+/// JIT Stage 2 > JIT Stage 1 > Bytecode VM if ready.
+///
+/// Returns `Some((results, new_env))` on successful dispatch, `None` if
+/// no compiled code is available or execution fails (falls back to tree-walker).
+///
+/// # Safety
+/// `ptr` must point to a live, slab-allocated `MettaValueInner`.
+pub fn try_sub_expr_dispatch(
+    ptr: *const MettaValueInner,
+    _value: &MettaValue,
+    env: MettaEnvironment,
+) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
+    let hash = get_slot_compilation_hash(ptr);
+    if hash == 0 { return None; }
+
+    let cache = global_tiered_cache();
+    let state_ref = cache.entries.get(&hash)?;
+    let state = std::sync::Arc::clone(state_ref.value());
+    drop(state_ref); // release DashMap read guard
+
+    // Cascade: JIT Stage 2 > JIT Stage 1 > Bytecode VM
+    if state.jit2_status() == TierStatusKind::Ready {
+        if let Some(code) = state.jit2_code() {
+            if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                cache.record_tier_execution(ExecutionTier::JitStage2);
+                return Some((results, new_env));
+            }
+        }
+    }
+    if state.jit1_status() == TierStatusKind::Ready {
+        if let Some(code) = state.jit1_code() {
+            if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                cache.record_tier_execution(ExecutionTier::JitStage1);
+                return Some((results, new_env));
+            }
+        }
+    }
+    if state.bytecode_status() == TierStatusKind::Ready {
+        if let Some(chunk) = state.bytecode_chunk() {
+            match super::execute_arena(chunk, env.clone()) {
+                Ok((results, new_env, unreduced)) if !unreduced => {
+                    cache.record_tier_execution(ExecutionTier::Bytecode);
+                    return Some((results, new_env));
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Helper: dispatch to JIT-compiled native code with environment.
+fn dispatch_jit(
+    state: &std::sync::Arc<ExprCompilationState>,
+    native_ptr: *const (),
+    env: MettaEnvironment,
+) -> Result<(Vec<MettaValue>, MettaEnvironment), ()> {
+    use super::jit::HybridExecutor;
+    use crate::backend::models::{global_allocator, global_factory};
+    let allocator = global_allocator();
+    let factory = global_factory();
+    let chunk = state.bytecode_chunk().ok_or(())?;
+    let mut executor = HybridExecutor::new();
+    executor
+        .execute_jit_arena_with_env(&chunk, native_ptr, allocator, &factory, env)
+        .map_err(|_| ())
+}
 
 // =============================================================================
 // Tests

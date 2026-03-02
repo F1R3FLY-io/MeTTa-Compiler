@@ -217,6 +217,8 @@ pub use tiered_cache::{
     hash_value,
     // Per-slot atomic counter infrastructure for sub-expression tiering
     increment_exec_count,
+    get_slot_compilation_hash,
+    try_sub_expr_dispatch,
 };
 
 

@@ -415,18 +415,33 @@ fn execute_counter_sync() {
             if count == 0 {
                 continue;
             }
+
+            let cached_hash = page.compilation_hash(slot_idx);
+            if cached_hash != 0 {
+                // Fast path: reuse cached hash — DashMap lookup by u64, no recursive xxh3
+                if let Some(state) = cache.entries.get(&cached_hash) {
+                    state.execution_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+                    cache.total_executions.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+                    page.exec_count_fetch_sub(slot_idx, count);
+                    let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
+                    cache.maybe_trigger_jit1(&state, new_count);
+                    cache.maybe_trigger_jit2(&state, new_count);
+                    continue;
+                }
+                // Hash cached but entry removed? Fall through to slow path.
+            }
+
+            // Slow path: first time for this slot — compute hash, create state, cache hash
+            let ptr = page.slot_ptr(slot_idx, slot_size) as *const MettaValueInner;
             // SAFETY: slot is still live — COUNTER_FLUSH_LOCK prevents
             // concurrent GC Phase 3 freeing, and epoch != u64::MAX confirms
             // the slot hasn't been freed.
-            let ptr = page.slot_ptr(slot_idx, slot_size) as *const MettaValueInner;
             let value = unsafe { MettaValue::from_inner_ptr(ptr) };
             let state = cache.get_or_create_state(&value);
+            page.set_compilation_hash(slot_idx, state.expr_hash);
             state.execution_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
             cache.total_executions.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
-            // Deduct what was flushed — any increments between our load and
-            // this fetch_sub are preserved (flushed next cycle)
             page.exec_count_fetch_sub(slot_idx, count);
-            // Check tier transitions
             let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
             cache.maybe_trigger_bytecode(&value, &state, new_count);
             cache.maybe_trigger_jit1(&state, new_count);

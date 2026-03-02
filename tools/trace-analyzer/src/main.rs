@@ -4,11 +4,15 @@
 //! produced by `mettatron --trace FILE`.
 //!
 //! Subcommands:
-//! - `dump`     — Sequential event dump (human-readable or JSON)
-//! - `stats`    — Summary statistics, histograms, hot expression ranking
-//! - `search`   — Pattern-based event filtering
-//! - `errors`   — Error/exception event listing with context chain
-//! - `bailouts` — JIT/bytecode bailout summary
+//! - `dump`          — Sequential event dump (human-readable or JSON)
+//! - `stats`         — Summary statistics, histograms, hot expression ranking
+//! - `search`        — Pattern-based event filtering
+//! - `errors`        — Error/exception event listing with context chain
+//! - `bailouts`      — JIT/bytecode bailout summary
+//! - `timeline`      — Per-thread activity timeline with Gantt bars (v2)
+//! - `parallel`      — Concurrency level analysis over time (v2)
+//! - `bottlenecks`   — Serialization bottleneck identification (v2)
+//! - `export-chrome` — Chrome Trace Format JSON export for Perfetto UI (v2)
 
 mod reader;
 mod dump;
@@ -16,6 +20,10 @@ mod stats;
 mod search;
 mod errors;
 mod bailouts;
+mod timeline;
+mod parallel;
+mod bottlenecks;
+mod export_chrome;
 
 use clap::{Parser, Subcommand};
 
@@ -63,6 +71,41 @@ enum Commands {
         /// Path to the trace file
         file: String,
     },
+    /// Per-thread activity timeline with horizontal Gantt bars (requires v2 trace)
+    Timeline {
+        /// Path to the trace file
+        file: String,
+    },
+    /// Concurrency level analysis over time (requires v2 trace)
+    Parallel {
+        /// Path to the trace file
+        file: String,
+        /// Time bucket width in microseconds (default: 100)
+        #[arg(long, default_value = None)]
+        bucket_us: Option<u64>,
+    },
+    /// Identify serialization bottlenecks — intervals of low concurrency (requires v2 trace)
+    Bottlenecks {
+        /// Path to the trace file
+        file: String,
+        /// Concurrency threshold: flag intervals with fewer than this many active threads (default: 2)
+        #[arg(long)]
+        concurrency_threshold: Option<usize>,
+        /// Minimum duration in microseconds to report (default: 1000 = 1ms)
+        #[arg(long)]
+        duration_threshold_us: Option<u64>,
+        /// Number of top bottlenecks to display (default: 20)
+        #[arg(long)]
+        top_n: Option<usize>,
+    },
+    /// Export trace as Chrome Trace Format JSON for Perfetto UI / chrome://tracing (requires v2 trace)
+    ExportChrome {
+        /// Path to the trace file
+        file: String,
+        /// Output JSON file path
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 fn main() {
@@ -74,6 +117,11 @@ fn main() {
         Commands::Search { file, pattern } => search::run(&file, &pattern),
         Commands::Errors { file } => errors::run(&file),
         Commands::Bailouts { file } => bailouts::run(&file),
+        Commands::Timeline { file } => timeline::run(&file),
+        Commands::Parallel { file, bucket_us } => parallel::run(&file, bucket_us),
+        Commands::Bottlenecks { file, concurrency_threshold, duration_threshold_us, top_n } =>
+            bottlenecks::run(&file, concurrency_threshold, duration_threshold_us, top_n),
+        Commands::ExportChrome { file, output } => export_chrome::run(&file, &output),
     };
 
     if let Err(e) = result {

@@ -74,9 +74,17 @@ fn print_event_human(event: &TraceEvent, reader: &TraceReader) {
     };
 
     let ts_ns = event.timestamp_ns;
+    let dur_str = match event.duration_ns {
+        Some(d) => format!(" dur={}ns", d),
+        None => String::new(),
+    };
+    let span_str2 = match event.span_id {
+        Some(id) => format!(" span={}", id),
+        None => String::new(),
+    };
     println!(
-        "[#{} T{} D{} {} {}ns{}]",
-        event.seq, event.thread_id, event.depth, tier_label(&event.tier), ts_ns, span_str,
+        "[#{} T{} D{} {} {}ns{}{}{}]",
+        event.seq, event.thread_id, event.depth, tier_label(&event.tier), ts_ns, dur_str, span_str2, span_str,
     );
 
     // Input => Outputs

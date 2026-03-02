@@ -1,8 +1,8 @@
-//! Binary trace file format I/O.
+//! Binary trace file format I/O (format v2).
 //!
 //! File layout:
 //! ```text
-//! [Magic: "MTRACE\x00\x01" (8 bytes)]
+//! [Magic: "MTRACE\x00\x02" (8 bytes)]
 //! [Header length: u32 LE]
 //! [Header: bitcode-serialized TraceHeader]
 //! [Event 0: u32 LE length + bitcode bytes]

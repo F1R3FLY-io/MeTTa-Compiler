@@ -7,7 +7,7 @@ use std::path::Path;
 
 use memmap2::Mmap;
 use trace_format::{
-    TraceEvent, TraceHeader, TRACE_MAGIC,
+    TraceEvent, TraceHeader, TRACE_MAGIC, TRACE_MAGIC_V1,
 };
 
 /// A memory-mapped trace file with lazy event iteration.
@@ -19,6 +19,8 @@ pub struct TraceReader {
     pub header: TraceHeader,
     /// File table from footer (populated after reading footer).
     pub file_table: Vec<String>,
+    /// Detected format version (1 or 2). v1 files lack duration_ns/span_id.
+    pub format_version: u32,
 }
 
 impl TraceReader {
@@ -39,10 +41,14 @@ impl TraceReader {
             return Err("File too small to contain trace header".to_string());
         }
 
-        // Verify magic bytes
-        if &mmap[0..8] != TRACE_MAGIC {
+        // Verify magic bytes (accept both v1 and v2)
+        let format_version = if mmap[0..8] == TRACE_MAGIC {
+            2u32
+        } else if mmap[0..8] == TRACE_MAGIC_V1 {
+            1u32
+        } else {
             return Err("Invalid trace file: magic bytes mismatch".to_string());
-        }
+        };
 
         // Read header length (u32 LE at offset 8)
         if mmap.len() < 12 {
@@ -85,6 +91,7 @@ impl TraceReader {
             events_start,
             header,
             file_table,
+            format_version,
         })
     }
 

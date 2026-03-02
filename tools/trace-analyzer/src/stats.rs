@@ -18,8 +18,19 @@ pub fn run(file: &str) -> Result<(), String> {
     let mut gc_safepoint_count = 0u64;
     let mut workpool_event_count = 0u64;
 
+    // Duration statistics (format v2)
+    let mut timed_events = 0u64;
+    let mut duration_by_kind: HashMap<String, Vec<u64>> = HashMap::new();
+    let mut total_gc_pause_ns = 0u64;
+    let mut span_count = 0u64;
+    let mut total_wall_ns = 0u64; // max timestamp across all events
+
     for event in reader.events() {
         total_events += 1;
+
+        if event.timestamp_ns + event.duration_ns.unwrap_or(0) > total_wall_ns {
+            total_wall_ns = event.timestamp_ns + event.duration_ns.unwrap_or(0);
+        }
 
         let tier_name = match event.tier {
             TraceTier::TreeWalker => "TreeWalker",
@@ -31,6 +42,22 @@ pub fn run(file: &str) -> Result<(), String> {
 
         let kind_name = kind_label(&event.kind);
         *by_kind.entry(kind_name.to_string()).or_default() += 1;
+
+        // Collect duration data
+        if let Some(dur) = event.duration_ns {
+            timed_events += 1;
+            duration_by_kind.entry(kind_name.to_string())
+                .or_default()
+                .push(dur);
+
+            if matches!(event.kind, TraceEventKind::GcSafepoint { .. }) {
+                total_gc_pause_ns += dur;
+            }
+        }
+
+        if event.span_id.is_some() {
+            span_count += 1;
+        }
 
         *depth_histogram.entry(event.depth).or_default() += 1;
         if event.depth > max_depth {
@@ -65,12 +92,19 @@ pub fn run(file: &str) -> Result<(), String> {
     println!();
     println!("Source: {}", reader.header.source_file);
     println!("Version: {}", reader.header.mettatron_version);
+    println!("Format: v{}", reader.format_version);
     println!("Total events: {total_events}");
+    println!("Timed events: {timed_events}");
+    println!("Span-correlated events: {span_count}");
     println!("Max eval depth: {max_depth}");
     println!("Errors: {error_count}");
     println!("Bailouts: {bailout_count}");
     println!("GC safepoints: {gc_safepoint_count}");
+    if total_gc_pause_ns > 0 {
+        println!("GC total pause: {:.3}ms", total_gc_pause_ns as f64 / 1_000_000.0);
+    }
     println!("Work pool events: {workpool_event_count}");
+    println!("Wall time: {:.3}ms", total_wall_ns as f64 / 1_000_000.0);
 
     println!();
     println!("--- Events by Tier ---");
@@ -88,6 +122,32 @@ pub fn run(file: &str) -> Result<(), String> {
     for (kind, count) in kind_vec.iter().take(20) {
         let pct = (*count as f64 / total_events as f64) * 100.0;
         println!("  {:<30} {:>8}  ({:.1}%)", kind, count, pct);
+    }
+
+    // Duration statistics by kind
+    if !duration_by_kind.is_empty() {
+        println!();
+        println!("--- Duration Statistics by Kind ---");
+        let mut dur_entries: Vec<_> = duration_by_kind.into_iter().collect();
+        // Sort by total time descending
+        dur_entries.sort_by(|a, b| {
+            let sum_b: u64 = b.1.iter().sum();
+            let sum_a: u64 = a.1.iter().sum();
+            sum_b.cmp(&sum_a)
+        });
+        println!("  {:<30} {:>6} {:>12} {:>12} {:>12} {:>12} {:>12}",
+                 "Kind", "Count", "Total", "Mean", "Median", "P95", "P99");
+        for (kind, mut durations) in dur_entries {
+            let n = durations.len();
+            let total: u64 = durations.iter().sum();
+            let mean = total / n as u64;
+            durations.sort_unstable();
+            let median = durations[n / 2];
+            let p95 = durations[(n as f64 * 0.95) as usize];
+            let p99 = durations[(n as f64 * 0.99) as usize];
+            println!("  {:<30} {:>6} {:>10}ns {:>10}ns {:>10}ns {:>10}ns {:>10}ns",
+                     kind, n, total, mean, median, p95, p99);
+        }
     }
 
     println!();

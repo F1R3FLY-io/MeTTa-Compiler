@@ -95,20 +95,29 @@ where
     let debug_eval = is_debug_eval();
     let mut eval_count: u64 = 0;
 
-    // Trace: EvalStart (before value is moved into work stack)
+    // Trace: EvalStart with span correlation + start timestamp.
+    // These variables carry the start timestamp and span ID to the EvalEnd site.
     #[cfg(feature = "eval-trace")]
-    {
+    let (_eval_start_ns, _eval_span_id) = {
         if let Some(tc) = ctx.trace_collector() {
-            tc.emit_converted(
+            let span_id = tc.next_span_id();
+            let start_ns = tc.elapsed_ns();
+            tc.emit_timed(
                 trace_format::TraceTier::TreeWalker,
                 0,
                 crate::backend::trace::trace_value_generic(&value),
                 vec![],
                 None,
                 trace_format::TraceEventKind::EvalStart,
+                start_ns,
+                None, // duration not known yet — EvalEnd carries it
+                Some(span_id),
             );
+            (start_ns, span_id)
+        } else {
+            (0u64, 0u64)
         }
-    }
+    };
 
     // Set thread-local trace collector so that type inference (infer_types_generic,
     // types_match_generic) and rule management (add_rule) can emit trace events
@@ -173,12 +182,18 @@ where
             }
             #[cfg(feature = "eval-trace")]
             let _root_count = roots.len() as u32;
+            #[cfg(feature = "eval-trace")]
+            let _safepoint_start = {
+                ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
+            };
             ctx.perform_safepoint(roots);
-            // Trace: GcSafepoint (after safepoint so root_count is computed before move)
+            // Trace: GcSafepoint with measured pause duration
             #[cfg(feature = "eval-trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
-                    tc.emit_converted(
+                    let end_ns = tc.elapsed_ns();
+                    let duration = end_ns.saturating_sub(_safepoint_start);
+                    tc.emit_timed(
                         trace_format::TraceTier::TreeWalker,
                         0,
                         trace_format::TraceValue::Unit,
@@ -188,6 +203,9 @@ where
                             root_count: _root_count,
                             allocation_delta_bytes: 0,
                         },
+                        _safepoint_start,
+                        Some(duration),
+                        None, // no span correlation needed for safepoints
                     );
                 }
             }
@@ -228,14 +246,18 @@ where
                     continue;
                 }
 
-                // Sub-expression tiered dispatch: increment the per-slot execution
-                // counter for compilable S-expressions. Only counts expressions
-                // whose head is a known compilable operation (~3% of S-exprs in PLN).
-                // Non-compilable heads (user-defined functions) would waste work-pool
-                // CPU on compilation that the bytecode VM can't execute.
+                // Sub-expression tiered dispatch: increment per-slot execution counter
+                // and attempt dispatch to compiled bytecode/JIT.
                 //
-                // Hot path: ~10-15 cycles (pointer arithmetic + atomic fetch_add).
-                // No hash, no map, no lock.
+                // For compilable S-expressions (~3% of all in PLN), this:
+                // 1. Increments the per-slot atomic counter (~10-15 cycles)
+                // 2. Reads the cached compilation hash from the slot (~3 cycles)
+                // 3. If hash is non-zero (cron has flushed): DashMap lookup (~15 cycles)
+                // 4. If compiled code is ready: dispatch to highest tier (JIT2 > JIT1 > Bytecode)
+                // 5. On dispatch success: push Resume and skip eval_step_generic
+                //
+                // Net overhead for cold expressions (no compiled code): ~25-30 cycles
+                // Net benefit for hot expressions: tree-walker step replaced by bytecode/JIT
                 //
                 // Only active for MettaValue (GC-managed) — after monomorphization
                 // the TypeId check becomes a compile-time constant, and the else
@@ -267,7 +289,38 @@ where
                         } else { false }
                     } else { false };
                     if has_compilable_head {
+                        // Increment per-slot execution counter (for compilation triggering)
                         crate::backend::bytecode::tiered_cache::increment_exec_count(value.inner_ptr());
+
+                        // Try dispatching to compiled bytecode/JIT.
+                        // Uses cached compilation hash from slot → DashMap lookup → tier cascade.
+                        if let Some((results, new_env)) = ctx.try_compiled_dispatch(&value, &env) {
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    let output_tvs: Vec<trace_format::TraceValue> = results.iter()
+                                        .map(|v| crate::backend::trace::trace_value_generic(v))
+                                        .collect();
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::BytecodeVM,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&value),
+                                        output_tvs,
+                                        None,
+                                        trace_format::TraceEventKind::TierDispatch {
+                                            expression_hash: 0,
+                                            selected_tier: trace_format::TraceTier::BytecodeVM,
+                                            execution_count: 0,
+                                        },
+                                    );
+                                }
+                            }
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (results, new_env),
+                            });
+                            continue; // Skip eval_step_generic — compiled code handled it
+                        }
+                        // Dispatch returned None — fall through to tree-walker
                     }
                 }
 
@@ -328,6 +381,10 @@ where
                         // Use static dispatch - monomorphized for each value type
                         // Clone op_name to avoid borrow conflict with mutable state
                         let op_name = state.op_name.clone();
+                        #[cfg(feature = "eval-trace")]
+                        let _grounded_start_ns = {
+                            ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
+                        };
                         if let Some(work) = execute_generic_grounded_op(&op_name, &mut state, ctx.factory()) {
                             match work {
                                 GenericGroundedWork::Done(results) => {
@@ -336,10 +393,12 @@ where
                                         .into_iter()
                                         .map(|(v, _)| v)
                                         .collect();
-                                    // Trace: GroundedOp success
+                                    // Trace: GroundedOp success with duration
                                     #[cfg(feature = "eval-trace")]
                                     {
                                         if let Some(tc) = ctx.trace_collector() {
+                                            let end_ns = tc.elapsed_ns();
+                                            let duration = end_ns.saturating_sub(_grounded_start_ns);
                                             let input = crate::backend::trace::trace_value_generic(
                                                 &ctx.factory().sexpr({
                                                     let mut parts = Vec::with_capacity(1 + state.args.len());
@@ -348,7 +407,7 @@ where
                                                     parts
                                                 }),
                                             );
-                                            tc.emit_converted(
+                                            tc.emit_timed(
                                                 trace_format::TraceTier::TreeWalker,
                                                 depth as u32,
                                                 input,
@@ -358,6 +417,9 @@ where
                                                     op_name: op_name.clone(),
                                                     args: state.args.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
                                                 },
+                                                _grounded_start_ns,
+                                                Some(duration),
+                                                None,
                                             );
                                         }
                                     }
@@ -550,13 +612,64 @@ where
                             let mut matches_deque: VecDeque<_> = matches.into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                 .collect();
+                            let total_branches = (matches_deque.len() + 1) as u32; // +1 for the one we pop
                             let (rhs, bindings) = matches_deque.pop_front().expect("matches is non-empty");
+
+                            // Trace: NondeterministicFork + BranchStart for first branch
+                            #[cfg(feature = "eval-trace")]
+                            let _branch_span_id = {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    // Emit fork event
+                                    if total_branches > 1 {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            depth as u32,
+                                            trace_format::TraceValue::Unit,
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::NondeterministicFork {
+                                                branch_count: total_branches,
+                                            },
+                                        );
+                                    }
+                                    // Emit BranchStart for first branch with span ID
+                                    let span_id = tc.next_span_id();
+                                    let start_ns = tc.elapsed_ns();
+                                    tc.emit_timed(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        trace_format::TraceValue::Unit,
+                                        vec![],
+                                        None,
+                                        trace_format::TraceEventKind::BranchStart {
+                                            branch_index: 0,
+                                            total_branches,
+                                        },
+                                        start_ns,
+                                        None, // duration filled at BranchEnd
+                                        Some(span_id),
+                                    );
+                                    span_id
+                                } else {
+                                    0u64
+                                }
+                            };
 
                             continuations.push(GenericContinuation::ProcessRuleMatches {
                                 remaining_matches: matches_deque,
                                 results: vec![],
                                 env: env.clone(),
                                 depth,
+                                #[cfg(feature = "eval-trace")]
+                                branch_span_id: _branch_span_id,
+                                #[cfg(feature = "eval-trace")]
+                                branch_start_ns: {
+                                    ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
+                                },
+                                #[cfg(feature = "eval-trace")]
+                                branch_index: 0,
+                                #[cfg(feature = "eval-trace")]
+                                total_branches,
                             });
 
                             // Apply generic bindings to RHS - NO CONVERSION needed!
@@ -1462,18 +1575,23 @@ where
         }
     }
 
-    // Trace: EvalEnd
+    // Trace: EvalEnd with matching span_id and measured duration
     #[cfg(feature = "eval-trace")]
     {
         if let Some(tc) = ctx.trace_collector() {
             let result_count = final_result.as_ref().map_or(0, |r| r.0.len()) as u32;
-            tc.emit_converted(
+            let end_ns = tc.elapsed_ns();
+            let duration = end_ns.saturating_sub(_eval_start_ns);
+            tc.emit_timed(
                 trace_format::TraceTier::TreeWalker,
                 0,
                 trace_format::TraceValue::Unit,
                 vec![],
                 None,
                 trace_format::TraceEventKind::EvalEnd { result_count },
+                _eval_start_ns,
+                Some(duration),
+                Some(_eval_span_id),
             );
         }
     }
@@ -1534,13 +1652,51 @@ fn process_continuation_generic<C: EvalContext>(
                         } else {
                             // Already generic types - no conversion needed!
                             let mut matches_deque = matches;
+                            let _total = (matches_deque.len() + 1) as u32;
                             let (rhs, bindings) = matches_deque.pop_front().expect("matches is non-empty");
+
+                            // Trace: BranchStart for the first branch
+                            #[cfg(feature = "eval-trace")]
+                            let (_branch_span, _branch_start) = {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    if _total > 1 {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            depth as u32,
+                                            trace_format::TraceValue::Unit,
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::NondeterministicFork { branch_count: _total },
+                                        );
+                                    }
+                                    let sid = tc.next_span_id();
+                                    let sns = tc.elapsed_ns();
+                                    tc.emit_timed(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        trace_format::TraceValue::Unit,
+                                        vec![],
+                                        None,
+                                        trace_format::TraceEventKind::BranchStart { branch_index: 0, total_branches: _total },
+                                        sns, None, Some(sid),
+                                    );
+                                    (sid, sns)
+                                } else { (0u64, 0u64) }
+                            };
 
                             continuations.push(GenericContinuation::ProcessRuleMatches {
                                 remaining_matches: matches_deque,
                                 results: base_results,
                                 env: env.clone(),
                                 depth,
+                                #[cfg(feature = "eval-trace")]
+                                branch_span_id: _branch_span,
+                                #[cfg(feature = "eval-trace")]
+                                branch_start_ns: _branch_start,
+                                #[cfg(feature = "eval-trace")]
+                                branch_index: 0,
+                                #[cfg(feature = "eval-trace")]
+                                total_branches: _total,
                             });
 
                             // Apply generic bindings - no conversion needed
@@ -1604,9 +1760,41 @@ fn process_continuation_generic<C: EvalContext>(
             mut results,
             env: _,
             depth,
+            #[cfg(feature = "eval-trace")]
+            branch_span_id,
+            #[cfg(feature = "eval-trace")]
+            branch_start_ns,
+            #[cfg(feature = "eval-trace")]
+            branch_index,
+            #[cfg(feature = "eval-trace")]
+            total_branches,
         } => {
+            let result_count = result.0.len() as u32;
             results.extend(result.0);
             let env = result.1;
+
+            // Trace: BranchEnd for the branch that just completed
+            #[cfg(feature = "eval-trace")]
+            {
+                if let Some(tc) = ctx.trace_collector() {
+                    let end_ns = tc.elapsed_ns();
+                    let duration = end_ns.saturating_sub(branch_start_ns);
+                    tc.emit_timed(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::BranchEnd {
+                            branch_index,
+                            result_count,
+                        },
+                        branch_start_ns,
+                        Some(duration),
+                        Some(branch_span_id),
+                    );
+                }
+            }
 
             if remaining_matches.is_empty() {
                 work_stack.push(GenericWorkItem::Resume {
@@ -1616,11 +1804,46 @@ fn process_continuation_generic<C: EvalContext>(
                 // remaining_matches is already in generic type (V, GenericBindings<V>)
                 let (rhs, bindings) = remaining_matches.pop_front().expect("remaining_matches is non-empty");
 
+                // Trace: BranchStart for the next branch
+                #[cfg(feature = "eval-trace")]
+                let (_next_span_id, _next_start_ns, _next_branch_index) = {
+                    if let Some(tc) = ctx.trace_collector() {
+                        let next_idx = branch_index + 1;
+                        let span_id = tc.next_span_id();
+                        let start_ns = tc.elapsed_ns();
+                        tc.emit_timed(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::BranchStart {
+                                branch_index: next_idx,
+                                total_branches,
+                            },
+                            start_ns,
+                            None,
+                            Some(span_id),
+                        );
+                        (span_id, start_ns, next_idx)
+                    } else {
+                        (0u64, 0u64, 0u32)
+                    }
+                };
+
                 continuations.push(GenericContinuation::ProcessRuleMatches {
                     remaining_matches,
                     results,
                     env: env.clone(),
                     depth,
+                    #[cfg(feature = "eval-trace")]
+                    branch_span_id: _next_span_id,
+                    #[cfg(feature = "eval-trace")]
+                    branch_start_ns: _next_start_ns,
+                    #[cfg(feature = "eval-trace")]
+                    branch_index: _next_branch_index,
+                    #[cfg(feature = "eval-trace")]
+                    total_branches,
                 });
 
                 // Apply generic bindings - no conversion needed
@@ -2184,8 +2407,31 @@ fn process_continuation_generic<C: EvalContext>(
                                     all_matches_with_types.into_iter()
                                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                         .collect();
+                                let _total_app = (matches_deque.len() + 1) as u32;
                                 let (rhs, bindings) =
                                     matches_deque.pop_front().expect("matches is non-empty");
+
+                                #[cfg(feature = "eval-trace")]
+                                let (_app_span, _app_start) = {
+                                    if let Some(tc) = ctx.trace_collector() {
+                                        if _total_app > 1 {
+                                            tc.emit_converted(
+                                                trace_format::TraceTier::TreeWalker, depth as u32,
+                                                trace_format::TraceValue::Unit, vec![], None,
+                                                trace_format::TraceEventKind::NondeterministicFork { branch_count: _total_app },
+                                            );
+                                        }
+                                        let sid = tc.next_span_id();
+                                        let sns = tc.elapsed_ns();
+                                        tc.emit_timed(
+                                            trace_format::TraceTier::TreeWalker, depth as u32,
+                                            trace_format::TraceValue::Unit, vec![], None,
+                                            trace_format::TraceEventKind::BranchStart { branch_index: 0, total_branches: _total_app },
+                                            sns, None, Some(sid),
+                                        );
+                                        (sid, sns)
+                                    } else { (0u64, 0u64) }
+                                };
 
                                 continuations.push(
                                     GenericContinuation::ProcessRuleMatches {
@@ -2193,6 +2439,14 @@ fn process_continuation_generic<C: EvalContext>(
                                         results: vec![],
                                         env: result_env.clone(),
                                         depth,
+                                        #[cfg(feature = "eval-trace")]
+                                        branch_span_id: _app_span,
+                                        #[cfg(feature = "eval-trace")]
+                                        branch_start_ns: _app_start,
+                                        #[cfg(feature = "eval-trace")]
+                                        branch_index: 0,
+                                        #[cfg(feature = "eval-trace")]
+                                        total_branches: _total_app,
                                     },
                                 );
 

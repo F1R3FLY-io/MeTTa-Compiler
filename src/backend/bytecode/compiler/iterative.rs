@@ -5,7 +5,7 @@
 //! overflow for deeply nested expressions.
 
 use std::collections::VecDeque;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use super::error::{CompileError, CompileResult};
 use super::work_item::{
@@ -16,7 +16,7 @@ use super::work_item::{
 use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{register_root_provider, MettaValue, MettaValueInner, RootProvider};
 
 // ============================================================================
 // Cached Synthetic Atoms
@@ -32,19 +32,71 @@ static ATOM_PRINTLN: OnceLock<MettaValue> = OnceLock::new();
 /// Cached atom for `if` (control flow).
 static ATOM_IF: OnceLock<MettaValue> = OnceLock::new();
 
+// =============================================================================
+// GC Root Provider for Compiler Atom Statics
+// =============================================================================
+
+/// GC root provider that exposes slab-allocated atoms in `ATOM_EQUALS`,
+/// `ATOM_PRINTLN`, and `ATOM_IF` to the garbage collector's root set.
+///
+/// Without this, if the first call to a `cached_atom_*` accessor happens
+/// during session evaluation (context_id > 0), the slab slot is tagged with
+/// that session's context. When the session ends, session GC frees the slot
+/// → use-after-free on subsequent accesses from other sessions.
+struct CompilerAtomRoots;
+
+impl RootProvider for CompilerAtomRoots {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        if let Some(v) = ATOM_EQUALS.get() {
+            roots.push(*v);
+        }
+        if let Some(v) = ATOM_PRINTLN.get() {
+            roots.push(*v);
+        }
+        if let Some(v) = ATOM_IF.get() {
+            roots.push(*v);
+        }
+    }
+}
+
+/// Keeps the `Arc<dyn RootProvider>` alive for the lifetime of the process so
+/// the `Weak` reference in `ROOT_REGISTRY` remains valid.
+static COMPILER_ATOM_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
+
+/// Ensure the compiler atom statics are registered as GC root providers.
+///
+/// Called lazily on first atom initialization. Idempotent — `OnceLock`
+/// guarantees single initialization.
+fn ensure_compiler_atom_roots_registered() {
+    COMPILER_ATOM_ROOT_PROVIDER.get_or_init(|| {
+        let provider = Arc::new(CompilerAtomRoots) as Arc<dyn RootProvider>;
+        register_root_provider(&provider);
+        provider
+    });
+}
+
 #[inline]
 fn cached_atom_equals() -> MettaValue {
-    *ATOM_EQUALS.get_or_init(|| MettaValue::Atom("="))
+    *ATOM_EQUALS.get_or_init(|| {
+        ensure_compiler_atom_roots_registered();
+        MettaValue::Atom("=")
+    })
 }
 
 #[inline]
 fn cached_atom_println() -> MettaValue {
-    *ATOM_PRINTLN.get_or_init(|| MettaValue::Atom("println!"))
+    *ATOM_PRINTLN.get_or_init(|| {
+        ensure_compiler_atom_roots_registered();
+        MettaValue::Atom("println!")
+    })
 }
 
 #[inline]
 fn cached_atom_if() -> MettaValue {
-    *ATOM_IF.get_or_init(|| MettaValue::Atom("if"))
+    *ATOM_IF.get_or_init(|| {
+        ensure_compiler_atom_roots_registered();
+        MettaValue::Atom("if")
+    })
 }
 
 impl Compiler {
@@ -3105,5 +3157,34 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::models::gc_allocator::collect_all_roots;
+
+    #[test]
+    fn test_compiler_atom_roots_registered() {
+        // Force initialization of all three cached atoms
+        let _ = cached_atom_equals();
+        let _ = cached_atom_println();
+        let _ = cached_atom_if();
+
+        // Verify all three atoms appear in the GC root set
+        let roots = collect_all_roots();
+        assert!(
+            roots.iter().any(|v| v.as_atom() == Some("=")),
+            "ATOM_EQUALS not found in GC roots"
+        );
+        assert!(
+            roots.iter().any(|v| v.as_atom() == Some("println!")),
+            "ATOM_PRINTLN not found in GC roots"
+        );
+        assert!(
+            roots.iter().any(|v| v.as_atom() == Some("if")),
+            "ATOM_IF not found in GC roots"
+        );
     }
 }

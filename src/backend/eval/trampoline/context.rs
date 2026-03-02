@@ -99,6 +99,23 @@ pub trait EvalContext {
     fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
         None
     }
+
+    /// Try to dispatch a sub-expression to compiled bytecode/JIT.
+    ///
+    /// Called from the trampoline for S-expressions with compilable heads.
+    /// Returns `Some((results, new_env))` on successful dispatch, `None` to
+    /// fall through to the tree-walker.
+    ///
+    /// Default implementation returns `None` (no tiered dispatch).
+    /// Override in production contexts that support bytecode/JIT execution.
+    #[inline]
+    fn try_compiled_dispatch(
+        &self,
+        _value: &Self::Value,
+        _env: &ContextEnv<Self>,
+    ) -> Option<(Vec<Self::Value>, ContextEnv<Self>)> {
+        None
+    }
 }
 
 /// Type alias for the environment associated with an EvalContext.

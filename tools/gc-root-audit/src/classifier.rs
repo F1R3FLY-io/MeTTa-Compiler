@@ -181,6 +181,20 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
         }
     }
 
+    // Merge function-scope bounds (from free functions and impl blocks).
+    // These capture MettaValueTrait bounds that exist at function/impl scope
+    // rather than on the type definition itself.
+    for (type_name, bounds) in &scan.function_scope_bounds {
+        for bound in bounds {
+            if bound.bound.contains("MettaValueTrait") {
+                type_metta_params
+                    .entry(type_name.clone())
+                    .or_default()
+                    .insert(bound.param.clone());
+            }
+        }
+    }
+
     // Build lookup: type_name → ordered list of type params
     let type_params_ordered: HashMap<&str, &[String]> = scan
         .type_defs
@@ -647,6 +661,14 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
             let uses_concrete_metta_value =
                 type_references_concrete_metta_value(&field.ty);
 
+            // PhantomData is zero-sized (compile-time only) — no GC concern.
+            let is_phantom = field.ty.contains("PhantomData");
+
+            // Type is never instantiated with a MettaValue carrier in the codebase.
+            let never_instantiated_with_metta = scan
+                .types_never_instantiated_with_metta
+                .contains(type_name.as_str());
+
             let category = if is_root_provider {
                 Category::RegisteredRoot
             } else if is_borrow {
@@ -660,6 +682,12 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
             } else if uses_concrete_metta_value {
                 // Concrete MettaValue in a non-static type — transient work item.
                 // Persistent statics are classified in Phase 4.
+                Category::GenericEvalType
+            } else if is_phantom {
+                // PhantomData<V> is zero-sized — compile-time marker only.
+                Category::GenericEvalType
+            } else if never_instantiated_with_metta {
+                // Generic type never concretely instantiated with MettaValue.
                 Category::GenericEvalType
             } else {
                 Category::Unknown
@@ -705,6 +733,16 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
                     } else if field_uses_carrier_param {
                         format!(
                             "{}.{}: {} — uses carrier param of enclosing type (transitive MettaValueTrait bound)",
+                            type_name, field.name, field.ty
+                        )
+                    } else if is_phantom {
+                        format!(
+                            "{}.{}: {} — PhantomData is zero-sized (compile-time only, no GC concern)",
+                            type_name, field.name, field.ty
+                        )
+                    } else if never_instantiated_with_metta {
+                        format!(
+                            "{}.{}: {} — generic type never instantiated with MettaValue carrier in codebase",
                             type_name, field.name, field.ty
                         )
                     } else {

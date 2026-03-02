@@ -28,7 +28,7 @@ use crate::backend::models::{
 };
 use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 
-use super::context::EvalContext;
+use super::context::{EvalContext, MettaEnvironment};
 
 /// Safepoint allocation count threshold.
 ///
@@ -229,6 +229,17 @@ impl<'s> EvalContext for SessionContext<'s> {
     #[inline]
     fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
         self.trace_collector.as_deref()
+    }
+
+    #[inline]
+    fn try_compiled_dispatch(
+        &self,
+        value: &MettaValue,
+        env: &MettaEnvironment,
+    ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
+        crate::backend::bytecode::tiered_cache::try_sub_expr_dispatch(
+            value.inner_ptr(), value, env.clone(),
+        )
     }
 }
 

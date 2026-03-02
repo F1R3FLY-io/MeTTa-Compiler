@@ -99,6 +99,18 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         results: Vec<V>,
         env: E,
         depth: usize,
+        /// Span correlation ID for the current branch (format v2).
+        #[cfg(feature = "eval-trace")]
+        branch_span_id: u64,
+        /// Start timestamp of the current branch (format v2).
+        #[cfg(feature = "eval-trace")]
+        branch_start_ns: u64,
+        /// Index of the current branch (0-based).
+        #[cfg(feature = "eval-trace")]
+        branch_index: u32,
+        /// Total number of nondeterministic branches.
+        #[cfg(feature = "eval-trace")]
+        total_branches: u32,
     },
 
     /// Processing TCO grounded operation.

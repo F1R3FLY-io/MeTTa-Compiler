@@ -71,6 +71,8 @@ pub struct TraceCollector {
     global_seq: AtomicU64,
     /// Next thread ID to assign.
     next_thread_id: AtomicU64,
+    /// Monotonic span correlation ID generator.
+    span_id_counter: AtomicU64,
 }
 
 impl TraceCollector {
@@ -91,6 +93,7 @@ impl TraceCollector {
             mettatron_version: env!("CARGO_PKG_VERSION").to_string(),
             cpu_count: num_cpus::get() as u32,
             file_table: Vec::new(), // Will be written in footer.
+            format_version: trace_format::TRACE_FORMAT_VERSION,
         };
 
         format::write_header(&mut writer, &header)?;
@@ -104,6 +107,7 @@ impl TraceCollector {
             start: Instant::now(),
             global_seq: AtomicU64::new(0),
             next_thread_id: AtomicU64::new(0),
+            span_id_counter: AtomicU64::new(1), // Start at 1 so 0 is never a valid span ID
         });
 
         Ok(collector)
@@ -163,6 +167,8 @@ impl TraceCollector {
                 outputs,
                 expr_span,
                 kind,
+                duration_ns: None,
+                span_id: None,
             };
 
             buf.events.push(event);
@@ -173,6 +179,79 @@ impl TraceCollector {
                     Vec::with_capacity(BATCH_SIZE),
                 );
                 // Drop the RefCell borrow before locking the mutex.
+                drop(buf_opt);
+                self.flush_batch(batch);
+            }
+        });
+    }
+
+    /// Get elapsed nanoseconds since trace start.
+    ///
+    /// Use this to capture a start timestamp before an operation, then
+    /// compute `duration_ns = elapsed_ns() - start_ns` after it completes.
+    #[inline]
+    pub fn elapsed_ns(&self) -> u64 {
+        self.start.elapsed().as_nanos() as u64
+    }
+
+    /// Generate a globally unique span correlation ID.
+    ///
+    /// IDs are monotonically increasing and never zero, so `0` can serve
+    /// as a sentinel for "no span".
+    #[inline]
+    pub fn next_span_id(&self) -> u64 {
+        self.span_id_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Emit a timed trace event with explicit start time, duration, and
+    /// optional span correlation ID.
+    ///
+    /// Use this for events that measure an operation's wall-clock duration.
+    /// The `start_ns` becomes the event's `timestamp_ns` (so the event
+    /// is anchored at the operation's *start*, not its end).
+    pub fn emit_timed(
+        &self,
+        tier: TraceTier,
+        depth: u32,
+        input: TraceValue,
+        outputs: Vec<TraceValue>,
+        expr_span: Option<TraceSpan>,
+        kind: TraceEventKind,
+        start_ns: u64,
+        duration_ns: Option<u64>,
+        span_id: Option<u64>,
+    ) {
+        THREAD_BUF.with(|buf_cell| {
+            let mut buf_opt = buf_cell.borrow_mut();
+            let buf = buf_opt.get_or_insert_with(|| {
+                let tid = self.next_thread_id.fetch_add(1, Ordering::Relaxed) as u32;
+                ThreadBuffer::new(tid)
+            });
+
+            let seq = buf.seq;
+            buf.seq += 1;
+
+            let event = TraceEvent {
+                seq,
+                thread_id: buf.thread_id,
+                timestamp_ns: start_ns,
+                tier,
+                depth,
+                input,
+                outputs,
+                expr_span,
+                kind,
+                duration_ns,
+                span_id,
+            };
+
+            buf.events.push(event);
+
+            if buf.events.len() >= BATCH_SIZE {
+                let batch = std::mem::replace(
+                    &mut buf.events,
+                    Vec::with_capacity(BATCH_SIZE),
+                );
                 drop(buf_opt);
                 self.flush_batch(batch);
             }
@@ -237,5 +316,148 @@ impl TraceCollector {
             }
             shared.event_count += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_span_id_uniqueness() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_span_ids.mtrace");
+        let tc = TraceCollector::new(
+            path.to_str().expect("valid temp path"),
+            "test.metta",
+        )
+        .expect("create collector");
+
+        let mut ids = HashSet::new();
+        for _ in 0..1000 {
+            let id = tc.next_span_id();
+            assert!(ids.insert(id), "span ID {id} was not unique");
+        }
+
+        // IDs start at 1 and are monotonically increasing
+        assert!(!ids.contains(&0), "span ID 0 should never be generated");
+        assert!(ids.contains(&1), "first span ID should be 1");
+        assert!(ids.contains(&1000), "last span ID should be 1000");
+
+        let _ = tc.finalize();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_elapsed_ns_monotonic() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_elapsed_ns.mtrace");
+        let tc = TraceCollector::new(
+            path.to_str().expect("valid temp path"),
+            "test.metta",
+        )
+        .expect("create collector");
+
+        let t1 = tc.elapsed_ns();
+        // Spin briefly to ensure elapsed advances
+        std::hint::spin_loop();
+        let t2 = tc.elapsed_ns();
+
+        assert!(
+            t2 >= t1,
+            "elapsed_ns should be monotonically non-decreasing: t1={t1}, t2={t2}"
+        );
+
+        let _ = tc.finalize();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_emit_timed_writes_duration_and_span() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_emit_timed.mtrace");
+        let path_str = path.to_str().expect("valid temp path").to_string();
+
+        {
+            let tc = TraceCollector::new(&path_str, "test.metta")
+                .expect("create collector");
+
+            let start = tc.elapsed_ns();
+            let span = tc.next_span_id();
+
+            // Emit a timed EvalStart
+            tc.emit_timed(
+                TraceTier::TreeWalker,
+                0,
+                TraceValue::Unit,
+                vec![],
+                None,
+                TraceEventKind::EvalStart,
+                start,
+                None,
+                Some(span),
+            );
+
+            // Simulate some work
+            std::hint::spin_loop();
+            let end = tc.elapsed_ns();
+            let dur = end.saturating_sub(start);
+
+            // Emit a timed EvalEnd with duration
+            tc.emit_timed(
+                TraceTier::TreeWalker,
+                0,
+                TraceValue::Unit,
+                vec![TraceValue::Long(42)],
+                None,
+                TraceEventKind::EvalEnd { result_count: 1 },
+                start,
+                Some(dur),
+                Some(span),
+            );
+
+            let count = tc.finalize().expect("finalize should succeed");
+            assert_eq!(count, 2, "should have written exactly 2 events");
+        }
+
+        // Read back the trace file and verify events
+        let data = std::fs::read(&path).expect("read trace file");
+        // Skip the 8-byte magic + header length-prefix + header
+        let mut pos = 8;
+        // Read header length (4 bytes LE)
+        let header_len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4 + header_len;
+
+        // Read first event
+        let ev1_len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+        let ev1: TraceEvent =
+            trace_format::deserialize(&data[pos..pos + ev1_len]).expect("deserialize event 1");
+        pos += ev1_len;
+
+        // Read second event
+        let ev2_len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+        let ev2: TraceEvent =
+            trace_format::deserialize(&data[pos..pos + ev2_len]).expect("deserialize event 2");
+
+        // Verify event 1 (EvalStart with span, no duration)
+        assert!(matches!(ev1.kind, TraceEventKind::EvalStart));
+        assert!(ev1.duration_ns.is_none());
+        assert!(ev1.span_id.is_some());
+
+        // Verify event 2 (EvalEnd with span AND duration)
+        assert!(matches!(ev1.kind, TraceEventKind::EvalStart));
+        assert!(ev2.duration_ns.is_some());
+        assert!(ev2.span_id.is_some());
+
+        // Both events should share the same span ID
+        assert_eq!(
+            ev1.span_id, ev2.span_id,
+            "paired events should share span_id"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

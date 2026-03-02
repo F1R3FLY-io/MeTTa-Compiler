@@ -236,6 +236,11 @@ pub(crate) struct ValuePage {
     /// Flushed to the global TieredCache DashMap by periodic cron task and
     /// before GC frees dead slots.
     exec_counts: Vec<AtomicU32>,
+    /// Per-slot cached TieredCache hash (xxh3 of expression content).
+    /// Zero = not yet computed. Populated by GC cron counter flush on first
+    /// encounter, cleared when slot is freed (GC Phase 3).
+    /// Used by trampoline for O(1) DashMap lookup (avoids recursive re-hashing).
+    compilation_hashes: Vec<AtomicU64>,
 }
 
 impl ValuePage {
@@ -248,6 +253,7 @@ impl ValuePage {
         let epochs: Vec<AtomicU64> = (0..capacity).map(|_| AtomicU64::new(0)).collect();
         let context_ids: Vec<AtomicU32> = (0..capacity).map(|_| AtomicU32::new(0)).collect();
         let exec_counts: Vec<AtomicU32> = (0..capacity).map(|_| AtomicU32::new(0)).collect();
+        let compilation_hashes: Vec<AtomicU64> = (0..capacity).map(|_| AtomicU64::new(0)).collect();
         Self {
             data,
             bump_count: AtomicUsize::new(0),
@@ -257,6 +263,7 @@ impl ValuePage {
             epochs,
             context_ids,
             exec_counts,
+            compilation_hashes,
         }
     }
 
@@ -404,6 +411,24 @@ impl ValuePage {
     #[inline]
     pub(crate) fn exec_counts_ptr(&self) -> *const AtomicU32 {
         self.exec_counts.as_ptr()
+    }
+
+    /// Get cached compilation hash for a slot (Relaxed).
+    #[inline]
+    pub(crate) fn compilation_hash(&self, idx: usize) -> u64 {
+        self.compilation_hashes[idx].load(Ordering::Relaxed)
+    }
+
+    /// Set cached compilation hash for a slot (Relaxed).
+    #[inline]
+    pub(crate) fn set_compilation_hash(&self, idx: usize, hash: u64) {
+        self.compilation_hashes[idx].store(hash, Ordering::Relaxed);
+    }
+
+    /// Get raw pointer to compilation_hashes[0] for thread-local cache.
+    #[inline]
+    pub(crate) fn compilation_hashes_ptr(&self) -> *const AtomicU64 {
+        self.compilation_hashes.as_ptr()
     }
 }
 
@@ -3927,9 +3952,25 @@ impl SlabAllocator {
                     let page = &pages[entry.page_idx];
                     let count = page.exec_count_swap(entry.slot_idx, 0);
                     if count > 0 {
+                        let cached_hash = page.compilation_hash(entry.slot_idx);
+                        if cached_hash != 0 {
+                            // Fast path: reuse cached hash — skip recursive xxh3
+                            if let Some(state) = cache.entries.get(&cached_hash) {
+                                state.execution_count.fetch_add(count, Ordering::Relaxed);
+                                cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
+                                let new_count = state.execution_count.load(Ordering::Relaxed);
+                                cache.maybe_trigger_jit1(&state, new_count);
+                                cache.maybe_trigger_jit2(&state, new_count);
+                                continue;
+                            }
+                            // Hash cached but entry removed? Fall through to slow path.
+                        }
+
+                        // Slow path: compute hash, create state, cache hash
                         // SAFETY: slot content is still valid — not yet freed.
                         let value = unsafe { MettaValue::from_inner_ptr(entry.ptr as *const MettaValueInner) };
                         let state = cache.get_or_create_state(&value);
+                        page.set_compilation_hash(entry.slot_idx, state.expr_hash);
                         state.execution_count.fetch_add(count, Ordering::Relaxed);
                         cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
                         let new_count = state.execution_count.load(Ordering::Relaxed);
@@ -3971,6 +4012,9 @@ impl SlabAllocator {
                 page.live_count.fetch_sub(1, Ordering::Relaxed);
                 // Sentinel epoch: prevents double-free by future GC cycles.
                 page.set_slot_epoch(entry.slot_idx, u64::MAX);
+                // Clear cached compilation hash so stale hashes are not reused
+                // if the slot is re-allocated for a different expression.
+                page.set_compilation_hash(entry.slot_idx, 0);
 
                 if quarantine {
                     // Quarantine mode: fully poison the slot (including FreeNode header)

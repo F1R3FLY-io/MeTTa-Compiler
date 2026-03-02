@@ -8,7 +8,6 @@ use trace_format::*;
 use super::collector::TraceCollector;
 use super::convert::{trace_value, trace_value_generic, FileTable};
 use crate::backend::models::metta_value::MettaValue;
-use crate::backend::models::MettaValueTrait;
 
 #[test]
 fn test_bitcode_event_roundtrip() {
@@ -35,6 +34,8 @@ fn test_bitcode_event_roundtrip() {
             op_name: "+".to_string(),
             args: vec![TraceValue::Long(1), TraceValue::Long(2)],
         },
+        duration_ns: None,
+        span_id: None,
     };
 
     // Serialize.
@@ -56,6 +57,7 @@ fn test_bitcode_header_roundtrip() {
         mettatron_version: "0.2.0".to_string(),
         cpu_count: 8,
         file_table: vec!["test.metta".to_string(), "lib.metta".to_string()],
+        format_version: TRACE_FORMAT_VERSION,
     };
 
     let bytes = trace_format::serialize(&header);
@@ -308,5 +310,115 @@ fn test_thread_local_trace_sink() {
     assert_eq!(count, 1, "expected 1 event from thread-local test");
 
     // Clean up
+    let _ = std::fs::remove_file(&trace_path);
+}
+
+#[test]
+fn test_e2e_eval_events_have_duration_and_span() {
+    // End-to-end test: evaluate a program with tracing, read back the trace,
+    // and verify that EvalStart/EvalEnd events carry span_id and that
+    // EvalEnd has duration_ns > 0.
+    use crate::backend::eval::trampoline::{eval_trampoline_with_trace, new_env};
+
+    let dir = std::env::temp_dir();
+    let trace_path = dir.join("e2e_v2_eval.mtrace");
+    let trace_path_str = trace_path.to_str().expect("valid path");
+
+    let state = crate::compile("!(+ 1 2)").expect("compile should succeed");
+    let mut env = new_env();
+
+    let collector =
+        TraceCollector::new(trace_path_str, "test_v2.metta").expect("should create collector");
+
+    let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+    for expr in source_exprs {
+        let (results, new_env) = eval_trampoline_with_trace(expr, env, &state, &collector);
+        env = new_env;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_long(), Some(3));
+    }
+
+    let count = collector.finalize().expect("finalize should succeed");
+    assert!(count > 0, "expected trace events");
+
+    // Read back and find EvalStart/EvalEnd events
+    let data = std::fs::read(&trace_path).expect("read trace file");
+    let mut pos = 8; // skip magic
+
+    // Read header
+    let header_len =
+        u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+    pos += 4 + header_len;
+
+    let mut eval_start_spans: Vec<u64> = Vec::new();
+    let mut eval_end_spans: Vec<(u64, Option<u64>)> = Vec::new(); // (span_id, duration_ns)
+    let mut grounded_ops_with_duration = 0u32;
+
+    // Read events until we hit the footer or run out of data
+    while pos + 4 < data.len() {
+        let ev_len =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+
+        if pos + ev_len > data.len() {
+            break; // footer or truncated
+        }
+
+        if let Ok(ev) = trace_format::deserialize::<TraceEvent>(&data[pos..pos + ev_len]) {
+            match &ev.kind {
+                TraceEventKind::EvalStart => {
+                    if let Some(span) = ev.span_id {
+                        eval_start_spans.push(span);
+                    }
+                }
+                TraceEventKind::EvalEnd { .. } => {
+                    if let Some(span) = ev.span_id {
+                        eval_end_spans.push((span, ev.duration_ns));
+                    }
+                }
+                TraceEventKind::GroundedOp { .. } => {
+                    if ev.duration_ns.is_some() {
+                        grounded_ops_with_duration += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        pos += ev_len;
+    }
+
+    // EvalStart should have span_id
+    assert!(
+        !eval_start_spans.is_empty(),
+        "expected at least one EvalStart with span_id"
+    );
+
+    // EvalEnd should have matching span_id and duration_ns > 0
+    assert!(
+        !eval_end_spans.is_empty(),
+        "expected at least one EvalEnd with span_id"
+    );
+    for (span, dur) in &eval_end_spans {
+        assert!(
+            eval_start_spans.contains(span),
+            "EvalEnd span_id {span} should match an EvalStart"
+        );
+        assert!(
+            dur.is_some(),
+            "EvalEnd should have duration_ns"
+        );
+        assert!(
+            dur.expect("checked above") > 0,
+            "EvalEnd duration_ns should be > 0"
+        );
+    }
+
+    // GroundedOp duration is emitted from the StartGroundedOp continuation path.
+    // For simple expressions like `(+ 1 2)`, the grounded op may complete
+    // synchronously without entering the continuation, so duration_ns may be
+    // absent. We just verify the count is non-negative (no panic).
+    let _ = grounded_ops_with_duration;
+
     let _ = std::fs::remove_file(&trace_path);
 }

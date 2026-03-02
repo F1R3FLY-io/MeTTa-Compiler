@@ -194,6 +194,21 @@ where
     /// Set before sub-expression evaluation in `vm_type_driven_pre_eval()`, consumed
     /// after `match_rules_native()` to filter out type-incompatible rule matches.
     pub(crate) expected_type: Option<V>,
+
+    /// Phase 8b: Optional runtime type profile for collecting branch/dispatch/guard
+    /// feedback during bytecode VM execution. Only active for expressions with
+    /// `execution_count >= PROFILING_THRESHOLD` (50+). When active, branch opcodes
+    /// record taken/not-taken counts, DispatchRules records rule match frequencies,
+    /// and guard opcodes record pass/fail outcomes.
+    ///
+    /// V8 equivalent: FeedbackVector (per-function IC slot array).
+    /// HotSpot equivalent: MethodData (MDO).
+    pub(crate) runtime_profile: Option<std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>>,
+
+    /// Set to `true` by `DispatchRules` when no rules matched — signals that
+    /// the expression was returned unchanged. Callers use this O(1) flag instead
+    /// of an O(expression_size) structural comparison (`results[0] == expr`).
+    pub unreduced: bool,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
@@ -242,6 +257,8 @@ where
             factory,
             env: None,
             expected_type: None,
+            runtime_profile: None,
+            unreduced: false,
         }
     }
 
@@ -266,6 +283,8 @@ where
             factory,
             env: Some(env),
             expected_type: None,
+            runtime_profile: None,
+            unreduced: false,
         }
     }
 
@@ -293,6 +312,8 @@ where
             external_registry,
             memo_cache,
             expected_type: None,
+            runtime_profile: None,
+            unreduced: false,
         }
     }
 
@@ -306,6 +327,95 @@ where
     pub fn with_environment(mut self, env: GenericEnvironment<V, F>) -> Self {
         self.env = Some(env);
         self
+    }
+
+    /// Set the runtime type profile for collecting execution feedback (builder pattern).
+    ///
+    /// When set, the VM instruments branch, dispatch, and guard opcodes to record
+    /// runtime feedback for profile-guided JIT compilation.
+    pub fn with_runtime_profile(
+        mut self,
+        profile: std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>,
+    ) -> Self {
+        self.runtime_profile = Some(profile);
+        self
+    }
+
+    /// Record a branch outcome in the runtime profile (if profiling is active).
+    ///
+    /// Called at JumpIfFalse, JumpIfTrue, JumpIfNotBool, JumpIfUnit, JumpIfError
+    /// opcodes to track taken/not-taken frequencies.
+    #[inline]
+    fn profile_branch(&self, offset: u32, taken: bool) {
+        if let Some(ref profile_arc) = self.runtime_profile {
+            let mut profile = profile_arc.lock();
+            // Find or create feedback entry for this offset
+            let entry = profile.branch_frequencies.iter().position(|bf| bf.offset == offset);
+            match entry {
+                Some(idx) => {
+                    if taken {
+                        profile.branch_frequencies[idx].record_taken();
+                    } else {
+                        profile.branch_frequencies[idx].record_not_taken();
+                    }
+                }
+                None => {
+                    use super::runtime_profile::BranchFeedback;
+                    let bf = BranchFeedback::new(offset);
+                    if taken { bf.record_taken(); } else { bf.record_not_taken(); }
+                    profile.branch_frequencies.push(bf);
+                }
+            }
+            profile.sample_count += 1;
+        }
+    }
+
+    /// Record a guard outcome in the runtime profile (if profiling is active).
+    #[inline]
+    fn profile_guard(&self, offset: u16, passed: bool) {
+        if let Some(ref profile_arc) = self.runtime_profile {
+            let mut profile = profile_arc.lock();
+            let entry = profile.guard_outcomes.iter_mut().find(|g| g.offset == offset);
+            match entry {
+                Some(gf) => {
+                    if passed { gf.pass_count += 1; } else { gf.fail_count += 1; }
+                }
+                None => {
+                    use super::runtime_profile::GuardFeedback;
+                    let gf = GuardFeedback {
+                        offset,
+                        pass_count: if passed { 1 } else { 0 },
+                        fail_count: if passed { 0 } else { 1 },
+                    };
+                    profile.guard_outcomes.push(gf);
+                }
+            }
+        }
+    }
+
+    /// Record a rule match in the runtime profile (if profiling is active).
+    #[inline]
+    fn profile_rule_match(&self, site_hash: u64, match_count: usize) {
+        if let Some(ref profile_arc) = self.runtime_profile {
+            let mut profile = profile_arc.lock();
+            for rule_index in 0..match_count.min(u16::MAX as usize) {
+                let idx = rule_index as u16;
+                let entry = profile.rule_match_hits.iter_mut().find(|r| r.site_hash == site_hash && r.rule_index == idx);
+                match entry {
+                    Some(rmf) => {
+                        rmf.match_count += 1;
+                    }
+                    None => {
+                        use super::runtime_profile::RuleMatchFeedback;
+                        profile.rule_match_hits.push(RuleMatchFeedback {
+                            site_hash,
+                            rule_index: idx,
+                            match_count: 1,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// Push an initial value onto the stack before execution.
@@ -706,13 +816,16 @@ where
                 self.ip = (self.ip as isize + offset as isize) as usize;
             }
             Opcode::JumpIfFalse => {
+                let branch_offset = self.ip as u32;
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
                 // MeTTa HE: only Bool(false) is falsy. Unit is NOT falsy —
                 // it falls through to JumpIfNotBool which returns unreduced.
-                if matches!(cond.inner_raw(), MettaValueInner::Bool(false)) {
+                let taken = matches!(cond.inner_raw(), MettaValueInner::Bool(false));
+                if taken {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
+                self.profile_branch(branch_offset, taken);
             }
             Opcode::JumpIfTrue => {
                 let offset = self.read_i16()?;
@@ -738,11 +851,14 @@ where
             Opcode::JumpIfNotBool => {
                 // MeTTa HE: if condition is not Bool, jump to non-bool handler
                 // to return unreduced (if cond then else). Peek, not pop.
+                let branch_offset = self.ip as u32;
                 let offset = self.read_i16()?;
                 let value = self.peek()?;
-                if !matches!(value.inner_raw(), MettaValueInner::Bool(_)) {
+                let taken = !matches!(value.inner_raw(), MettaValueInner::Bool(_));
+                if taken {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
+                self.profile_branch(branch_offset, taken);
             }
             Opcode::JumpShort => {
                 let offset = self.read_i8()?;
@@ -1835,13 +1951,11 @@ where
     }
 
     fn op_match_guard(&mut self) -> VmResult<()> {
+        let guard_offset = self.ip as u16;
         let guard_result = self.pop()?;
-        if guard_result.as_bool() != Some(true) {
-            // Guard failed - push false
-            self.push(self.make_bool(false));
-        } else {
-            self.push(self.make_bool(true));
-        }
+        let passed = guard_result.as_bool() == Some(true);
+        self.push(self.make_bool(passed));
+        self.profile_guard(guard_offset, passed);
         Ok(())
     }
 
@@ -3477,12 +3591,20 @@ where
             });
         }
 
+        // Phase 8b: Profile rule match frequencies for PGO JIT compilation.
+        // Uses bytecode IP as site identifier within this chunk.
+        if !matches.is_empty() {
+            self.profile_rule_match(self.ip as u64, matches.len());
+        }
+
         if matches.is_empty() {
             // Phase 9.5: Memoize as normal form — no rules matched, so this
             // S-expression is irreducible. Future dispatches will skip it.
             if expr.as_sexpr().is_some() {
                 crate::backend::eval::trampoline::memoize_normal_form(&expr);
             }
+            // Signal no reduction so callers can skip O(n) structural comparison
+            self.unreduced = true;
             // No rules match - return expression unchanged
             self.push(expr);
             return Ok(());

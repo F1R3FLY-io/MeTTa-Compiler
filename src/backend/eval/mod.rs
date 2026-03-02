@@ -151,6 +151,11 @@ pub fn eval_with_trace(
 ) -> EvalResult {
     use crate::backend::models::EvalGuard;
 
+    // Wire the trace collector into the work pool so worker threads can emit
+    // trace events (WorkPoolTaskEnqueued, WorkPoolScaleEvent, etc.).
+    // OnceLock inside — only the first call has effect; subsequent are no-ops.
+    crate::backend::models::work_pool::set_work_pool_trace_collector(collector);
+
     let result = {
         let _guard = EvalGuard::enter();
         eval_inner_with_trace(value, env, state, collector)
@@ -259,11 +264,15 @@ fn eval_inner_with_trace(
                 );
 
                 match execute_arena(chunk, env.clone()) {
-                    Ok((results, new_env)) => {
-                        global_tiered_cache()
-                            .record_tier_execution(ExecutionTier::Bytecode);
-                        clear_thread_trace_collector();
-                        return (results, new_env);
+                    Ok((results, new_env, unreduced)) => {
+                        if unreduced {
+                            // Bytecode couldn't reduce — fall through
+                        } else {
+                            global_tiered_cache()
+                                .record_tier_execution(ExecutionTier::Bytecode);
+                            clear_thread_trace_collector();
+                            return (results, new_env);
+                        }
                     }
                     Err(_) => {}
                 }
@@ -285,11 +294,15 @@ fn eval_inner_with_trace(
         );
 
         match eval_bytecode_arena_with_env(&value, env.clone()) {
-            Ok((results, new_env)) => {
-                global_tiered_cache()
-                    .record_tier_execution(ExecutionTier::Bytecode);
-                clear_thread_trace_collector();
-                return (results, new_env);
+            Ok((results, new_env, unreduced)) => {
+                if unreduced {
+                    // Bytecode couldn't reduce — fall through to tree-walker
+                } else {
+                    global_tiered_cache()
+                        .record_tier_execution(ExecutionTier::Bytecode);
+                    clear_thread_trace_collector();
+                    return (results, new_env);
+                }
             }
             Err(_) => {}
         }
@@ -372,10 +385,14 @@ fn eval_inner(
             if let Some(chunk) = compilation_state.bytecode_chunk() {
                 // Execute via generic bytecode VM (zero-conversion)
                 match execute_arena(chunk, env.clone()) {
-                    Ok((results, new_env)) => {
-                        global_tiered_cache()
-                            .record_tier_execution(ExecutionTier::Bytecode);
-                        return (results, new_env);
+                    Ok((results, new_env, unreduced)) => {
+                        if unreduced {
+                            // Bytecode couldn't reduce — fall through
+                        } else {
+                            global_tiered_cache()
+                                .record_tier_execution(ExecutionTier::Bytecode);
+                            return (results, new_env);
+                        }
                     }
                     Err(_) => {
                         // Bytecode execution failed, fall through to tree-walker
@@ -388,10 +405,14 @@ fn eval_inner(
     // Try environment-aware bytecode for expressions that need rule dispatch.
     if can_compile_with_env(&value) {
         match eval_bytecode_arena_with_env(&value, env.clone()) {
-            Ok((results, new_env)) => {
-                global_tiered_cache()
-                    .record_tier_execution(ExecutionTier::Bytecode);
-                return (results, new_env);
+            Ok((results, new_env, unreduced)) => {
+                if unreduced {
+                    // Bytecode couldn't reduce — fall through to tree-walker
+                } else {
+                    global_tiered_cache()
+                        .record_tier_execution(ExecutionTier::Bytecode);
+                    return (results, new_env);
+                }
             }
             Err(_) => {
                 // Bytecode compilation/execution failed, fall through to tree-walker

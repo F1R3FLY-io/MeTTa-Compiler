@@ -44,6 +44,10 @@ pub enum CompileWork {
     /// Compile function call arguments
     CompileCallArgs {
         head: String,
+        /// Original slab-allocated MettaValue for the head atom. When
+        /// `Some(v)`, reused directly as constant to avoid redundant
+        /// slab allocation. `None` for synthetic heads.
+        head_value: Option<MettaValue>,
         args: VecDeque<MettaValue>,
         arity: usize,
         saved_tail_position: bool,

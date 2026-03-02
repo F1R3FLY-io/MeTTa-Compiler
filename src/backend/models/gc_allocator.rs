@@ -131,7 +131,7 @@ fn discriminant_name(inner: &MettaValueInner) -> &'static str {
 /// Page size for value and data slabs (256 KB).
 /// Larger pages reduce mmap syscall overhead (4x fewer pages for the same
 /// total allocation). Trade-off: coarser page release granularity during GC.
-const PAGE_SIZE: usize = 256 * 1024;
+pub(crate) const PAGE_SIZE: usize = 256 * 1024;
 
 /// Power-of-2 size classes for variable-length data.
 /// Minimum 16 bytes to hold the Treiber stack `FreeNode` (u128 = 16 bytes).
@@ -210,7 +210,7 @@ unsafe impl Sync for MmapPage {}
 ///
 /// Each page is a contiguous 64 KB mmap'd block divided into uniform slots.
 /// All counters are atomic for lock-free concurrent access.
-struct ValuePage {
+pub(crate) struct ValuePage {
     /// Raw page memory (mmap-backed for guaranteed OS release).
     data: MmapPage,
     /// Number of slots that have been bump-allocated (atomic for CAS bump).
@@ -231,6 +231,11 @@ struct ValuePage {
     /// Context 0 = persistent (never released by session GC).
     /// Other values identify the session that allocated the slot.
     context_ids: Vec<AtomicU32>,
+    /// Per-slot execution counter for tiered compilation.
+    /// Incremented by eval threads via `increment_exec_count()` (atomic fetch_add).
+    /// Flushed to the global TieredCache DashMap by periodic cron task and
+    /// before GC frees dead slots.
+    exec_counts: Vec<AtomicU32>,
 }
 
 impl ValuePage {
@@ -242,6 +247,7 @@ impl ValuePage {
         let marks: Vec<AtomicU64> = (0..mark_words).map(|_| AtomicU64::new(0)).collect();
         let epochs: Vec<AtomicU64> = (0..capacity).map(|_| AtomicU64::new(0)).collect();
         let context_ids: Vec<AtomicU32> = (0..capacity).map(|_| AtomicU32::new(0)).collect();
+        let exec_counts: Vec<AtomicU32> = (0..capacity).map(|_| AtomicU32::new(0)).collect();
         Self {
             data,
             bump_count: AtomicUsize::new(0),
@@ -250,12 +256,13 @@ impl ValuePage {
             marks,
             epochs,
             context_ids,
+            exec_counts,
         }
     }
 
     /// Get pointer to slot at the given index.
     #[inline]
-    fn slot_ptr(&self, idx: usize, slot_size: usize) -> *mut u8 {
+    pub(crate) fn slot_ptr(&self, idx: usize, slot_size: usize) -> *mut u8 {
         debug_assert!(idx < self.capacity);
         unsafe { self.data.ptr.add(idx * slot_size) }
     }
@@ -337,7 +344,7 @@ impl ValuePage {
 
     /// Get slot epoch (atomic).
     #[inline]
-    fn slot_epoch(&self, idx: usize) -> u64 {
+    pub(crate) fn slot_epoch(&self, idx: usize) -> u64 {
         self.epochs[idx].load(Ordering::Acquire)
     }
 
@@ -357,6 +364,46 @@ impl ValuePage {
     #[inline]
     fn set_context_id(&self, idx: usize, id: u32) {
         self.context_ids[idx].store(id, Ordering::Release);
+    }
+
+    /// Get the exec_count for a slot (atomic, Relaxed).
+    #[inline]
+    pub(crate) fn exec_count(&self, idx: usize) -> u32 {
+        self.exec_counts[idx].load(Ordering::Relaxed)
+    }
+
+    /// Atomically add to the exec_count for a slot (Relaxed).
+    #[inline]
+    pub(crate) fn exec_count_fetch_add(&self, idx: usize, val: u32) {
+        self.exec_counts[idx].fetch_add(val, Ordering::Relaxed);
+    }
+
+    /// Atomically subtract from the exec_count for a slot (Relaxed).
+    #[inline]
+    pub(crate) fn exec_count_fetch_sub(&self, idx: usize, val: u32) {
+        self.exec_counts[idx].fetch_sub(val, Ordering::Relaxed);
+    }
+
+    /// Atomically swap the exec_count for a slot, returning the old value (Relaxed).
+    #[inline]
+    pub(crate) fn exec_count_swap(&self, idx: usize, val: u32) -> u32 {
+        self.exec_counts[idx].swap(val, Ordering::Relaxed)
+    }
+
+    /// Get the bump_count (number of allocated slots).
+    #[inline]
+    pub(crate) fn bump_count(&self) -> usize {
+        self.bump_count.load(Ordering::Acquire)
+    }
+
+    /// Get a raw pointer to exec_counts[0] for thread-local cache.
+    ///
+    /// The returned pointer is valid for the page's lifetime (until `release_empty_pages`
+    /// drops the page). Callers must check the page generation counter to detect stale
+    /// pointers from released pages.
+    #[inline]
+    pub(crate) fn exec_counts_ptr(&self) -> *const AtomicU32 {
+        self.exec_counts.as_ptr()
     }
 }
 
@@ -2062,6 +2109,22 @@ impl SlabAllocator {
         self.values.epoch.load(Ordering::Acquire)
     }
 
+    /// Get read access to value pages (for cron counter sync).
+    ///
+    /// Callers must hold the returned guard for the minimum necessary duration
+    /// to avoid blocking page allocation (which needs a write lock).
+    pub(crate) fn value_pages_read(&self) -> parking_lot::RwLockReadGuard<'_, Vec<Box<ValuePage>>> {
+        self.values.pages.read()
+    }
+
+    /// Get the page generation counter for cache invalidation.
+    ///
+    /// Incremented when value pages are released (munmapped). Thread-local
+    /// page caches compare against this to detect stale entries.
+    pub fn page_generation(&self) -> u64 {
+        CACHE_GENERATION.load(Ordering::Acquire)
+    }
+
     /// Check if a value pointer is valid (not freed, within a known page).
     ///
     /// Returns `true` if `ptr`:
@@ -2428,6 +2491,15 @@ pub(super) static ACTIVE_EVALUATORS: AtomicU32 = AtomicU32::new(0);
 /// `EvalGuard::enter()` parks on condvar until this is false.
 /// NOT stop-the-world: only guards the brief snapshot capture, not mark-sweep.
 pub(super) static GC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Check if GC is currently in progress (snapshot being built or response being processed).
+///
+/// Used by the cron counter-sync task to skip cycles during GC to avoid
+/// reading slot content that Phase 3 may be concurrently freeing/poisoning.
+#[inline]
+pub fn is_gc_in_progress() -> bool {
+    GC_IN_PROGRESS.load(Ordering::Acquire)
+}
 
 /// Mutex + Condvar pair for parking evaluator threads while GC snapshot is in
 /// progress. The mutex protects against lost wakeups: `GcInProgressGuard::drop()`
@@ -3835,6 +3907,38 @@ impl SlabAllocator {
                 }
                 data
             };
+
+            // === Phase 2.5: Flush exec_counts for dead values ===
+            // Before freeing slots, collect non-zero exec_counts from dead values
+            // and merge them into the global TieredCache. This ensures execution
+            // data from short-lived hot expressions is not lost.
+            //
+            // Acquires COUNTER_FLUSH_LOCK to block any in-progress periodic sync
+            // from reading dead slot content concurrently.
+            {
+                use crate::backend::bytecode::tiered_cache::global_tiered_cache;
+                use crate::backend::models::metta_value_trait::MettaValueTrait as _;
+                use super::gc_cron::COUNTER_FLUSH_LOCK;
+
+                let _flush_guard = COUNTER_FLUSH_LOCK.lock();
+
+                let cache = global_tiered_cache();
+                for entry in &non_filtered_dead {
+                    let page = &pages[entry.page_idx];
+                    let count = page.exec_count_swap(entry.slot_idx, 0);
+                    if count > 0 {
+                        // SAFETY: slot content is still valid — not yet freed.
+                        let value = unsafe { MettaValue::from_inner_ptr(entry.ptr as *const MettaValueInner) };
+                        let state = cache.get_or_create_state(&value);
+                        state.execution_count.fetch_add(count, Ordering::Relaxed);
+                        cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
+                        let new_count = state.execution_count.load(Ordering::Relaxed);
+                        cache.maybe_trigger_bytecode(&value, &state, new_count);
+                        cache.maybe_trigger_jit1(&state, new_count);
+                        cache.maybe_trigger_jit2(&state, new_count);
+                    }
+                }
+            }
 
             // === Phase 3: Free value slots — O(D'), zero page lookups ===
             let trace = gc_trace_enabled();

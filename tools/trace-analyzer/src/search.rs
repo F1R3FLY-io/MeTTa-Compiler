@@ -61,6 +61,12 @@ fn kind_matches_pattern(kind: &TraceEventKind, pattern: &str) -> bool {
         TraceEventKind::ErrorCreated { message, .. } => message.contains(pattern),
         TraceEventKind::JitBailout { reason, .. } => reason.contains(pattern),
         TraceEventKind::BytecodeHalt { reason, .. } => reason.contains(pattern),
+        TraceEventKind::WorkPoolTaskEnqueued { task_kind, .. }
+        | TraceEventKind::WorkPoolTaskDropped { task_kind, .. }
+        | TraceEventKind::WorkPoolTaskCompleted { task_kind, .. } => task_kind.contains(pattern),
+        TraceEventKind::WorkPoolScaleEvent { action, .. } => action.contains(pattern),
+        TraceEventKind::WorkPoolWorkerParked { .. }
+        | TraceEventKind::WorkPoolWorkerResumed { .. } => false,
         _ => false,
     }
 }

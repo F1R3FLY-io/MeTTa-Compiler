@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use mettatron::backend::bytecode::{
     can_compile, can_compile_with_env, global_tiered_cache, ExecutionTier, TierStatusKind,
-    TieredCacheStats,
+    TieredCacheStats, BYTECODE_THRESHOLD,
 };
 use mettatron::{compile, eval, new_env, MettaValue};
 
@@ -167,19 +167,25 @@ fn test_path_a_tiered_cache_bytecode_progression() {
         "bare (+ 1 2) should pass can_compile_with_env"
     );
 
-    // Step 2: First eval — result is 3. Background compilation triggered async.
-    let (results, env) = eval(expr, env, &state);
-    assert_eq!(results.len(), 1, "Expected exactly one result");
-    assert_eq!(format!("{}", results[0]), "3", "Expected 3 from (+ 1 2)");
+    // Step 2: Eval BYTECODE_THRESHOLD times to cross the compilation threshold.
+    // Each eval increments the execution counter; the last one triggers background
+    // bytecode compilation asynchronously.
+    let mut env = env;
+    for _ in 0..BYTECODE_THRESHOLD {
+        let (results, new_env) = eval(expr, env, &state);
+        assert_eq!(results.len(), 1, "Expected exactly one result");
+        assert_eq!(format!("{}", results[0]), "3", "Expected 3 from (+ 1 2)");
+        env = new_env;
+    }
 
     // Step 3: Per-expression state should be tracked (record_execution always fires)
     let comp_state = global_tiered_cache()
         .get_state(&expr)
         .expect("expression should be tracked after first eval");
     assert!(
-        comp_state.count() >= 1,
-        "Expected execution count >= 1, got {}",
-        comp_state.count()
+        comp_state.count() >= BYTECODE_THRESHOLD,
+        "Expected execution count >= {}, got {}",
+        BYTECODE_THRESHOLD, comp_state.count()
     );
 
     // Step 4: Wait for background bytecode compilation to complete
@@ -227,18 +233,18 @@ fn test_path_a_tiered_cache_bytecode_progression() {
         .get_state(&expr)
         .expect("still tracked");
     assert!(
-        comp_state.count() >= 2,
-        "Expected execution count >= 2 after two evals, got {}",
-        comp_state.count()
+        comp_state.count() >= BYTECODE_THRESHOLD + 1,
+        "Expected execution count >= {} after extra eval, got {}",
+        BYTECODE_THRESHOLD + 1, comp_state.count()
     );
 
     // Step 9: Both evals used bytecode (first via B, second via A)
     let after = global_tiered_cache().stats();
     let deltas = stat_deltas(&before, &after);
     assert!(
-        deltas.bytecode_executions >= 2,
-        "Expected at least 2 bytecode executions (Path B + Path A), got {}",
-        deltas.bytecode_executions
+        deltas.bytecode_executions >= (BYTECODE_THRESHOLD + 1) as u64,
+        "Expected at least {} bytecode executions, got {}",
+        BYTECODE_THRESHOLD + 1, deltas.bytecode_executions
     );
 }
 
@@ -474,15 +480,23 @@ fn test_background_compilation_lifecycle() {
         "Expected 42 from (* 7 6)"
     );
 
-    // Step 3: Now tracked after record_execution
-    let comp_state = global_tiered_cache()
-        .get_state(&expr)
-        .expect("Expression should be tracked after first eval");
+    // Step 3: Pump record_execution() to cross BYTECODE_THRESHOLD (=5).
+    // The single eval above used per-slot atomic counters (flushed by cron every 200ms),
+    // so we use the direct record_execution() API to reliably cross the threshold.
+    let cache = global_tiered_cache();
+    for _ in 0..BYTECODE_THRESHOLD {
+        cache.record_execution(&expr);
+    }
 
-    // Step 4: Execution count >= 1
+    let comp_state = cache
+        .get_state(&expr)
+        .expect("Expression should be tracked after record_execution");
+
+    // Step 4: Execution count >= BYTECODE_THRESHOLD
     assert!(
-        comp_state.count() >= 1,
-        "Expected execution count >= 1, got {}",
+        comp_state.count() >= BYTECODE_THRESHOLD,
+        "Expected execution count >= {}, got {}",
+        BYTECODE_THRESHOLD,
         comp_state.count()
     );
 
@@ -490,7 +504,7 @@ fn test_background_compilation_lifecycle() {
     assert!(
         wait_for_bytecode_ready(&expr, Duration::from_secs(5)),
         "Bytecode compilation did not complete within 5s; status: {:?}",
-        global_tiered_cache()
+        cache
             .get_state(&expr)
             .map(|s| s.bytecode_status())
     );
@@ -516,10 +530,11 @@ fn test_background_compilation_lifecycle() {
     assert_eq!(
         best_tier,
         ExecutionTier::Bytecode,
-        "After 1 execution + compilation, best tier should be Bytecode"
+        "After {} executions + compilation, best tier should be Bytecode",
+        BYTECODE_THRESHOLD,
     );
 
-    // Step 9: JIT tiers should be NotStarted (only 1 execution, well below thresholds)
+    // Step 9: JIT tiers should be NotStarted (only a few executions, well below thresholds)
     assert_eq!(
         comp_state.jit1_status(),
         TierStatusKind::NotStarted,
@@ -566,11 +581,19 @@ fn test_superpose_nondeterminism_via_bytecode() {
         strs1
     );
 
+    // Pump record_execution() to cross BYTECODE_THRESHOLD (=5).
+    // The eval above used per-slot atomic counters (flushed asynchronously by cron),
+    // so we use the direct record_execution() API to reliably trigger compilation.
+    let cache = global_tiered_cache();
+    for _ in 0..BYTECODE_THRESHOLD {
+        cache.record_execution(&expr);
+    }
+
     // Wait for background bytecode compilation to complete
     assert!(
         wait_for_bytecode_ready(&expr, Duration::from_secs(5)),
         "Bytecode compilation did not complete within 5s; status: {:?}",
-        global_tiered_cache()
+        cache
             .get_state(&expr)
             .map(|s| s.bytecode_status())
     );
@@ -646,8 +669,8 @@ fn test_jit_stage1_tier_promotion() {
         "bare (+ 1 2) should pass can_compile"
     );
 
-    // Execute 150 times (well above JIT1_THRESHOLD=100) to trigger JIT1 compilation
-    for i in 0..150 {
+    // Execute 250 times (well above JIT1_THRESHOLD=200) to trigger JIT1 compilation
+    for i in 0..250 {
         let (results, new_env) = eval(expr, env, &state);
         assert_eq!(
             results.len(),
@@ -690,7 +713,7 @@ fn test_jit_stage1_tier_promotion() {
         let best_tier = global_tiered_cache().get_best_tier(&expr);
         assert!(
             best_tier >= ExecutionTier::JitStage1,
-            "After 150 executions, best tier should be >= JitStage1, got {:?}",
+            "After 250 executions, best tier should be >= JitStage1, got {:?}",
             best_tier
         );
 
@@ -713,7 +736,7 @@ fn test_jit_stage1_tier_promotion() {
             jit1_status == TierStatusKind::Compiling
                 || jit1_status == TierStatusKind::Failed
                 || jit1_status == TierStatusKind::Ready,
-            "After 150 executions, JIT1 should have been triggered; status: {:?}",
+            "After 250 executions, JIT1 should have been triggered; status: {:?}",
             jit1_status
         );
     }
@@ -741,8 +764,8 @@ fn test_jit_stage2_tier_promotion() {
         "bare (+ 3 4) should pass can_compile"
     );
 
-    // Execute 550 times (well above JIT2_THRESHOLD=500)
-    for i in 0..550 {
+    // Execute 2100 times (well above JIT2_THRESHOLD=2000)
+    for i in 0..2100 {
         let (results, new_env) = eval(expr, env, &state);
         assert_eq!(
             results.len(),
@@ -786,7 +809,7 @@ fn test_jit_stage2_tier_promotion() {
         assert_eq!(
             best_tier,
             ExecutionTier::JitStage2,
-            "After 550 executions, best tier should be JitStage2, got {:?}",
+            "After 2100 executions, best tier should be JitStage2, got {:?}",
             best_tier
         );
 
@@ -808,7 +831,7 @@ fn test_jit_stage2_tier_promotion() {
             jit2_status == TierStatusKind::Compiling
                 || jit2_status == TierStatusKind::Failed
                 || jit2_status == TierStatusKind::Ready,
-            "After 550 executions, JIT2 should have been triggered; status: {:?}",
+            "After 2100 executions, JIT2 should have been triggered; status: {:?}",
             jit2_status
         );
     }

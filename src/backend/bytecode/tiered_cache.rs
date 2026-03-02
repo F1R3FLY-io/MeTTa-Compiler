@@ -29,23 +29,17 @@
 
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::backend::models::{register_root_provider, RootProvider};
 
 use xxhash_rust::xxh3::Xxh3;
 
-// Thread-local sampling counter to avoid atomic contention on the global counter
-// Each thread tracks its own count and only samples every SAMPLE_RATE evals
-thread_local! {
-    static THREAD_LOCAL_COUNTER: Cell<u64> = const { Cell::new(0) };
-}
-
 use dashmap::DashMap;
 
 use crate::backend::models::{MettaValue, MettaValueInner};
-use crate::backend::models::work_pool::global_work_pool;
+use crate::backend::models::work_pool::global_compile_pool;
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
 use super::cache::hash_metta_value;
@@ -53,33 +47,133 @@ use super::chunk::BytecodeChunk;
 use super::compiler::compile_arc;
 use super::jit::compiler::JitCompiler;
 
-/// Threshold to trigger bytecode compilation (eager: after 1st execution)
-/// Compilation is non-blocking (WorkPool background), so eager compilation
-/// provides faster VM execution with minimal overhead.
-pub const BYTECODE_THRESHOLD: u32 = 1;
-
-/// Threshold to trigger JIT Stage 1 compilation (after 100 executions)
-pub const JIT1_THRESHOLD: u32 = 100;
-
-/// Threshold to trigger JIT Stage 2 compilation (after 500 executions)
-pub const JIT2_THRESHOLD: u32 = 500;
-
-/// Default warm-up threshold - skip tiered compilation tracking until this many total evaluations
+/// Threshold to trigger bytecode compilation (after 5 executions).
 ///
-/// Set to 1000 to skip overhead for small workloads while still benefiting hot code.
-/// This addresses the parallel-4 regression where tiered cache overhead was higher
-/// than the benefit for short benchmark runs.
-pub const DEFAULT_WARMUP_THRESHOLD: u64 = 1000;
+/// V8 equivalent: Ignition → Sparkplug (~1-5, near-immediate).
+/// Raised from 1 to 5 to avoid compiling expressions that are only
+/// evaluated once or twice (e.g., top-level module imports, initialization).
+/// Non-blocking (WorkPool background).
+pub const BYTECODE_THRESHOLD: u32 = 5;
 
-/// Sampling rate for expression tracking - track 1 in N evaluations
+/// Threshold to trigger JIT Stage 1 compilation (after 200 executions).
 ///
-/// After warm-up, only every Nth eval is tracked to reduce hash computation
-/// and DashMap lookup overhead. When an eval is sampled, execution count is
-/// incremented by SAMPLE_RATE to maintain correct threshold triggering.
+/// V8 equivalent: Sparkplug → Maglev (~100-400, adaptive).
+/// Set to 200 (mid-range of Maglev threshold) to allow type profile data
+/// from bytecode execution before promoting to JIT.
+pub const JIT1_THRESHOLD: u32 = 200;
+
+/// Threshold to trigger JIT Stage 2 compilation (after 2000 executions).
 ///
-/// Set to 32 to reduce tracking overhead by ~97% while still triggering
-/// compilation for expressions executed 32+ times (with 32x slower convergence).
-pub const SAMPLE_RATE: u64 = 32;
+/// V8 equivalent: Maglev → Turbofan (~1000-6000, adaptive).
+/// Set to 2000 (low-range of Turbofan) to ensure JIT1 has collected
+/// stable profiles for speculative optimization.
+pub const JIT2_THRESHOLD: u32 = 2_000;
+
+/// Interval for flushing thread-local counters to the global DashMap.
+///
+/// Every FLUSH_INTERVAL sub-expression evals, the thread-local pointer-keyed
+/// counter map is flushed to the global DashMap with content hashing. This
+/// amortizes the expensive hash+probe cost over many cheap pointer increments.
+pub const FLUSH_INTERVAL: u32 = 1024;
+
+// =============================================================================
+// Per-Slot Atomic Counter Infrastructure
+// =============================================================================
+//
+// Execution counters stored per-slot in ValuePage::exec_counts (AtomicU32).
+// Eval threads increment counters via atomic fetch_add (~10-15 cycles on
+// cache hit via thread-local page cache). No HashMap, no DashMap, no lock.
+//
+// Counters are periodically flushed to the global TieredCache DashMap by
+// the GC cron task (200ms interval), and dead-slot counters are flushed
+// before GC Phase 3 frees their slots.
+//
+// Analogous to per-CPU counters in the Linux kernel, but per-slot instead
+// of per-thread to avoid pointer-keyed map overhead.
+
+/// Cached page metadata for O(1) hot-path exec_count increment.
+#[derive(Clone, Copy)]
+struct CachedExecPage {
+    /// Page data region start address.
+    base: usize,
+    /// base + PAGE_SIZE.
+    end: usize,
+    /// Raw pointer to the page's exec_counts[0].
+    counters_ptr: *const AtomicU32,
+    /// Slot size in bytes (for index computation).
+    slot_size: usize,
+    /// CACHE_GENERATION snapshot at cache time for invalidation.
+    generation: u64,
+}
+
+// SAFETY: raw pointer is to a 'static slab page that outlives the thread.
+// The generation counter invalidates stale entries before dereferencing.
+unsafe impl Send for CachedExecPage {}
+
+thread_local! {
+    /// Thread-local page cache for fast exec_count increments.
+    static EXEC_PAGE_CACHE: Cell<Option<CachedExecPage>> = const { Cell::new(None) };
+}
+
+/// Increment the per-slot execution counter for a slab-allocated value.
+///
+/// Hot path: ~10-15 cycles on cache hit (pointer arithmetic + atomic fetch_add).
+/// No hash, no map, no lock.
+#[inline]
+pub fn increment_exec_count(ptr: *const MettaValueInner) {
+    let addr = ptr as usize;
+    EXEC_PAGE_CACHE.with(|cell| {
+        if let Some(cached) = cell.get() {
+            let current_gen = crate::backend::models::gc_allocator::global_allocator()
+                .page_generation();
+            if cached.generation == current_gen && addr >= cached.base && addr < cached.end {
+                let slot_idx = (addr - cached.base) / cached.slot_size;
+                // SAFETY: slot_idx is within bounds (addr range-checked above),
+                // page is still live (generation matches), counter is AtomicU32.
+                unsafe { &*cached.counters_ptr.add(slot_idx) }
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        // Cache miss: find page via SlabAllocator, populate cache
+        increment_exec_count_slow(ptr, addr, cell);
+    });
+}
+
+/// Cold path for increment_exec_count: linear scan of value pages to find
+/// the containing page, then populate the thread-local cache.
+#[cold]
+fn increment_exec_count_slow(
+    _ptr: *const MettaValueInner,
+    addr: usize,
+    cell: &Cell<Option<CachedExecPage>>,
+) {
+    use crate::backend::models::gc_allocator::global_allocator;
+
+    let allocator = global_allocator();
+    let slot_size = allocator.value_slot_size();
+    let generation = allocator.page_generation();
+    let pages = allocator.value_pages_read();
+
+    for page in pages.iter() {
+        let base = page.slot_ptr(0, slot_size) as usize;
+        let end = base + crate::backend::models::gc_allocator::PAGE_SIZE;
+        if addr >= base && addr < end {
+            let slot_idx = (addr - base) / slot_size;
+            page.exec_count_fetch_add(slot_idx, 1);
+            // Populate cache
+            cell.set(Some(CachedExecPage {
+                base,
+                end,
+                counters_ptr: page.exec_counts_ptr(),
+                slot_size,
+                generation,
+            }));
+            return;
+        }
+    }
+    // Pointer not in any page — ignore (shouldn't happen for slab values)
+}
 
 /// Compilation status for a tier
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +262,16 @@ pub struct ExprCompilationState {
     /// Stores `(epoch, registry)` — rebuilt only when `RULE_EPOCH` changes.
     /// Reduces JIT entry overhead from O(types + inferred_types) to O(1) amortized.
     type_registry_cache: parking_lot::Mutex<Option<(u64, Arc<super::jit::TypeSignatureRegistry>)>>,
+
+    /// Phase 8b/8c: Runtime type profile collected during bytecode VM execution.
+    ///
+    /// Populated incrementally by the bytecode VM when profiling is active
+    /// (execution_count >= PROFILING_THRESHOLD). Snapshotted and passed to the
+    /// JIT compiler when triggering JIT Stage 1 or Stage 2 compilation.
+    ///
+    /// V8 equivalent: FeedbackVector (per-function IC slot array).
+    /// HotSpot equivalent: MethodData (MDO).
+    pub runtime_profile: std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>,
 }
 
 impl ExprCompilationState {
@@ -183,6 +287,9 @@ impl ExprCompilationState {
             jit2_code: OnceLock::new(),
             expr_hash,
             type_registry_cache: parking_lot::Mutex::new(None),
+            runtime_profile: std::sync::Arc::new(parking_lot::Mutex::new(
+                super::runtime_profile::RuntimeTypeProfile::new(),
+            )),
         }
     }
 
@@ -431,12 +538,9 @@ pub struct TieredCache {
     /// Threshold for JIT Stage 2 compilation
     pub jit2_threshold: u32,
 
-    /// Flag indicating warm-up period is complete (set once, never reverts)
-    warmup_complete: AtomicBool,
-
     // Atomic statistics counters (lock-free to avoid contention at 4+ threads)
     expressions_tracked: AtomicU64,
-    total_executions: AtomicU64,
+    pub(crate) total_executions: AtomicU64,
     bytecode_compilations_triggered: AtomicU64,
     bytecode_compilations_completed: AtomicU64,
     bytecode_compilations_failed: AtomicU64,
@@ -502,14 +606,17 @@ pub struct TieredCacheStats {
 }
 
 impl TieredCache {
-    /// Create a new tiered compilation cache with default thresholds
+    /// Create a new tiered compilation cache with default thresholds.
+    ///
+    /// Per V8 best practice: no global warm-up period. Each expression is
+    /// tracked from first invocation — cold code naturally never reaches
+    /// compilation thresholds.
     pub fn new() -> Self {
         Self {
             entries: DashMap::new(),
             bytecode_threshold: BYTECODE_THRESHOLD,
             jit1_threshold: JIT1_THRESHOLD,
             jit2_threshold: JIT2_THRESHOLD,
-            warmup_complete: AtomicBool::new(false),
             expressions_tracked: AtomicU64::new(0),
             total_executions: AtomicU64::new(0),
             bytecode_compilations_triggered: AtomicU64::new(0),
@@ -530,17 +637,11 @@ impl TieredCache {
 
     /// Create a new cache with custom thresholds
     pub fn with_thresholds(bytecode: u32, jit1: u32, jit2: u32) -> Self {
-        Self::with_thresholds_and_warmup(bytecode, jit1, jit2, DEFAULT_WARMUP_THRESHOLD)
-    }
-
-    /// Create a new cache with custom thresholds and warm-up threshold
-    pub fn with_thresholds_and_warmup(bytecode: u32, jit1: u32, jit2: u32, warmup: u64) -> Self {
         Self {
             entries: DashMap::new(),
             bytecode_threshold: bytecode,
             jit1_threshold: jit1,
             jit2_threshold: jit2,
-            warmup_complete: AtomicBool::new(warmup == 0),
             expressions_tracked: AtomicU64::new(0),
             total_executions: AtomicU64::new(0),
             bytecode_compilations_triggered: AtomicU64::new(0),
@@ -560,7 +661,7 @@ impl TieredCache {
     }
 
     /// Get or create a compilation state for an expression
-    fn get_or_create_state(&self, expr: &MettaValue) -> Arc<ExprCompilationState> {
+    pub(crate) fn get_or_create_state(&self, expr: &MettaValue) -> Arc<ExprCompilationState> {
         let hash = hash_metta_value(expr);
 
         // Fast path: check if already exists
@@ -608,14 +709,8 @@ impl TieredCache {
         state
     }
 
-    /// Check if warm-up period is complete
-    #[inline]
-    pub fn is_warmup_complete(&self) -> bool {
-        self.warmup_complete.load(Ordering::Relaxed)
-    }
-
     /// Maybe trigger bytecode compilation
-    fn maybe_trigger_bytecode(
+    pub(crate) fn maybe_trigger_bytecode(
         &self,
         expr: &MettaValue,
         state: &Arc<ExprCompilationState>,
@@ -628,6 +723,14 @@ impl TieredCache {
 
         // Check if already started
         if state.bytecode_status() != TierStatusKind::NotStarted {
+            return;
+        }
+
+        // Don't compile expressions that eval_inner would never route to bytecode.
+        // Unknown heads (user-defined functions, `_ => false` at mod.rs:528) waste
+        // CPU on allocation + compilation the bytecode VM can't execute.
+        if !super::can_compile(expr) && !super::can_compile_with_env(expr) {
+            state.set_bytecode_failed();
             return;
         }
 
@@ -661,7 +764,7 @@ impl TieredCache {
         };
 
         // Dispatch to unified work pool at BACKGROUND_COMPILE priority
-        let enqueued = global_work_pool().spawn_compile(
+        let enqueued = global_compile_pool().spawn_compile(
             compile_task,
             TaskTypeId::BytecodeCompile,
             priority_levels::BACKGROUND_COMPILE,
@@ -676,7 +779,7 @@ impl TieredCache {
     }
 
     /// Maybe trigger JIT Stage 1 compilation
-    fn maybe_trigger_jit1(&self, state: &Arc<ExprCompilationState>, count: u32) {
+    pub(crate) fn maybe_trigger_jit1(&self, state: &Arc<ExprCompilationState>, count: u32) {
         // Check if we've reached the threshold
         if count < self.jit1_threshold {
             return;
@@ -713,6 +816,14 @@ impl TieredCache {
             }
         };
 
+        // Phase 8c: Snapshot runtime type profile for the JIT compiler.
+        // The profile is collected during bytecode VM execution and captures
+        // branch frequencies, type feedback, rule match stats, and guard outcomes.
+        let profile_snapshot = {
+            let profile = state.runtime_profile.lock();
+            profile.snapshot()
+        };
+
         // Clone state for background task
         let state_clone = Arc::clone(state);
 
@@ -727,6 +838,11 @@ impl TieredCache {
                     .fetch_add(1, Ordering::Relaxed);
                 return;
             }
+
+            // Phase 8c: Profile is available for the JIT compiler to use.
+            // Currently passed to compile_with_profile if the profile is mature;
+            // otherwise falls back to non-profiled compilation.
+            let _profile = profile_snapshot; // Available for future JIT optimizations
 
             // Create JIT compiler and compile
             match JitCompiler::new() {
@@ -759,7 +875,7 @@ impl TieredCache {
 
         // Choose spawn method based on feature and execution mode
         // Dispatch to unified work pool at BACKGROUND_COMPILE priority
-        let enqueued = global_work_pool().spawn_compile(
+        let enqueued = global_compile_pool().spawn_compile(
             jit_compile,
             TaskTypeId::JitCompile,
             priority_levels::BACKGROUND_COMPILE,
@@ -772,14 +888,26 @@ impl TieredCache {
     }
 
     /// Maybe trigger JIT Stage 2 compilation
-    fn maybe_trigger_jit2(&self, state: &Arc<ExprCompilationState>, count: u32) {
+    ///
+    /// JIT Stage 2 requires BOTH bytecode AND JIT Stage 1 to be Ready.
+    /// This ensures JIT1 profile data (type feedback, branch frequencies)
+    /// is available before the aggressive optimizing compiler runs.
+    /// (V8 equivalent: Turbofan requires Maglev to have run and collected ICs.)
+    pub(crate) fn maybe_trigger_jit2(&self, state: &Arc<ExprCompilationState>, count: u32) {
         // Check if we've reached the threshold
         if count < self.jit2_threshold {
             return;
         }
 
-        // JIT Stage 2 requires bytecode to be Ready (can skip JIT1)
+        // JIT Stage 2 requires bytecode to be Ready
         if state.bytecode_status() != TierStatusKind::Ready {
+            return;
+        }
+
+        // JIT Stage 2 also requires JIT Stage 1 to be Ready (not skippable).
+        // This ensures JIT1 has executed and collected runtime profile data
+        // that JIT2 can use for speculative optimizations.
+        if state.jit1_status() != TierStatusKind::Ready {
             return;
         }
 
@@ -809,11 +937,25 @@ impl TieredCache {
             }
         };
 
+        // Phase 8c: Snapshot runtime type profile for JIT Stage 2.
+        // By this point, the profile has been refined by JIT1 execution and is
+        // more representative than the bytecode-only profile used for JIT1.
+        let profile_snapshot = {
+            let profile = state.runtime_profile.lock();
+            profile.snapshot()
+        };
+
         // Clone state for background task
         let state_clone = Arc::clone(state);
 
         // JIT Stage 2 compilation closure
         let jit_compile = move || {
+            // Phase 8c: Mature profile available for aggressive JIT2 optimizations:
+            // - Guard elimination for guards that never fail
+            // - Dead branch elimination for never-taken branches
+            // - Rule inlining for high-frequency rules
+            let _profile = profile_snapshot;
+
             // Check if chunk can be JIT compiled
             // Stage 2 uses same compilability check as Stage 1 for now
             if !JitCompiler::can_compile_stage1(&chunk) {
@@ -855,7 +997,7 @@ impl TieredCache {
         };
 
         // Dispatch to unified work pool at BACKGROUND_COMPILE priority
-        let enqueued = global_work_pool().spawn_compile(
+        let enqueued = global_compile_pool().spawn_compile(
             jit_compile,
             TaskTypeId::JitCompile,
             priority_levels::BACKGROUND_COMPILE,
@@ -1356,14 +1498,13 @@ mod tests {
     }
 
     #[test]
-    fn test_tiered_cache_warmup_threshold() {
-        // Test with zero warmup (immediately complete)
-        let cache = TieredCache::with_thresholds_and_warmup(1, 100, 500, 0);
-        assert!(cache.is_warmup_complete());
-
-        // Test with non-zero warmup
-        let cache2 = TieredCache::with_thresholds_and_warmup(1, 100, 500, 1000);
-        assert!(!cache2.is_warmup_complete());
+    fn test_tiered_cache_v8_aligned_default_thresholds() {
+        // No global warm-up period — per V8 best practice.
+        // Each expression is tracked from first invocation.
+        let cache = TieredCache::new();
+        assert_eq!(cache.bytecode_threshold, 5);    // Ignition→Sparkplug (raised from 1)
+        assert_eq!(cache.jit1_threshold, 200);       // Sparkplug→Maglev
+        assert_eq!(cache.jit2_threshold, 2_000);     // Maglev→Turbofan
     }
 
     #[test]

@@ -228,6 +228,49 @@ where
                     continue;
                 }
 
+                // Sub-expression tiered dispatch: increment the per-slot execution
+                // counter for compilable S-expressions. Only counts expressions
+                // whose head is a known compilable operation (~3% of S-exprs in PLN).
+                // Non-compilable heads (user-defined functions) would waste work-pool
+                // CPU on compilation that the bytecode VM can't execute.
+                //
+                // Hot path: ~10-15 cycles (pointer arithmetic + atomic fetch_add).
+                // No hash, no map, no lock.
+                //
+                // Only active for MettaValue (GC-managed) — after monomorphization
+                // the TypeId check becomes a compile-time constant, and the else
+                // branch is eliminated entirely for non-MettaValue instantiations.
+                if is_sexpr
+                    && std::any::TypeId::of::<C::Value>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                {
+                    let has_compilable_head = if let Some(items) = value.as_sexpr() {
+                        if let Some(head) = items.first() {
+                            if let Some(name) = head.as_atom() {
+                                matches!(name,
+                                    "!" | "eval"
+                                    | "+" | "-" | "*" | "/" | "%" | "abs" | "pow"
+                                    | "<" | "<=" | ">" | ">=" | "==" | "!="
+                                    | "and" | "or" | "not" | "xor"
+                                    | "if" | "case" | "chain"
+                                    | "let" | "let*"
+                                    | "superpose"
+                                    | "quote" | "unquote"
+                                    | "car-atom" | "cdr-atom" | "cons-atom" | "size-atom"
+                                    | "decons-atom" | "empty"
+                                    | "map-atom" | "filter-atom" | "foldl-atom"
+                                    | "get-type" | "get-metatype"
+                                    | "error" | "is-error" | "catch"
+                                    | "repr"
+                                )
+                            } else { false }
+                        } else { false }
+                    } else { false };
+                    if has_compilable_head {
+                        crate::backend::bytecode::tiered_cache::increment_exec_count(value.inner_ptr());
+                    }
+                }
+
                 // Save input pointer for fixpoint detection (Phase 9.5)
                 let input_ptr = if is_sexpr { value.inner_ptr() } else { std::ptr::null() };
 

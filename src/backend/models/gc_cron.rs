@@ -13,13 +13,15 @@
 //! committed bytes exceed `gc_threshold`.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
 use std::time::{Duration, Instant};
 
 use super::adaptive_pool::{Ema, HillClimber, ScaleAction};
 use super::gc_allocator::{gc_values_freed_total, request_gc};
 use super::gc_pool::global_gc_pool;
 use super::task_scheduler::TaskSchedulerSingleton;
+use super::work_pool::WorkPool;
 
 // Re-export generic types that external code depends on
 pub use super::task_scheduler::{
@@ -35,10 +37,48 @@ pub use super::task_scheduler::{
 /// Memory monitor poll interval (100ms).
 const MONITOR_INTERVAL_MS: u64 = 100;
 
+/// Interval for periodic counter synchronization (200ms).
+///
+/// Flushes per-slot `exec_counts` from ValuePages to the global TieredCache
+/// DashMap, enabling tier transitions (bytecode/JIT compilation) for live
+/// expressions regardless of GC cadence.
+const COUNTER_SYNC_INTERVAL_MS: u64 = 200;
+
 /// Allocation rate threshold (allocs/s) to set gc_requested.
 /// When exceeded, the cron sets the flag so the trampoline's `maybe_gc()`
 /// triggers a GC cycle at the next check.
 const ALLOC_RATE_THRESHOLD: u64 = 100_000;
+
+// --- GC Pool Hill Climbing Constants ---
+
+// --- Cron Worker Pool Constants ---
+
+/// Minimum number of cron worker threads.
+const CRON_MIN_WORKERS: usize = 1;
+
+/// Maximum number of cron worker threads.
+const CRON_MAX_WORKERS: usize = 8;
+
+/// Number of cron workers that start active (unparked).
+const CRON_INITIAL_ACTIVE: usize = 2;
+
+/// Global cron worker pool singleton.
+static CRON_WORK_POOL: OnceLock<Arc<WorkPool>> = OnceLock::new();
+
+/// Get or initialize the global cron worker pool.
+///
+/// The pool has `CRON_MIN_WORKERS`..`CRON_MAX_WORKERS` threads with
+/// `CRON_INITIAL_ACTIVE` starting unparked. Used exclusively by the GC
+/// cron scheduler for off-thread task execution.
+pub fn cron_work_pool() -> Arc<WorkPool> {
+    Arc::clone(CRON_WORK_POOL.get_or_init(|| {
+        Arc::new(WorkPool::with_threads_initial(
+            CRON_MIN_WORKERS,
+            CRON_MAX_WORKERS,
+            CRON_INITIAL_ACTIVE,
+        ))
+    }))
+}
 
 // --- GC Pool Hill Climbing Constants ---
 
@@ -137,13 +177,16 @@ pub fn spawn_gc_cron(
     gc_threshold: Arc<AtomicUsize>,
 ) -> GcCronSingleton {
     use std::sync::atomic::AtomicBool;
-    use super::task_scheduler::spawn_cron_with_interval_and_name;
+    use super::task_scheduler::spawn_cron_with_pool;
+
+    let cron_pool = cron_work_pool();
 
     let terminating = Arc::new(AtomicBool::new(false));
-    let (handle, thread_handle, ready_rx) = spawn_cron_with_interval_and_name(
+    let (handle, thread_handle, ready_rx) = spawn_cron_with_pool(
         Arc::clone(&terminating),
         CronStateMachine::DEFAULT_POLL_INTERVAL_MS,
         "mettatron-gc-cron",
+        Arc::clone(&cron_pool),
     );
 
     // Wait for the event loop to start before scheduling tasks.
@@ -170,7 +213,22 @@ pub fn spawn_gc_cron(
         true // always reschedule
     });
 
-    TaskSchedulerSingleton::new(handle, thread_handle)
+    // Schedule counter sync (recurring, 200ms)
+    //
+    // Flushes per-slot exec_counts from ValuePages to the global TieredCache.
+    // Ensures long-lived hot expressions are promoted to bytecode/JIT promptly
+    // regardless of GC cadence.
+    handle.schedule_recurring(
+        COUNTER_SYNC_INTERVAL_MS,
+        COUNTER_SYNC_INTERVAL_MS,
+        "counter-sync",
+        move || {
+            execute_counter_sync();
+            true // always reschedule
+        },
+    );
+
+    TaskSchedulerSingleton::with_pool(handle, thread_handle, cron_pool)
 }
 
 // ============================================================================
@@ -294,6 +352,88 @@ fn execute_memory_monitor(
     }
 }
 
+
+// ============================================================================
+// Counter Sync Infrastructure
+// ============================================================================
+
+/// Serializes periodic counter-sync and GC-triggered dead-slot flush.
+///
+/// With the cron worker pool, both tasks can execute concurrently on different
+/// pool workers. This lock prevents double-counting and use-after-free.
+///
+/// Contention is near-zero: the periodic flush skips when GC is in progress,
+/// so the lock only contends in the narrow window (~ns) where GC starts
+/// between the periodic flush's `is_gc_in_progress()` check and lock acquisition.
+pub(crate) static COUNTER_FLUSH_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Periodic counter sync: iterate all live slots, flush non-zero exec_counts
+/// to the global TieredCache. Runs on a cron worker pool thread (~1-5ms per sweep).
+///
+/// Skips the cycle if GC is in progress (`GC_IN_PROGRESS` flag set) to avoid
+/// reading slot content that GC Phase 3 may be concurrently freeing/poisoning.
+/// Unflushed counts will be picked up next cycle (200ms) or by the GC-triggered
+/// flush for dead values.
+///
+/// Acquires `COUNTER_FLUSH_LOCK` to serialize with the GC-triggered flush
+/// (both can be dispatched to different worker pool threads concurrently).
+fn execute_counter_sync() {
+    use crate::backend::bytecode::tiered_cache::global_tiered_cache;
+    use crate::backend::models::gc_allocator::{global_allocator, is_gc_in_progress};
+    use crate::backend::models::{MettaValue, MettaValueTrait, MettaValueInner};
+
+    // Skip if GC is in progress — process_gc_response Phase 3 may be
+    // freeing slots concurrently. The GC-triggered flush handles
+    // dead values, and live values will be flushed next periodic cycle.
+    if is_gc_in_progress() {
+        return;
+    }
+
+    // Serialize with GC-triggered flush (may be running on another pool worker).
+    let _flush_guard = COUNTER_FLUSH_LOCK.lock();
+
+    // Re-check after acquiring lock — GC may have started while we waited.
+    if is_gc_in_progress() {
+        return;
+    }
+
+    let allocator = global_allocator();
+    let slot_size = allocator.value_slot_size();
+    let cache = global_tiered_cache();
+
+    // Read lock on pages — same weight as GC snapshot, no starvation concern.
+    let pages = allocator.value_pages_read();
+    for page in pages.iter() {
+        let bump_count = page.bump_count();
+        for slot_idx in 0..bump_count {
+            // Skip freed slots (epoch sentinel)
+            let epoch = page.slot_epoch(slot_idx);
+            if epoch == u64::MAX {
+                continue;
+            }
+            let count = page.exec_count(slot_idx);
+            if count == 0 {
+                continue;
+            }
+            // SAFETY: slot is still live — COUNTER_FLUSH_LOCK prevents
+            // concurrent GC Phase 3 freeing, and epoch != u64::MAX confirms
+            // the slot hasn't been freed.
+            let ptr = page.slot_ptr(slot_idx, slot_size) as *const MettaValueInner;
+            let value = unsafe { MettaValue::from_inner_ptr(ptr) };
+            let state = cache.get_or_create_state(&value);
+            state.execution_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+            cache.total_executions.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+            // Deduct what was flushed — any increments between our load and
+            // this fetch_sub are preserved (flushed next cycle)
+            page.exec_count_fetch_sub(slot_idx, count);
+            // Check tier transitions
+            let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
+            cache.maybe_trigger_bytecode(&value, &state, new_count);
+            cache.maybe_trigger_jit1(&state, new_count);
+            cache.maybe_trigger_jit2(&state, new_count);
+        }
+    }
+}
 
 // ============================================================================
 // Tests
@@ -484,5 +624,66 @@ mod tests {
             "should NOT request GC when committed bytes below threshold"
         );
         pool.shutdown();
+    }
+
+    /// Test that the cron pool singleton initializes with expected parameters.
+    #[test]
+    fn test_cron_work_pool_singleton() {
+        let pool = cron_work_pool();
+        assert_eq!(pool.min_threads(), CRON_MIN_WORKERS);
+        assert_eq!(pool.max_threads(), CRON_MAX_WORKERS);
+        assert_eq!(pool.initial_active(), CRON_INITIAL_ACTIVE);
+
+        // Second call returns the same Arc (idempotent)
+        let pool2 = cron_work_pool();
+        assert!(Arc::ptr_eq(&pool, &pool2));
+    }
+
+    /// Test that the GC cron memory monitor runs on pool threads, not the
+    /// cron scheduler thread.
+    #[test]
+    fn test_gc_cron_memory_monitor_runs_on_pool() {
+        let committed = Arc::new(AtomicUsize::new(0));
+        let alloc_count = Arc::new(AtomicU64::new(0));
+        let gc_threshold = Arc::new(AtomicUsize::new(1024 * 1024 * 1024)); // 1 GB
+
+        let singleton = spawn_gc_cron(
+            Arc::clone(&committed),
+            Arc::clone(&alloc_count),
+            Arc::clone(&gc_threshold),
+        );
+
+        // Schedule a one-shot task that records its thread name
+        let thread_name = Arc::new(parking_lot::Mutex::new(String::new()));
+        let tn = Arc::clone(&thread_name);
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let d = Arc::clone(&done);
+
+        singleton.handle.schedule_once(0, "thread-name-probe", move || {
+            *tn.lock() = std::thread::current()
+                .name()
+                .unwrap_or("unknown")
+                .to_string();
+            d.store(true, Ordering::Release);
+            true
+        });
+
+        // Wait for probe task to execute
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !done.load(Ordering::Acquire) {
+            if Instant::now() > deadline {
+                panic!("Timeout waiting for cron pool probe task");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let name = thread_name.lock().clone();
+        assert!(
+            name.starts_with("work-pool-"),
+            "Expected task on work-pool-* thread, got '{}'",
+            name
+        );
+
+        singleton.shutdown();
     }
 }

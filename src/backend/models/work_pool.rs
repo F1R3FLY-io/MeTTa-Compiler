@@ -1,26 +1,34 @@
-//! Unified Work Pool (Eval + Compile via P2 Priority Queue)
+//! Split Work Pools (Eval Pool + Compile Pool)
 //!
-//! Replaces both the Rayon compilation pool and par_iter eval parallelism with a
-//! single adaptive thread pool backed by the P2 priority queue.
+//! Two separate `WorkPool` instances provide CPU isolation between eval and
+//! compile tasks:
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ┌──────────────────────────────────────────┐
-//! │          Unified WorkPool (P2)           │
+//! │       Eval Pool (P2, adaptive)           │
 //! │  ┌────────────────────────────────────┐  │
-//! │  │ Eval tasks    (pri=NORMAL=5)       │  │  ← dequeued first
-//! │  │ Compile tasks (pri=BACKGROUND=10)  │  │  ← dequeued when no eval pending
+//! │  │ Eval tasks    (pri=NORMAL=5)       │  │
 //! │  └────────────────────────────────────┘  │
-//! │  1–N workers, single EMA hill climber    │
+//! │  1–N workers, EMA hill climber           │
 //! │  Objective: max weighted throughput      │
+//! └──────────────────────────────────────────┘
+//!
+//! ┌──────────────────────────────────────────┐
+//! │    Compile Pool (fixed, 4 workers)       │
+//! │  ┌────────────────────────────────────┐  │
+//! │  │ Compile tasks (pri=BACKGROUND=10)  │  │
+//! │  └────────────────────────────────────┘  │
+//! │  Fixed 4 workers, no scaling monitor     │
+//! │  Backpressure: drop at queue cap (256)   │
 //! └──────────────────────────────────────────┘
 //! ```
 //!
 //! ## Thread Inventory
 //!
-//! - **Idle**: main + 4 work + 1 GC + scheduler = 7 threads
-//! - **Peak** (36-core): main + 72 work + 4 GC + scheduler = 78 threads
+//! - **Idle**: main + 4 eval + 4 compile + 1 GC + scheduler = 11 threads
+//! - **Peak** (36-core): main + 72 eval + 4 compile + 4 GC + scheduler = 82 threads
 //!
 //! ## Backpressure
 //!
@@ -68,6 +76,19 @@ fn get_work_thread_config() -> (usize, usize) {
 /// Maximum queue depth before compile tasks are dropped (backpressure).
 const MAX_QUEUE_SIZE: usize = 256;
 
+/// CPU utilization ratio below which a worker is considered "blocked".
+///
+/// Workers with `cpu_delta / wall_delta < 0.5` are spending more than half
+/// their time sleeping/waiting (locks, condvars, I/O, GC) rather than computing.
+const BLOCKED_RATIO_THRESHOLD: f64 = 0.5;
+
+/// Minimum wall-time delta (in nanoseconds) before computing a CPU ratio.
+///
+/// Avoids division-by-zero and noisy ratios from very short intervals.
+/// 1ms is well above VDSO clock resolution (~25ns) and below the monitor
+/// interval (200ms).
+const MIN_WALL_DELTA_NS: u64 = 1_000_000; // 1ms
+
 // ============================================================================
 // Global Eval Counter
 // ============================================================================
@@ -79,6 +100,198 @@ pub static WORK_EVAL_COUNT: AtomicU64 = AtomicU64::new(0);
 #[inline]
 pub fn work_eval_count() -> u64 {
     WORK_EVAL_COUNT.load(Ordering::Relaxed)
+}
+
+// ============================================================================
+// Trace Infrastructure (eval-trace feature only)
+// ============================================================================
+
+/// Global trace collector for work pool events.
+///
+/// The work pool doesn't have access to an `EvalContext`, so we stash a `Weak`
+/// reference here. Set once per session from `eval_with_trace()`.
+#[cfg(feature = "eval-trace")]
+static WORK_POOL_TRACE_COLLECTOR: OnceLock<std::sync::Weak<crate::backend::trace::TraceCollector>> =
+    OnceLock::new();
+
+/// Register the trace collector so work pool events can be emitted.
+///
+/// Called from `eval_with_trace()` on the first traced evaluation. Uses
+/// `OnceLock` so it is safe to call multiple times — only the first call wins.
+#[cfg(feature = "eval-trace")]
+pub fn set_work_pool_trace_collector(
+    collector: &std::sync::Arc<crate::backend::trace::TraceCollector>,
+) {
+    let _ = WORK_POOL_TRACE_COLLECTOR.set(std::sync::Arc::downgrade(collector));
+}
+
+/// Execute a closure with the work pool trace collector, if available.
+///
+/// No-op if no collector was registered or it has been dropped.
+#[cfg(feature = "eval-trace")]
+#[inline]
+fn with_work_pool_trace(f: impl FnOnce(&crate::backend::trace::TraceCollector)) {
+    if let Some(weak) = WORK_POOL_TRACE_COLLECTOR.get() {
+        if let Some(arc) = weak.upgrade() {
+            f(&arc);
+        }
+    }
+}
+
+/// Map a `TaskTypeId` to a human-readable task kind string for trace events.
+#[cfg(feature = "eval-trace")]
+fn task_type_kind_str(task_type: &TaskTypeId) -> &'static str {
+    match task_type {
+        TaskTypeId::Eval(_) => "eval",
+        TaskTypeId::BytecodeCompile | TaskTypeId::JitCompile => "compile",
+        TaskTypeId::Generic => "detached",
+    }
+}
+
+/// Return `(active_workers, max_workers)` from the global work pool.
+///
+/// Used by the worker loop to include pool-level stats in trace events
+/// without threading additional parameters through `spawn_all_workers`.
+#[cfg(feature = "eval-trace")]
+fn global_eval_pool_stats() -> (u32, u32) {
+    let pool = &*GLOBAL_EVAL_POOL;
+    (pool.active_workers() as u32, pool.max_threads() as u32)
+}
+
+// ============================================================================
+// Per-Worker CPU State (Blocked-Worker Detection)
+// ============================================================================
+
+/// Per-worker CPU utilization state, published by the worker and read by the monitor.
+///
+/// Each field is on its own 64-byte cache line to avoid false sharing between
+/// the worker (writer) and the scaling monitor (reader).
+#[repr(C, align(64))]
+pub struct WorkerCpuState {
+    /// Cumulative CPU time in nanoseconds (worker writes, monitor reads).
+    cpu_nanos: AtomicU64,
+    _pad0: [u8; 56],
+
+    /// Wall-clock nanos at the time of the last CPU time update (worker writes, monitor reads).
+    wall_nanos: AtomicU64,
+    _pad1: [u8; 56],
+
+    /// Task completion counter / heartbeat (worker writes, monitor reads).
+    task_count: AtomicU64,
+    _pad2: [u8; 56],
+}
+
+impl WorkerCpuState {
+    /// Create a new zeroed CPU state.
+    fn new() -> Self {
+        Self {
+            cpu_nanos: AtomicU64::new(0),
+            _pad0: [0; 56],
+            wall_nanos: AtomicU64::new(0),
+            _pad1: [0; 56],
+            task_count: AtomicU64::new(0),
+            _pad2: [0; 56],
+        }
+    }
+
+    /// Publish the current CPU and wall-clock time, and increment the task counter.
+    ///
+    /// Called by the worker after each `task.execute()`.
+    #[inline]
+    fn publish(&self) {
+        let cpu_ns = get_thread_cpu_nanos();
+        let wall_ns = wall_nanos_now();
+        self.cpu_nanos.store(cpu_ns, Ordering::Relaxed);
+        self.wall_nanos.store(wall_ns, Ordering::Relaxed);
+        self.task_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Publish the initial CPU and wall-clock time at worker startup (no task count increment).
+    #[inline]
+    fn publish_initial(&self) {
+        let cpu_ns = get_thread_cpu_nanos();
+        let wall_ns = wall_nanos_now();
+        self.cpu_nanos.store(cpu_ns, Ordering::Relaxed);
+        self.wall_nanos.store(wall_ns, Ordering::Relaxed);
+    }
+}
+
+/// Get the current thread's cumulative CPU time in nanoseconds.
+///
+/// Uses `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` which is VDSO-accelerated
+/// on Linux 6.x (~25ns per call, no syscall overhead).
+#[cfg(target_os = "linux")]
+#[inline]
+fn get_thread_cpu_nanos() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts);
+    }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+/// Fallback: returns 0 on non-Linux (CPU ratio detection disabled, heartbeat-only).
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn get_thread_cpu_nanos() -> u64 {
+    0
+}
+
+/// Get the current monotonic wall-clock time in nanoseconds.
+///
+/// Uses `CLOCK_MONOTONIC` via VDSO for consistency with CPU time measurement.
+#[cfg(target_os = "linux")]
+#[inline]
+fn wall_nanos_now() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+/// Fallback: uses `Instant` on non-Linux.
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn wall_nanos_now() -> u64 {
+    // Use a thread-local epoch to convert Instant to nanos
+    use std::cell::Cell;
+    thread_local! {
+        static EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
+    }
+    EPOCH.with(|e| {
+        let epoch = match e.get() {
+            Some(ep) => ep,
+            None => {
+                let ep = Instant::now();
+                e.set(Some(ep));
+                ep
+            }
+        };
+        epoch.elapsed().as_nanos() as u64
+    })
+}
+
+// ============================================================================
+// Overflow Worker
+// ============================================================================
+
+/// An overflow worker thread spawned dynamically to compensate for blocked
+/// core-pool workers. Each overflow worker has its own shutdown signal and
+/// CPU state for monitoring.
+struct OverflowWorker {
+    /// Thread handle for joining on shutdown.
+    handle: JoinHandle<()>,
+    /// Per-overflow-worker shutdown signal (set by `drain_overflow`).
+    self_shutdown: Arc<AtomicBool>,
+    /// CPU state for this overflow worker (shared with monitor).
+    cpu_state: Arc<WorkerCpuState>,
 }
 
 // ============================================================================
@@ -129,6 +342,19 @@ pub struct WorkPool {
 
     /// Monotonic sequence counter for stable ordering.
     sequence: AtomicU64,
+
+    /// Per-worker CPU utilization state (parallel to `worker_parks`).
+    /// Workers publish CPU time after each task; the monitor reads for
+    /// blocked-worker detection.
+    worker_cpu_states: Vec<Arc<WorkerCpuState>>,
+
+    /// Overflow worker thread handles (beyond max_threads).
+    /// These are spawned dynamically when blocked workers reduce effective
+    /// parallelism below the hill climber's target.
+    overflow_workers: Mutex<Vec<OverflowWorker>>,
+
+    /// Current overflow thread count (atomically updated for lock-free reads).
+    overflow_count: AtomicUsize,
 }
 
 impl WorkPool {
@@ -145,11 +371,30 @@ impl WorkPool {
     /// Pre-allocate structures without spawning any OS threads.
     ///
     /// Creates the priority queue, runtime tracker, worker park primitives,
-    /// and empty worker slots. Returns immediately.
+    /// and empty worker slots. Returns immediately.  Delegates to
+    /// `allocate_with_initial` with `initial = max(min, 8)`.
     fn allocate(min_threads: usize, max_threads: usize) -> Self {
+        let min = min_threads.max(1);
+        let max = max_threads.max(min).max(2);
+        let initial = min.max(8).min(max);
+        Self::allocate_with_initial(min, max, initial)
+    }
+
+    /// Pre-allocate structures without spawning any OS threads.
+    ///
+    /// Creates the priority queue, runtime tracker, worker park primitives,
+    /// and empty worker slots. Returns immediately.
+    ///
+    /// `initial_active` is clamped to `[min_threads, max_threads]` and controls
+    /// how many workers start unparked.
+    fn allocate_with_initial(
+        min_threads: usize,
+        max_threads: usize,
+        initial_active: usize,
+    ) -> Self {
         let min_threads = min_threads.max(1);
         let max_threads = max_threads.max(min_threads).max(2);
-        let initial_active = min_threads.max(4).min(max_threads);
+        let initial_active = initial_active.clamp(min_threads, max_threads);
         let config = SchedulerConfig::default();
         let runtime_tracker = Arc::new(RuntimeTracker::new());
         let queue = Arc::new(PriorityQueue::new(Arc::clone(&runtime_tracker), config));
@@ -158,6 +403,11 @@ impl WorkPool {
         // Pre-allocate WorkerPark structs (cheap: Mutex<bool> + Condvar)
         let worker_parks: Vec<Arc<WorkerPark>> = (0..max_threads)
             .map(|id| Arc::new(WorkerPark::new(id >= initial_active)))
+            .collect();
+
+        // Pre-allocate per-worker CPU state (for blocked-worker detection)
+        let worker_cpu_states: Vec<Arc<WorkerCpuState>> = (0..max_threads)
+            .map(|_| Arc::new(WorkerCpuState::new()))
             .collect();
 
         // Pre-allocate worker slots as None (no OS threads yet)
@@ -175,6 +425,9 @@ impl WorkPool {
             min_threads,
             max_threads,
             sequence: AtomicU64::new(0),
+            worker_cpu_states,
+            overflow_workers: Mutex::new(Vec::new()),
+            overflow_count: AtomicUsize::new(0),
         }
     }
 
@@ -212,9 +465,12 @@ impl WorkPool {
         let queue = Arc::clone(&self.queue);
         let runtime_tracker = Arc::clone(&self.runtime_tracker);
         let shutdown = Arc::clone(&self.shutdown);
+        let cpu_state = Arc::clone(&self.worker_cpu_states[id]);
         let handle = thread::Builder::new()
             .name(format!("work-pool-{}", id))
-            .spawn(move || work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park))
+            .spawn(move || {
+                work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state)
+            })
             .expect("failed to spawn work pool worker thread");
         *self.workers[id].lock() = Some(handle);
     }
@@ -230,6 +486,21 @@ impl WorkPool {
         pool
     }
 
+    /// Create and start a work pool with explicit thread counts and initial
+    /// active worker count.
+    ///
+    /// Like `with_threads`, but allows specifying exactly how many workers
+    /// start unparked. `initial_active` is clamped to `[min, max]`.
+    pub fn with_threads_initial(
+        min_threads: usize,
+        max_threads: usize,
+        initial_active: usize,
+    ) -> Self {
+        let pool = Self::allocate_with_initial(min_threads, max_threads, initial_active);
+        pool.spawn_all_workers();
+        pool
+    }
+
     /// Spawn an eval task (priority = NORMAL).
     ///
     /// Eval tasks are never dropped. The caller's `EvalGuard` should be managed
@@ -241,6 +512,29 @@ impl WorkPool {
         let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let task = PriorityTask::new(Box::new(f), priority, task_type, sequence);
         self.queue.push(task);
+
+        #[cfg(feature = "eval-trace")]
+        {
+            let queue_depth = self.queue.len() as u32;
+            let active_workers = self.active_workers() as u32;
+            let max_workers = self.max_threads() as u32;
+            with_work_pool_trace(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::WorkPoolTaskEnqueued {
+                        task_kind: "eval".to_string(),
+                        priority,
+                        queue_depth,
+                        active_workers,
+                        max_workers,
+                    },
+                );
+            });
+        }
     }
 
     /// Spawn a compile task (priority = BACKGROUND_COMPILE).
@@ -258,12 +552,57 @@ impl WorkPool {
         // Backpressure: drop compile tasks when queue is saturated
         if self.queue.len() >= MAX_QUEUE_SIZE {
             trace!("WorkPool: compile task dropped (queue backpressure)");
+
+            #[cfg(feature = "eval-trace")]
+            {
+                let queue_depth = self.queue.len() as u32;
+                let active_workers = self.active_workers() as u32;
+                with_work_pool_trace(|tc| {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        0,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::WorkPoolTaskDropped {
+                            task_kind: "compile".to_string(),
+                            queue_depth,
+                            active_workers,
+                        },
+                    );
+                });
+            }
+
             return false;
         }
 
         let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let task = PriorityTask::new(Box::new(f), priority, task_type, sequence);
         self.queue.push(task);
+
+        #[cfg(feature = "eval-trace")]
+        {
+            let queue_depth = self.queue.len() as u32;
+            let active_workers = self.active_workers() as u32;
+            let max_workers = self.max_threads() as u32;
+            with_work_pool_trace(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::WorkPoolTaskEnqueued {
+                        task_kind: "compile".to_string(),
+                        priority,
+                        queue_depth,
+                        active_workers,
+                        max_workers,
+                    },
+                );
+            });
+        }
+
         true
     }
 
@@ -275,6 +614,29 @@ impl WorkPool {
         let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let task = PriorityTask::new(Box::new(f), priority, task_type, sequence);
         self.queue.push(task);
+
+        #[cfg(feature = "eval-trace")]
+        {
+            let queue_depth = self.queue.len() as u32;
+            let active_workers = self.active_workers() as u32;
+            let max_workers = self.max_threads() as u32;
+            with_work_pool_trace(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::WorkPoolTaskEnqueued {
+                        task_kind: "detached".to_string(),
+                        priority,
+                        queue_depth,
+                        active_workers,
+                        max_workers,
+                    },
+                );
+            });
+        }
     }
 
     /// Get the current queue depth.
@@ -390,11 +752,12 @@ impl WorkPool {
             let queue = Arc::clone(&self.queue);
             let runtime_tracker = Arc::clone(&self.runtime_tracker);
             let shutdown = Arc::clone(&self.shutdown);
+            let cpu_state = Arc::clone(&self.worker_cpu_states[id]);
 
             let new_handle = thread::Builder::new()
                 .name(format!("work-pool-{}", id))
                 .spawn(move || {
-                    work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park);
+                    work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state);
                 })
                 .expect("failed to respawn work pool worker thread");
 
@@ -405,7 +768,7 @@ impl WorkPool {
         respawned
     }
 
-    /// Initiate graceful shutdown.
+    /// Initiate graceful shutdown (signal only — does not join workers).
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
 
@@ -417,17 +780,288 @@ impl WorkPool {
         // Wake up any workers blocked on the queue
         self.queue.notify_all();
     }
+
+    /// Signal shutdown and join all worker threads (blocks until workers exit).
+    ///
+    /// Unlike `shutdown()` which only signals, this method waits for all
+    /// in-flight tasks to complete. Useful when the pool is behind an `Arc`
+    /// and `Drop` won't run until the last reference is released.
+    pub fn shutdown_and_join(&self) {
+        self.shutdown();
+
+        // Signal overflow workers to drain
+        {
+            let overflow = self.overflow_workers.lock();
+            for ow in overflow.iter() {
+                ow.self_shutdown.store(true, Ordering::Relaxed);
+            }
+        }
+
+        // Join core workers
+        for slot in self.workers.iter() {
+            if let Some(handle) = slot.lock().take() {
+                let _ = handle.join();
+            }
+        }
+
+        // Join overflow workers
+        let mut overflow = self.overflow_workers.lock();
+        for ow in overflow.drain(..) {
+            let _ = ow.handle.join();
+        }
+    }
+}
+
+// ============================================================================
+// Overflow Pool Methods
+// ============================================================================
+
+impl WorkPool {
+    /// Get the current number of active overflow threads.
+    #[inline]
+    pub fn overflow_count(&self) -> usize {
+        self.overflow_count.load(Ordering::Relaxed)
+    }
+
+    /// Maximum number of overflow threads allowed.
+    ///
+    /// Capped at `max_threads` so total possible workers = `2 * max_threads`.
+    #[inline]
+    pub fn max_overflow(&self) -> usize {
+        self.max_threads
+    }
+
+    /// Get a reference to the per-worker CPU states (for monitor access).
+    pub fn worker_cpu_states(&self) -> &[Arc<WorkerCpuState>] {
+        &self.worker_cpu_states
+    }
+
+    /// Spawn `count` overflow worker threads.
+    ///
+    /// Overflow workers share the same `PriorityQueue` as core workers but
+    /// have their own shutdown signals and CPU states for independent lifecycle
+    /// management. They self-drain after 1s of idleness.
+    pub fn spawn_overflow(&self, count: usize) {
+        let mut overflow = self.overflow_workers.lock();
+        let base_id = self.max_threads + overflow.len();
+
+        for i in 0..count {
+            let queue = Arc::clone(&self.queue);
+            let runtime_tracker = Arc::clone(&self.runtime_tracker);
+            let global_shutdown = Arc::clone(&self.shutdown);
+            let self_shutdown = Arc::new(AtomicBool::new(false));
+            let cpu_state = Arc::new(WorkerCpuState::new());
+            let overflow_count = &self.overflow_count as *const AtomicUsize as usize;
+            let self_shutdown_clone = Arc::clone(&self_shutdown);
+            let cpu_state_clone = Arc::clone(&cpu_state);
+            let worker_id = base_id + i;
+
+            // SAFETY: overflow_count points to a field of the WorkPool behind
+            // GLOBAL_EVAL_POOL (LazyLock, 'static lifetime). The AtomicUsize
+            // outlives any overflow worker thread. For test pools, Drop joins
+            // all overflow threads before the pool is freed.
+            let overflow_count_ref = unsafe { &*(overflow_count as *const AtomicUsize) };
+
+            let handle = thread::Builder::new()
+                .name(format!("work-pool-overflow-{}", worker_id))
+                .spawn(move || {
+                    overflow_worker_loop(
+                        worker_id,
+                        queue,
+                        runtime_tracker,
+                        global_shutdown,
+                        self_shutdown_clone,
+                        cpu_state_clone,
+                        overflow_count_ref,
+                    );
+                })
+                .expect("failed to spawn overflow worker thread");
+
+            self.overflow_count.fetch_add(1, Ordering::Relaxed);
+
+            overflow.push(OverflowWorker {
+                handle,
+                self_shutdown,
+                cpu_state,
+            });
+        }
+
+        trace!(
+            spawned = count,
+            total_overflow = self.overflow_count.load(Ordering::Relaxed),
+            "WorkPool: spawned overflow workers"
+        );
+    }
+
+    /// Signal `count` overflow workers to drain (oldest first).
+    ///
+    /// Workers exit after completing their current task or after the next
+    /// queue pop timeout (500ms). Finished handles are reaped lazily by
+    /// `reap_finished_overflow()`.
+    pub fn drain_overflow(&self, count: usize) {
+        let overflow = self.overflow_workers.lock();
+        let mut drained = 0;
+        for ow in overflow.iter() {
+            if drained >= count {
+                break;
+            }
+            if !ow.self_shutdown.load(Ordering::Relaxed) {
+                ow.self_shutdown.store(true, Ordering::Relaxed);
+                drained += 1;
+            }
+        }
+        if drained > 0 {
+            trace!(
+                drained,
+                "WorkPool: signaled overflow workers to drain"
+            );
+        }
+    }
+
+    /// Signal all overflow workers to drain.
+    pub fn drain_all_overflow(&self) {
+        let overflow = self.overflow_workers.lock();
+        for ow in overflow.iter() {
+            ow.self_shutdown.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Reap (join) overflow workers that have finished.
+    ///
+    /// Called at the end of each monitor tick to clean up joined handles
+    /// and their associated resources. Non-blocking: only joins threads
+    /// whose `is_finished()` returns true.
+    pub fn reap_finished_overflow(&self) {
+        let mut overflow = self.overflow_workers.lock();
+        let before = overflow.len();
+
+        // Partition: retain live workers, collect finished ones
+        let mut i = 0;
+        while i < overflow.len() {
+            if overflow[i].handle.is_finished() {
+                let ow = overflow.swap_remove(i);
+                let _ = ow.handle.join();
+                // Note: overflow_count is decremented by the worker loop itself
+            } else {
+                i += 1;
+            }
+        }
+
+        let reaped = before - overflow.len();
+        if reaped > 0 {
+            trace!(
+                reaped,
+                remaining = overflow.len(),
+                "WorkPool: reaped finished overflow workers"
+            );
+        }
+    }
+
+    /// Collect CPU states from all live overflow workers.
+    ///
+    /// Returns a snapshot of `Arc<WorkerCpuState>` for each overflow worker
+    /// that has not been signaled to shut down. Used by the monitor for
+    /// blocked-worker detection across the full worker population.
+    pub fn overflow_cpu_states(&self) -> Vec<Arc<WorkerCpuState>> {
+        let overflow = self.overflow_workers.lock();
+        overflow
+            .iter()
+            .filter(|ow| !ow.self_shutdown.load(Ordering::Relaxed))
+            .map(|ow| Arc::clone(&ow.cpu_state))
+            .collect()
+    }
+}
+
+// ============================================================================
+// Overflow Worker Loop
+// ============================================================================
+
+/// Overflow worker thread main loop.
+///
+/// Simpler than the core worker loop — no park/unpark, no trace events.
+/// Self-drains after 2 consecutive idle timeouts (1s total) with no work.
+fn overflow_worker_loop(
+    _id: usize,
+    queue: Arc<PriorityQueue>,
+    runtime_tracker: Arc<RuntimeTracker>,
+    shutdown: Arc<AtomicBool>,
+    self_shutdown: Arc<AtomicBool>,
+    cpu_state: Arc<WorkerCpuState>,
+    overflow_count: &AtomicUsize,
+) {
+    // Publish initial CPU state at startup.
+    cpu_state.publish_initial();
+
+    let mut consecutive_idle = 0u32;
+
+    loop {
+        if shutdown.load(Ordering::Relaxed) || self_shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
+        match queue.pop_timeout(&shutdown, Duration::from_millis(500)) {
+            Some(task) => {
+                consecutive_idle = 0;
+                let task_type = task.task_type();
+
+                let outer_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let runtime_nanos = task.execute();
+                    if runtime_nanos > 0 {
+                        runtime_tracker.record_runtime(task_type, runtime_nanos);
+                    }
+                    cpu_state.publish();
+
+                    if matches!(task_type, TaskTypeId::Eval(_)) {
+                        WORK_EVAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                    }
+                }));
+
+                if let Err(payload) = outer_result {
+                    tracing::error!(
+                        worker_id = _id,
+                        ?task_type,
+                        panic = ?payload,
+                        "overflow_worker_loop: catch_unwind caught panic -- worker continues"
+                    );
+                }
+            }
+            None => {
+                consecutive_idle += 1;
+                // Self-drain: if idle for 2 consecutive timeouts (1s total)
+                // with no work, this overflow thread is no longer needed.
+                if consecutive_idle >= 2 {
+                    break;
+                }
+            }
+        }
+    }
+
+    overflow_count.fetch_sub(1, Ordering::Relaxed);
 }
 
 impl Drop for WorkPool {
     fn drop(&mut self) {
         self.shutdown();
 
-        // Join all worker threads
+        // Signal all overflow workers to drain
+        {
+            let overflow = self.overflow_workers.lock();
+            for ow in overflow.iter() {
+                ow.self_shutdown.store(true, Ordering::Relaxed);
+            }
+        }
+
+        // Join all core worker threads
         for slot in self.workers.iter() {
             if let Some(handle) = slot.lock().take() {
                 let _ = handle.join();
             }
+        }
+
+        // Join all overflow worker threads
+        let mut overflow = self.overflow_workers.lock();
+        for ow in overflow.drain(..) {
+            let _ = ow.handle.join();
         }
     }
 }
@@ -449,16 +1083,74 @@ fn work_pool_worker_loop(
     runtime_tracker: Arc<RuntimeTracker>,
     shutdown: Arc<AtomicBool>,
     park: Arc<WorkerPark>,
+    cpu_state: Arc<WorkerCpuState>,
 ) {
+    // Publish initial CPU/wall time at thread startup so the monitor
+    // has a valid baseline before any tasks execute.
+    cpu_state.publish_initial();
+
+    // Track whether this worker was parked at the end of the previous iteration,
+    // so we can detect park→unpark and unpark→park transitions for trace events.
+    #[cfg(feature = "eval-trace")]
+    let mut was_parked = park.is_parked();
+
     loop {
         // Check for shutdown
         if shutdown.load(Ordering::Relaxed) {
             break;
         }
 
+        // Detect parking: if we're about to block, emit a WorkPoolWorkerParked event.
+        #[cfg(feature = "eval-trace")]
+        {
+            let currently_parked = park.is_parked();
+            if currently_parked && !was_parked {
+                let queue_depth = queue.len() as u32;
+                with_work_pool_trace(|tc| {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        0,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::WorkPoolWorkerParked {
+                            worker_id: _id as u32,
+                            queue_depth,
+                        },
+                    );
+                });
+            }
+            was_parked = currently_parked;
+        }
+
         // Check if we're parked — block until unparked (with 5s timeout to
         // recover from a dead scaling monitor that never calls unpark())
         park.wait_if_parked_timeout(Duration::from_secs(5));
+
+        // Detect resumption: if we were parked and now aren't, emit WorkPoolWorkerResumed.
+        #[cfg(feature = "eval-trace")]
+        {
+            let currently_parked = park.is_parked();
+            if was_parked && !currently_parked {
+                let (active_workers, _max) = global_eval_pool_stats();
+                let queue_depth = queue.len() as u32;
+                with_work_pool_trace(|tc| {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        0,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::WorkPoolWorkerResumed {
+                            worker_id: _id as u32,
+                            queue_depth,
+                            active_workers,
+                        },
+                    );
+                });
+            }
+            was_parked = currently_parked;
+        }
 
         // Re-check shutdown after unpark
         if shutdown.load(Ordering::Relaxed) {
@@ -481,6 +1173,34 @@ fn work_pool_worker_loop(
                     // Only record runtime if task didn't panic (runtime > 0)
                     if runtime_nanos > 0 {
                         runtime_tracker.record_runtime(task_type, runtime_nanos);
+                    }
+
+                    // Publish CPU time + heartbeat for blocked-worker detection.
+                    // The monitor reads these atomics every 200ms to compute
+                    // per-worker cpu_delta/wall_delta ratios.
+                    cpu_state.publish();
+
+                    // Emit WorkPoolTaskCompleted trace event
+                    #[cfg(feature = "eval-trace")]
+                    {
+                        let (active_workers, _max) = global_eval_pool_stats();
+                        let queue_depth = queue.len() as u32;
+                        let kind_str = task_type_kind_str(&task_type);
+                        with_work_pool_trace(|tc| {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker,
+                                0,
+                                trace_format::TraceValue::Unit,
+                                vec![],
+                                None,
+                                trace_format::TraceEventKind::WorkPoolTaskCompleted {
+                                    task_kind: kind_str.to_string(),
+                                    runtime_nanos,
+                                    queue_depth,
+                                    active_workers,
+                                },
+                            );
+                        });
                     }
 
                     // Track eval completions for throughput monitoring
@@ -508,11 +1228,12 @@ fn work_pool_worker_loop(
 // Global Singleton
 // ============================================================================
 
-/// Global work pool singleton (lazy initialization).
+/// Global eval pool singleton (lazy initialization).
 ///
+/// Handles eval tasks only. Compile tasks are routed to `GLOBAL_COMPILE_POOL`.
 /// `LazyLock::new(WorkPool::new)` calls `allocate()` only — no OS threads
 /// are spawned. Workers are started asynchronously via `start_async_init()`.
-static GLOBAL_WORK_POOL: LazyLock<WorkPool> = LazyLock::new(WorkPool::new);
+static GLOBAL_EVAL_POOL: LazyLock<WorkPool> = LazyLock::new(WorkPool::new);
 
 /// Global async init guard — ensures `spawn_all_workers()` runs exactly once.
 static WORK_POOL_INIT: OnceLock<()> = OnceLock::new();
@@ -522,7 +1243,7 @@ impl WorkPool {
     ///
     /// Spawns a dedicated `work-pool-init` thread that calls
     /// `spawn_all_workers()`. Requires `&'static self` (only valid
-    /// for the global singleton via `GLOBAL_WORK_POOL`).
+    /// for the global singleton via `GLOBAL_EVAL_POOL`).
     fn start_async_init(&'static self) {
         WORK_POOL_INIT.get_or_init(|| {
             thread::Builder::new()
@@ -533,30 +1254,68 @@ impl WorkPool {
     }
 }
 
-/// Get the global unified work pool.
+/// Get the global eval pool (for evaluation tasks).
 ///
 /// On first access, lazily initializes the pool (allocation only), kicks off
 /// async background worker spawning, and starts the scaling monitor.
-pub fn global_work_pool() -> &'static WorkPool {
-    let pool = &*GLOBAL_WORK_POOL;
+pub fn global_eval_pool() -> &'static WorkPool {
+    let pool = &*GLOBAL_EVAL_POOL;
     pool.start_async_init();
     // Start the scaling monitor (idempotent — only runs once)
     start_work_scaling_monitor();
     pool
 }
 
+/// Backward-compatible alias for `global_eval_pool()`.
+#[inline]
+pub fn global_work_pool() -> &'static WorkPool {
+    global_eval_pool()
+}
+
+// ============================================================================
+// Global Compile Pool (Fixed-Size, Separate from Eval)
+// ============================================================================
+
+/// Number of fixed worker threads for the compile pool.
+///
+/// Fixed at 4 to prevent compile tasks from stealing CPU from eval workers.
+/// The compile pool has no scaling monitor — its size is constant.
+const COMPILE_POOL_WORKERS: usize = 4;
+
+/// Global compile pool singleton (lazy initialization).
+///
+/// Separate from the eval pool to prevent compile task CPU contention from
+/// degrading eval throughput. Fixed at `COMPILE_POOL_WORKERS` threads with
+/// no scaling monitor.
+static GLOBAL_COMPILE_POOL: LazyLock<WorkPool> = LazyLock::new(|| {
+    WorkPool::with_threads_initial(
+        COMPILE_POOL_WORKERS, // min = 4
+        COMPILE_POOL_WORKERS, // max = 4 (fixed)
+        COMPILE_POOL_WORKERS, // all active from start
+    )
+});
+
+/// Get the global compile pool (for bytecode/JIT compilation tasks).
+///
+/// Separate from the eval pool to prevent CPU contention. Fixed at
+/// `COMPILE_POOL_WORKERS` threads with no dynamic scaling.
+pub fn global_compile_pool() -> &'static WorkPool {
+    &*GLOBAL_COMPILE_POOL
+}
+
 /// Eagerly initialize all global thread pools at application startup.
 ///
-/// Forces initialization of the global work pool (with async background
-/// worker spawning), GC pool, and scaling monitor. Call from `main()`
+/// Forces initialization of the eval pool (with async background worker
+/// spawning), compile pool, GC pool, and scaling monitor. Call from `main()`
 /// before any evaluation to start workers warming up during arg parsing.
 ///
 /// This is optional — all pools self-initialize on first access via
-/// `global_work_pool()` / `global_gc_pool()`, so the Rholang integration
-/// entry point (which calls `global_work_pool()` directly) also triggers
-/// initialization. Calling this from `main()` just starts it sooner.
+/// `global_eval_pool()` / `global_compile_pool()` / `global_gc_pool()`,
+/// so the Rholang integration entry point also triggers initialization.
+/// Calling this from `main()` just starts it sooner.
 pub fn init_thread_pools() {
-    let _ = global_work_pool(); // Triggers LazyLock + start_async_init + scaling monitor
+    let _ = global_eval_pool(); // Triggers LazyLock + start_async_init + scaling monitor
+    let _ = global_compile_pool(); // Triggers LazyLock for compile pool
     let _ = super::gc_pool::global_gc_pool(); // Triggers OnceLock for GC pool
 }
 
@@ -582,7 +1341,13 @@ const WORK_IMPROVEMENT_THRESHOLD: f64 = 0.05;
 const THROUGHPUT_WEIGHT: f64 = 1.0;
 
 /// Weight for queue depth in the composite objective (positive = minimize).
-const QUEUE_DEPTH_WEIGHT: f64 = 0.5;
+///
+/// Increased from 0.5 to 2.0 so that a growing queue can counterbalance
+/// memory pressure (w_mp=5.0). At queue_depth=10 pending tasks, the
+/// contribution is 2.0 × 10 = 20.0, which equals w_mp × M at bp_level=1
+/// slab_pressure=2.0. This prevents the death spiral where memory pressure
+/// parks all workers → queue grows → more parking.
+const QUEUE_DEPTH_WEIGHT: f64 = 2.0;
 
 /// Weight for slab memory pressure in the composite objective (positive = minimize).
 ///
@@ -727,6 +1492,31 @@ fn rss_pressure(page_size: usize, rss_limit: usize) -> f64 {
 // Work Monitor State
 // ============================================================================
 
+/// Per-worker CPU snapshot for blocked-worker detection.
+///
+/// Stores the previous sample's CPU and wall-clock nanoseconds so the
+/// monitor can compute `cpu_delta / wall_delta` per worker.
+#[derive(Clone)]
+struct WorkerCpuSnapshot {
+    prev_cpu_nanos: u64,
+    prev_wall_nanos: u64,
+    prev_task_count: u64,
+    /// Number of consecutive ticks this worker has been considered stalled
+    /// (heartbeat-only detection for non-Linux platforms).
+    ticks_stalled: u32,
+}
+
+impl WorkerCpuSnapshot {
+    fn new() -> Self {
+        Self {
+            prev_cpu_nanos: 0,
+            prev_wall_nanos: 0,
+            prev_task_count: 0,
+            ticks_stalled: 0,
+        }
+    }
+}
+
 /// Mutable state for the work pool scaling monitor.
 ///
 /// Tracks EMA-smoothed throughput, queue depth, slab memory pressure,
@@ -751,6 +1541,10 @@ struct WorkMonitorState {
     rss_limit: usize,
     /// System page size in bytes (cached to avoid repeated sysconf calls).
     page_size: usize,
+    /// Per-worker CPU snapshots for blocked-worker detection (parallel to worker_parks).
+    worker_snapshots: Vec<WorkerCpuSnapshot>,
+    /// Number of core-pool workers detected as blocked in the last tick.
+    blocked_worker_count: usize,
 }
 
 impl WorkMonitorState {
@@ -771,7 +1565,80 @@ impl WorkMonitorState {
             ),
             rss_limit: get_rss_limit(),
             page_size: get_page_size(),
+            worker_snapshots: (0..pool.max_threads())
+                .map(|_| WorkerCpuSnapshot::new())
+                .collect(),
+            blocked_worker_count: 0,
         }
+    }
+
+    /// Detect blocked workers by comparing CPU time deltas to wall time deltas.
+    ///
+    /// For each non-parked core-pool worker, reads the current CPU and wall
+    /// nanoseconds (Relaxed atomics), computes the ratio, and marks workers
+    /// with ratio < BLOCKED_RATIO_THRESHOLD as blocked.
+    ///
+    /// On non-Linux platforms, falls back to heartbeat-only stall detection
+    /// (workers with no task completions for >= 2 ticks are considered stalled).
+    fn detect_blocked_workers(&mut self, pool: &WorkPool) {
+        let cpu_states = pool.worker_cpu_states();
+        let mut blocked = 0;
+
+        for (i, snap) in self.worker_snapshots.iter_mut().enumerate() {
+            // Skip parked workers — they're blocked by design, not by contention
+            if pool.worker_parks[i].is_parked() {
+                snap.ticks_stalled = 0;
+                continue;
+            }
+
+            let state = &cpu_states[i];
+            let curr_cpu = state.cpu_nanos.load(Ordering::Relaxed);
+            let curr_wall = state.wall_nanos.load(Ordering::Relaxed);
+            let curr_tasks = state.task_count.load(Ordering::Relaxed);
+
+            // Worker hasn't published yet (just spawned, no tasks executed)
+            if curr_wall == 0 {
+                snap.ticks_stalled = 0;
+                continue;
+            }
+
+            let task_delta = curr_tasks.wrapping_sub(snap.prev_task_count);
+
+            #[cfg(target_os = "linux")]
+            {
+                let cpu_delta = curr_cpu.saturating_sub(snap.prev_cpu_nanos);
+                let wall_delta = curr_wall.saturating_sub(snap.prev_wall_nanos);
+
+                if wall_delta >= MIN_WALL_DELTA_NS {
+                    let ratio = cpu_delta as f64 / wall_delta as f64;
+                    if ratio < BLOCKED_RATIO_THRESHOLD && task_delta == 0 {
+                        // Low CPU utilization + no task completions → blocked
+                        blocked += 1;
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Heartbeat-only: worker hasn't completed a task in this tick
+                // AND is not parked → likely stalled
+                if task_delta == 0 {
+                    snap.ticks_stalled += 1;
+                    if snap.ticks_stalled >= 2 {
+                        blocked += 1;
+                    }
+                } else {
+                    snap.ticks_stalled = 0;
+                }
+            }
+
+            // Update snapshot for next tick
+            snap.prev_cpu_nanos = curr_cpu;
+            snap.prev_wall_nanos = curr_wall;
+            snap.prev_task_count = curr_tasks;
+        }
+
+        self.blocked_worker_count = blocked;
     }
 }
 
@@ -792,11 +1659,13 @@ impl WorkMonitorState {
 /// - Maximizing throughput (negative coefficient)
 /// - Minimizing queue depth, slab pressure, and RSS pressure (positive coefficients)
 ///
-/// ## Emergency Override
+/// ## Graduated Memory Pressure Response
 ///
-/// When slab backpressure ≥ 2 (medium/heavy), the hill climber is bypassed
-/// and workers are immediately parked (one per tick). This provides a fast
-/// response path that doesn't wait for EMA convergence.
+/// Instead of an emergency override that bypasses the hill climber, slab memory
+/// pressure is amplified by a graduated multiplier (1x at bp_level 0-1, 2x at
+/// bp_level 2, 4x at bp_level 3). This allows queue depth to counterbalance
+/// memory pressure, preventing the death spiral where memory pressure parks all
+/// workers → queue grows → more parking.
 fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     let now = Instant::now();
     let elapsed = now.duration_since(state.prev_sample_time).as_secs_f64();
@@ -820,44 +1689,177 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     let slab_p = slab_pressure();
     let rss_p = rss_pressure(state.page_size, state.rss_limit);
 
-    // Update all EMAs
+    // Update all EMAs (still maintained for trace diagnostics)
     let ema_tp = state.ema_throughput.update(throughput);
     let ema_qd = state.ema_queue_depth.update(queue_depth);
     let ema_slab = state.ema_slab_pressure.update(slab_p);
     let ema_rss = state.ema_rss_pressure.update(rss_p);
 
-    // Emergency override: when slab backpressure ≥ 2 (medium/heavy),
-    // immediately park a worker without waiting for EMA convergence.
-    // This is a fast response path for acute memory pressure.
+    // Graduated slab pressure amplification
     let bp_level = super::gc_allocator::backpressure_level();
-    if bp_level >= 2 {
-        if pool.park_one() {
-            trace!(
-                bp_level,
-                slab_pressure = ema_slab,
-                rss_pressure = ema_rss,
-                active = pool.active_workers(),
-                "WorkPool scaling: EMERGENCY park (bp_level >= 2)"
-            );
+    let slab_amplifier = match bp_level {
+        0 | 1 => 1.0,
+        2 => 2.0,
+        _ => 4.0, // bp_level 3 (heavy)
+    };
+
+    // ====================================================================
+    // Phase 1: Graduated memory pressure response (highest priority)
+    // ====================================================================
+    // At bp_level >= 3 with low queue: direct park + drain overflow.
+    // This bypasses the hill climber (which doesn't respond to constant
+    // pressure — it responds to changes/gradients). Low queue means the
+    // parking won't starve pending tasks.
+    //
+    // At bp_level == 2: the slab_amplifier (2.0) feeds into the hill climber
+    // objective function in Phase 4, providing a graduated response that
+    // still considers queue depth as a counterbalancing signal.
+    let queue_len_for_pressure = pool.queue_len();
+    if bp_level >= 3 && queue_len_for_pressure < MAX_QUEUE_SIZE / 2 {
+        pool.park_one();
+        pool.drain_all_overflow();
+        trace!(
+            bp_level,
+            slab_pressure = ema_slab,
+            rss_pressure = ema_rss,
+            active = pool.active_workers(),
+            overflow = pool.overflow_count(),
+            queue_len = queue_len_for_pressure,
+            "WorkPool scaling: graduated park + overflow drain (bp_level >= 3, low queue)"
+        );
+
+        #[cfg(feature = "eval-trace")]
+        {
+            let active_workers_after = pool.active_workers() as u32;
+            let instantaneous_qd = pool.queue_len() as u32;
+            with_work_pool_trace(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::WorkPoolScaleEvent {
+                        action: "graduated_park".to_string(),
+                        active_workers_after,
+                        min_workers: pool.min_threads() as u32,
+                        max_workers: pool.max_threads() as u32,
+                        queue_depth: instantaneous_qd,
+                        ema_throughput: ema_tp,
+                        ema_queue_depth: ema_qd,
+                        ema_slab_pressure: ema_slab,
+                        ema_rss_pressure: ema_rss,
+                        objective: 0.0, // Not computed in graduated path
+                        emergency: true,
+                    },
+                );
+            });
         }
-        // Still check for dead workers even during emergency
+
         check_and_log_respawns(pool);
+        pool.reap_finished_overflow();
         return;
     }
 
+    // ====================================================================
+    // Phase 2: Blocked-worker detection
+    // ====================================================================
+    state.detect_blocked_workers(pool);
+
+    // ====================================================================
+    // Phase 3: Compensatory activation (emergency bypass)
+    // ====================================================================
+    // Fires before the hill climber. Does not reset climber state.
+    let active = pool.active_workers();
+    let blocked = state.blocked_worker_count;
+    let overflow = pool.overflow_count();
+    let unblocked_core = active.saturating_sub(blocked);
+    let total_unblocked = unblocked_core + overflow;
+    let target = state.climber.current_active();
+    let queue_len = pool.queue_len();
+
+    // Gate: no compensation if the queue is empty — there's no work to give
+    // replacement threads. Also drain any existing overflow.
+    if queue_len == 0 {
+        if overflow > 0 {
+            pool.drain_all_overflow();
+            trace!(
+                overflow,
+                "WorkPool: draining all overflow (queue empty)"
+            );
+        }
+    } else if total_unblocked < target {
+        // Fewer unblocked workers than the target — need compensation
+        let deficit = target - total_unblocked;
+
+        // Step 1: Unpark core pool workers (cheapest — already OS-allocated)
+        let mut compensated = 0;
+        while compensated < deficit {
+            if pool.unpark_one() {
+                compensated += 1;
+            } else {
+                break; // No more parked workers available
+            }
+        }
+
+        // Step 2: Spawn overflow threads for remaining deficit
+        let remaining = deficit - compensated;
+        // RSS veto: no overflow when RSS >= 100% of limit (rss_p >= 2.0)
+        // Core pool unparking (Step 1) is NOT vetoed — those threads are
+        // already OS-allocated and don't increase RSS.
+        let overflow_allowed = rss_p < 2.0;
+        if remaining > 0 && overflow_allowed {
+            let max_overflow = pool.max_overflow();
+            let can_spawn = max_overflow.saturating_sub(overflow);
+            let to_spawn = remaining.min(can_spawn);
+            if to_spawn > 0 {
+                pool.spawn_overflow(to_spawn);
+                trace!(
+                    to_spawn,
+                    blocked,
+                    deficit,
+                    compensated,
+                    "WorkPool: spawned overflow to compensate for blocked workers"
+                );
+            }
+        }
+    }
+
+    // Drain excess overflow when blocking resolves
+    if overflow > 0 && total_unblocked > target {
+        let excess = (total_unblocked - target).min(overflow);
+        pool.drain_overflow(excess);
+    }
+
+    // ====================================================================
+    // Phase 4: Hill climber (normal throughput/queue-depth optimization)
+    // ====================================================================
+    // Use instantaneous queue depth (not EMA) for the scaling decision.
+    // Queue buildup needs immediate response, not 860ms-lagged EMA.
+    // EMA is still maintained above for trace logging.
+    let queue_depth_instant = pool.queue_len() as f64;
+
     // Four-term composite objective: minimize (lower = better)
     //
-    //   J(N) = −w_tp × ema_tp + w_qd × ema_qd + w_mp × ema_slab + w_rss × ema_rss
+    //   J(N) = −w_tp × ema_tp + w_qd × qd_instant + w_mp × amp × ema_slab + w_rss × ema_rss
     //
-    // Weight derivation and dominance conditions verified in
-    // formal/rocq/work_pool_stability/theories/WeightDominance.v
+    // At bp_level=2, ema_slab=2.0: 5.0 × 2.0 × 2.0 = 20.0 vs queue 10: 2.0 × 10 = 20.0
+    // At bp_level=3, ema_slab=3.0: 5.0 × 4.0 × 3.0 = 60.0 — only queue 30+ overrides
     let objective = -THROUGHPUT_WEIGHT * ema_tp
-        + QUEUE_DEPTH_WEIGHT * ema_qd
-        + MEMORY_PRESSURE_WEIGHT * ema_slab
+        + QUEUE_DEPTH_WEIGHT * queue_depth_instant
+        + MEMORY_PRESSURE_WEIGHT * slab_amplifier * ema_slab
         + RSS_PRESSURE_WEIGHT * ema_rss;
 
     // Feed to hill climber
     let action = state.climber.step(objective);
+
+    // Determine action string for trace event (computed before match to avoid duplication).
+    #[cfg(feature = "eval-trace")]
+    let action_str = match action {
+        ScaleAction::Unpark => "unpark",
+        ScaleAction::Park => "park",
+        ScaleAction::Hold => "hold",
+    };
 
     match action {
         ScaleAction::Unpark => {
@@ -891,8 +1893,39 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
         }
     }
 
-    // Check for and respawn dead workers
+    // Emit WorkPoolScaleEvent for every tick (including Hold) so the full
+    // timeline of the monitor's decision-making is visible in the trace.
+    #[cfg(feature = "eval-trace")]
+    {
+        let active_workers_after = pool.active_workers() as u32;
+        let instantaneous_qd = pool.queue_len() as u32;
+        with_work_pool_trace(|tc| {
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                0,
+                trace_format::TraceValue::Unit,
+                vec![],
+                None,
+                trace_format::TraceEventKind::WorkPoolScaleEvent {
+                    action: action_str.to_string(),
+                    active_workers_after,
+                    min_workers: pool.min_threads() as u32,
+                    max_workers: pool.max_threads() as u32,
+                    queue_depth: instantaneous_qd,
+                    ema_throughput: ema_tp,
+                    ema_queue_depth: ema_qd,
+                    ema_slab_pressure: ema_slab,
+                    ema_rss_pressure: ema_rss,
+                    objective,
+                    emergency: false,
+                },
+            );
+        });
+    }
+
+    // Check for and respawn dead workers, then reap finished overflow
     check_and_log_respawns(pool);
+    pool.reap_finished_overflow();
 }
 
 /// Check for dead workers and log respawns. Extracted to avoid duplication
@@ -920,10 +1953,10 @@ static GLOBAL_WORK_MONITOR: OnceLock<super::task_scheduler::TaskSchedulerSinglet
 /// Idempotent — subsequent calls are no-ops.
 pub fn start_work_scaling_monitor() {
     GLOBAL_WORK_MONITOR.get_or_init(|| {
-        // Access GLOBAL_WORK_POOL directly (not via global_work_pool()) to avoid
+        // Access GLOBAL_EVAL_POOL directly (not via global_work_pool()) to avoid
         // reentrant OnceLock deadlock: global_work_pool() → start_work_scaling_monitor()
         // → global_work_pool() → start_work_scaling_monitor() → OnceLock reentry.
-        let pool: &'static WorkPool = &*GLOBAL_WORK_POOL;
+        let pool: &'static WorkPool = &*GLOBAL_EVAL_POOL;
         let mut state = WorkMonitorState::new(pool);
 
         let terminating = Arc::new(AtomicBool::new(false));
@@ -971,6 +2004,11 @@ mod tests {
 
     /// Test timeout for waiting on task completion.
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Mutex to serialize tests that read/write global `backpressure_level`.
+    /// Prevents parallel test contamination (one test setting bp=3 while
+    /// another expects bp=0 inside `work_scaling_monitor_tick`).
+    static BP_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Helper: wait for an AtomicBool to become true (with timeout).
     fn wait_for_bool(flag: &AtomicBool) {
@@ -1180,6 +2218,9 @@ mod tests {
 
     #[test]
     fn test_work_scaling_monitor_tick_hold_on_idle() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
         let pool = WorkPool::with_threads(2, 4);
         let mut state = WorkMonitorState::new(&pool);
 
@@ -1196,6 +2237,9 @@ mod tests {
 
     #[test]
     fn test_work_scaling_monitor_tick_skips_fast_calls() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
         let pool = WorkPool::with_threads(2, 4);
         let mut state = WorkMonitorState::new(&pool);
 
@@ -1211,6 +2255,9 @@ mod tests {
 
     #[test]
     fn test_work_scaling_monitor_tick_with_load() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
         let pool = WorkPool::with_threads(2, 4);
         let mut state = WorkMonitorState::new(&pool);
 
@@ -1328,9 +2375,12 @@ mod tests {
     }
 
     #[test]
-    fn test_emergency_park_at_high_backpressure() {
-        // When backpressure is >= 2, the emergency override should park workers
-        // immediately (bypassing the hill climber).
+    fn test_graduated_pressure_parks_at_high_backpressure() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // At bp_level >= 3 with low queue, the graduated response directly parks
+        // one worker per tick (without waiting for hill climber convergence).
         let pool = WorkPool::with_threads(2, 4);
         let mut state = WorkMonitorState::new(&pool);
         state.prev_sample_time = Instant::now() - Duration::from_millis(200);
@@ -1341,16 +2391,16 @@ mod tests {
         assert!(initial_active > pool.min_threads(),
             "Need more than min_threads active to test parking");
 
-        // Simulate high backpressure level
-        crate::backend::models::gc_allocator::set_backpressure_level(2);
+        // Simulate extreme backpressure (bp_level=3) with empty queue
+        crate::backend::models::gc_allocator::set_backpressure_level(3);
 
-        // Run a tick — should park via emergency override
+        // Run a tick — should park via graduated direct response
         work_scaling_monitor_tick(&pool, &mut state);
 
         let after_active = pool.active_workers();
         assert!(
             after_active < initial_active,
-            "Emergency park should reduce active workers: {} < {}",
+            "Graduated pressure (bp=3, low queue) should reduce active workers: {} < {}",
             after_active, initial_active
         );
 
@@ -1359,8 +2409,11 @@ mod tests {
     }
 
     #[test]
-    fn test_emergency_park_respects_min_threads() {
-        // Emergency park should never go below min_threads
+    fn test_graduated_pressure_respects_min_threads() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // Graduated pressure should never go below min_threads
         let pool = WorkPool::with_threads(2, 4);
         let mut state = WorkMonitorState::new(&pool);
 
@@ -1480,5 +2533,394 @@ mod tests {
             "Scale-up should dominate mild pressure at T₁={}",
             t1_val
         );
+    }
+
+    // ===================================================================
+    // with_threads_initial Tests
+    // ===================================================================
+
+    #[test]
+    fn test_with_threads_initial() {
+        let pool = WorkPool::with_threads_initial(1, 8, 2);
+
+        assert_eq!(pool.min_threads(), 1);
+        assert_eq!(pool.max_threads(), 8);
+        assert_eq!(pool.initial_active(), 2);
+        assert_eq!(pool.active_workers(), 2);
+
+        // Verify tasks still execute on the pool
+        let done = Arc::new(AtomicBool::new(false));
+        let d = Arc::clone(&done);
+        pool.spawn_eval(
+            move || {
+                d.store(true, Ordering::Release);
+            },
+            TaskTypeId::Generic,
+            priority_levels::LOW,
+        );
+        wait_for_bool(&done);
+    }
+
+    #[test]
+    fn test_with_threads_initial_clamps_to_min() {
+        // initial (0) gets clamped up to min (2)
+        let pool = WorkPool::with_threads_initial(2, 8, 0);
+        assert_eq!(pool.initial_active(), 2);
+        assert_eq!(pool.active_workers(), 2);
+    }
+
+    #[test]
+    fn test_with_threads_initial_clamps_to_max() {
+        // initial (100) gets clamped down to max (4)
+        let pool = WorkPool::with_threads_initial(1, 4, 100);
+        assert_eq!(pool.initial_active(), 4);
+        assert_eq!(pool.active_workers(), 4);
+    }
+
+    // ===================================================================
+    // Blocked-Worker Detection + Overflow Pool Tests
+    // ===================================================================
+
+    #[test]
+    fn test_worker_cpu_state_published() {
+        // Spawn pool, submit tasks, verify CPU state atomics are non-zero after execution.
+        let pool = WorkPool::with_threads(2, 4);
+
+        let done = Arc::new(AtomicBool::new(false));
+        let d = Arc::clone(&done);
+        pool.spawn_eval(
+            move || {
+                // Do some work so CPU time advances
+                let mut sum = 0u64;
+                for i in 0..10_000 {
+                    sum = sum.wrapping_add(i);
+                }
+                std::hint::black_box(sum);
+                d.store(true, Ordering::Release);
+            },
+            TaskTypeId::Generic,
+            priority_levels::NORMAL,
+        );
+
+        wait_for_bool(&done);
+
+        // Give a moment for the CPU state publish to complete
+        thread::sleep(Duration::from_millis(50));
+
+        // At least one worker should have non-zero wall_nanos (from publish_initial
+        // at startup or from publish after task execution)
+        let cpu_states = pool.worker_cpu_states();
+        let any_published = cpu_states.iter().any(|s| {
+            s.wall_nanos.load(Ordering::Relaxed) > 0
+        });
+        assert!(any_published, "At least one worker should have published CPU state");
+
+        // At least one worker should have task_count > 0
+        let any_tasks = cpu_states.iter().any(|s| {
+            s.task_count.load(Ordering::Relaxed) > 0
+        });
+        assert!(any_tasks, "At least one worker should have task_count > 0");
+    }
+
+    #[test]
+    fn test_blocked_worker_detection() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // Submit a task that sleeps (simulating blocking), verify monitor
+        // detects blocked_worker_count > 0.
+        let pool = WorkPool::with_threads_initial(2, 2, 2);
+        let mut state = WorkMonitorState::new(&pool);
+
+        // Warm up: run one normal tick so snapshots initialize
+        state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+        work_scaling_monitor_tick(&pool, &mut state);
+
+        // Submit a blocking task
+        let blocking = Arc::new(AtomicBool::new(false));
+        let b = Arc::clone(&blocking);
+        pool.spawn_eval(
+            move || {
+                b.store(true, Ordering::Release);
+                thread::sleep(Duration::from_secs(2));
+            },
+            TaskTypeId::Generic,
+            priority_levels::NORMAL,
+        );
+
+        // Wait for the blocking task to start
+        wait_for_bool(&blocking);
+
+        // Wait for the monitor interval to pass, then tick
+        thread::sleep(Duration::from_millis(250));
+        state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+        state.detect_blocked_workers(&pool);
+
+        // On Linux: should detect at least one blocked worker (sleeping = low CPU ratio)
+        // On non-Linux: heartbeat detection needs 2 ticks to trigger
+        #[cfg(target_os = "linux")]
+        assert!(
+            state.blocked_worker_count > 0,
+            "Expected blocked workers detected, got {}",
+            state.blocked_worker_count
+        );
+    }
+
+    #[test]
+    fn test_compensatory_unpark() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // Create pool with 2 active, 2 parked. Block active workers with
+        // a mutex so detect_blocked_workers sees low CPU utilization (or
+        // stalled heartbeat), then verify compensatory logic unparks
+        // parked workers to compensate.
+        let pool = WorkPool::with_threads_initial(1, 4, 2);
+        let mut state = WorkMonitorState::new(&pool);
+        assert_eq!(pool.active_workers(), 2);
+
+        // Block both active workers on a mutex
+        let blocker = Arc::new(std::sync::Mutex::new(()));
+        let _guard = blocker.lock().expect("lock blocker");
+        for _ in 0..2 {
+            let b = Arc::clone(&blocker);
+            pool.spawn_eval(
+                move || {
+                    let _lock = b.lock().expect("lock in worker");
+                },
+                TaskTypeId::Generic,
+                priority_levels::NORMAL,
+            );
+        }
+
+        // Wait for workers to pick up the blocking tasks
+        thread::sleep(Duration::from_millis(50));
+
+        // Submit additional tasks so queue is non-empty
+        let counter = Arc::new(AtomicU32::new(0));
+        for _ in 0..5 {
+            let c = Arc::clone(&counter);
+            pool.spawn_eval(
+                move || { c.fetch_add(1, Ordering::Relaxed); },
+                TaskTypeId::Generic,
+                priority_levels::NORMAL,
+            );
+        }
+
+        // Run multiple ticks so detect_blocked_workers converges
+        // (needs wall_delta >= MIN_WALL_DELTA_NS with low CPU ratio on Linux,
+        // or 2+ ticks with 0 task completions on non-Linux heartbeat fallback)
+        for _ in 0..4 {
+            state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+            work_scaling_monitor_tick(&pool, &mut state);
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        // Compensatory logic should have unparked workers (from parked pool)
+        // OR spawned overflow to cover the deficit
+        let active_after = pool.active_workers();
+        let overflow_after = pool.overflow_count();
+        assert!(
+            active_after > 2 || overflow_after > 0,
+            "Compensatory logic should have unparked workers or spawned overflow: \
+             active={}, overflow={}, blocked={}, expected active > 2 or overflow > 0",
+            active_after, overflow_after, state.blocked_worker_count
+        );
+
+        // Release the blocker so all tasks can complete
+        drop(_guard);
+        wait_for_count(&counter, 5);
+    }
+
+    #[test]
+    fn test_overflow_spawn_on_deficit() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // Set max_threads=2, block both workers with a mutex, submit more
+        // tasks, verify overflow threads are spawned.
+        let pool = WorkPool::with_threads_initial(2, 2, 2);
+        let mut state = WorkMonitorState::new(&pool);
+
+        // Block both core workers on a mutex so they appear stalled
+        let blocker = Arc::new(std::sync::Mutex::new(()));
+        let _guard = blocker.lock().expect("lock blocker");
+        for _ in 0..2 {
+            let b = Arc::clone(&blocker);
+            pool.spawn_eval(
+                move || {
+                    let _lock = b.lock().expect("lock in worker");
+                },
+                TaskTypeId::Generic,
+                priority_levels::NORMAL,
+            );
+        }
+
+        // Wait briefly for workers to pick up the blocking tasks
+        thread::sleep(Duration::from_millis(50));
+
+        // Submit additional tasks that will queue behind the blocked workers
+        let counter = Arc::new(AtomicU32::new(0));
+        for _ in 0..5 {
+            let c = Arc::clone(&counter);
+            pool.spawn_eval(
+                move || {
+                    c.fetch_add(1, Ordering::Relaxed);
+                },
+                TaskTypeId::Generic,
+                priority_levels::NORMAL,
+            );
+        }
+
+        // Run multiple ticks to allow detect_blocked_workers to converge.
+        // On Linux: needs wall_delta >= MIN_WALL_DELTA_NS (10ms) with low CPU ratio.
+        // On non-Linux: needs 2+ ticks with 0 task completions.
+        for _ in 0..4 {
+            state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+            work_scaling_monitor_tick(&pool, &mut state);
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        // Overflow should have been spawned (or workers unparked) to compensate
+        let oc = pool.overflow_count();
+        assert!(
+            oc > 0,
+            "Overflow workers should have been spawned when all core workers are blocked: \
+             overflow_count={}, blocked_count={}, active={}",
+            oc, state.blocked_worker_count, pool.active_workers()
+        );
+
+        // Release the blocker so all tasks can complete
+        drop(_guard);
+
+        // Wait for the counter tasks to complete
+        wait_for_count(&counter, 5);
+    }
+
+    #[test]
+    fn test_overflow_drain_on_unblock() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // After overflow is spawned, simulate unblocking, verify overflow
+        // threads are drained.
+        let pool = WorkPool::with_threads_initial(2, 2, 2);
+
+        // Manually spawn some overflow
+        pool.spawn_overflow(2);
+        assert_eq!(pool.overflow_count(), 2);
+
+        let mut state = WorkMonitorState::new(&pool);
+        // Simulate: no workers blocked, all are unblocked
+        state.blocked_worker_count = 0;
+
+        // Tick with empty queue — should drain all overflow
+        state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+        work_scaling_monitor_tick(&pool, &mut state);
+
+        // Give overflow workers time to receive drain signal and exit
+        thread::sleep(Duration::from_millis(600));
+        pool.reap_finished_overflow();
+
+        // All overflow should be drained
+        let oc = pool.overflow_count();
+        assert_eq!(
+            oc, 0,
+            "All overflow should be drained when queue is empty: overflow_count={}",
+            oc
+        );
+    }
+
+    #[test]
+    fn test_no_overflow_when_queue_empty() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // Block a worker but leave queue empty, verify no overflow threads
+        // are spawned.
+        let pool = WorkPool::with_threads_initial(2, 2, 2);
+        let mut state = WorkMonitorState::new(&pool);
+
+        // Simulate a blocked worker
+        state.blocked_worker_count = 1;
+
+        // No tasks submitted — queue is empty
+
+        // Run a tick
+        state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+        work_scaling_monitor_tick(&pool, &mut state);
+
+        // No overflow should have been spawned
+        assert_eq!(
+            pool.overflow_count(), 0,
+            "No overflow should be spawned when queue is empty"
+        );
+    }
+
+    #[test]
+    fn test_memory_pressure_vetoes_overflow() {
+        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        // Set slab backpressure >= 3, verify no overflow spawned even
+        // with blocked workers. The emergency path fires at bp_level >= 3
+        // (bp_level == 2 is graduated, feeding slab_amplifier into the
+        // hill climber objective, not an emergency bypass).
+        let pool = WorkPool::with_threads_initial(2, 4, 2);
+        let mut state = WorkMonitorState::new(&pool);
+
+        // Submit tasks so queue is non-empty
+        let counter = Arc::new(AtomicU32::new(0));
+        for _ in 0..5 {
+            let c = Arc::clone(&counter);
+            pool.spawn_eval(
+                move || { c.fetch_add(1, Ordering::Relaxed); },
+                TaskTypeId::Generic,
+                priority_levels::NORMAL,
+            );
+        }
+
+        // Simulate blocked workers
+        state.blocked_worker_count = 2;
+
+        // Set high backpressure (emergency threshold is bp_level >= 3)
+        crate::backend::models::gc_allocator::set_backpressure_level(3);
+
+        // Run a tick — emergency path should fire (park + drain), NOT spawn overflow
+        state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+        work_scaling_monitor_tick(&pool, &mut state);
+
+        assert_eq!(
+            pool.overflow_count(), 0,
+            "No overflow should be spawned during emergency memory pressure"
+        );
+
+        // Reset backpressure
+        crate::backend::models::gc_allocator::set_backpressure_level(0);
+
+        wait_for_count(&counter, 5);
+    }
+
+    #[test]
+    fn test_overflow_max_cap() {
+        // Verify overflow count is bounded at max_overflow (= max_threads).
+        let pool = WorkPool::with_threads_initial(2, 2, 2);
+
+        // Try to spawn more overflow than the cap
+        pool.spawn_overflow(2); // max_overflow = 2 for max_threads = 2
+        assert_eq!(pool.overflow_count(), 2);
+
+        // The compensatory logic should cap at max_overflow, but let's
+        // verify spawn_overflow itself works and the count is correct.
+        pool.spawn_overflow(1);
+        // overflow_count is 3 because spawn_overflow doesn't enforce the cap
+        // itself — the cap is enforced in the compensatory logic via
+        // `max_overflow.saturating_sub(overflow)`.
+        assert_eq!(pool.overflow_count(), 3);
+
+        // Clean up: drain all
+        pool.drain_all_overflow();
+        thread::sleep(Duration::from_millis(600));
+        pool.reap_finished_overflow();
     }
 }

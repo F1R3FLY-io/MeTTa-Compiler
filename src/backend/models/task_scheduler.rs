@@ -59,7 +59,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
 use parking_lot::Mutex;
-use tracing::{error, warn};
+use tracing::{error, trace, warn};
+
+use super::work_pool::WorkPool;
+use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
 // ============================================================================
 // Time utilities
@@ -174,6 +177,22 @@ impl TaskMetadata {
 }
 
 // ============================================================================
+// CronDispatchState — Shared state for worker-pool dispatched recurring tasks
+// ============================================================================
+
+/// Shared state for a recurring task dispatched to a worker pool.
+///
+/// Wraps the mutable closure for shared access across worker dispatches and
+/// provides an in-flight guard to prevent overlapping executions of the same
+/// recurring task.
+pub(crate) struct CronDispatchState {
+    /// Mutable closure wrapped for shared access across worker dispatches.
+    shared_task: Mutex<Box<dyn FnMut() -> bool + Send>>,
+    /// In-flight guard: prevents overlapping executions of the same recurring task.
+    in_flight: AtomicBool,
+}
+
+// ============================================================================
 // ScheduledTask — Task entry in the priority queue
 // ============================================================================
 
@@ -187,6 +206,10 @@ pub struct ScheduledTask {
 
     /// The task to execute. Returns `true` if successful.
     pub task: Box<dyn FnMut() -> bool + Send>,
+
+    /// Shared dispatch state for worker pool execution of recurring tasks.
+    /// `None` for first dispatch or one-shot tasks. Set by `dispatch_to_pool()`.
+    pub(crate) dispatch_state: Option<Arc<CronDispatchState>>,
 }
 
 impl std::fmt::Debug for ScheduledTask {
@@ -257,6 +280,11 @@ pub struct CronStateMachine {
 
     /// One-shot ready signal sender (sent at start of run()).
     ready_tx: Option<Sender<()>>,
+
+    /// Optional worker pool for dispatching task execution off the cron thread.
+    /// When `Some`, tasks are dispatched to pool workers instead of executing
+    /// inline on the scheduler thread.
+    worker_pool: Option<Arc<WorkPool>>,
 }
 
 impl CronStateMachine {
@@ -270,11 +298,13 @@ impl CronStateMachine {
     /// * `terminating` - Atomic flag for graceful shutdown
     /// * `poll_interval_ms` - Maximum sleep duration between polls
     /// * `ready_tx` - Optional one-shot channel to signal when event loop starts
+    /// * `worker_pool` - Optional worker pool for off-thread task execution
     pub fn new(
         task_rx: Receiver<ScheduledTask>,
         terminating: Arc<AtomicBool>,
         poll_interval_ms: u64,
         ready_tx: Option<Sender<()>>,
+        worker_pool: Option<Arc<WorkPool>>,
     ) -> Self {
         Self {
             state: CronState::CheckEvents,
@@ -284,6 +314,7 @@ impl CronStateMachine {
             terminating,
             channel_disconnected: false,
             ready_tx,
+            worker_pool,
         }
     }
 
@@ -484,12 +515,23 @@ impl CronStateMachine {
     }
 
     /// Execute one due task (exception-safe).
+    ///
+    /// When a worker pool is configured, dispatches to the pool; otherwise
+    /// executes inline on the cron thread.
     fn execute_one_task(&mut self) {
-        let Some(mut task) = self.queue.pop() else {
+        let Some(task) = self.queue.pop() else {
             return;
         };
 
-        // Execute with panic catching
+        if let Some(pool) = &self.worker_pool {
+            self.dispatch_to_pool(Arc::clone(pool), task);
+        } else {
+            Self::execute_inline(task, &mut self.queue);
+        }
+    }
+
+    /// Execute a task inline on the current thread (exception-safe).
+    fn execute_inline(mut task: ScheduledTask, queue: &mut BinaryHeap<ScheduledTask>) {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task.task)()));
 
         match result {
@@ -497,7 +539,7 @@ impl CronStateMachine {
                 // Re-queue if recurring
                 if let Some(interval) = task.metadata.recurrence_interval() {
                     task.scheduled_time_ms = now_ms() + interval;
-                    self.queue.push(task);
+                    queue.push(task);
                 }
             }
             Ok(false) => {
@@ -506,6 +548,105 @@ impl CronStateMachine {
             Err(e) => {
                 error!(task_name = task.metadata.name(), panic = ?e, "Task panicked");
             }
+        }
+    }
+
+    /// Dispatch a task to the worker pool for off-thread execution.
+    ///
+    /// **Recurring tasks**: The `FnMut` closure is wrapped in a shared
+    /// `CronDispatchState` (on first dispatch) with an `AtomicBool` in-flight
+    /// guard. If the previous execution is still in-flight, the task is
+    /// re-queued at `now + interval` without dispatching.
+    ///
+    /// **One-shot tasks**: Dispatched directly as a `FnOnce` — no shared state.
+    fn dispatch_to_pool(&mut self, pool: Arc<WorkPool>, task: ScheduledTask) {
+        let interval = task.metadata.recurrence_interval();
+
+        if let Some(interval_ms) = interval {
+            // --- Recurring task: use shared dispatch state ---
+            let dispatch = task.dispatch_state.unwrap_or_else(|| {
+                Arc::new(CronDispatchState {
+                    shared_task: Mutex::new(task.task),
+                    in_flight: AtomicBool::new(false),
+                })
+            });
+
+            // Check in-flight guard — skip if still running
+            if dispatch
+                .in_flight
+                .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+                .is_err()
+            {
+                // Previous execution still running — re-queue without dispatching
+                trace!(
+                    task_name = task.metadata.name(),
+                    "Skipping overlapping recurring task execution"
+                );
+                let requeued = ScheduledTask {
+                    scheduled_time_ms: now_ms() + interval_ms,
+                    metadata: task.metadata,
+                    task: Box::new(|| true), // Placeholder — real closure is in dispatch_state
+                    dispatch_state: Some(Arc::clone(&dispatch)),
+                };
+                self.queue.push(requeued);
+                return;
+            }
+
+            // Dispatch to worker pool
+            let dispatch_for_worker = Arc::clone(&dispatch);
+            let task_name = task.metadata.name().to_string();
+            pool.spawn_eval(
+                move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut guard = dispatch_for_worker.shared_task.lock();
+                        (guard)()
+                    }));
+
+                    // Clear in-flight flag
+                    dispatch_for_worker
+                        .in_flight
+                        .store(false, AtomicOrdering::Release);
+
+                    match result {
+                        Ok(true) => {} // Will be re-queued by cron thread
+                        Ok(false) => {
+                            trace!(task_name, "Recurring task returned false — stopping");
+                        }
+                        Err(e) => {
+                            error!(task_name, panic = ?e, "Worker pool task panicked");
+                        }
+                    }
+                },
+                TaskTypeId::Generic,
+                priority_levels::LOW,
+            );
+
+            // Re-queue for next interval
+            let requeued = ScheduledTask {
+                scheduled_time_ms: now_ms() + interval_ms,
+                metadata: task.metadata,
+                task: Box::new(|| true), // Placeholder — real closure is in dispatch_state
+                dispatch_state: Some(dispatch),
+            };
+            self.queue.push(requeued);
+        } else {
+            // --- One-shot task: dispatch directly ---
+            let mut task_fn = task.task;
+            let task_name = task.metadata.name().to_string();
+            pool.spawn_eval(
+                move || {
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task_fn)()));
+                    match result {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!(task_name, panic = ?e, "Worker pool one-shot task panicked");
+                        }
+                    }
+                },
+                TaskTypeId::Generic,
+                priority_levels::LOW,
+            );
         }
     }
 
@@ -569,6 +710,7 @@ impl CronHandle {
             scheduled_time_ms: time_ms,
             metadata,
             task: Box::new(task),
+            dispatch_state: None,
         };
         self.task_tx.send(scheduled_task).is_ok()
     }
@@ -686,6 +828,47 @@ pub fn spawn_cron_with_interval_and_name(
     JoinHandle<()>,
     Receiver<()>,
 ) {
+    spawn_cron_with_interval_name_and_pool(terminating, poll_interval_ms, thread_name, None)
+}
+
+/// Spawn with a worker pool for off-thread task execution.
+///
+/// The cron thread handles scheduling decisions; actual task execution is
+/// dispatched to the worker pool. See `CronStateMachine::dispatch_to_pool`.
+///
+/// Returns:
+/// - `CronHandle` for submitting tasks (clone-able, thread-safe, lock-free)
+/// - `JoinHandle` for the cron thread
+/// - `Receiver<()>` that signals when the scheduler is ready
+pub fn spawn_cron_with_pool(
+    terminating: Arc<AtomicBool>,
+    poll_interval_ms: u64,
+    thread_name: &str,
+    worker_pool: Arc<WorkPool>,
+) -> (
+    CronHandle,
+    JoinHandle<()>,
+    Receiver<()>,
+) {
+    spawn_cron_with_interval_name_and_pool(
+        terminating,
+        poll_interval_ms,
+        thread_name,
+        Some(worker_pool),
+    )
+}
+
+/// Internal spawn function accepting all optional parameters.
+fn spawn_cron_with_interval_name_and_pool(
+    terminating: Arc<AtomicBool>,
+    poll_interval_ms: u64,
+    thread_name: &str,
+    worker_pool: Option<Arc<WorkPool>>,
+) -> (
+    CronHandle,
+    JoinHandle<()>,
+    Receiver<()>,
+) {
     // Lock-free unbounded MPSC channel for tasks
     let (task_tx, task_rx) = unbounded::<ScheduledTask>();
 
@@ -703,6 +886,7 @@ pub fn spawn_cron_with_interval_and_name(
                 terminating_clone,
                 poll_interval_ms,
                 Some(ready_tx),
+                worker_pool,
             );
 
             sm.run();
@@ -730,23 +914,52 @@ pub struct TaskSchedulerSingleton {
     pub handle: CronHandle,
     /// Thread join handle (for graceful shutdown).
     thread_handle: Mutex<Option<JoinHandle<()>>>,
+    /// Optional worker pool for coordinated shutdown.
+    worker_pool: Option<Arc<WorkPool>>,
 }
 
 impl TaskSchedulerSingleton {
-    /// Create a new singleton from a handle and thread.
+    /// Create a new singleton from a handle and thread (no worker pool).
     pub fn new(handle: CronHandle, thread_handle: JoinHandle<()>) -> Self {
         Self {
             handle,
             thread_handle: Mutex::new(Some(thread_handle)),
+            worker_pool: None,
+        }
+    }
+
+    /// Create a new singleton with a worker pool for coordinated shutdown.
+    ///
+    /// Shutdown order: cron thread is joined first (stops new dispatches),
+    /// then the worker pool is shut down (drains in-flight tasks).
+    pub fn with_pool(
+        handle: CronHandle,
+        thread_handle: JoinHandle<()>,
+        pool: Arc<WorkPool>,
+    ) -> Self {
+        Self {
+            handle,
+            thread_handle: Mutex::new(Some(thread_handle)),
+            worker_pool: Some(pool),
         }
     }
 
     /// Request graceful shutdown and join the scheduler thread.
+    ///
+    /// If a worker pool is attached, shuts it down and joins its workers
+    /// after the cron thread exits (ensures no new dispatches occur after
+    /// the cron thread is joined, and all in-flight pool tasks complete).
     pub fn shutdown(&self) {
         self.handle.request_shutdown();
+        // Join cron thread first — prevents new dispatches to the pool
         let mut guard = self.thread_handle.lock();
         if let Some(handle) = guard.take() {
             let _ = handle.join();
+        }
+        drop(guard);
+        // Then shut down the worker pool and join all workers to drain in-flight tasks
+        if let Some(pool) = &self.worker_pool {
+            pool.shutdown_and_join();
         }
     }
 }
@@ -774,7 +987,7 @@ mod tests {
         let (_, rx) = unbounded::<ScheduledTask>();
         let terminating = Arc::new(AtomicBool::new(false));
 
-        let sm = CronStateMachine::new(rx, terminating.clone(), 100, None);
+        let sm = CronStateMachine::new(rx, terminating.clone(), 100, None, None);
 
         // Initial state is CheckEvents
         assert_eq!(sm.current_state(), CronState::CheckEvents);
@@ -786,7 +999,7 @@ mod tests {
         let (_, rx) = unbounded::<ScheduledTask>();
         let terminating = Arc::new(AtomicBool::new(false));
 
-        let mut sm = CronStateMachine::new(rx, terminating.clone(), 100, None);
+        let mut sm = CronStateMachine::new(rx, terminating.clone(), 100, None, None);
 
         // Request termination
         terminating.store(true, AtomicOrdering::Release);
@@ -1051,16 +1264,19 @@ mod tests {
             scheduled_time_ms: 300,
             metadata: TaskMetadata::OneShot,
             task: Box::new(|| true),
+            dispatch_state: None,
         });
         heap.push(ScheduledTask {
             scheduled_time_ms: 100,
             metadata: TaskMetadata::OneShot,
             task: Box::new(|| true),
+            dispatch_state: None,
         });
         heap.push(ScheduledTask {
             scheduled_time_ms: 200,
             metadata: TaskMetadata::OneShot,
             task: Box::new(|| true),
+            dispatch_state: None,
         });
 
         // Should pop in ascending order (earliest first)
@@ -1176,5 +1392,238 @@ mod tests {
 
         handle.request_shutdown();
         thread.join().expect("Cron thread panicked");
+    }
+
+    // ===================================================================
+    // Worker Pool Dispatch Tests
+    // ===================================================================
+
+    /// Test that one-shot tasks dispatched to a worker pool execute on pool
+    /// threads, not the cron thread.
+    #[test]
+    fn test_cron_dispatches_to_worker_pool() {
+        use super::super::work_pool::WorkPool;
+
+        let pool = Arc::new(WorkPool::with_threads_initial(1, 4, 2));
+        let terminating = Arc::new(AtomicBool::new(false));
+        let (handle, thread, ready_rx) = spawn_cron_with_pool(
+            Arc::clone(&terminating),
+            10,
+            "test-cron-pool",
+            Arc::clone(&pool),
+        );
+        ready_rx.recv().expect("Cron thread failed to start");
+
+        let thread_name = Arc::new(parking_lot::Mutex::new(String::new()));
+        let tn = Arc::clone(&thread_name);
+        let done = Arc::new(AtomicBool::new(false));
+        let d = Arc::clone(&done);
+
+        handle.schedule_once(0, "thread-name-check", move || {
+            *tn.lock() = thread::current()
+                .name()
+                .unwrap_or("unknown")
+                .to_string();
+            d.store(true, AtomicOrdering::Release);
+            true
+        });
+
+        // Wait for task to execute
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !done.load(AtomicOrdering::Acquire) {
+            if Instant::now() > deadline {
+                panic!("Timeout waiting for pool-dispatched task");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let name = thread_name.lock().clone();
+        assert!(
+            name.starts_with("work-pool-"),
+            "Expected task on work-pool-* thread, got '{}'",
+            name
+        );
+
+        handle.request_shutdown();
+        thread.join().expect("Cron thread panicked");
+    }
+
+    /// Test that recurring tasks on the worker pool execute multiple times.
+    #[test]
+    fn test_recurring_task_on_worker_pool() {
+        use super::super::work_pool::WorkPool;
+
+        let pool = Arc::new(WorkPool::with_threads_initial(1, 4, 2));
+        let terminating = Arc::new(AtomicBool::new(false));
+        let (handle, thread, ready_rx) = spawn_cron_with_pool(
+            Arc::clone(&terminating),
+            10,
+            "test-recurring-pool",
+            Arc::clone(&pool),
+        );
+        ready_rx.recv().expect("Cron thread failed to start");
+
+        let counter = Arc::new(StdAtomicU64::new(0));
+        let c = Arc::clone(&counter);
+
+        // Recurring task every 50ms
+        handle.schedule_recurring(0, 50, "pool-counter", move || {
+            c.fetch_add(1, Ordering::Relaxed);
+            true
+        });
+
+        // Wait ~300ms — should execute several times
+        thread::sleep(Duration::from_millis(300));
+
+        handle.request_shutdown();
+        thread.join().expect("Cron thread panicked");
+        pool.shutdown();
+
+        let count = counter.load(Ordering::Relaxed);
+        assert!(
+            count >= 3,
+            "Expected at least 3 recurring executions on pool, got {}",
+            count
+        );
+    }
+
+    /// Test that the in-flight guard prevents overlapping executions of
+    /// recurring tasks dispatched to the worker pool.
+    #[test]
+    fn test_in_flight_guard_prevents_overlap() {
+        use super::super::work_pool::WorkPool;
+
+        let pool = Arc::new(WorkPool::with_threads_initial(1, 4, 2));
+        let terminating = Arc::new(AtomicBool::new(false));
+        let (handle, thread, ready_rx) = spawn_cron_with_pool(
+            Arc::clone(&terminating),
+            10,
+            "test-inflight-guard",
+            Arc::clone(&pool),
+        );
+        ready_rx.recv().expect("Cron thread failed to start");
+
+        let counter = Arc::new(StdAtomicU64::new(0));
+        let c = Arc::clone(&counter);
+
+        // Task takes 200ms but is scheduled every 10ms — should NOT overlap
+        handle.schedule_recurring(0, 10, "slow-task", move || {
+            c.fetch_add(1, Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(200));
+            true
+        });
+
+        // Wait 500ms — without the guard we'd see ~50 concurrent executions.
+        // With the guard, each 200ms execution blocks the next, so ~2-3 max.
+        thread::sleep(Duration::from_millis(500));
+
+        handle.request_shutdown();
+        thread.join().expect("Cron thread panicked");
+        pool.shutdown();
+
+        let count = counter.load(Ordering::Relaxed);
+        assert!(
+            count <= 4,
+            "Expected at most 4 non-overlapping executions, got {} (overlap likely)",
+            count
+        );
+        assert!(
+            count >= 1,
+            "Expected at least 1 execution, got {}",
+            count
+        );
+    }
+
+    /// Test that the cron thread is not blocked by worker pool tasks.
+    /// A long task on the pool should not prevent a short task from completing.
+    #[test]
+    fn test_cron_thread_not_blocked_by_worker_tasks() {
+        use super::super::work_pool::WorkPool;
+
+        let pool = Arc::new(WorkPool::with_threads_initial(2, 4, 2));
+        let terminating = Arc::new(AtomicBool::new(false));
+        let (handle, thread, ready_rx) = spawn_cron_with_pool(
+            Arc::clone(&terminating),
+            10,
+            "test-not-blocked",
+            Arc::clone(&pool),
+        );
+        ready_rx.recv().expect("Cron thread failed to start");
+
+        let short_done = Arc::new(AtomicBool::new(false));
+        let sd = Arc::clone(&short_done);
+
+        // Schedule a long-running task
+        handle.schedule_once(0, "long-task", move || {
+            thread::sleep(Duration::from_millis(500));
+            true
+        });
+
+        // Schedule a short task slightly after
+        handle.schedule_once(10, "short-task", move || {
+            sd.store(true, AtomicOrdering::Release);
+            true
+        });
+
+        // The short task should complete well before the long task
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while !short_done.load(AtomicOrdering::Acquire) {
+            if Instant::now() > deadline {
+                panic!("Short task blocked by long task — cron thread may be blocked");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        handle.request_shutdown();
+        thread.join().expect("Cron thread panicked");
+        pool.shutdown();
+    }
+
+    /// Test that shutdown drains the cron worker pool (in-flight tasks complete).
+    #[test]
+    fn test_shutdown_drains_cron_pool() {
+        use super::super::work_pool::WorkPool;
+
+        let pool = Arc::new(WorkPool::with_threads_initial(1, 4, 2));
+        let terminating = Arc::new(AtomicBool::new(false));
+        let (handle, thread_handle, ready_rx) = spawn_cron_with_pool(
+            Arc::clone(&terminating),
+            10,
+            "test-shutdown-drain",
+            Arc::clone(&pool),
+        );
+        ready_rx.recv().expect("Cron thread failed to start");
+
+        let started = Arc::new(AtomicBool::new(false));
+        let counter = Arc::new(StdAtomicU64::new(0));
+        let s = Arc::clone(&started);
+        let c = Arc::clone(&counter);
+
+        // Schedule a task that signals when it starts and takes a moment to complete
+        handle.schedule_once(0, "drain-task", move || {
+            s.store(true, AtomicOrdering::Release);
+            thread::sleep(Duration::from_millis(100));
+            c.fetch_add(1, Ordering::Relaxed);
+            true
+        });
+
+        // Wait until the task has actually started executing on the pool
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !started.load(AtomicOrdering::Acquire) {
+            if Instant::now() > deadline {
+                panic!("Timeout waiting for drain-task to start");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let singleton = TaskSchedulerSingleton::with_pool(handle, thread_handle, pool);
+        singleton.shutdown();
+
+        // Task should have completed before shutdown returned
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            1,
+            "In-flight task should complete before shutdown returns"
+        );
     }
 }

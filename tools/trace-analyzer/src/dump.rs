@@ -73,9 +73,10 @@ fn print_event_human(event: &TraceEvent, reader: &TraceReader) {
         String::new()
     };
 
+    let ts_ns = event.timestamp_ns;
     println!(
-        "[#{} T{} D{} {}{}]",
-        event.seq, event.thread_id, event.depth, tier_label(&event.tier), span_str,
+        "[#{} T{} D{} {} {}ns{}]",
+        event.seq, event.thread_id, event.depth, tier_label(&event.tier), ts_ns, span_str,
     );
 
     // Input => Outputs
@@ -206,6 +207,35 @@ fn print_kind_details(kind: &TraceEventKind) {
         TraceEventKind::InferredTypeRegistered { function_name, registered_type, source } => {
             println!("  InferredTypeRegistered {{ fn: \"{}\", type: {}, source: \"{}\" }}",
                      function_name, format_trace_value(registered_type), source);
+        }
+        TraceEventKind::WorkPoolTaskEnqueued { task_kind, priority, queue_depth, active_workers, max_workers } => {
+            println!("  WorkPoolTaskEnqueued {{ kind: \"{}\", pri: {}, queue: {}, active: {}/{} }}",
+                     task_kind, priority, queue_depth, active_workers, max_workers);
+        }
+        TraceEventKind::WorkPoolTaskDropped { task_kind, queue_depth, active_workers } => {
+            println!("  WorkPoolTaskDropped {{ kind: \"{}\", queue: {}, active: {} }}",
+                     task_kind, queue_depth, active_workers);
+        }
+        TraceEventKind::WorkPoolTaskCompleted { task_kind, runtime_nanos, queue_depth, active_workers } => {
+            println!("  WorkPoolTaskCompleted {{ kind: \"{}\", runtime: {}ns, queue: {}, active: {} }}",
+                     task_kind, runtime_nanos, queue_depth, active_workers);
+        }
+        TraceEventKind::WorkPoolScaleEvent {
+            action, active_workers_after, min_workers, max_workers,
+            queue_depth, ema_throughput, ema_queue_depth,
+            ema_slab_pressure, ema_rss_pressure, objective, emergency,
+        } => {
+            println!("  WorkPoolScaleEvent {{ action: \"{}\", active: {}, range: [{}, {}], queue: {} }}",
+                     action, active_workers_after, min_workers, max_workers, queue_depth);
+            println!("    ema: tp={:.2}, qd={:.2}, slab={:.3}, rss={:.3}, J={:.4}, emergency={}",
+                     ema_throughput, ema_queue_depth, ema_slab_pressure, ema_rss_pressure, objective, emergency);
+        }
+        TraceEventKind::WorkPoolWorkerParked { worker_id, queue_depth } => {
+            println!("  WorkPoolWorkerParked {{ worker: {}, queue: {} }}", worker_id, queue_depth);
+        }
+        TraceEventKind::WorkPoolWorkerResumed { worker_id, queue_depth, active_workers } => {
+            println!("  WorkPoolWorkerResumed {{ worker: {}, queue: {}, active: {} }}",
+                     worker_id, queue_depth, active_workers);
         }
     }
 }

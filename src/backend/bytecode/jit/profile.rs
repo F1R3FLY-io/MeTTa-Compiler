@@ -4,24 +4,26 @@
 //! that should be JIT compiled. The tiering strategy is:
 //!
 //! 1. Cold (< 10 executions): Run bytecode only
-//! 2. Warming (10-99 executions): Run bytecode, increment counter
-//! 3. Hot (>= 100 executions): Trigger JIT compilation
+//! 2. Warming (10-199 executions): Run bytecode, increment counter
+//! 3. Hot (>= 200 executions): Trigger JIT compilation
 //! 4. Jitted: Run native code
 //!
-//! The threshold of 100 is aggressive to maximize JIT benefits while
-//! amortizing compilation overhead.
+//! The threshold of 200 (V8 Maglev-aligned) allows sufficient type profile
+//! data collection from bytecode execution before promoting to JIT.
 
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, Ordering};
 
-/// Execution count threshold to trigger JIT compilation
+/// Execution count threshold to trigger JIT compilation.
 ///
-/// Set to 100 for aggressive tiering - hot loops will be JIT compiled
-/// after approximately 100 iterations. This is balanced against:
-/// - Too low: JIT overhead not amortized
-/// - Too high: Miss optimization opportunities
-pub const HOT_THRESHOLD: u32 = 100;
+/// V8 equivalent: Sparkplug → Maglev (~100-400). Set to 200 to align
+/// with System A's JIT1_THRESHOLD and allow sufficient type profile data
+/// collection from bytecode execution before promoting to JIT.
+pub const HOT_THRESHOLD: u32 = 200;
 
-/// Threshold to start considering for JIT (warming state)
+/// Threshold to start considering for JIT (warming state).
+///
+/// At 10+ executions, the chunk transitions from Cold to Warming,
+/// indicating it may become hot. Still runs bytecode.
 pub const WARM_THRESHOLD: u32 = 10;
 
 /// Maximum executions to track (prevents counter overflow)

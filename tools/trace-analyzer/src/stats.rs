@@ -16,6 +16,7 @@ pub fn run(file: &str) -> Result<(), String> {
     let mut error_count = 0u64;
     let mut bailout_count = 0u64;
     let mut gc_safepoint_count = 0u64;
+    let mut workpool_event_count = 0u64;
 
     for event in reader.events() {
         total_events += 1;
@@ -48,6 +49,14 @@ pub fn run(file: &str) -> Result<(), String> {
             TraceEventKind::GcSafepoint { .. } => {
                 gc_safepoint_count += 1;
             }
+            TraceEventKind::WorkPoolTaskEnqueued { .. }
+            | TraceEventKind::WorkPoolTaskDropped { .. }
+            | TraceEventKind::WorkPoolTaskCompleted { .. }
+            | TraceEventKind::WorkPoolScaleEvent { .. }
+            | TraceEventKind::WorkPoolWorkerParked { .. }
+            | TraceEventKind::WorkPoolWorkerResumed { .. } => {
+                workpool_event_count += 1;
+            }
             _ => {}
         }
     }
@@ -61,6 +70,7 @@ pub fn run(file: &str) -> Result<(), String> {
     println!("Errors: {error_count}");
     println!("Bailouts: {bailout_count}");
     println!("GC safepoints: {gc_safepoint_count}");
+    println!("Work pool events: {workpool_event_count}");
 
     println!();
     println!("--- Events by Tier ---");
@@ -123,5 +133,11 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::TypeMatch { .. } => "TypeMatch",
         TraceEventKind::RhsTypeComputed { .. } => "RhsTypeComputed",
         TraceEventKind::InferredTypeRegistered { .. } => "InferredTypeRegistered",
+        TraceEventKind::WorkPoolTaskEnqueued { .. } => "WorkPoolTaskEnqueued",
+        TraceEventKind::WorkPoolTaskDropped { .. } => "WorkPoolTaskDropped",
+        TraceEventKind::WorkPoolTaskCompleted { .. } => "WorkPoolTaskCompleted",
+        TraceEventKind::WorkPoolScaleEvent { .. } => "WorkPoolScaleEvent",
+        TraceEventKind::WorkPoolWorkerParked { .. } => "WorkPoolWorkerParked",
+        TraceEventKind::WorkPoolWorkerResumed { .. } => "WorkPoolWorkerResumed",
     }
 }

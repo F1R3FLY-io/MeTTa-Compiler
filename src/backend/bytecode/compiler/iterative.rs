@@ -5,6 +5,7 @@
 //! overflow for deeply nested expressions.
 
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 
 use super::error::{CompileError, CompileResult};
 use super::work_item::{
@@ -16,6 +17,35 @@ use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::models::{MettaValue, MettaValueInner};
+
+// ============================================================================
+// Cached Synthetic Atoms
+// ============================================================================
+//
+// Slab-allocated once, reused by all compilation tasks to avoid redundant
+// `MettaValue::Atom("...")` allocations (which allocate string + slab slot).
+
+/// Cached atom for `=` (rule head in match compilation).
+static ATOM_EQUALS: OnceLock<MettaValue> = OnceLock::new();
+/// Cached atom for `println!` (I/O builtin).
+static ATOM_PRINTLN: OnceLock<MettaValue> = OnceLock::new();
+/// Cached atom for `if` (control flow).
+static ATOM_IF: OnceLock<MettaValue> = OnceLock::new();
+
+#[inline]
+fn cached_atom_equals() -> MettaValue {
+    *ATOM_EQUALS.get_or_init(|| MettaValue::Atom("="))
+}
+
+#[inline]
+fn cached_atom_println() -> MettaValue {
+    *ATOM_PRINTLN.get_or_init(|| MettaValue::Atom("println!"))
+}
+
+#[inline]
+fn cached_atom_if() -> MettaValue {
+    *ATOM_IF.get_or_init(|| MettaValue::Atom("if"))
+}
 
 impl Compiler {
     /// Compile a MettaValue expression using iterative trampoline pattern.
@@ -120,6 +150,7 @@ impl Compiler {
 
             CompileWork::CompileCallArgs {
                 head,
+                head_value,
                 args,
                 arity,
                 saved_tail_position,
@@ -127,6 +158,7 @@ impl Compiler {
             } => {
                 self.compile_call_args_iterative(
                     head,
+                    head_value,
                     args,
                     arity,
                     saved_tail_position,
@@ -433,7 +465,7 @@ impl Compiler {
             // Atoms (symbols and variables)
             // ================================================================
             MettaValueInner::Atom(name) => {
-                self.compile_atom(*name)?;
+                self.compile_atom(*name, Some(expr))?;
             }
 
             // ================================================================
@@ -529,6 +561,7 @@ impl Compiler {
 
         // Check if the head is a known operation
         if let Some(MettaValueInner::Atom(op_name)) = items.first().map(|v| v.inner()) {
+            let head_value = items[0]; // Original slab-allocated head (Copy)
             let args = &items[1..];
 
             // Try to compile as built-in operation
@@ -540,7 +573,7 @@ impl Compiler {
 
             // Not a builtin - check if it's a potential function call
             if !op_name.starts_with('$') && !op_name.starts_with('&') {
-                return self.compile_call_iterative(op_name, args, cont_id, work_stack);
+                return self.compile_call_iterative(op_name, head_value, args, cont_id, work_stack);
             }
         }
 
@@ -559,6 +592,7 @@ impl Compiler {
     fn compile_call_iterative(
         &mut self,
         head: &str,
+        head_val: MettaValue,
         args: &[MettaValue],
         cont_id: usize,
         work_stack: &mut Vec<CompileWork>,
@@ -577,6 +611,7 @@ impl Compiler {
         // Push call compilation work
         work_stack.push(CompileWork::CompileCallArgs {
             head: head.to_string(),
+            head_value: Some(head_val),
             args: args.iter().cloned().collect(),
             arity,
             saved_tail_position: self.in_tail_position,
@@ -590,6 +625,7 @@ impl Compiler {
     fn compile_call_args_iterative(
         &mut self,
         head: String,
+        head_value: Option<MettaValue>,
         mut args: VecDeque<MettaValue>,
         arity: usize,
         saved_tail_position: bool,
@@ -603,6 +639,7 @@ impl Compiler {
             // Push continuation to compile rest and emit call
             work_stack.push(CompileWork::CompileCallArgs {
                 head,
+                head_value,
                 args,
                 arity,
                 saved_tail_position,
@@ -616,12 +653,12 @@ impl Compiler {
                 cont_id: 0,
             });
         } else {
-            // All args compiled, emit the call
+            // All args compiled, emit the call.
+            // Reuse original head value to avoid redundant slab allocation.
             self.in_tail_position = saved_tail_position;
 
-            let head_index = self
-                .builder
-                .add_constant(MettaValue::Atom(head.to_string()));
+            let head_constant = head_value.unwrap_or_else(|| MettaValue::Atom(head));
+            let head_index = self.builder.add_constant(head_constant);
 
             if self.in_tail_position {
                 self.builder.emit_u16(Opcode::TailCall, head_index);
@@ -1942,7 +1979,7 @@ impl Compiler {
                     expr: args[0].clone(),
                     cont_id: 0,
                 });
-                let idx = self.builder.add_constant(MettaValue::Atom("=".to_string()));
+                let idx = self.builder.add_constant(cached_atom_equals());
                 self.builder.emit_u16(Opcode::PushAtom, idx);
                 Ok(Some(()))
             }
@@ -1965,9 +2002,7 @@ impl Compiler {
                     in_tail_position: false,
                     cont_id: 0,
                 });
-                let idx = self
-                    .builder
-                    .add_constant(MettaValue::Atom("println!".to_string()));
+                let idx = self.builder.add_constant(cached_atom_println());
                 self.builder.emit_u16(Opcode::PushAtom, idx);
                 Ok(Some(()))
             }
@@ -2112,7 +2147,7 @@ impl Compiler {
                 // Non-bool handler: construct unreduced (if cond then else)
                 // Stack has: [cond] (JumpIfNotBool peeked, didn't pop)
                 // Emit: PushAtom "if", Swap, PushConstant then, PushConstant else, MakeSExpr 4
-                let if_idx = self.builder.add_constant(MettaValue::Atom("if"));
+                let if_idx = self.builder.add_constant(cached_atom_if());
                 self.builder.emit_u16(Opcode::PushAtom, if_idx);
                 self.builder.emit(Opcode::Swap);
                 self.builder.emit_constant(then_branch);

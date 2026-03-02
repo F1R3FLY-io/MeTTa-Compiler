@@ -325,6 +325,87 @@ pub enum TraceEventKind {
         /// "phase-10.1-rhs" or "phase-10.4-arrow".
         source: String,
     },
+
+    // ---- Worker Pool ----
+    /// A task was added to the work pool's priority queue.
+    WorkPoolTaskEnqueued {
+        /// "eval", "compile", or "detached"
+        task_kind: String,
+        /// Task priority value (5=NORMAL, 10=BACKGROUND_COMPILE)
+        priority: u32,
+        /// Queue depth AFTER the task was enqueued
+        queue_depth: u32,
+        /// Number of currently active (non-parked) workers
+        active_workers: u32,
+        /// Maximum configured workers
+        max_workers: u32,
+    },
+
+    /// A compile task was dropped due to backpressure (queue full).
+    WorkPoolTaskDropped {
+        /// Always "compile"
+        task_kind: String,
+        /// Queue depth at drop time
+        queue_depth: u32,
+        /// Number of active workers
+        active_workers: u32,
+    },
+
+    /// A worker finished executing a task.
+    WorkPoolTaskCompleted {
+        /// "eval", "compile", or "detached"
+        task_kind: String,
+        /// Runtime in nanoseconds
+        runtime_nanos: u64,
+        /// Queue depth after task completion
+        queue_depth: u32,
+        /// Number of active workers
+        active_workers: u32,
+    },
+
+    /// Scaling monitor tick — records every decision including Hold.
+    WorkPoolScaleEvent {
+        /// "unpark", "park", or "hold"
+        action: String,
+        /// Number of active workers AFTER the action
+        active_workers_after: u32,
+        /// Min worker bound
+        min_workers: u32,
+        /// Max worker bound
+        max_workers: u32,
+        /// Current queue depth (instantaneous, not EMA)
+        queue_depth: u32,
+        /// EMA-smoothed throughput signal
+        ema_throughput: f64,
+        /// EMA-smoothed queue depth signal
+        ema_queue_depth: f64,
+        /// EMA-smoothed slab memory pressure signal
+        ema_slab_pressure: f64,
+        /// EMA-smoothed RSS memory pressure signal
+        ema_rss_pressure: f64,
+        /// Composite objective value J(N) from hill climber
+        objective: f64,
+        /// Whether this was an emergency override (bp_level >= 2)
+        emergency: bool,
+    },
+
+    /// A worker thread entered the parked state.
+    WorkPoolWorkerParked {
+        /// Worker thread index
+        worker_id: u32,
+        /// Queue depth when this worker parked
+        queue_depth: u32,
+    },
+
+    /// A worker thread resumed from the parked state.
+    WorkPoolWorkerResumed {
+        /// Worker thread index
+        worker_id: u32,
+        /// Queue depth when this worker resumed
+        queue_depth: u32,
+        /// Active workers after resume
+        active_workers: u32,
+    },
 }
 
 /// A single trace event — the fundamental unit of the trace log.

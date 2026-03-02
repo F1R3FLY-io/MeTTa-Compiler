@@ -25,7 +25,7 @@ use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
 
 #[cfg(feature = "async")]
-use crate::backend::models::work_pool::global_work_pool;
+use crate::backend::models::work_pool::global_eval_pool;
 
 #[cfg(feature = "async")]
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
@@ -497,7 +497,7 @@ async fn evaluate_batch_parallel_arena(
     let remaining = Arc::new(AtomicU32::new(num_tasks as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
 
-    let pool = global_work_pool();
+    let pool = global_eval_pool();
 
     for (slot, (idx, expr, should_output)) in batch.into_iter().enumerate() {
         let env = env.clone();

@@ -5,8 +5,8 @@
 //! ```text
 //! Tier 0: Tree-walking interpreter (cold code, first execution)
 //! Tier 1: Bytecode VM (warm code, 10+ executions)
-//! Tier 2: JIT Stage 1 (hot code, 100+ executions, arithmetic/boolean)
-//! Tier 3: JIT Stage 2 (very hot code, 500+ executions, full native)
+//! Tier 2: JIT Stage 1 (hot code, 200+ executions, arithmetic/boolean)
+//! Tier 3: JIT Stage 2 (very hot code, 2000+ executions, full native)
 //! ```
 //!
 //! The tiered approach balances compilation overhead against runtime performance:
@@ -26,8 +26,12 @@ use super::profile::{JitProfile, JitState, HOT_THRESHOLD, WARM_THRESHOLD};
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 
-/// Threshold for Stage 2 JIT (full native with runtime calls)
-pub const STAGE2_THRESHOLD: u32 = 500;
+/// Threshold for Stage 2 JIT (full native with runtime calls).
+///
+/// V8 equivalent: Maglev → Turbofan (~1000-6000). Set to 2000 to align
+/// with System A's JIT2_THRESHOLD and ensure JIT1 has collected stable
+/// profiles for speculative optimization.
+pub const STAGE2_THRESHOLD: u32 = 2_000;
 
 /// Execution tier for a bytecode chunk
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -39,10 +43,10 @@ pub enum Tier {
     /// 10+ executions - use bytecode VM
     Bytecode = 1,
 
-    /// 100+ executions - JIT Stage 1 (arithmetic/boolean only)
+    /// 200+ executions - JIT Stage 1 (arithmetic/boolean only)
     JitStage1 = 2,
 
-    /// 500+ executions - JIT Stage 2 (full native with runtime calls)
+    /// 2000+ executions - JIT Stage 2 (full native with runtime calls)
     JitStage2 = 3,
 }
 
@@ -582,12 +586,15 @@ mod tests {
         assert_eq!(Tier::from_count(5), Tier::Interpreter);
         assert_eq!(Tier::from_count(10), Tier::Bytecode);
         assert_eq!(Tier::from_count(50), Tier::Bytecode);
+        assert_eq!(Tier::from_count(100), Tier::Bytecode);
 
         {
-            assert_eq!(Tier::from_count(100), Tier::JitStage1);
+            // V8-aligned thresholds: HOT=200 (Maglev), STAGE2=2000 (Turbofan)
             assert_eq!(Tier::from_count(200), Tier::JitStage1);
-            assert_eq!(Tier::from_count(500), Tier::JitStage2);
-            assert_eq!(Tier::from_count(1000), Tier::JitStage2);
+            assert_eq!(Tier::from_count(500), Tier::JitStage1);
+            assert_eq!(Tier::from_count(1999), Tier::JitStage1);
+            assert_eq!(Tier::from_count(2000), Tier::JitStage2);
+            assert_eq!(Tier::from_count(5000), Tier::JitStage2);
         }
     }
 

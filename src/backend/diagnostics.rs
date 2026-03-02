@@ -454,29 +454,42 @@ pub fn print_tier_stats() {
 /// Shows worker counts, queue depths, and throughput metrics for all
 /// thread pool subsystems (WorkPool, GcPool).
 pub fn print_pool_stats() {
-    use crate::backend::models::work_pool::{global_work_pool, work_eval_count};
+    use crate::backend::models::work_pool::{global_eval_pool, global_compile_pool, work_eval_count};
     use crate::backend::models::gc_pool::global_gc_pool;
 
-    // ── Work Pool ──
-    let wp = global_work_pool();
-    let wp_min = wp.min_threads();
-    let wp_max = wp.max_threads();
-    let wp_active = wp.active_workers();
-    let wp_parked = wp_max.saturating_sub(wp_active);
-    let wp_queue = wp.queue_len();
-    let wp_evals = work_eval_count();
-    let wp_median_ns = wp.runtime_tracker().global_median();
-    let wp_median_ms = wp_median_ns / 1_000_000.0;
+    // ── Eval Pool ──
+    let ep = global_eval_pool();
+    let ep_min = ep.min_threads();
+    let ep_max = ep.max_threads();
+    let ep_active = ep.active_workers();
+    let ep_parked = ep_max.saturating_sub(ep_active);
+    let ep_queue = ep.queue_len();
+    let ep_evals = work_eval_count();
+    let ep_median_ns = ep.runtime_tracker().global_median();
+    let ep_median_ms = ep_median_ns / 1_000_000.0;
 
     eprintln!();
-    eprintln!("── Work Pool (Eval + Compile) ─────────────────────────────────");
-    eprintln!("  min_threads:        {:>12}", wp_min);
-    eprintln!("  max_threads:        {:>12}", wp_max);
-    eprintln!("  active_workers:     {:>12}", wp_active);
-    eprintln!("  parked_workers:     {:>12}", wp_parked);
-    eprintln!("  queue_depth:        {:>12}", wp_queue);
-    eprintln!("  total_evals:        {:>12}", wp_evals);
-    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", wp_median_ns, wp_median_ms);
+    eprintln!("── Eval Pool ──────────────────────────────────────────────────");
+    eprintln!("  min_threads:        {:>12}", ep_min);
+    eprintln!("  max_threads:        {:>12}", ep_max);
+    eprintln!("  active_workers:     {:>12}", ep_active);
+    eprintln!("  parked_workers:     {:>12}", ep_parked);
+    eprintln!("  queue_depth:        {:>12}", ep_queue);
+    eprintln!("  total_evals:        {:>12}", ep_evals);
+    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", ep_median_ns, ep_median_ms);
+    eprintln!();
+
+    // ── Compile Pool ──
+    let cp = global_compile_pool();
+    let cp_active = cp.active_workers();
+    let cp_queue = cp.queue_len();
+    let cp_median_ns = cp.runtime_tracker().global_median();
+    let cp_median_ms = cp_median_ns / 1_000_000.0;
+
+    eprintln!("── Compile Pool (fixed {} workers) ─────────────────────────────", cp.max_threads());
+    eprintln!("  active_workers:     {:>12}", cp_active);
+    eprintln!("  queue_depth:        {:>12}", cp_queue);
+    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", cp_median_ns, cp_median_ms);
     eprintln!();
 
     // ── GC Pool ──

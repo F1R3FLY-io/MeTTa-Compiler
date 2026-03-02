@@ -96,7 +96,12 @@ impl Compiler {
     }
 
     /// Compile an atom (symbol or variable)
-    fn compile_atom(&mut self, name: &str) -> CompileResult<()> {
+    ///
+    /// When `original_value` is `Some(v)`, the original slab-allocated
+    /// `MettaValue` is reused directly as the constant, avoiding redundant
+    /// string + slab allocation. `None` is used for synthetic atoms created
+    /// during compilation (e.g., function call heads).
+    fn compile_atom(&mut self, name: &str, original_value: Option<MettaValue>) -> CompileResult<()> {
         // Check if it's a variable (starts with $)
         if let Some(var_name) = name.strip_prefix('$') {
             // First try to resolve as local
@@ -115,16 +120,15 @@ impl Compiler {
                 return Ok(());
             }
 
-            // Variable not bound - push as symbol to be resolved at runtime
-            let idx = self
-                .builder
-                .add_constant(MettaValue::Atom(name.to_string()));
+            // Variable not bound - push as symbol to be resolved at runtime.
+            // Reuse original value if available to avoid redundant slab allocation.
+            let constant = original_value.unwrap_or_else(|| MettaValue::Atom(name.to_string()));
+            let idx = self.builder.add_constant(constant);
             self.builder.emit_u16(Opcode::PushVariable, idx);
         } else {
-            // Regular symbol
-            let idx = self
-                .builder
-                .add_constant(MettaValue::Atom(name.to_string()));
+            // Regular symbol — reuse original value to avoid redundant slab allocation.
+            let constant = original_value.unwrap_or_else(|| MettaValue::Atom(name.to_string()));
+            let idx = self.builder.add_constant(constant);
             self.builder.emit_u16(Opcode::PushAtom, idx);
         }
         Ok(())

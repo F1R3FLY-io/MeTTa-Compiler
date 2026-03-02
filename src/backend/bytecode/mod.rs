@@ -105,6 +105,7 @@ pub mod mork_bridge;
 pub mod native_registry;
 pub mod opcodes;
 pub mod optimizer;
+pub mod runtime_profile;
 pub mod space_registry;
 pub mod tiered_cache;
 pub mod vm;
@@ -194,6 +195,12 @@ pub use jit::{
     STAGE2_THRESHOLD,
 };
 
+// Runtime type profile re-exports
+pub use runtime_profile::{
+    RuntimeTypeProfile, TypeTag,
+    BranchFeedback, ArgTypeFeedback, RuleMatchFeedback, GuardFeedback,
+};
+
 // Unified tiered compilation cache re-exports
 pub use tiered_cache::{
     ExecutionTier,
@@ -206,7 +213,10 @@ pub use tiered_cache::{
     BYTECODE_THRESHOLD,
     JIT1_THRESHOLD,
     JIT2_THRESHOLD,
+    FLUSH_INTERVAL,
     hash_value,
+    // Per-slot atomic counter infrastructure for sub-expression tiering
+    increment_exec_count,
 };
 
 
@@ -501,8 +511,18 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // Note: match and unify need space access, use tree-walker
                     // Error handling
                     "error" | "is-error" | "catch" => true,
-                    // Unknown operations fall back to tree-walker
-                    // (switch, collapse, etc. are not yet implemented in bytecode)
+                    // Type query (get-type can use env type declarations)
+                    "get-type" => true,
+                    // Unknown atom heads: user-defined functions need rules
+                    // from the environment. The bytecode VM's DispatchRules
+                    // matches rules and returns the instantiated RHS, but only
+                    // performs single-step reduction — it does NOT continue
+                    // evaluating the result. Multi-step reductions (recursion,
+                    // nested function calls) produce partially-reduced results.
+                    // Keep as non-compilable so the tree-walker's trampoline
+                    // loop handles full iterative reduction.
+                    // The identity check in eval_inner guards against the case
+                    // where known-head expressions are returned unreduced.
                     _ => false,
                 };
 
@@ -893,12 +913,13 @@ pub type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
 pub fn execute_arena(
     chunk: std::sync::Arc<GenericBytecodeChunk<MettaValue>>,
     env: MettaEnvironment,
-) -> VmResult<(Vec<MettaValue>, MettaEnvironment)> {
+) -> VmResult<(Vec<MettaValue>, MettaEnvironment, bool)> {
     let factory = env.factory().clone();
     let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     let (results, env_opt) = vm.run_with_env()?;
+    let unreduced = vm.unreduced;
     let final_env = env_opt.unwrap_or_else(|| MettaEnvironment::new(factory));
-    Ok((results, final_env))
+    Ok((results, final_env, unreduced))
 }
 
 /// Evaluate MettaValue expression with environment threading.
@@ -930,7 +951,7 @@ pub fn execute_arena(
 pub fn eval_bytecode_arena_with_env(
     expr: &MettaValue,
     env: MettaEnvironment,
-) -> VmResult<(Vec<MettaValue>, MettaEnvironment)> {
+) -> VmResult<(Vec<MettaValue>, MettaEnvironment, bool)> {
     // Compile the expression to bytecode
     let chunk = compile_bytecode_arc("arena_with_env", expr)
         .map_err(|_| VmError::CompileError)?;
@@ -939,9 +960,10 @@ pub fn eval_bytecode_arena_with_env(
     let factory = env.factory().clone();
     let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     let (results, env_opt) = vm.run_with_env()?;
+    let unreduced = vm.unreduced;
 
     let final_env = env_opt.unwrap_or_else(|| MettaEnvironment::new(factory));
-    Ok((results, final_env))
+    Ok((results, final_env, unreduced))
 }
 
 /// Execute bytecode with generic value type and environment.

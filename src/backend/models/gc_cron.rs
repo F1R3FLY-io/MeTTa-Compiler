@@ -431,7 +431,15 @@ fn execute_counter_sync() {
                 // Hash cached but entry removed? Fall through to slow path.
             }
 
-            // Slow path: first time for this slot — compute hash, create state, cache hash
+            // Skip expensive hashing for expressions below compilation threshold.
+            // Let count accumulate in the slot across sync cycles until threshold
+            // is crossed. Most expressions are cold (1-3 execs) and will never be
+            // compiled — no point hashing their entire tree or creating a DashMap entry.
+            if count < cache.bytecode_threshold {
+                continue;
+            }
+
+            // Slow path: expression crossed threshold — hash, create DashMap entry, cache hash
             let ptr = page.slot_ptr(slot_idx, slot_size) as *const MettaValueInner;
             // SAFETY: slot is still live — COUNTER_FLUSH_LOCK prevents
             // concurrent GC Phase 3 freeing, and epoch != u64::MAX confirms
@@ -506,7 +514,9 @@ mod tests {
         // Poll until GC_REQUESTED is set (with timeout).
         // The monitor fires every 100ms and will re-set the flag if cleared
         // by other parallel tests calling maybe_trigger_gc().
-        let deadline = Instant::now() + Duration::from_millis(500);
+        // Use a generous deadline (2s = 20 poll cycles) to avoid flaky failures
+        // under heavy parallel test load where thread scheduling is delayed.
+        let deadline = Instant::now() + Duration::from_millis(2000);
         let mut observed = false;
         while Instant::now() < deadline {
             if is_gc_requested() {
@@ -518,7 +528,7 @@ mod tests {
 
         assert!(
             observed,
-            "GC_REQUESTED should be true after high allocation rate (within 500ms)"
+            "GC_REQUESTED should be true after high allocation rate (within 2s)"
         );
 
         singleton.shutdown();

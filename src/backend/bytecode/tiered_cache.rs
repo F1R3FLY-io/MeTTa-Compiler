@@ -201,6 +201,74 @@ pub fn get_slot_compilation_hash(ptr: *const MettaValueInner) -> u64 {
     })
 }
 
+/// Increment per-slot execution counter AND return cached compilation hash.
+///
+/// Single thread-local access + single generation check (vs 2× for separate
+/// `increment_exec_count` + `get_slot_compilation_hash` calls).
+/// Hot path: ~15-20 cycles on CachedExecPage hit.
+///
+/// Returns the cached compilation hash (0 if not yet computed by cron).
+#[inline]
+pub fn increment_and_get_hash(ptr: *const MettaValueInner) -> u64 {
+    let addr = ptr as usize;
+    EXEC_PAGE_CACHE.with(|cell| {
+        if let Some(cached) = cell.get() {
+            let current_gen = crate::backend::models::gc_allocator::global_allocator()
+                .page_generation();
+            if cached.generation == current_gen && addr >= cached.base && addr < cached.end {
+                let slot_idx = (addr - cached.base) / cached.slot_size;
+                // SAFETY: slot_idx is within bounds (addr range-checked above),
+                // page is still live (generation matches).
+                unsafe { &*cached.counters_ptr.add(slot_idx) }
+                    .fetch_add(1, Ordering::Relaxed);
+                return unsafe { &*cached.hashes_ptr.add(slot_idx) }
+                    .load(Ordering::Relaxed);
+            }
+        }
+        // Cache miss: find page, populate cache, increment counter, return hash
+        increment_and_get_hash_slow(ptr, addr, cell)
+    })
+}
+
+/// Cold path for `increment_and_get_hash`: linear scan of value pages to find
+/// the containing page, populate the thread-local cache, increment counter,
+/// and return the compilation hash.
+#[cold]
+fn increment_and_get_hash_slow(
+    _ptr: *const MettaValueInner,
+    addr: usize,
+    cell: &Cell<Option<CachedExecPage>>,
+) -> u64 {
+    use crate::backend::models::gc_allocator::global_allocator;
+
+    let allocator = global_allocator();
+    let slot_size = allocator.value_slot_size();
+    let generation = allocator.page_generation();
+    let pages = allocator.value_pages_read();
+
+    for page in pages.iter() {
+        let base = page.slot_ptr(0, slot_size) as usize;
+        let end = base + crate::backend::models::gc_allocator::PAGE_SIZE;
+        if addr >= base && addr < end {
+            let slot_idx = (addr - base) / slot_size;
+            page.exec_count_fetch_add(slot_idx, 1);
+            let hash = page.compilation_hash(slot_idx);
+            // Populate cache for subsequent fast-path hits
+            cell.set(Some(CachedExecPage {
+                base,
+                end,
+                counters_ptr: page.exec_counts_ptr(),
+                hashes_ptr: page.compilation_hashes_ptr(),
+                slot_size,
+                generation,
+            }));
+            return hash;
+        }
+    }
+    // Pointer not in any page — ignore (shouldn't happen for slab values)
+    0
+}
+
 /// Compilation status for a tier
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -1294,7 +1362,7 @@ fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H)
 pub fn try_sub_expr_dispatch(
     ptr: *const MettaValueInner,
     _value: &MettaValue,
-    env: MettaEnvironment,
+    env: &MettaEnvironment,
 ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
     let hash = get_slot_compilation_hash(ptr);
     if hash == 0 { return None; }
@@ -1305,6 +1373,58 @@ pub fn try_sub_expr_dispatch(
     drop(state_ref); // release DashMap read guard
 
     // Cascade: JIT Stage 2 > JIT Stage 1 > Bytecode VM
+    // env.clone() is deferred to here — only when a tier actually dispatches.
+    if state.jit2_status() == TierStatusKind::Ready {
+        if let Some(code) = state.jit2_code() {
+            if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                cache.record_tier_execution(ExecutionTier::JitStage2);
+                return Some((results, new_env));
+            }
+        }
+    }
+    if state.jit1_status() == TierStatusKind::Ready {
+        if let Some(code) = state.jit1_code() {
+            if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                cache.record_tier_execution(ExecutionTier::JitStage1);
+                return Some((results, new_env));
+            }
+        }
+    }
+    if state.bytecode_status() == TierStatusKind::Ready {
+        if let Some(chunk) = state.bytecode_chunk() {
+            match super::execute_arena(chunk, env.clone()) {
+                Ok((results, new_env, unreduced)) if !unreduced => {
+                    cache.record_tier_execution(ExecutionTier::Bytecode);
+                    return Some((results, new_env));
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Attempt to dispatch a sub-expression using a pre-computed compilation hash.
+///
+/// Like `try_sub_expr_dispatch`, but skips the `get_slot_compilation_hash` call
+/// since the hash was already obtained by `increment_and_get_hash`. The caller
+/// guarantees `hash != 0`.
+///
+/// Returns `Some((results, new_env))` on successful dispatch, `None` if
+/// no compiled code is available or execution fails (falls back to tree-walker).
+pub fn try_sub_expr_dispatch_with_hash(
+    hash: u64,
+    _value: &MettaValue,
+    env: &MettaEnvironment,
+) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
+    // hash is already known non-zero (checked by caller)
+    let cache = global_tiered_cache();
+    let state_ref = cache.entries.get(&hash)?;
+    let state = std::sync::Arc::clone(state_ref.value());
+    drop(state_ref); // release DashMap read guard
+
+    // Cascade: JIT Stage 2 > JIT Stage 1 > Bytecode VM
+    // env.clone() deferred to dispatch site — only when a tier is actually invoked.
     if state.jit2_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit2_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {

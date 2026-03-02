@@ -289,12 +289,14 @@ where
                         } else { false }
                     } else { false };
                     if has_compilable_head {
-                        // Increment per-slot execution counter (for compilation triggering)
-                        crate::backend::bytecode::tiered_cache::increment_exec_count(value.inner_ptr());
+                        // Merged: increment per-slot exec counter AND read cached compilation hash
+                        // in a single thread-local + generation check (vs 2× for separate calls).
+                        let compilation_hash = crate::backend::bytecode::tiered_cache::increment_and_get_hash(value.inner_ptr());
 
                         // Try dispatching to compiled bytecode/JIT.
-                        // Uses cached compilation hash from slot → DashMap lookup → tier cascade.
-                        if let Some((results, new_env)) = ctx.try_compiled_dispatch(&value, &env) {
+                        // hash != 0 guard short-circuits before any trait dispatch / DashMap lookup for cold code.
+                        if compilation_hash != 0 {
+                        if let Some((results, new_env)) = ctx.try_compiled_dispatch(&value, &env, compilation_hash) {
                             #[cfg(feature = "eval-trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
@@ -321,6 +323,7 @@ where
                             continue; // Skip eval_step_generic — compiled code handled it
                         }
                         // Dispatch returned None — fall through to tree-walker
+                        }
                     }
                 }
 

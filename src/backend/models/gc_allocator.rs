@@ -3966,6 +3966,14 @@ impl SlabAllocator {
                             // Hash cached but entry removed? Fall through to slow path.
                         }
 
+                        // Skip expensive hashing for dead expressions below threshold.
+                        // These were never compiled (count < bytecode_threshold) and never
+                        // will be — no point creating a DashMap entry or recursively hashing
+                        // their expression tree. Their execution counts are simply discarded.
+                        if count < cache.bytecode_threshold {
+                            continue;
+                        }
+
                         // Slow path: compute hash, create state, cache hash
                         // SAFETY: slot content is still valid — not yet freed.
                         let value = unsafe { MettaValue::from_inner_ptr(entry.ptr as *const MettaValueInner) };

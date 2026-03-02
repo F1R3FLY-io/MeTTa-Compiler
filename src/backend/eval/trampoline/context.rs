@@ -103,6 +103,8 @@ pub trait EvalContext {
     /// Try to dispatch a sub-expression to compiled bytecode/JIT.
     ///
     /// Called from the trampoline for S-expressions with compilable heads.
+    /// `compilation_hash` is the pre-computed hash from `increment_and_get_hash`,
+    /// guaranteed non-zero by the caller.
     /// Returns `Some((results, new_env))` on successful dispatch, `None` to
     /// fall through to the tree-walker.
     ///
@@ -113,6 +115,7 @@ pub trait EvalContext {
         &self,
         _value: &Self::Value,
         _env: &ContextEnv<Self>,
+        _compilation_hash: u64,
     ) -> Option<(Vec<Self::Value>, ContextEnv<Self>)> {
         None
     }

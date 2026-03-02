@@ -13,6 +13,7 @@
 //! - `parallel`      — Concurrency level analysis over time (v2)
 //! - `bottlenecks`   — Serialization bottleneck identification (v2)
 //! - `export-chrome` — Chrome Trace Format JSON export for Perfetto UI (v2)
+//! - `lint`          — Diagnostic passes for anti-pattern detection (v2)
 
 mod reader;
 mod dump;
@@ -24,6 +25,7 @@ mod timeline;
 mod parallel;
 mod bottlenecks;
 mod export_chrome;
+mod lint;
 
 use clap::{Parser, Subcommand};
 
@@ -106,6 +108,20 @@ enum Commands {
         #[arg(short, long)]
         output: String,
     },
+    /// Run lint-style diagnostic passes detecting anti-patterns and optimization opportunities (requires v2 trace)
+    Lint {
+        /// Path to the trace file
+        file: String,
+        /// Minimum severity to report: "info" or "warning"
+        #[arg(long, default_value = "info")]
+        severity: String,
+        /// Run only specific lint(s), comma-separated (e.g., "gc-storm,tier-thrash")
+        #[arg(long)]
+        lint: Option<String>,
+        /// Depth threshold for eval-depth-explosion lint
+        #[arg(long, default_value = "100")]
+        depth_threshold: u32,
+    },
 }
 
 fn main() {
@@ -122,6 +138,8 @@ fn main() {
         Commands::Bottlenecks { file, concurrency_threshold, duration_threshold_us, top_n } =>
             bottlenecks::run(&file, concurrency_threshold, duration_threshold_us, top_n),
         Commands::ExportChrome { file, output } => export_chrome::run(&file, &output),
+        Commands::Lint { file, severity, lint, depth_threshold } =>
+            lint::run(&file, &severity, lint.as_deref(), depth_threshold),
     };
 
     if let Err(e) = result {

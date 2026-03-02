@@ -236,9 +236,10 @@ impl<'s> EvalContext for SessionContext<'s> {
         &self,
         value: &MettaValue,
         env: &MettaEnvironment,
+        compilation_hash: u64,
     ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
-        crate::backend::bytecode::tiered_cache::try_sub_expr_dispatch(
-            value.inner_ptr(), value, env.clone(),
+        crate::backend::bytecode::tiered_cache::try_sub_expr_dispatch_with_hash(
+            compilation_hash, value, env,
         )
     }
 }

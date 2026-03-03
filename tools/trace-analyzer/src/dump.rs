@@ -232,11 +232,24 @@ fn print_kind_details(kind: &TraceEventKind) {
             action, active_workers_after, min_workers, max_workers,
             queue_depth, ema_throughput, ema_queue_depth,
             ema_slab_pressure, ema_rss_pressure, objective, emergency,
+            hc_direction, hc_cooldown_remaining, hc_prev_objective, hc_improvement,
+            raw_throughput, raw_slab_pressure, raw_rss_pressure, bp_level,
+            slab_amplifier, term_throughput, term_queue_depth, term_slab_pressure, term_rss_pressure,
+            blocked_worker_count, overflow_count, decision_phase,
+            delta_evals, elapsed_seconds,
         } => {
-            println!("  WorkPoolScaleEvent {{ action: \"{}\", active: {}, range: [{}, {}], queue: {} }}",
-                     action, active_workers_after, min_workers, max_workers, queue_depth);
+            println!("  WorkPoolScaleEvent {{ action: \"{}\", active: {}, range: [{}, {}], queue: {}, phase: \"{}\" }}",
+                     action, active_workers_after, min_workers, max_workers, queue_depth, decision_phase);
             println!("    ema: tp={:.2}, qd={:.2}, slab={:.3}, rss={:.3}, J={:.4}, emergency={}",
                      ema_throughput, ema_queue_depth, ema_slab_pressure, ema_rss_pressure, objective, emergency);
+            println!("    hc: dir={}, cooldown={}, prev_obj={:.4}, improvement={:.4}",
+                     hc_direction, hc_cooldown_remaining, hc_prev_objective, hc_improvement);
+            println!("    raw: tp={:.2}, slab={:.3}, rss={:.3}, bp={}, amp={:.1}",
+                     raw_throughput, raw_slab_pressure, raw_rss_pressure, bp_level, slab_amplifier);
+            println!("    terms: tp={:.4}, qd={:.4}, slab={:.4}, rss={:.4}",
+                     term_throughput, term_queue_depth, term_slab_pressure, term_rss_pressure);
+            println!("    pool: blocked={}, overflow={}, delta_evals={}, elapsed={:.4}s",
+                     blocked_worker_count, overflow_count, delta_evals, elapsed_seconds);
         }
         TraceEventKind::WorkPoolWorkerParked { worker_id, queue_depth } => {
             println!("  WorkPoolWorkerParked {{ worker: {}, queue: {} }}", worker_id, queue_depth);
@@ -244,6 +257,29 @@ fn print_kind_details(kind: &TraceEventKind) {
         TraceEventKind::WorkPoolWorkerResumed { worker_id, queue_depth, active_workers } => {
             println!("  WorkPoolWorkerResumed {{ worker: {}, queue: {}, active: {} }}",
                      worker_id, queue_depth, active_workers);
+        }
+        TraceEventKind::WorkPoolBlockedWorkersDetected { blocked_count, active_workers, blocked_indices } => {
+            println!("  WorkPoolBlockedWorkersDetected {{ blocked: {}, active: {}, indices: {:?} }}",
+                     blocked_count, active_workers, blocked_indices);
+        }
+        TraceEventKind::WorkPoolCompensatoryAction {
+            core_unparked, overflow_spawned, overflow_drained,
+            target, deficit, rss_veto,
+        } => {
+            println!("  WorkPoolCompensatoryAction {{ core_unparked: {}, overflow_spawned: {}, overflow_drained: {}, target: {}, deficit: {}, rss_veto: {} }}",
+                     core_unparked, overflow_spawned, overflow_drained, target, deficit, rss_veto);
+        }
+        TraceEventKind::WorkPoolMonitorTick {
+            current_eval_count, elapsed_ns, queue_len, bp_level, rss_bytes,
+        } => {
+            println!("  WorkPoolMonitorTick {{ evals: {}, elapsed: {}ns, queue: {}, bp: {}, rss: {} }}",
+                     current_eval_count, elapsed_ns, queue_len, bp_level, rss_bytes);
+        }
+        TraceEventKind::WorkPoolWorkerBlocked { worker_id, cpu_ratio } => {
+            println!("  WorkPoolWorkerBlocked {{ worker: {}, cpu_ratio: {:.3} }}", worker_id, cpu_ratio);
+        }
+        TraceEventKind::WorkPoolWorkerUnblocked { worker_id } => {
+            println!("  WorkPoolWorkerUnblocked {{ worker: {} }}", worker_id);
         }
     }
 }

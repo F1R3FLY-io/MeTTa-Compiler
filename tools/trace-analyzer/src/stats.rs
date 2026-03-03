@@ -81,7 +81,12 @@ pub fn run(file: &str) -> Result<(), String> {
             | TraceEventKind::WorkPoolTaskCompleted { .. }
             | TraceEventKind::WorkPoolScaleEvent { .. }
             | TraceEventKind::WorkPoolWorkerParked { .. }
-            | TraceEventKind::WorkPoolWorkerResumed { .. } => {
+            | TraceEventKind::WorkPoolWorkerResumed { .. }
+            | TraceEventKind::WorkPoolBlockedWorkersDetected { .. }
+            | TraceEventKind::WorkPoolCompensatoryAction { .. }
+            | TraceEventKind::WorkPoolMonitorTick { .. }
+            | TraceEventKind::WorkPoolWorkerBlocked { .. }
+            | TraceEventKind::WorkPoolWorkerUnblocked { .. } => {
                 workpool_event_count += 1;
             }
             _ => {}
@@ -199,5 +204,10 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::WorkPoolScaleEvent { .. } => "WorkPoolScaleEvent",
         TraceEventKind::WorkPoolWorkerParked { .. } => "WorkPoolWorkerParked",
         TraceEventKind::WorkPoolWorkerResumed { .. } => "WorkPoolWorkerResumed",
+        TraceEventKind::WorkPoolBlockedWorkersDetected { .. } => "WorkPoolBlockedWorkersDetected",
+        TraceEventKind::WorkPoolCompensatoryAction { .. } => "WorkPoolCompensatoryAction",
+        TraceEventKind::WorkPoolMonitorTick { .. } => "WorkPoolMonitorTick",
+        TraceEventKind::WorkPoolWorkerBlocked { .. } => "WorkPoolWorkerBlocked",
+        TraceEventKind::WorkPoolWorkerUnblocked { .. } => "WorkPoolWorkerUnblocked",
     }
 }

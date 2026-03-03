@@ -20,8 +20,10 @@
 //! the value type and factory. The production implementation uses `StaticEvalContext`
 //! with arena-allocated `MettaValue` values.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tracing::trace;
 
@@ -42,8 +44,13 @@ use crate::backend::eval::types_generic::{
     infer_type_generic, types_match_generic, types_match_with_subtypes,
 };
 use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
-use crate::backend::models::{GenericMultiplicityMatch, MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::models::{
+    EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValueFactory, MettaValueInner,
+    MettaValueTrait,
+};
 use crate::backend::models::metta_value::is_variable_str;
+use crate::backend::models::work_pool::global_eval_pool;
+use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
 /// Cached check for the `METTA_DEBUG_EVAL` environment variable.
 /// Uses `OnceLock` so the syscall happens at most once per process.
@@ -59,6 +66,296 @@ use super::dispatch_hints::{
     is_memoized_normal_form, memoize_normal_form,
     derive_arg_expected_type,
 };
+
+// =============================================================================
+// Parallel Nondeterministic Branching
+// =============================================================================
+//
+// MeTTa HE defines nondeterministic results as **unordered sets**. Evaluating
+// branches in parallel and collecting results in any order produces semantically
+// identical results. Programs needing ordering must use sequential combinators
+// (`chain`, `let*`).
+
+/// Global budget of available parallel branch slots.
+/// Prevents nested fork bombs from exponential thread explosion.
+static PARALLEL_BRANCH_BUDGET: AtomicU32 = AtomicU32::new(0);
+static PARALLEL_BUDGET_INITIALIZED: OnceLock<()> = OnceLock::new();
+
+/// Maximum parallel nesting depth, cached from `METTATRON_MAX_PARALLEL_DEPTH`.
+///
+/// - Depth 0 (top-level): full budget (e.g., 72 slots on 36 cores)
+/// - Depth 1 (nested in worker): budget / 4 (e.g., 18 slots)
+/// - Depth 2 (double-nested): budget / 16 (e.g., 4 slots)
+/// - Depth >= max_depth: sequential (no parallelism)
+///
+/// Default: 3. Set to 0 to disable parallel branching entirely.
+static MAX_PARALLEL_DEPTH: OnceLock<u32> = OnceLock::new();
+
+fn max_parallel_depth() -> u32 {
+    *MAX_PARALLEL_DEPTH.get_or_init(|| {
+        std::env::var("METTATRON_MAX_PARALLEL_DEPTH")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(3)
+    })
+}
+
+fn init_parallel_budget() {
+    PARALLEL_BUDGET_INITIALIZED.get_or_init(|| {
+        let cpus = num_cpus::get() as u32;
+        PARALLEL_BRANCH_BUDGET.store(cpus.saturating_mul(2).min(128), Ordering::Relaxed);
+    });
+}
+
+/// Try to acquire N budget slots at the given nesting depth.
+///
+/// Budget is scaled by two factors:
+/// 1. **Depth decay**: `4^(-depth)` (exponential) prevents pool exhaustion from
+///    nested forks while allowing inner forks to exploit some parallelism.
+/// 2. **Queue pressure**: When the work pool queue is saturated
+///    (`queue_depth > active_workers * 2`), no budget is granted (back off).
+///    When workers are starving (`queue_depth < active_workers / 2`), full
+///    budget is available (more parallelism).
+///
+/// Returns actual slots acquired (0..=N).
+fn try_acquire_budget(n: u32, depth: u32) -> u32 {
+    init_parallel_budget();
+
+    // Dynamic budget gate: check queue pressure.
+    // If the pool is saturated, don't add more parallel work.
+    let pool = global_eval_pool();
+    let queue_depth = pool.queue_len();
+    let active = pool.active_workers();
+    if active > 0 && queue_depth > active * 2 {
+        // Pool is saturated — back off, evaluate sequentially
+        return 0;
+    }
+
+    // Scale requested budget down by 4^depth.
+    // depth 0: n, depth 1: n/4, depth 2: n/16, depth 3: n/64, ...
+    let scaled_n = if depth == 0 {
+        n
+    } else {
+        // 4^depth = 1 << (2*depth)
+        let divisor = 1u32.checked_shl(depth.saturating_mul(2)).unwrap_or(u32::MAX);
+        n.saturating_div(divisor).max(1) // at least 1 slot if any requested
+    };
+
+    let mut current = PARALLEL_BRANCH_BUDGET.load(Ordering::Relaxed);
+    loop {
+        let granted = scaled_n.min(current);
+        if granted == 0 {
+            return 0;
+        }
+        match PARALLEL_BRANCH_BUDGET.compare_exchange_weak(
+            current,
+            current - granted,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return granted,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn release_budget(n: u32) {
+    PARALLEL_BRANCH_BUDGET.fetch_add(n, Ordering::Release);
+}
+
+// Thread-local depth counter for parallel branch evaluation.
+//
+// Tracks the current nesting depth of `parallel_branch_eval` on this thread.
+// At depth >= `MAX_PARALLEL_DEPTH`, the gate falls through to the sequential
+// path. Budget slots are scaled by `4^(-depth)` at each nesting level to
+// prevent exponential thread explosion while allowing inner forks to exploit
+// available parallelism.
+thread_local! {
+    static PARALLEL_BRANCH_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Evaluate nondeterministic branches in parallel via the work pool.
+///
+/// Uses scatter-gather: evaluate branch 0 locally, spawn branches 1..N
+/// to the eval pool, block-wait via condvar, merge results.
+///
+/// # Arguments
+/// - `branches`: Pre-instantiated RHS values (bindings already applied)
+/// - `env`: The evaluation environment (cloned per branch)
+/// - `budget_acquired`: Number of budget slots to release on completion
+///
+/// # Returns
+/// Flat vector of all results from all branches, concatenated in branch order.
+fn parallel_branch_eval(
+    branches: Vec<crate::backend::models::MettaValue>,
+    env: crate::backend::environment::generic::MettaEnvironment,
+    budget_acquired: u32,
+    caller_depth: u32,
+) -> Vec<crate::backend::models::MettaValue> {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use super::context::ParallelBranchContext;
+
+    type MettaValue = crate::backend::models::MettaValue;
+
+    let num_branches = branches.len();
+    debug_assert!(num_branches >= 2, "parallel_branch_eval requires at least 2 branches");
+
+    // Pre-allocate result slots: Vec<Option<Vec<MettaValue>>>
+    let results: Arc<Mutex<Vec<Option<Vec<MettaValue>>>>> =
+        Arc::new(Mutex::new(vec![None; num_branches]));
+    let remaining = Arc::new(AtomicU32::new((num_branches - 1) as u32));
+    let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
+
+    let pool = global_eval_pool();
+    let child_depth = caller_depth + 1;
+
+    // Spawn branches 1..N to the work pool
+    for (slot, branch_expr) in branches.iter().enumerate().skip(1) {
+        let branch_expr = branch_expr.clone();
+        let env = env.clone();
+        let results = Arc::clone(&results);
+        let remaining = Arc::clone(&remaining);
+        let done_pair = Arc::clone(&done_pair);
+
+        pool.spawn_eval(
+            move || {
+                // Set depth for nested parallel branching. At depth >= MAX_PARALLEL_DEPTH,
+                // the gate falls through to sequential. Budget is scaled by 4^(-depth).
+                PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+
+                // Track this parallel eval as active (prevents GC during evaluation)
+                let _guard = EvalGuard::enter();
+                let ctx = ParallelBranchContext::get();
+                let (eval_results, _new_env) =
+                    eval_trampoline_generic(branch_expr, env, &ctx);
+
+                // Store result in pre-allocated slot (no contention per slot)
+                {
+                    let mut guard = results.lock().expect("results mutex poisoned");
+                    guard[slot] = Some(eval_results);
+                }
+
+                // Decrement barrier; if last task, notify waiter
+                if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    let (lock, cvar) = &*done_pair;
+                    let mut done = lock.lock().expect("done mutex poisoned");
+                    *done = true;
+                    cvar.notify_one();
+                }
+            },
+            TaskTypeId::Eval(0),
+            priority_levels::NORMAL,
+        );
+    }
+
+    // Evaluate branch 0 locally (avoids pool overhead for 1 task).
+    // Increment depth so any recursive MatchRules in this branch goes sequential.
+    let branch0_results = {
+        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
+        let ctx = ParallelBranchContext::get();
+        let (eval_results, _new_env) =
+            eval_trampoline_generic(branches[0].clone(), env.clone(), &ctx);
+        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
+        eval_results
+    };
+
+    // Store branch 0 results
+    {
+        let mut guard = results.lock().expect("results mutex poisoned");
+        guard[0] = Some(branch0_results);
+    }
+
+    // Wait for all spawned tasks to complete, with work-stealing.
+    //
+    // Instead of purely blocking on the condvar, the main thread alternates
+    // between:
+    // 1. A short condvar wait (1ms) — instant wakeup if workers finish
+    // 2. Stealing tasks from the pool queue — keeps the main thread productive
+    //
+    // This eliminates the idle gap where the main thread sits blocked while
+    // workers evaluate branches. The main thread effectively becomes a
+    // temporary worker, draining the queue alongside the pool workers.
+    //
+    // Falls back to stall detection + overflow if no progress is made.
+    {
+        let mut prev_remaining = remaining.load(Ordering::Acquire);
+        let mut stall_count = 0u32;
+        let mut overflow_requested = false;
+        let queue = pool.queue();
+
+        let (lock, cvar) = &*done_pair;
+        let mut done = lock.lock().expect("done mutex poisoned");
+        while !*done {
+            // Short condvar wait: check for completion frequently
+            let result = cvar
+                .wait_timeout(done, std::time::Duration::from_millis(1))
+                .expect("done condvar wait failed");
+            done = result.0;
+            if *done {
+                break;
+            }
+
+            // Work-stealing: try to pop and execute a task from the pool queue.
+            // This keeps the main thread productive while waiting for branches.
+            // Execute up to 4 stolen tasks per wake cycle to amortize lock overhead.
+            for _ in 0..4 {
+                if remaining.load(Ordering::Acquire) == 0 {
+                    break; // All branches done, stop stealing
+                }
+                if let Some(task) = queue.try_pop() {
+                    // Drop the condvar lock before executing the stolen task
+                    drop(done);
+                    task.execute();
+                    // Re-acquire the condvar lock
+                    done = lock.lock().expect("done mutex poisoned");
+                    if *done {
+                        break;
+                    }
+                } else {
+                    break; // Queue empty, nothing to steal
+                }
+            }
+
+            if !*done {
+                let curr_remaining = remaining.load(Ordering::Acquire);
+                if curr_remaining > 0 && curr_remaining == prev_remaining {
+                    stall_count += 1;
+                    // After 20 consecutive stalls (~20ms with no progress), spawn overflow
+                    // workers. Threshold is higher than before (was 2) because the 1ms
+                    // condvar timeout makes stall detection more granular.
+                    if stall_count >= 20 && !overflow_requested {
+                        pool.spawn_overflow(curr_remaining as usize);
+                        overflow_requested = true;
+                        tracing::warn!(
+                            remaining = curr_remaining,
+                            active_workers = pool.active_workers(),
+                            overflow = pool.overflow_count(),
+                            "parallel_branch_eval: stall detected, spawned overflow workers"
+                        );
+                    }
+                } else {
+                    stall_count = 0;
+                }
+                prev_remaining = curr_remaining;
+            }
+        }
+    }
+
+    // Release budget slots
+    release_budget(budget_acquired);
+
+    // Merge results in branch order
+    let mut merged = Vec::new();
+    let guard = results.lock().expect("results mutex poisoned");
+    for slot_result in guard.iter() {
+        if let Some(ref branch_results) = slot_result {
+            merged.extend_from_slice(branch_results);
+        }
+    }
+
+    merged
+}
 
 /// Generic trampoline evaluation entry point.
 ///
@@ -611,6 +908,80 @@ where
                                 result: (vec![], env),
                             });
                         } else {
+                            // ── Parallel nondeterministic branching gate ──
+                            // Check conditions without consuming matches: MettaValue only
+                            // (compile-time constant after monomorphization), at least 2
+                            // matches (1+ remaining after local branch 0), not at max
+                            // parallel depth (prevents recursive pool exhaustion),
+                            // active workers available, and budget slots remain.
+                            // Budget is scaled by 4^(-depth) at each nesting level.
+                            let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
+                            let budget = if matches.len() >= 2
+                                && std::any::TypeId::of::<C::Value>()
+                                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                                && current_depth < max_parallel_depth()
+                                && global_eval_pool().active_workers() > 0
+                            {
+                                try_acquire_budget((matches.len() - 1) as u32, current_depth)
+                            } else {
+                                0
+                            };
+
+                            if budget > 0 {
+                                // ── Parallel path: dispatch all branches to work pool ──
+                                let factory = ctx.factory();
+                                let branches: Vec<crate::backend::models::MettaValue> = matches
+                                    .into_iter()
+                                    .map(|(rhs, bindings, _rhs_type)| {
+                                        // SAFETY: C::Value is MettaValue (TypeId checked above).
+                                        // MettaValue and C::Value have identical layout (same struct).
+                                        let metta_rhs: &crate::backend::models::MettaValue =
+                                            unsafe { &*(&rhs as *const C::Value as *const crate::backend::models::MettaValue) };
+                                        let metta_bindings: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
+                                            unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
+                                        let metta_factory: &GcFactory =
+                                            unsafe { &*(factory as *const C::Factory as *const GcFactory) };
+                                        apply_bindings_generic(metta_rhs, metta_bindings, metta_factory)
+                                    })
+                                    .collect();
+
+                                // Clone env to properly increment Arc refcounts, then
+                                // reinterpret as MettaEnvironment. transmute_copy alone
+                                // would alias without incrementing refcounts → UAF.
+                                // forget(clone) transfers ownership to metta_env.
+                                let env_clone = env.clone();
+                                let metta_env: crate::backend::environment::generic::MettaEnvironment =
+                                    unsafe { std::mem::transmute_copy(&env_clone) };
+                                std::mem::forget(env_clone);
+
+                                // Trace: NondeterministicFork (parallel)
+                                #[cfg(feature = "eval-trace")]
+                                {
+                                    if let Some(tc) = ctx.trace_collector() {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            depth as u32,
+                                            trace_format::TraceValue::Unit,
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::NondeterministicFork {
+                                                branch_count: branches.len() as u32,
+                                            },
+                                        );
+                                    }
+                                }
+
+                                let results = parallel_branch_eval(branches, metta_env, budget, current_depth);
+
+                                // SAFETY: MettaValue and C::Value are the same type (TypeId checked).
+                                let generic_results: Vec<C::Value> =
+                                    unsafe { std::mem::transmute(results) };
+
+                                work_stack.push(GenericWorkItem::Resume {
+                                    result: (generic_results, env),
+                                });
+                            } else {
+                            // ── Sequential path (existing code, unchanged) ──
                             // Strip rhs_type → 2-tuples for ProcessRuleMatches
                             let mut matches_deque: VecDeque<_> = matches.into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
@@ -710,6 +1081,7 @@ where
                                 is_tail_call: true,
                                 expected_type: None,
                             });
+                            } // end else (sequential path)
                         }
                     }
 

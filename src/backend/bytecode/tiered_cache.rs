@@ -48,6 +48,15 @@ use super::chunk::BytecodeChunk;
 use super::compiler::compile_arc;
 use super::jit::compiler::JitCompiler;
 
+/// Cached check for the `METTATRON_JIT_DEBUG` environment variable.
+/// When set, logs JIT compilation failures and a summary at program exit.
+/// Uses `OnceLock` so the syscall happens at most once per process.
+static JIT_DEBUG: OnceLock<bool> = OnceLock::new();
+
+fn is_jit_debug() -> bool {
+    *JIT_DEBUG.get_or_init(|| std::env::var("METTATRON_JIT_DEBUG").is_ok())
+}
+
 /// Threshold to trigger bytecode compilation (after 5 executions).
 ///
 /// V8 equivalent: Ignition → Sparkplug (~1-5, near-immediate).
@@ -926,6 +935,14 @@ impl TieredCache {
             // JIT compilation using Cranelift
             // Check if chunk can be JIT compiled
             if !JitCompiler::can_compile_stage1(&chunk) {
+                if is_jit_debug() {
+                    eprintln!(
+                        "[JIT1] Rejected: chunk '{}' has_nondeterminism={} len={}",
+                        chunk.name(),
+                        chunk.has_nondeterminism(),
+                        chunk.len()
+                    );
+                }
                 state_clone.set_jit1_failed();
                 global_tiered_cache()
                     .jit1_compilations_failed
@@ -951,14 +968,20 @@ impl TieredCache {
                             .jit1_compilations_completed
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        if is_jit_debug() {
+                            eprintln!("[JIT1] Compile failed for '{}': {:?}", chunk.name(), e);
+                        }
                         state_clone.set_jit1_failed();
                         global_tiered_cache()
                             .jit1_compilations_failed
                             .fetch_add(1, Ordering::Relaxed);
                     }
                 },
-                Err(_) => {
+                Err(e) => {
+                    if is_jit_debug() {
+                        eprintln!("[JIT1] Compiler init failed: {:?}", e);
+                    }
                     state_clone.set_jit1_failed();
                     global_tiered_cache()
                         .jit1_compilations_failed
@@ -1053,6 +1076,14 @@ impl TieredCache {
             // Check if chunk can be JIT compiled
             // Stage 2 uses same compilability check as Stage 1 for now
             if !JitCompiler::can_compile_stage1(&chunk) {
+                if is_jit_debug() {
+                    eprintln!(
+                        "[JIT2] Rejected: chunk '{}' has_nondeterminism={} len={}",
+                        chunk.name(),
+                        chunk.has_nondeterminism(),
+                        chunk.len()
+                    );
+                }
                 state_clone.set_jit2_failed();
                 global_tiered_cache()
                     .jit2_compilations_failed
@@ -1074,14 +1105,20 @@ impl TieredCache {
                             .jit2_compilations_completed
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        if is_jit_debug() {
+                            eprintln!("[JIT2] Compile failed for '{}': {:?}", chunk.name(), e);
+                        }
                         state_clone.set_jit2_failed();
                         global_tiered_cache()
                             .jit2_compilations_failed
                             .fetch_add(1, Ordering::Relaxed);
                     }
                 },
-                Err(_) => {
+                Err(e) => {
+                    if is_jit_debug() {
+                        eprintln!("[JIT2] Compiler init failed: {:?}", e);
+                    }
                     state_clone.set_jit2_failed();
                     global_tiered_cache()
                         .jit2_compilations_failed
@@ -1226,11 +1263,53 @@ impl Default for TieredCache {
 ///
 /// Shared across all evaluations for optimal reuse of compiled code.
 static GLOBAL_TIERED_CACHE: std::sync::LazyLock<TieredCache> =
-    std::sync::LazyLock::new(TieredCache::new);
+    std::sync::LazyLock::new(|| {
+        maybe_register_jit_summary();
+        TieredCache::new()
+    });
 
 /// Get a reference to the global tiered compilation cache.
 pub fn global_tiered_cache() -> &'static TieredCache {
     &GLOBAL_TIERED_CACHE
+}
+
+/// Register an atexit hook that prints a JIT summary when `METTATRON_JIT_DEBUG` is set.
+/// Called once on first access to the global tiered cache (idempotent via OnceLock).
+static JIT_SUMMARY_REGISTERED: OnceLock<()> = OnceLock::new();
+
+fn maybe_register_jit_summary() {
+    if !is_jit_debug() {
+        return;
+    }
+    JIT_SUMMARY_REGISTERED.get_or_init(|| {
+        extern "C" fn jit_summary_atexit() {
+            let stats = global_tiered_cache().stats();
+            eprintln!(
+                "[JIT Summary] tracked={} bytecode={}/{}/{} jit1={}/{}/{} jit2={}/{}/{} (ok/fail/pending)",
+                stats.expressions_tracked,
+                stats.bytecode_compilations_completed,
+                stats.bytecode_compilations_failed,
+                stats.bytecode_compilations_triggered.saturating_sub(
+                    stats.bytecode_compilations_completed + stats.bytecode_compilations_failed
+                ),
+                stats.jit1_compilations_completed,
+                stats.jit1_compilations_failed,
+                stats.jit1_compilations_triggered.saturating_sub(
+                    stats.jit1_compilations_completed + stats.jit1_compilations_failed
+                ),
+                stats.jit2_compilations_completed,
+                stats.jit2_compilations_failed,
+                stats.jit2_compilations_triggered.saturating_sub(
+                    stats.jit2_compilations_completed + stats.jit2_compilations_failed
+                ),
+            );
+        }
+        // SAFETY: jit_summary_atexit is an extern "C" fn with no parameters,
+        // which is the required signature for libc::atexit.
+        unsafe {
+            libc::atexit(jit_summary_atexit);
+        }
+    });
 }
 
 // =============================================================================

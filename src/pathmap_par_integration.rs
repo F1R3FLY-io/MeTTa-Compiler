@@ -2,13 +2,12 @@
 ///
 /// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
 /// This module enables MettaState to be represented as Rholang EPathMap structures.
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use models::rhoapi::{expr::ExprInstance, EList, EPathMap, ETuple, Expr, Par};
-use pathmap::zipper::{ZipperIteration, ZipperMoving};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use tracing::{debug, trace};
 
 use crate::backend::environment::multiplicity::Multiplicity;
@@ -31,7 +30,6 @@ fn create_int_par(n: i64) -> Par {
 
 // Magic numbers for MeTTa Environment byte arrays
 // These identify byte arrays as MeTTa-specific data for the pretty-printer
-const METTA_MULTIPLICITIES_MAGIC: &[u8] = b"MTTM"; // MeTTa Multiplicities
 const METTA_SPACE_MAGIC: &[u8] = b"MTTS"; // MeTTa Space
 const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arity >= 64)
 
@@ -208,10 +206,10 @@ pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
 }
 
 /// Convert Environment to a Rholang Par tuple
-/// Serializes the Space's PathMap and multiplicities as byte arrays
+/// Serializes the Space's PathMap with inline multiplicities as byte arrays
 /// Returns an ETuple with two named fields:
-///   ("space", GByteArray) - Raw MORK trie bytes
-///   ("multiplicities", GByteArray) - Binary encoded multiplicities map
+///   ("space", GByteArray) - Raw MORK trie bytes with inline multiplicities
+///   ("large_exprs", GByteArray) - Wide MORK paths (arity >= 64) with inline multiplicities
 /// Note: Type assertions are stored within the space, not separately
 pub fn environment_to_par(env: &MettaEnvironment) -> Par {
     // CRITICAL FIX for "reserved 111" bug:
@@ -229,7 +227,7 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
     let mut all_paths_data = Vec::new();
     let mut rz = space.btm.read_zipper();
 
-    // Write format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes]...
+    // Write format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes][multiplicity1: 8 bytes]...
 
     // Write magic number to identify this as MeTTa space
     all_paths_data.extend_from_slice(METTA_SPACE_MAGIC);
@@ -271,14 +269,17 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
     let count_offset = all_paths_data.len();
     all_paths_data.extend_from_slice(&[0u8; 8]); // Reserve space for count
 
-    // Iterate through all paths and collect their raw bytes
+    // Iterate through all paths and collect their raw bytes with inline multiplicities
     while rz.to_next_val() {
         let path_bytes = rz.path();
+        let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1);
         // Write path length (4 bytes, big-endian)
         let len = path_bytes.len() as u32;
         all_paths_data.extend_from_slice(&len.to_be_bytes());
         // Write raw path bytes (NO INTERPRETATION!)
         all_paths_data.extend_from_slice(path_bytes);
+        // Write multiplicity (8 bytes, big-endian) inline with path
+        all_paths_data.extend_from_slice(&multiplicity.to_be_bytes());
         path_count += 1;
     }
     trace!(target: "mettatron::rholang_integration::environment_to_par", path_count, space_data_len = all_paths_data.len());
@@ -298,13 +299,13 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
     let space_epathmap = space_bytes_par;
 
     // Serialize wide expressions (arity >= 64) from wide_btm PathMap
-    // Format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes]...
+    // Format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes][multiplicity1: 8 bytes]...
     // Uses Wide MORK storage encoding (tag-byte + LEB128) for expressions that exceed 63-arity limit
     let mut large_exprs_bytes = Vec::new();
     large_exprs_bytes.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
 
     {
-        use pathmap::zipper::{ZipperIteration, ZipperMoving};
+        use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 
         let wbtm = env.shared.atom_space.wide_btm.read();
         let mut wrz = wbtm.read_zipper();
@@ -316,10 +317,13 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
         let mut count = 0u64;
         while wrz.to_next_val() {
             let path_bytes = wrz.path();
+            let multiplicity = wrz.val().map(|m| m.count()).unwrap_or(1);
             // Write Wide MORK key bytes directly (already in storage encoding)
             let len = path_bytes.len() as u32;
             large_exprs_bytes.extend_from_slice(&len.to_be_bytes());
             large_exprs_bytes.extend_from_slice(path_bytes);
+            // Write multiplicity (8 bytes, big-endian) inline with path
+            large_exprs_bytes.extend_from_slice(&multiplicity.to_be_bytes());
             count += 1;
         }
 
@@ -331,39 +335,8 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
         expr_instance: Some(ExprInstance::GByteArray(large_exprs_bytes)),
     }]);
 
-    // Serialize multiplicities as a byte array for efficiency and consistency
-    // Format: [magic: 4 bytes "MTTM"][count: 8 bytes][key1_len: 4 bytes][key1_bytes][value1: 8 bytes]...
-    let multiplicities_map = env.get_multiplicities();
-    let mut multiplicities_bytes = Vec::new();
-
-    // Write magic number to identify this as MeTTa multiplicities
-    multiplicities_bytes.extend_from_slice(METTA_MULTIPLICITIES_MAGIC);
-
-    // Write count
-    let count = multiplicities_map.len() as u64;
-    multiplicities_bytes.extend_from_slice(&count.to_be_bytes());
-
-    // Write each key-value pair
-    for (rule_key, count) in multiplicities_map.iter() {
-        let key_bytes = rule_key.as_bytes();
-        // Write key length (4 bytes)
-        let key_len = key_bytes.len() as u32;
-        multiplicities_bytes.extend_from_slice(&key_len.to_be_bytes());
-        // Write key bytes
-        multiplicities_bytes.extend_from_slice(key_bytes);
-        // Write value (8 bytes)
-        multiplicities_bytes.extend_from_slice(&(*count as u64).to_be_bytes());
-    }
-    trace!(
-        target: "mettatron::rholang_integration::environment_to_par",
-        multiplicities_count = multiplicities_map.len(), mult_data_len = multiplicities_bytes.len()
-    );
-
-    let multiplicities_emap = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::GByteArray(multiplicities_bytes)),
-    }]);
-
-    // Build ETuple with named fields: (("space", ...), ("large_exprs", ...), ("multiplicities", ...))
+    // Build ETuple with named fields: (("space", ...), ("large_exprs", ...))
+    // Multiplicities are now encoded inline with each path in MTTS/MTTL byte arrays
     let space_tuple = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
             ps: vec![create_string_par("space".to_string()), space_epathmap],
@@ -383,22 +356,10 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
         })),
     }]);
 
-    let multiplicities_tuple = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-            ps: vec![
-                create_string_par("multiplicities".to_string()),
-                multiplicities_emap,
-            ],
-            locally_free: Vec::new(),
-            connective_used: false,
-        })),
-    }]);
-
-    // Return ETuple with 2 or 3 named field tuples (3 if large_exprs present)
-    // Order: [space, multiplicities, large_exprs] for backwards compatibility
+    // Return ETuple with 2 named field tuples: [space, large_exprs]
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-            ps: vec![space_tuple, multiplicities_tuple, large_exprs_tuple],
+            ps: vec![space_tuple, large_exprs_tuple],
             locally_free: Vec::new(),
             connective_used: false,
         })),
@@ -588,24 +549,24 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 }
 
 /// Convert a Rholang Par back to Environment
-/// Deserializes the Space's PathMap and multiplicities from byte arrays
+/// Deserializes the Space's PathMap with inline multiplicities from byte arrays
 /// Expects an ETuple with named fields:
-///   (("space", GByteArray), ("multiplicities", GByteArray))
-///   or (("space", GByteArray), ("multiplicities", GByteArray), ("large_exprs", GByteArray))
+///   (("space", GByteArray), ("large_exprs", GByteArray))
+/// Multiplicities are encoded inline with each path in MTTS/MTTL byte arrays
 /// Note: Type assertions are stored within the space, not separately
 pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
     trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
 
-    // The par should be an ETuple with 2 or 3 named field tuples (3 if large_exprs present)
+    // The par should be an ETuple with 2 named field tuples: [space, large_exprs]
     if let Some(expr) = par.exprs.first() {
         if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-            if tuple.ps.len() < 2 || tuple.ps.len() > 3 {
+            if tuple.ps.len() != 2 {
                 debug!(
                     target: "mettatron::rholang_integration::par_to_environment",
-                    expected = "2-3", got = tuple.ps.len(), "invalid environment tuple size"
+                    expected = 2, got = tuple.ps.len(), "invalid environment tuple size"
                 );
                 return Err(format!(
-                    "Expected 2 or 3 elements in environment tuple, got {}",
+                    "Expected 2 elements in environment tuple, got {}",
                     tuple.ps.len()
                 ));
             }
@@ -635,93 +596,19 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
             };
             trace!(target: "mettatron::rholang_integration::par_to_environment", space_bytes_len = space_dump_bytes.len());
 
-            // Extract multiplicities (element 1) - now stored as GByteArray
-            let multiplicities_par = extract_tuple_value(&tuple.ps[1])?;
-            let mut multiplicities_map: HashMap<String, usize> = HashMap::new();
-            if let Some(expr) = multiplicities_par.exprs.first() {
-                if let Some(ExprInstance::GByteArray(mult_bytes)) = &expr.expr_instance {
-                    // Read format: [magic: 4 bytes "MTTM"][count: 8 bytes][key1_len: 4 bytes][key1_bytes][value1: 8 bytes]...
-                    if mult_bytes.len() >= 12 {
-                        // 4 bytes magic + 8 bytes count minimum
-                        let mut offset = 0;
-
-                        // Check and skip magic number if present
-                        if mult_bytes.len() >= 4 && &mult_bytes[0..4] == METTA_MULTIPLICITIES_MAGIC
-                        {
-                            offset += 4; // Skip magic number
-                        }
-
-                        // Read count
-                        let count = u64::from_be_bytes([
-                            mult_bytes[offset],
-                            mult_bytes[offset + 1],
-                            mult_bytes[offset + 2],
-                            mult_bytes[offset + 3],
-                            mult_bytes[offset + 4],
-                            mult_bytes[offset + 5],
-                            mult_bytes[offset + 6],
-                            mult_bytes[offset + 7],
-                        ]);
-                        offset += 8;
-
-                        // Read each key-value pair
-                        for _ in 0..count {
-                            if offset + 4 > mult_bytes.len() {
-                                break; // Not enough data
-                            }
-
-                            // Read key length
-                            let key_len = u32::from_be_bytes([
-                                mult_bytes[offset],
-                                mult_bytes[offset + 1],
-                                mult_bytes[offset + 2],
-                                mult_bytes[offset + 3],
-                            ]) as usize;
-                            offset += 4;
-
-                            if offset + key_len + 8 > mult_bytes.len() {
-                                break; // Not enough data
-                            }
-
-                            // Read key bytes
-                            let key_bytes = &mult_bytes[offset..offset + key_len];
-                            let key = String::from_utf8_lossy(key_bytes).to_string();
-                            offset += key_len;
-
-                            // Read value
-                            let value = u64::from_be_bytes([
-                                mult_bytes[offset],
-                                mult_bytes[offset + 1],
-                                mult_bytes[offset + 2],
-                                mult_bytes[offset + 3],
-                                mult_bytes[offset + 4],
-                                mult_bytes[offset + 5],
-                                mult_bytes[offset + 6],
-                                mult_bytes[offset + 7],
-                            ]) as usize;
-                            offset += 8;
-
-                            multiplicities_map.insert(key, value);
-                        }
-                    }
-                }
-            }
-
             // Reconstruct Environment
             let mut env = MettaEnvironment::default();
 
-            // Restore multiplicities
-            env.set_multiplicities(multiplicities_map);
-
-            // Rebuild the Space from raw path bytes
+            // Rebuild the Space from raw path bytes with inline multiplicities
             // CRITICAL FIX for "reserved 111" bug:
             // We stored raw path bytes (not text), so we insert them directly.
             // This avoids any interpretation of bytes as MORK tags.
             // We also restore the symbol table so symbol IDs match.
+            // Multiplicities are inline with each path — no separate MTTM field needed.
             {
                 let mut space = env.create_space();
                 if !space_dump_bytes.is_empty() {
-                    // Read format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes]...
+                    // Read format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes][multiplicity1: 8 bytes]...
                     if space_dump_bytes.len() >= 12 {
                         // 4 bytes magic + 8 bytes sym_table_len minimum
                         let mut offset = 0;
@@ -791,7 +678,8 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                             ]);
                             offset += 8;
 
-                            // Read and insert each path
+                            // Read and insert each path with its inline multiplicity
+                            let mut total_atoms_added: usize = 0;
                             for _ in 0..path_count {
                                 if offset + 4 > space_dump_bytes.len() {
                                     break; // Not enough data
@@ -806,15 +694,36 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                 ]) as usize;
                                 offset += 4;
 
-                                if offset + len > space_dump_bytes.len() {
-                                    break; // Not enough data
+                                if offset + len + 8 > space_dump_bytes.len() {
+                                    break; // Not enough data for path + multiplicity
                                 }
 
-                                // Get raw path bytes and insert directly into PathMap
+                                // Get raw path bytes
                                 let path_bytes = &space_dump_bytes[offset..offset + len];
-                                space.btm.insert(path_bytes, Multiplicity::new(1));
                                 offset += len;
+
+                                // Read inline multiplicity (8 bytes, big-endian)
+                                let multiplicity = u64::from_be_bytes([
+                                    space_dump_bytes[offset],
+                                    space_dump_bytes[offset + 1],
+                                    space_dump_bytes[offset + 2],
+                                    space_dump_bytes[offset + 3],
+                                    space_dump_bytes[offset + 4],
+                                    space_dump_bytes[offset + 5],
+                                    space_dump_bytes[offset + 6],
+                                    space_dump_bytes[offset + 7],
+                                ]);
+                                offset += 8;
+
+                                // Insert path with correct multiplicity directly
+                                space.btm.insert(path_bytes, Multiplicity::new(multiplicity));
+                                total_atoms_added += multiplicity as usize;
                             }
+                            // Update total_atoms counter for all paths inserted
+                            env.shared
+                                .atom_space
+                                .total_atoms
+                                .fetch_add(total_atoms_added, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                 }
@@ -827,14 +736,14 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                 env.rebuild_bloom_filter_from_space();
             }
 
-            // Extract and restore wide expressions (element 2) if present
+            // Extract and restore wide expressions (element 1) — always present
             // These are expressions with arity >= 64 that exceed MORK's 63-arity limit
-            // Stored as Wide MORK storage bytes (tag-byte + LEB128)
-            if tuple.ps.len() >= 3 {
-                let large_exprs_par = extract_tuple_value(&tuple.ps[2])?;
+            // Stored as Wide MORK storage bytes (tag-byte + LEB128) with inline multiplicities
+            {
+                let large_exprs_par = extract_tuple_value(&tuple.ps[1])?;
                 if let Some(expr) = large_exprs_par.exprs.first() {
                     if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
-                        // Read format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes]...
+                        // Read format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes][multiplicity1: 8 bytes]...
                         if large_bytes.len() >= 12 {
                             let mut offset = 0;
 
@@ -859,7 +768,7 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                 ]);
                                 offset += 8;
 
-                                // Read and restore each wide expression
+                                // Read and restore each wide expression with inline multiplicity
                                 for _ in 0..count {
                                     if offset + 4 > large_bytes.len() {
                                         break;
@@ -874,22 +783,36 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                     ]) as usize;
                                     offset += 4;
 
-                                    if offset + len > large_bytes.len() {
-                                        break;
+                                    if offset + len + 8 > large_bytes.len() {
+                                        break; // Not enough data for path + multiplicity
                                     }
 
                                     // Wide MORK bytes — insert directly into wide_btm
                                     let wide_bytes = &large_bytes[offset..offset + len];
+                                    offset += len;
+
+                                    // Read inline multiplicity (8 bytes, big-endian)
+                                    let multiplicity = u64::from_be_bytes([
+                                        large_bytes[offset],
+                                        large_bytes[offset + 1],
+                                        large_bytes[offset + 2],
+                                        large_bytes[offset + 3],
+                                        large_bytes[offset + 4],
+                                        large_bytes[offset + 5],
+                                        large_bytes[offset + 6],
+                                        large_bytes[offset + 7],
+                                    ]);
+                                    offset += 8;
+
                                     {
-                                        use crate::backend::environment::multiplicity;
+                                        use crate::backend::environment::multiplicity as mult_mod;
                                         let mut wbtm = env.shared.atom_space.wide_btm.write();
-                                        multiplicity::add_atom(&mut wbtm, wide_bytes);
+                                        mult_mod::set_multiplicity(&mut wbtm, wide_bytes, multiplicity);
                                     }
                                     env.shared
                                         .atom_space
                                         .total_atoms
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    offset += len;
+                                        .fetch_add(multiplicity as usize, std::sync::atomic::Ordering::Relaxed);
                                 }
                             }
                         }
@@ -1020,6 +943,137 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
     }
 }
 
+/// Decode a GByteArray containing MeTTa Space data (magic "MTTS") back to a
+/// vector of Rholang Pars representing the decoded MeTTa expressions.
+///
+/// This function fully restores the MORK space (including symbol table) and
+/// converts each atom back to a Rholang Par via `metta_value_to_par`.
+pub fn decode_space_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String> {
+    if bytes.len() < 4 {
+        return Err("Space bytes too short".to_string());
+    }
+    if &bytes[0..4] != METTA_SPACE_MAGIC {
+        return Err(format!(
+            "Invalid magic: expected {:?}, got {:?}",
+            METTA_SPACE_MAGIC,
+            &bytes[0..4]
+        ));
+    }
+
+    // Build a Par wrapping the space bytes, then wrap in an environment-shaped
+    // tuple so `par_to_environment` can decode it. The environment tuple has
+    // the shape: (("space", GByteArray), ("large_exprs", GByteArray))
+    let space_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(bytes.to_vec())),
+    }]);
+
+    // Create empty large_exprs bytes (magic + 0 count)
+    let mut empty_large = Vec::new();
+    empty_large.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
+    empty_large.extend_from_slice(&0u64.to_be_bytes()); // count = 0
+    let large_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(empty_large)),
+    }]);
+
+    let env_tuple_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            ps: vec![
+                // ("space", space_bytes)
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![create_string_par("space".to_string()), space_par],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+                // ("large_exprs", empty_large_bytes)
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![
+                            create_string_par("large_exprs".to_string()),
+                            large_par,
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
+    }]);
+
+    let env = par_to_environment(&env_tuple_par)?;
+    let atoms = env.get_all_atoms();
+    Ok(atoms.iter().map(metta_value_to_par).collect())
+}
+
+/// Decode a GByteArray containing MeTTa large expressions (magic "MTTL") back
+/// to a vector of Rholang Pars.
+///
+/// Large expressions are those with arity >= 64 that exceed MORK's 63-arity
+/// limit and are stored using Wide MORK encoding.
+pub fn decode_large_exprs_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String> {
+    if bytes.len() < 4 {
+        return Err("Large expression bytes too short".to_string());
+    }
+    if &bytes[0..4] != METTA_LARGE_EXPRS_MAGIC {
+        return Err(format!(
+            "Invalid magic: expected {:?}, got {:?}",
+            METTA_LARGE_EXPRS_MAGIC,
+            &bytes[0..4]
+        ));
+    }
+
+    // Build a synthetic environment tuple with just the large_exprs field
+    // so par_to_environment decodes it.
+    let large_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(bytes.to_vec())),
+    }]);
+
+    // Create empty space bytes (magic + 0 sym_table_len + 0 paths)
+    let mut empty_space = Vec::new();
+    empty_space.extend_from_slice(METTA_SPACE_MAGIC);
+    empty_space.extend_from_slice(&0u64.to_be_bytes()); // sym_table_len = 0
+    empty_space.extend_from_slice(&0u64.to_be_bytes()); // path_count = 0
+    let space_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(empty_space)),
+    }]);
+
+    let env_tuple_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            ps: vec![
+                // ("space", empty_space_bytes)
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![create_string_par("space".to_string()), space_par],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+                // ("large_exprs", large_expr_bytes)
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![
+                            create_string_par("large_exprs".to_string()),
+                            large_par,
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
+    }]);
+
+    let env = par_to_environment(&env_tuple_par)?;
+    // Only return the wide expressions (not the empty regular space)
+    let atoms = env.get_all_atoms();
+    Ok(atoms.iter().map(metta_value_to_par).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -1052,13 +1106,12 @@ mod tests {
         let par = environment_to_par(&env);
         println!("Serialized to Par");
 
-        // Check that the serialized Par is an ETuple with 2 or 3 named field tuples
-        // (3 if large_exprs are present)
+        // Check that the serialized Par is an ETuple with 2 named field tuples: [space, large_exprs]
         assert_eq!(par.exprs.len(), 1);
         if let Some(ExprInstance::ETupleBody(env_tuple)) = par.exprs[0].expr_instance.as_ref() {
-            assert!(
-                env_tuple.ps.len() == 2 || env_tuple.ps.len() == 3,
-                "Expected ETuple with 2 or 3 fields, got {}",
+            assert_eq!(
+                env_tuple.ps.len(), 2,
+                "Expected ETuple with 2 fields, got {}",
                 env_tuple.ps.len()
             );
 
@@ -1091,7 +1144,7 @@ mod tests {
                 panic!("Expected ETupleBody for field 0");
             }
 
-            // Check field 1: ("multiplicities", <GByteArray>)
+            // Check field 1: ("large_exprs", <GByteArray>)
             if let Some(ExprInstance::ETupleBody(tuple)) = env_tuple.ps[1]
                 .exprs
                 .first()
@@ -1102,25 +1155,25 @@ mod tests {
                     .first()
                     .and_then(|e| e.expr_instance.as_ref())
                 {
-                    assert_eq!(tag, "multiplicities");
+                    assert_eq!(tag, "large_exprs");
                 }
                 // Verify it's a GByteArray
-                if let Some(ExprInstance::GByteArray(mult_bytes)) = tuple.ps[1]
+                if let Some(ExprInstance::GByteArray(large_bytes)) = tuple.ps[1]
                     .exprs
                     .first()
                     .and_then(|e| e.expr_instance.as_ref())
                 {
                     println!(
-                        "Multiplicities is a GByteArray with {} bytes",
-                        mult_bytes.len()
+                        "Large expressions is a GByteArray with {} bytes",
+                        large_bytes.len()
                     );
-                    // Should have at least 8 bytes for the count
+                    // Should have at least 12 bytes (magic + count)
                     assert!(
-                        mult_bytes.len() >= 8,
-                        "Multiplicities byte array should have at least 8 bytes for count"
+                        large_bytes.len() >= 12,
+                        "Large expressions byte array should have at least 12 bytes for magic + count"
                     );
                 } else {
-                    panic!("Expected GByteArray for multiplicities");
+                    panic!("Expected GByteArray for large_exprs");
                 }
             }
         } else {
@@ -1933,7 +1986,7 @@ mod tests {
 
     #[test]
     fn test_par_to_environment_wrong_tuple_size() {
-        // Create a Par with wrong tuple size (1 instead of 2-3)
+        // Create a Par with wrong tuple size (1 instead of 2)
         let par = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                 ps: vec![create_string_par("only_one".to_string())],
@@ -1944,7 +1997,7 @@ mod tests {
 
         let result = par_to_environment(&par);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected 2 or 3 elements"));
+        assert!(result.unwrap_err().contains("Expected 2 elements"));
     }
 
     #[test]
@@ -2089,5 +2142,101 @@ mod tests {
         } else {
             panic!("Expected String after roundtrip");
         }
+    }
+
+    #[test]
+    fn test_multiplicity_roundtrip() {
+        // Test that multiplicities survive serialization/deserialization round-trip.
+        // This verifies the inline multiplicity encoding in MTTS works correctly.
+        let mut env = MettaEnvironment::default();
+
+        // Add the same atom multiple times to create non-trivial multiplicities
+        let fact = MettaValue::SExpr(vec![
+            MettaValue::Atom("color".to_string()),
+            MettaValue::Atom("red".to_string()),
+        ]);
+        env.add_to_space(&fact);
+        env.add_to_space(&fact); // multiplicity = 2
+        env.add_to_space(&fact); // multiplicity = 3
+
+        let fact2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("color".to_string()),
+            MettaValue::Atom("blue".to_string()),
+        ]);
+        env.add_to_space(&fact2); // multiplicity = 1
+
+        // Capture original multiplicities
+        let original_multiplicities = env.get_multiplicities();
+        println!("Original multiplicities: {:?}", original_multiplicities);
+
+        // Serialize
+        let par = environment_to_par(&env);
+
+        // Deserialize
+        let deserialized_env = par_to_environment(&par)
+            .expect("Failed to deserialize environment with multiplicities");
+
+        // Compare multiplicities
+        let deserialized_multiplicities = deserialized_env.get_multiplicities();
+        println!("Deserialized multiplicities: {:?}", deserialized_multiplicities);
+
+        // Verify each original entry is preserved with correct count
+        for (key, original_count) in &original_multiplicities {
+            let deserialized_count = deserialized_multiplicities.get(key)
+                .unwrap_or_else(|| panic!("Missing key '{}' after deserialization", key));
+            assert_eq!(
+                *original_count, *deserialized_count,
+                "Multiplicity mismatch for key '{}': original={}, deserialized={}",
+                key, original_count, deserialized_count
+            );
+        }
+        assert_eq!(
+            original_multiplicities.len(),
+            deserialized_multiplicities.len(),
+            "Number of multiplicity entries should match"
+        );
+
+        println!("✓ Multiplicity round-trip preserves all counts correctly!");
+    }
+
+    #[test]
+    fn test_multiplicity_roundtrip_multiple_cycles() {
+        // Verify multiplicities survive multiple round-trip cycles
+        let mut env = MettaEnvironment::default();
+
+        let fact = MettaValue::SExpr(vec![
+            MettaValue::Atom("item".to_string()),
+            MettaValue::Atom("sword".to_string()),
+        ]);
+        // Add 5 copies
+        for _ in 0..5 {
+            env.add_to_space(&fact);
+        }
+
+        let original_multiplicities = env.get_multiplicities();
+
+        // Round-trip 3 times
+        let par1 = environment_to_par(&env);
+        let env2 = par_to_environment(&par1).expect("Round-trip 1 failed");
+        let par2 = environment_to_par(&env2);
+        let env3 = par_to_environment(&par2).expect("Round-trip 2 failed");
+        let par3 = environment_to_par(&env3);
+        let env4 = par_to_environment(&par3).expect("Round-trip 3 failed");
+
+        let final_multiplicities = env4.get_multiplicities();
+
+        // Verify all counts are stable after 3 round-trips
+        for (key, original_count) in &original_multiplicities {
+            let final_count = final_multiplicities.get(key)
+                .unwrap_or_else(|| panic!("Missing key '{}' after 3 round-trips", key));
+            assert_eq!(
+                *original_count, *final_count,
+                "Multiplicity for '{}' changed after 3 round-trips: {} -> {}",
+                key, original_count, final_count
+            );
+        }
+        assert_eq!(original_multiplicities.len(), final_multiplicities.len());
+
+        println!("✓ Multiplicities stable across 3 round-trip cycles!");
     }
 }

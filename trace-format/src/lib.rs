@@ -368,7 +368,8 @@ pub enum TraceEventKind {
 
     /// Scaling monitor tick — records every decision including Hold.
     WorkPoolScaleEvent {
-        /// "unpark", "park", or "hold"
+        // --- existing fields ---
+        /// "unpark", "park", "hold", or "graduated_park"
         action: String,
         /// Number of active workers AFTER the action
         active_workers_after: u32,
@@ -390,6 +391,52 @@ pub enum TraceEventKind {
         objective: f64,
         /// Whether this was an emergency override (bp_level >= 2)
         emergency: bool,
+
+        // --- hill climber internals ---
+        /// +1 (exploring unpark) or -1 (exploring park)
+        hc_direction: i32,
+        /// Ticks remaining in cooldown (0 = ready to act)
+        hc_cooldown_remaining: u32,
+        /// Previous objective value (baseline for comparison)
+        hc_prev_objective: f64,
+        /// improvement = prev_objective - objective (positive = got better)
+        hc_improvement: f64,
+
+        // --- instantaneous (pre-EMA) signals ---
+        /// Raw throughput: delta_evals / elapsed_seconds
+        raw_throughput: f64,
+        /// Raw slab pressure: backpressure_level() as f64 (0.0-3.0)
+        raw_slab_pressure: f64,
+        /// Raw RSS pressure (0.0-3.0)
+        raw_rss_pressure: f64,
+        /// Backpressure level (0-3)
+        bp_level: u32,
+
+        // --- objective decomposition ---
+        /// slab_amplifier: 1.0 (bp 0-1), 2.0 (bp 2), 4.0 (bp 3)
+        slab_amplifier: f64,
+        /// -THROUGHPUT_WEIGHT * ema_throughput
+        term_throughput: f64,
+        /// QUEUE_DEPTH_WEIGHT * queue_depth_instant
+        term_queue_depth: f64,
+        /// MEMORY_PRESSURE_WEIGHT * slab_amplifier * ema_slab_pressure
+        term_slab_pressure: f64,
+        /// RSS_PRESSURE_WEIGHT * ema_rss_pressure
+        term_rss_pressure: f64,
+
+        // --- phase 2/3 state ---
+        /// Number of workers detected as blocked (Phase 2)
+        blocked_worker_count: u32,
+        /// Current overflow worker count
+        overflow_count: u32,
+        /// Which phase made the decision: "phase1_emergency", "phase4_hill_climber"
+        decision_phase: String,
+
+        // --- raw throughput inputs ---
+        /// Number of evals completed since last tick
+        delta_evals: u64,
+        /// Seconds elapsed since last tick
+        elapsed_seconds: f64,
     },
 
     /// A worker thread entered the parked state.
@@ -408,6 +455,61 @@ pub enum TraceEventKind {
         queue_depth: u32,
         /// Active workers after resume
         active_workers: u32,
+    },
+
+    /// Blocked workers detected by the scaling monitor (Phase 2).
+    WorkPoolBlockedWorkersDetected {
+        /// Number of blocked workers
+        blocked_count: u32,
+        /// Number of active (non-parked) workers
+        active_workers: u32,
+        /// Per-worker blocked indices (only workers detected as blocked)
+        blocked_indices: Vec<u32>,
+    },
+
+    /// Compensatory activation fired (Phase 3).
+    WorkPoolCompensatoryAction {
+        /// Workers unparked from core pool
+        core_unparked: u32,
+        /// Overflow workers spawned
+        overflow_spawned: u32,
+        /// Overflow workers drained
+        overflow_drained: u32,
+        /// Target active count (from hill climber)
+        target: u32,
+        /// Deficit = target - total_unblocked
+        deficit: u32,
+        /// Whether RSS vetoed overflow spawning
+        rss_veto: bool,
+    },
+
+    /// Lightweight event emitted at the START of every monitor tick,
+    /// carrying the raw sample values before EMA/decision processing.
+    WorkPoolMonitorTick {
+        /// Current global eval count
+        current_eval_count: u64,
+        /// Nanoseconds elapsed since last tick
+        elapsed_ns: u64,
+        /// Current queue length
+        queue_len: u32,
+        /// Current backpressure level (0-3)
+        bp_level: u32,
+        /// Current RSS in bytes (0 if unavailable)
+        rss_bytes: u64,
+    },
+
+    /// A specific worker transitioned from unblocked to blocked (Phase 2).
+    WorkPoolWorkerBlocked {
+        /// Worker thread index
+        worker_id: u32,
+        /// CPU utilization ratio at detection time (0.0-1.0)
+        cpu_ratio: f64,
+    },
+
+    /// A specific worker transitioned from blocked to unblocked (Phase 2).
+    WorkPoolWorkerUnblocked {
+        /// Worker thread index
+        worker_id: u32,
     },
 }
 
@@ -672,6 +774,24 @@ mod tests {
                 ema_rss_pressure: 0.3,
                 objective: 0.85,
                 emergency: false,
+                hc_direction: 1,
+                hc_cooldown_remaining: 0,
+                hc_prev_objective: 1.0,
+                hc_improvement: 0.15,
+                raw_throughput: 100.0,
+                raw_slab_pressure: 0.0,
+                raw_rss_pressure: 0.0,
+                bp_level: 0,
+                slab_amplifier: 1.0,
+                term_throughput: -0.75,
+                term_queue_depth: 20.0,
+                term_slab_pressure: 0.5,
+                term_rss_pressure: 2.4,
+                blocked_worker_count: 0,
+                overflow_count: 0,
+                decision_phase: "phase4_hill_climber".to_string(),
+                delta_evals: 500,
+                elapsed_seconds: 0.2,
             },
             TraceEventKind::NondeterministicFork { branch_count: 3 },
             TraceEventKind::BranchEnd {

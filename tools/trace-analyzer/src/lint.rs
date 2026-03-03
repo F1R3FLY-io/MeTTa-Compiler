@@ -81,6 +81,20 @@ pub const LINT_IDS: &[&str] = &[
     "gc-pause-outlier",
     "eval-depth-explosion",
     "compilation-latency",
+    "workpool-oscillation",
+    "workpool-floor-pinned",
+    "workpool-emergency-storm",
+    "workpool-pressure-dominance",
+    "workpool-convergence",
+    // Phase A6 lints
+    "repeated-eval",
+    "empty-branch-ratio",
+    "rule-match-explosion",
+    "type-inference-miss",
+    "fork-depth-explosion",
+    "speculative-waste",
+    "gc-allocation-hotspot",
+    "tier-promotion-opportunity",
 ];
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -89,6 +103,14 @@ pub struct LintConfig {
     pub min_severity: Severity,
     pub enabled_lints: Option<Vec<String>>,
     pub depth_threshold: u32,
+    /// Threshold for repeated-eval lint: flag after N identical evaluations (default: 3).
+    pub repeated_eval_threshold: u32,
+    /// Threshold for rule-match-explosion: flag when match_count exceeds N (default: 10).
+    pub rule_match_threshold: u32,
+    /// Threshold for fork-depth-explosion: flag when fork nesting exceeds N (default: 3).
+    pub fork_depth_threshold: u32,
+    /// Threshold for tier-promotion-opportunity: execution count before flagging (default: 100).
+    pub tier_promotion_threshold: u32,
 }
 
 impl LintConfig {
@@ -812,7 +834,768 @@ impl CompilationLatencyAcc {
     }
 }
 
-// ── LintPass — orchestrates all 8 accumulators ──────────────────────────────
+// ── I. workpool-oscillation ──────────────────────────────────────────────────
+
+struct WorkpoolOscillationAcc {
+    /// (timestamp_ns, action) pairs for scale events
+    actions: Vec<(u64, String)>,
+}
+
+impl WorkpoolOscillationAcc {
+    fn new() -> Self {
+        Self { actions: Vec::new() }
+    }
+
+    fn record(&mut self, timestamp_ns: u64, action: &str) {
+        self.actions.push((timestamp_ns, action.to_string()));
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+
+        // Look for 3+ alternating park/unpark within 5 consecutive ticks
+        const WINDOW: usize = 5;
+        const MIN_ALTERNATIONS: usize = 3;
+
+        if self.actions.len() < WINDOW {
+            return findings;
+        }
+
+        for start in 0..=self.actions.len() - WINDOW {
+            let window = &self.actions[start..start + WINDOW];
+            let mut alternations = 0;
+            for pair in window.windows(2) {
+                let a = &pair[0].1;
+                let b = &pair[1].1;
+                if (a == "park" && b == "unpark") || (a == "unpark" && b == "park") {
+                    alternations += 1;
+                }
+            }
+            if alternations >= MIN_ALTERNATIONS {
+                let start_ts = window[0].0;
+                let end_ts = window.last().expect("window must be non-empty").0;
+                let actions: Vec<&str> = window.iter().map(|(_, a)| a.as_str()).collect();
+                let msg = format!(
+                    "Hill climber oscillating: {} alternating park/unpark in {} ticks [{}]",
+                    alternations,
+                    WINDOW,
+                    actions.join(" → "),
+                );
+                findings.push(
+                    Finding::new(Severity::Warning, "workpool-oscillation", msg)
+                        .with_time(start_ts, Some(end_ts)),
+                );
+            }
+        }
+
+        findings
+    }
+}
+
+// ── J. workpool-floor-pinned ────────────────────────────────────────────────
+
+struct WorkpoolFloorPinnedAcc {
+    /// (timestamp_ns, active_workers_after, min_workers, dominant_term_name)
+    ticks: Vec<(u64, u32, u32, String)>,
+}
+
+impl WorkpoolFloorPinnedAcc {
+    fn new() -> Self {
+        Self { ticks: Vec::new() }
+    }
+
+    fn record(
+        &mut self,
+        timestamp_ns: u64,
+        active_workers_after: u32,
+        min_workers: u32,
+        term_throughput: f64,
+        term_queue_depth: f64,
+        term_slab_pressure: f64,
+        term_rss_pressure: f64,
+    ) {
+        let dominant = Self::dominant_term(
+            term_throughput, term_queue_depth, term_slab_pressure, term_rss_pressure,
+        );
+        self.ticks.push((timestamp_ns, active_workers_after, min_workers, dominant));
+    }
+
+    fn dominant_term(tp: f64, qd: f64, slab: f64, rss: f64) -> String {
+        // The objective is sum of all terms; throughput is negative (good),
+        // others are positive (bad). The dominant positive term drives parking.
+        let terms = [
+            ("throughput", tp.abs()),
+            ("queue_depth", qd),
+            ("slab_pressure", slab),
+            ("rss_pressure", rss),
+        ];
+        terms.iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        const MIN_CONSECUTIVE: usize = 10; // 10 ticks × 200ms = 2 seconds
+
+        let mut run_start: Option<usize> = None;
+
+        for (i, (_, active, min, _)) in self.ticks.iter().enumerate() {
+            let at_floor = *active == *min;
+            match (at_floor, run_start) {
+                (true, None) => run_start = Some(i),
+                (false, Some(start)) => {
+                    let run_len = i - start;
+                    if run_len >= MIN_CONSECUTIVE {
+                        Self::emit_floor_pinned(&self.ticks[start..i], &mut findings);
+                    }
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = run_start {
+            let run_len = self.ticks.len() - start;
+            if run_len >= MIN_CONSECUTIVE {
+                Self::emit_floor_pinned(&self.ticks[start..], &mut findings);
+            }
+        }
+
+        findings
+    }
+
+    fn emit_floor_pinned(run: &[(u64, u32, u32, String)], findings: &mut Vec<Finding>) {
+        let start_ts = run[0].0;
+        let end_ts = run.last().expect("run must be non-empty").0;
+        let duration_ns = end_ts.saturating_sub(start_ts);
+        let min_workers = run[0].2;
+
+        // Count dominant terms
+        let mut term_counts: HashMap<String, usize> = HashMap::new();
+        for (_, _, _, dominant) in run {
+            *term_counts.entry(dominant.clone()).or_insert(0) += 1;
+        }
+        let top_term = term_counts.iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(name, count)| format!("{} ({}×)", name, count))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let msg = format!(
+            "Workers pinned at floor ({}) for {} ({} ticks), dominant term: {}",
+            min_workers,
+            format_ms(duration_ns),
+            run.len(),
+            top_term,
+        );
+        findings.push(
+            Finding::new(Severity::Warning, "workpool-floor-pinned", msg)
+                .with_time(start_ts, Some(end_ts)),
+        );
+    }
+}
+
+// ── K. workpool-emergency-storm ─────────────────────────────────────────────
+
+struct WorkpoolEmergencyStormAcc {
+    /// (timestamp_ns, bp_level, slab_pressure, rss_pressure) for emergency ticks
+    emergency_ticks: Vec<(u64, u32, f64, f64)>,
+}
+
+impl WorkpoolEmergencyStormAcc {
+    fn new() -> Self {
+        Self { emergency_ticks: Vec::new() }
+    }
+
+    fn record(&mut self, timestamp_ns: u64, emergency: bool, bp_level: u32, slab_pressure: f64, rss_pressure: f64) {
+        if emergency {
+            self.emergency_ticks.push((timestamp_ns, bp_level, slab_pressure, rss_pressure));
+        } else {
+            // Non-emergency breaks the streak — add a sentinel
+            self.emergency_ticks.push((timestamp_ns, u32::MAX, 0.0, 0.0));
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        const MIN_CONSECUTIVE: usize = 5; // 5 ticks × 200ms = 1 second
+
+        let mut run_start: Option<usize> = None;
+
+        for (i, &(_, bp_level, _, _)) in self.emergency_ticks.iter().enumerate() {
+            let is_emergency = bp_level != u32::MAX;
+            match (is_emergency, run_start) {
+                (true, None) => run_start = Some(i),
+                (false, Some(start)) => {
+                    let run_len = i - start;
+                    if run_len >= MIN_CONSECUTIVE {
+                        Self::emit_storm(&self.emergency_ticks[start..i], &mut findings);
+                    }
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = run_start {
+            // Filter out sentinel entries
+            let actual: Vec<_> = self.emergency_ticks[start..]
+                .iter()
+                .filter(|&&(_, bp, _, _)| bp != u32::MAX)
+                .collect();
+            if actual.len() >= MIN_CONSECUTIVE {
+                Self::emit_storm(&self.emergency_ticks[start..], &mut findings);
+            }
+        }
+
+        findings
+    }
+
+    fn emit_storm(run: &[(u64, u32, f64, f64)], findings: &mut Vec<Finding>) {
+        let actual: Vec<_> = run.iter().filter(|&&(_, bp, _, _)| bp != u32::MAX).collect();
+        if actual.is_empty() {
+            return;
+        }
+        let start_ts = actual[0].0;
+        let end_ts = actual.last().expect("actual must be non-empty").0;
+        let duration_ns = end_ts.saturating_sub(start_ts);
+        let max_bp: u32 = actual.iter().map(|&&(_, bp, _, _)| bp).max().unwrap_or(0);
+        let max_slab: f64 = actual.iter().map(|&&(_, _, s, _)| s).fold(0.0_f64, f64::max);
+        let max_rss: f64 = actual.iter().map(|&&(_, _, _, r)| r).fold(0.0_f64, f64::max);
+
+        let msg = format!(
+            "Emergency override storm: {} consecutive ticks over {}, max bp_level={}, slab={:.3}, rss={:.3}",
+            actual.len(),
+            format_ms(duration_ns),
+            max_bp,
+            max_slab,
+            max_rss,
+        );
+        findings.push(
+            Finding::new(Severity::Warning, "workpool-emergency-storm", msg)
+                .with_time(start_ts, Some(end_ts)),
+        );
+    }
+}
+
+// ── L. workpool-pressure-dominance ──────────────────────────────────────────
+
+struct WorkpoolPressureDominanceAcc {
+    /// (timestamp_ns, term_breakdown) for parking events where memory pressure dominates
+    violations: Vec<(u64, f64, f64, f64, f64, u32)>,
+}
+
+impl WorkpoolPressureDominanceAcc {
+    fn new() -> Self {
+        Self { violations: Vec::new() }
+    }
+
+    fn record(
+        &mut self,
+        timestamp_ns: u64,
+        action: &str,
+        queue_depth: u32,
+        term_throughput: f64,
+        term_queue_depth: f64,
+        term_slab_pressure: f64,
+        term_rss_pressure: f64,
+    ) {
+        // Only flag park events with non-empty queue
+        if action != "park" {
+            return;
+        }
+        if queue_depth == 0 {
+            return;
+        }
+        // Check if memory terms dominate throughput + queue terms
+        let memory_sum = term_slab_pressure + term_rss_pressure;
+        let work_sum = term_throughput.abs() + term_queue_depth;
+        if memory_sum > work_sum {
+            self.violations.push((
+                timestamp_ns,
+                term_throughput,
+                term_queue_depth,
+                term_slab_pressure,
+                term_rss_pressure,
+                queue_depth,
+            ));
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+
+        for &(ts, tp, qd, slab, rss, queue) in &self.violations {
+            let msg = format!(
+                "Memory pressure starving queue (depth={}): slab={:.4}+rss={:.4} = {:.4} > |tp|={:.4}+qd={:.4} = {:.4}",
+                queue, slab, rss, slab + rss, tp.abs(), qd, tp.abs() + qd,
+            );
+            findings.push(
+                Finding::new(Severity::Warning, "workpool-pressure-dominance", msg)
+                    .with_time(ts, None),
+            );
+        }
+
+        findings
+    }
+}
+
+// ── M. workpool-convergence ─────────────────────────────────────────────────
+
+struct WorkpoolConvergenceAcc {
+    /// (timestamp_ns, action, objective)
+    ticks: Vec<(u64, String, f64)>,
+}
+
+impl WorkpoolConvergenceAcc {
+    fn new() -> Self {
+        Self { ticks: Vec::new() }
+    }
+
+    fn record(&mut self, timestamp_ns: u64, action: &str, objective: f64) {
+        self.ticks.push((timestamp_ns, action.to_string(), objective));
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+
+        // Detect if the hill climber ever converges: sustained Hold with stable objective
+        // "Converged" = 10+ consecutive Hold actions with objective variance < 1%
+        const CONVERGENCE_WINDOW: usize = 10;
+
+        let mut max_hold_run = 0usize;
+        let mut current_hold_run = 0usize;
+        let mut ever_converged = false;
+
+        for (_, action, _) in &self.ticks {
+            if action == "hold" {
+                current_hold_run += 1;
+                if current_hold_run > max_hold_run {
+                    max_hold_run = current_hold_run;
+                }
+            } else {
+                if current_hold_run >= CONVERGENCE_WINDOW {
+                    ever_converged = true;
+                }
+                current_hold_run = 0;
+            }
+        }
+        if current_hold_run >= CONVERGENCE_WINDOW {
+            ever_converged = true;
+        }
+
+        if !ever_converged && self.ticks.len() >= CONVERGENCE_WINDOW {
+            let msg = format!(
+                "Hill climber never converged during trace ({} ticks, max consecutive hold: {})",
+                self.ticks.len(),
+                max_hold_run,
+            );
+            findings.push(Finding::new(Severity::Info, "workpool-convergence", msg));
+        }
+
+        findings
+    }
+}
+
+// ── N. repeated-eval ──────────────────────────────────────────────────────
+
+struct RepeatedEvalAcc {
+    /// input_hash → (count, head_symbol, first_timestamp)
+    seen: HashMap<u64, (u32, String, u64)>,
+    threshold: u32,
+}
+
+impl RepeatedEvalAcc {
+    fn new(threshold: u32) -> Self {
+        Self { seen: HashMap::new(), threshold }
+    }
+
+    fn record(&mut self, input_hash: u64, head_symbol: &str, timestamp_ns: u64) {
+        self.seen.entry(input_hash)
+            .and_modify(|(count, _, _)| *count += 1)
+            .or_insert((1, head_symbol.to_string(), timestamp_ns));
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        let mut entries: Vec<_> = self.seen.into_iter()
+            .filter(|(_, (count, _, _))| *count > self.threshold)
+            .collect();
+        entries.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+
+        for (hash, (count, head, first_ts)) in entries.into_iter().take(20) {
+            let msg = format!(
+                "Expression `{}` (hash {:#x}) evaluated {} times (threshold: {})",
+                head, hash, count, self.threshold,
+            );
+            findings.push(
+                Finding::new(Severity::Info, "repeated-eval", msg)
+                    .with_time(first_ts, None),
+            );
+        }
+        findings
+    }
+}
+
+// ── O. empty-branch-ratio ────────────────────────────────────────────────
+
+struct EmptyBranchRatioAcc {
+    /// fork_hash → (total_branches, empty_branches, first_timestamp, head_symbol)
+    forks: HashMap<u64, (u32, u32, u64, String)>,
+    /// Current fork context per thread: (fork_hash, head)
+    current_fork: HashMap<u32, (u64, String)>,
+}
+
+impl EmptyBranchRatioAcc {
+    fn new() -> Self {
+        Self { forks: HashMap::new(), current_fork: HashMap::new() }
+    }
+
+    fn record_fork(&mut self, thread_id: u32, timestamp_ns: u64, branch_count: u32, input_hash: u64, head: &str) {
+        self.current_fork.insert(thread_id, (input_hash, head.to_string()));
+        self.forks.entry(input_hash)
+            .or_insert((0, 0, timestamp_ns, head.to_string()))
+            .0 += branch_count;
+    }
+
+    fn record_branch_end(&mut self, thread_id: u32, result_count: u32) {
+        if let Some((fork_hash, _)) = self.current_fork.get(&thread_id) {
+            if let Some(entry) = self.forks.get_mut(fork_hash) {
+                if result_count == 0 {
+                    entry.1 += 1;
+                }
+            }
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for (hash, (total, empty, ts, head)) in &self.forks {
+            if *total < 4 { continue; } // need enough branches to be meaningful
+            let ratio = *empty as f64 / *total as f64;
+            if ratio > 0.5 {
+                let msg = format!(
+                    "Fork point `{}` (hash {:#x}): {}/{} branches empty ({:.0}% waste)",
+                    head, hash, empty, total, ratio * 100.0,
+                );
+                findings.push(
+                    Finding::new(Severity::Warning, "empty-branch-ratio", msg)
+                        .with_time(*ts, None),
+                );
+            }
+        }
+        findings
+    }
+}
+
+// ── P. rule-match-explosion ──────────────────────────────────────────────
+
+struct RuleMatchExplosionAcc {
+    threshold: u32,
+    /// (timestamp, head_symbol, match_count)
+    explosions: Vec<(u64, String, u32)>,
+}
+
+impl RuleMatchExplosionAcc {
+    fn new(threshold: u32) -> Self {
+        Self { threshold, explosions: Vec::new() }
+    }
+
+    fn record(&mut self, timestamp_ns: u64, match_count: u32, head: &str) {
+        if match_count > self.threshold {
+            self.explosions.push((timestamp_ns, head.to_string(), match_count));
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        // Group by head symbol
+        let mut by_head: HashMap<String, (u32, u32, u64)> = HashMap::new(); // (count, max_matches, first_ts)
+        for (ts, head, match_count) in &self.explosions {
+            let entry = by_head.entry(head.clone()).or_insert((0, 0, *ts));
+            entry.0 += 1;
+            if *match_count > entry.1 {
+                entry.1 = *match_count;
+            }
+        }
+
+        let mut entries: Vec<_> = by_head.into_iter().collect();
+        entries.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+
+        for (head, (count, max_matches, first_ts)) in entries.into_iter().take(20) {
+            let msg = format!(
+                "Rule `{}`: {} occurrences with match_count > {} (max: {})",
+                head, count, self.threshold, max_matches,
+            );
+            findings.push(
+                Finding::new(Severity::Warning, "rule-match-explosion", msg)
+                    .with_time(first_ts, None),
+            );
+        }
+        findings
+    }
+}
+
+// ── Q. type-inference-miss ───────────────────────────────────────────────
+
+struct TypeInferenceMissAcc {
+    /// (timestamp, expression_display, source)
+    misses: Vec<(u64, String, String)>,
+}
+
+impl TypeInferenceMissAcc {
+    fn new() -> Self {
+        Self { misses: Vec::new() }
+    }
+
+    fn record(&mut self, timestamp_ns: u64, expression: &str, source: &str) {
+        if source.contains("fallback-undefined") {
+            self.misses.push((timestamp_ns, expression.to_string(), source.to_string()));
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        let count = self.misses.len();
+        if count == 0 {
+            return findings;
+        }
+
+        // Group by expression head
+        let mut by_expr: HashMap<String, u32> = HashMap::new();
+        for (_, expr, _) in &self.misses {
+            *by_expr.entry(expr.clone()).or_default() += 1;
+        }
+
+        let msg = format!(
+            "{} type inference fallbacks to %Undefined% ({} distinct expressions)",
+            count, by_expr.len(),
+        );
+        findings.push(Finding::new(Severity::Info, "type-inference-miss", msg));
+
+        // Top 5 most common
+        let mut sorted: Vec<_> = by_expr.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for (expr, count) in sorted.into_iter().take(5) {
+            let expr_display = if expr.len() > 60 {
+                format!("{}...", &expr[..57])
+            } else {
+                expr
+            };
+            let msg = format!("  `{}`: {} fallbacks", expr_display, count);
+            findings.push(Finding::new(Severity::Info, "type-inference-miss", msg));
+        }
+
+        findings
+    }
+}
+
+// ── R. fork-depth-explosion ──────────────────────────────────────────────
+
+struct ForkDepthExplosionAcc {
+    threshold: u32,
+    /// Per-thread fork nesting depth.
+    thread_depth: HashMap<u32, u32>,
+    /// (timestamp, thread_id, depth, head) for deep forks.
+    violations: Vec<(u64, u32, u32, String)>,
+}
+
+impl ForkDepthExplosionAcc {
+    fn new(threshold: u32) -> Self {
+        Self {
+            threshold,
+            thread_depth: HashMap::new(),
+            violations: Vec::new(),
+        }
+    }
+
+    fn record_fork(&mut self, timestamp_ns: u64, thread_id: u32, head: &str) {
+        let depth = self.thread_depth.entry(thread_id).or_insert(0);
+        *depth += 1;
+        if *depth > self.threshold {
+            self.violations.push((timestamp_ns, thread_id, *depth, head.to_string()));
+        }
+    }
+
+    fn record_branch_end(&mut self, thread_id: u32) {
+        if let Some(depth) = self.thread_depth.get_mut(&thread_id) {
+            *depth = depth.saturating_sub(1);
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        if self.violations.is_empty() {
+            return findings;
+        }
+
+        let max_depth = self.violations.iter().map(|(_, _, d, _)| *d).max().unwrap_or(0);
+        let msg = format!(
+            "{} fork nesting violations (max depth: {}, threshold: {})",
+            self.violations.len(), max_depth, self.threshold,
+        );
+        findings.push(
+            Finding::new(Severity::Warning, "fork-depth-explosion", msg)
+                .with_time(self.violations[0].0, None),
+        );
+
+        findings
+    }
+}
+
+// ── S. speculative-waste ─────────────────────────────────────────────────
+
+struct SpeculativeWasteAcc {
+    /// Total time in empty branches.
+    empty_branch_time_ns: u64,
+    /// Total wall time (max timestamp).
+    wall_time_ns: u64,
+    empty_count: u64,
+    total_count: u64,
+}
+
+impl SpeculativeWasteAcc {
+    fn new() -> Self {
+        Self {
+            empty_branch_time_ns: 0,
+            wall_time_ns: 0,
+            empty_count: 0,
+            total_count: 0,
+        }
+    }
+
+    fn record_branch_end(&mut self, result_count: u32, duration_ns: u64) {
+        self.total_count += 1;
+        if result_count == 0 {
+            self.empty_branch_time_ns += duration_ns;
+            self.empty_count += 1;
+        }
+    }
+
+    fn update_wall_time(&mut self, end_ns: u64) {
+        if end_ns > self.wall_time_ns {
+            self.wall_time_ns = end_ns;
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        if self.wall_time_ns == 0 || self.total_count == 0 {
+            return findings;
+        }
+        let waste_pct = self.empty_branch_time_ns as f64 / self.wall_time_ns as f64;
+        if waste_pct > 0.25 {
+            let msg = format!(
+                "Speculative waste: {}/{} branches empty ({:.1}%), consuming {} ({:.1}% of wall time)",
+                self.empty_count,
+                self.total_count,
+                self.empty_count as f64 / self.total_count as f64 * 100.0,
+                format_ms(self.empty_branch_time_ns),
+                waste_pct * 100.0,
+            );
+            findings.push(Finding::new(Severity::Warning, "speculative-waste", msg));
+        }
+        findings
+    }
+}
+
+// ── T. gc-allocation-hotspot ─────────────────────────────────────────────
+
+struct GcAllocationHotspotAcc {
+    /// depth → (count, total_allocation_delta_bytes)
+    by_depth: HashMap<u32, (u64, u64)>,
+}
+
+impl GcAllocationHotspotAcc {
+    fn new() -> Self {
+        Self { by_depth: HashMap::new() }
+    }
+
+    fn record(&mut self, depth: u32, allocation_delta_bytes: u64) {
+        let entry = self.by_depth.entry(depth).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += allocation_delta_bytes;
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        if self.by_depth.is_empty() {
+            return findings;
+        }
+
+        let total_allocs: u64 = self.by_depth.values().map(|(c, _)| c).sum();
+        let total_bytes: u64 = self.by_depth.values().map(|(_, b)| b).sum();
+
+        // Find depth with highest allocation
+        let mut sorted: Vec<_> = self.by_depth.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+
+        if let Some(&(depth, (count, bytes))) = sorted.first() {
+            let pct = if total_bytes > 0 { bytes as f64 / total_bytes as f64 * 100.0 } else { 0.0 };
+            if pct > 50.0 {
+                let msg = format!(
+                    "GC hotspot at depth {}: {} safepoints, {} bytes ({:.0}% of total {})",
+                    depth, count, bytes, pct, total_allocs,
+                );
+                findings.push(Finding::new(Severity::Info, "gc-allocation-hotspot", msg));
+            }
+        }
+
+        findings
+    }
+}
+
+// ── U. tier-promotion-opportunity ────────────────────────────────────────
+
+struct TierPromotionOpportunityAcc {
+    threshold: u32,
+    /// expression_hash → (max_execution_count, max_tier, head_symbol, first_ts)
+    dispatches: HashMap<u64, (u32, TraceTier, String, u64)>,
+}
+
+impl TierPromotionOpportunityAcc {
+    fn new(threshold: u32) -> Self {
+        Self { threshold, dispatches: HashMap::new() }
+    }
+
+    fn record(&mut self, expression_hash: u64, execution_count: u32, tier: TraceTier, head: &str, timestamp_ns: u64) {
+        let entry = self.dispatches.entry(expression_hash)
+            .or_insert((0, TraceTier::TreeWalker, head.to_string(), timestamp_ns));
+        if execution_count > entry.0 {
+            entry.0 = execution_count;
+        }
+        // Track the highest tier reached
+        if (tier as u8) > (entry.1 as u8) {
+            entry.1 = tier;
+        }
+    }
+
+    fn finalize(self) -> Vec<Finding> {
+        let mut findings = Vec::new();
+
+        let mut stuck: Vec<_> = self.dispatches.into_iter()
+            .filter(|(_, (count, tier, _, _))| {
+                *count > self.threshold && *tier == TraceTier::TreeWalker
+            })
+            .collect();
+
+        stuck.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+
+        for (hash, (count, _, head, first_ts)) in stuck.into_iter().take(20) {
+            let msg = format!(
+                "Expression `{}` (hash {:#x}): executed {} times, never promoted past TreeWalker",
+                head, hash, count,
+            );
+            findings.push(
+                Finding::new(Severity::Info, "tier-promotion-opportunity", msg)
+                    .with_time(first_ts, None),
+            );
+        }
+
+        findings
+    }
+}
+
+// ── LintPass — orchestrates all accumulators ─────────────────────────────────
 
 struct LintPass {
     branch_imbalance: Option<BranchImbalanceAcc>,
@@ -823,6 +1606,20 @@ struct LintPass {
     gc_pause_outlier: Option<GcPauseOutlierAcc>,
     eval_depth_explosion: Option<EvalDepthExplosionAcc>,
     compilation_latency: Option<CompilationLatencyAcc>,
+    workpool_oscillation: Option<WorkpoolOscillationAcc>,
+    workpool_floor_pinned: Option<WorkpoolFloorPinnedAcc>,
+    workpool_emergency_storm: Option<WorkpoolEmergencyStormAcc>,
+    workpool_pressure_dominance: Option<WorkpoolPressureDominanceAcc>,
+    workpool_convergence: Option<WorkpoolConvergenceAcc>,
+    // Phase A6 lints
+    repeated_eval: Option<RepeatedEvalAcc>,
+    empty_branch_ratio: Option<EmptyBranchRatioAcc>,
+    rule_match_explosion: Option<RuleMatchExplosionAcc>,
+    type_inference_miss: Option<TypeInferenceMissAcc>,
+    fork_depth_explosion: Option<ForkDepthExplosionAcc>,
+    speculative_waste: Option<SpeculativeWasteAcc>,
+    gc_allocation_hotspot: Option<GcAllocationHotspotAcc>,
+    tier_promotion_opportunity: Option<TierPromotionOpportunityAcc>,
 }
 
 impl LintPass {
@@ -844,6 +1641,33 @@ impl LintPass {
                 .then(|| EvalDepthExplosionAcc::new(config.depth_threshold)),
             compilation_latency: config.is_enabled("compilation-latency")
                 .then(CompilationLatencyAcc::new),
+            workpool_oscillation: config.is_enabled("workpool-oscillation")
+                .then(WorkpoolOscillationAcc::new),
+            workpool_floor_pinned: config.is_enabled("workpool-floor-pinned")
+                .then(WorkpoolFloorPinnedAcc::new),
+            workpool_emergency_storm: config.is_enabled("workpool-emergency-storm")
+                .then(WorkpoolEmergencyStormAcc::new),
+            workpool_pressure_dominance: config.is_enabled("workpool-pressure-dominance")
+                .then(WorkpoolPressureDominanceAcc::new),
+            workpool_convergence: config.is_enabled("workpool-convergence")
+                .then(WorkpoolConvergenceAcc::new),
+            // Phase A6 lints
+            repeated_eval: config.is_enabled("repeated-eval")
+                .then(|| RepeatedEvalAcc::new(config.repeated_eval_threshold)),
+            empty_branch_ratio: config.is_enabled("empty-branch-ratio")
+                .then(EmptyBranchRatioAcc::new),
+            rule_match_explosion: config.is_enabled("rule-match-explosion")
+                .then(|| RuleMatchExplosionAcc::new(config.rule_match_threshold)),
+            type_inference_miss: config.is_enabled("type-inference-miss")
+                .then(TypeInferenceMissAcc::new),
+            fork_depth_explosion: config.is_enabled("fork-depth-explosion")
+                .then(|| ForkDepthExplosionAcc::new(config.fork_depth_threshold)),
+            speculative_waste: config.is_enabled("speculative-waste")
+                .then(SpeculativeWasteAcc::new),
+            gc_allocation_hotspot: config.is_enabled("gc-allocation-hotspot")
+                .then(GcAllocationHotspotAcc::new),
+            tier_promotion_opportunity: config.is_enabled("tier-promotion-opportunity")
+                .then(|| TierPromotionOpportunityAcc::new(config.tier_promotion_threshold)),
         }
     }
 
@@ -852,10 +1676,31 @@ impl LintPass {
         let tid = event.thread_id;
         let seq = event.seq;
         let dur = event.duration_ns.unwrap_or(0);
+        let end_ns = ts + dur;
 
         // G. eval-depth-explosion — checks every event's depth
         if let Some(acc) = &mut self.eval_depth_explosion {
             acc.record(event.depth, ts);
+        }
+
+        // S. speculative-waste — tracks wall time on every event
+        if let Some(acc) = &mut self.speculative_waste {
+            acc.update_wall_time(end_ns);
+        }
+
+        // N. repeated-eval — track all timed computation events
+        if let Some(acc) = &mut self.repeated_eval {
+            if dur > 0 {
+                match &event.kind {
+                    TraceEventKind::RuleApplication { .. }
+                    | TraceEventKind::GroundedOp { .. } => {
+                        let input_hash = crate::util::hash_trace_value(&event.input);
+                        let head = crate::util::extract_head_symbol(&event.input);
+                        acc.record(input_hash, head, ts);
+                    }
+                    _ => {}
+                }
+            }
         }
 
         match &event.kind {
@@ -867,6 +1712,17 @@ impl LintPass {
                 if let Some(acc) = &mut self.sequential_fan_out {
                     acc.record_fork(ts, tid, *branch_count);
                 }
+                // O. empty-branch-ratio
+                if let Some(acc) = &mut self.empty_branch_ratio {
+                    let input_hash = crate::util::hash_trace_value(&event.input);
+                    let head = crate::util::extract_head_symbol(&event.input);
+                    acc.record_fork(tid, ts, *branch_count, input_hash, head);
+                }
+                // R. fork-depth-explosion
+                if let Some(acc) = &mut self.fork_depth_explosion {
+                    let head = crate::util::extract_head_symbol(&event.input);
+                    acc.record_fork(ts, tid, head);
+                }
             }
 
             TraceEventKind::BranchStart { .. } => {
@@ -875,17 +1731,29 @@ impl LintPass {
                 }
             }
 
-            TraceEventKind::BranchEnd { branch_index, .. } => {
+            TraceEventKind::BranchEnd { branch_index, result_count } => {
                 if let Some(acc) = &mut self.branch_imbalance {
                     acc.record_branch_end(ts, tid, event.duration_ns, *branch_index);
                 }
                 if let Some(acc) = &mut self.sequential_fan_out {
                     acc.record_branch_end(tid, seq);
                 }
+                // O. empty-branch-ratio
+                if let Some(acc) = &mut self.empty_branch_ratio {
+                    acc.record_branch_end(tid, *result_count);
+                }
+                // R. fork-depth-explosion
+                if let Some(acc) = &mut self.fork_depth_explosion {
+                    acc.record_branch_end(tid);
+                }
+                // S. speculative-waste
+                if let Some(acc) = &mut self.speculative_waste {
+                    acc.record_branch_end(*result_count, dur);
+                }
             }
 
             // ── GC events ──
-            TraceEventKind::GcSafepoint { .. } => {
+            TraceEventKind::GcSafepoint { allocation_delta_bytes, .. } => {
                 if let Some(acc) = &mut self.gc_storm {
                     acc.record(ts, dur);
                 }
@@ -894,12 +1762,39 @@ impl LintPass {
                         acc.record(ts, dur);
                     }
                 }
+                // T. gc-allocation-hotspot
+                if let Some(acc) = &mut self.gc_allocation_hotspot {
+                    acc.record(event.depth, *allocation_delta_bytes);
+                }
+            }
+
+            // ── Rule match events ──
+            TraceEventKind::RuleMatchSet { match_count, .. } => {
+                // P. rule-match-explosion
+                if let Some(acc) = &mut self.rule_match_explosion {
+                    let head = crate::util::extract_head_symbol(&event.input);
+                    acc.record(ts, *match_count, head);
+                }
+            }
+
+            // ── Type inference events ──
+            TraceEventKind::TypeInference { expression, source, .. } => {
+                // Q. type-inference-miss
+                if let Some(acc) = &mut self.type_inference_miss {
+                    let expr_display = format!("{}", expression);
+                    acc.record(ts, &expr_display, source);
+                }
             }
 
             // ── Tier transition events ──
             TraceEventKind::TierDispatch { expression_hash, selected_tier, execution_count } => {
                 if let Some(acc) = &mut self.tier_thrash {
                     acc.record_dispatch(tid, ts, *expression_hash, *selected_tier, *execution_count);
+                }
+                // U. tier-promotion-opportunity
+                if let Some(acc) = &mut self.tier_promotion_opportunity {
+                    let head = crate::util::extract_head_symbol(&event.input);
+                    acc.record(*expression_hash, *execution_count, *selected_tier, head, ts);
                 }
             }
 
@@ -959,6 +1854,37 @@ impl LintPass {
                 }
             }
 
+            // ── WorkPool scale events (new diagnostic lints) ──
+            TraceEventKind::WorkPoolScaleEvent {
+                action, active_workers_after, min_workers, emergency,
+                queue_depth, objective,
+                term_throughput, term_queue_depth, term_slab_pressure, term_rss_pressure,
+                bp_level, ema_slab_pressure, ema_rss_pressure,
+                ..
+            } => {
+                if let Some(acc) = &mut self.workpool_oscillation {
+                    acc.record(ts, action);
+                }
+                if let Some(acc) = &mut self.workpool_floor_pinned {
+                    acc.record(
+                        ts, *active_workers_after, *min_workers,
+                        *term_throughput, *term_queue_depth, *term_slab_pressure, *term_rss_pressure,
+                    );
+                }
+                if let Some(acc) = &mut self.workpool_emergency_storm {
+                    acc.record(ts, *emergency, *bp_level, *ema_slab_pressure, *ema_rss_pressure);
+                }
+                if let Some(acc) = &mut self.workpool_pressure_dominance {
+                    acc.record(
+                        ts, action, *queue_depth,
+                        *term_throughput, *term_queue_depth, *term_slab_pressure, *term_rss_pressure,
+                    );
+                }
+                if let Some(acc) = &mut self.workpool_convergence {
+                    acc.record(ts, action, *objective);
+                }
+            }
+
             // All other event kinds — no lint accumulator cares
             _ => {}
         }
@@ -989,6 +1915,46 @@ impl LintPass {
             findings.extend(acc.finalize());
         }
         if let Some(acc) = self.compilation_latency {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.workpool_oscillation {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.workpool_floor_pinned {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.workpool_emergency_storm {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.workpool_pressure_dominance {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.workpool_convergence {
+            findings.extend(acc.finalize());
+        }
+        // Phase A6 lints
+        if let Some(acc) = self.repeated_eval {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.empty_branch_ratio {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.rule_match_explosion {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.type_inference_miss {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.fork_depth_explosion {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.speculative_waste {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.gc_allocation_hotspot {
+            findings.extend(acc.finalize());
+        }
+        if let Some(acc) = self.tier_promotion_opportunity {
             findings.extend(acc.finalize());
         }
 
@@ -1099,6 +2065,10 @@ pub fn run(
             s.split(',').map(|id| id.trim().to_string()).collect()
         }),
         depth_threshold,
+        repeated_eval_threshold: 3,
+        rule_match_threshold: 10,
+        fork_depth_threshold: 3,
+        tier_promotion_threshold: 100,
     };
 
     // Validate lint IDs

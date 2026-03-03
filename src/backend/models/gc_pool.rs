@@ -250,6 +250,22 @@ impl AdaptiveGcPool {
         false
     }
 
+    /// Unpark up to `n` workers. Returns the number actually unparked.
+    pub fn unpark_n(&self, n: usize) -> usize {
+        let mut unparked = 0;
+        for park in &self.worker_parks {
+            if unparked >= n {
+                break;
+            }
+            if park.is_parked() {
+                park.unpark();
+                self.active_count.fetch_add(1, Ordering::Relaxed);
+                unparked += 1;
+            }
+        }
+        unparked
+    }
+
     /// Park one worker (called by the GC scaling monitor).
     /// Does not park below `min_workers`.
     pub fn park_one(&self) -> bool {
@@ -266,6 +282,27 @@ impl AdaptiveGcPool {
             }
         }
         false
+    }
+
+    /// Park up to `n` workers. Returns the number actually parked.
+    /// Does not park below `min_workers`.
+    pub fn park_n(&self, n: usize) -> usize {
+        let mut parked = 0;
+        for park in self.worker_parks.iter().rev() {
+            if parked >= n {
+                break;
+            }
+            let active = self.active_count.load(Ordering::Relaxed);
+            if active <= self.min_workers {
+                break;
+            }
+            if !park.is_parked() {
+                park.park();
+                self.active_count.fetch_sub(1, Ordering::Relaxed);
+                parked += 1;
+            }
+        }
+        parked
     }
 
     /// Check for dead workers and respawn them.

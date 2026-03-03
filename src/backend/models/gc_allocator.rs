@@ -1171,14 +1171,9 @@ impl ThreadFreeCache {
         None
     }
 
-    /// Drain all cached slot pointers (as raw `*mut u8`) for pushing back
-    /// to the global TreiberStack. After this call, the cache is empty.
-    #[inline]
-    fn drain_ptrs(&mut self) -> impl Iterator<Item = *mut u8> + '_ {
-        let len = self.len;
-        self.len = 0;
-        self.slots[..len].iter().map(|s| s.ptr)
-    }
+    // NOTE: drain_ptrs() removed — was only used by flush_value_cache_to_global()
+    // which pushed stale pointers to the Treiber stack, causing SIGSEGV on munmapped
+    // pages. Stale caches are now silently discarded via `cache.len = 0`.
 
     /// Check if the generation matches the global generation.
     /// If not, all cached pointers are stale and must be discarded.
@@ -1199,13 +1194,10 @@ thread_local! {
     static VALUE_CACHE: Cell<ThreadFreeCache> = const { Cell::new(ThreadFreeCache::new()) };
 }
 
-/// Flush the thread-local value cache back to the global free list.
-/// Called on thread exit via `Drop` and on generation mismatch.
-fn flush_value_cache_to_global(cache: &mut ThreadFreeCache, free_list: &TreiberStack) {
-    for ptr in cache.drain_ptrs() {
-        free_list.push(ptr);
-    }
-}
+// NOTE: flush_value_cache_to_global() removed — it pushed stale pointers (potentially
+// in munmapped pages) to the global Treiber stack, where TreiberStack::push() writes
+// FreeNode::next at the pointer's address, causing SIGSEGV. Stale caches are now
+// silently discarded via `cache.len = 0` (matching the data cache pattern).
 
 // ============================================================================
 // Thread-Local Data Free-List Cache (DataClassAllocator Contention Reduction)
@@ -1362,14 +1354,28 @@ impl ValueAllocator {
 
             // Check generation validity
             if !cache.is_valid_generation() {
-                // Pages were munmapped — discard all cached pointers and refill
-                flush_value_cache_to_global(&mut cache, &self.free_list);
+                // Stale pointers may reference munmapped pages — silently discard.
+                // Cannot push back to global free list because push() writes
+                // FreeNode::next at the pointer's address, which would SIGSEGV
+                // if the page was munmapped by release_empty_pages().
+                cache.len = 0;
                 cache.sync_generation();
             }
 
             if let Some(slot) = cache.pop() {
+                // Re-check generation after pop to close TOCTOU window.
+                // Between is_valid_generation() above and this pop, a concurrent
+                // release_empty_pages() could have munmapped pages and bumped
+                // generation. If so, the popped CachedSlot may reference a
+                // munmapped page — discard entire cache and fall through to Tier 2.
+                if cache.generation != CACHE_GENERATION.load(Ordering::Acquire) {
+                    cache.len = 0;
+                    cache.sync_generation();
+                    cell.set(cache);
+                    return None; // fall through to Tier 2
+                }
                 cell.set(cache);
-                // SAFETY: Generation check above guarantees the page hasn't been freed.
+                // SAFETY: Generation double-check above guarantees the page hasn't been freed.
                 // Pages are append-only within a generation — only release_empty_pages()
                 // modifies the Vec, which bumps generation and invalidates all caches first.
                 let page = unsafe { &*slot.page };
@@ -1625,7 +1631,13 @@ impl ValueAllocator {
             current = next;
         }
 
-        // Phase 5: Remove empty pages (triggers munmap via MmapPage::Drop)
+        // Phase 5: Invalidate thread-local caches BEFORE munmap.
+        // All thread-local value caches will discard their pointers on next access.
+        // Must happen before swap_remove so no thread can trust cached pointers
+        // to pages that are about to be munmapped.
+        CACHE_GENERATION.fetch_add(1, Ordering::Release);
+
+        // Phase 6: Remove empty pages (triggers munmap via MmapPage::Drop)
         // Iterate in reverse so swap_remove indices remain valid.
         let mut i = pages.len();
         while i > 0 {
@@ -1635,12 +1647,6 @@ impl ValueAllocator {
                 pages.swap_remove(i);
             }
         }
-
-        // Phase 6: Invalidate thread-local caches.
-        // Any cached pointers to munmapped pages are now stale. Bumping the
-        // generation counter causes all threads to discard their caches on
-        // the next allocation attempt.
-        CACHE_GENERATION.fetch_add(1, Ordering::Release);
 
         // Phase 7: Update current_page if all pages were released
         if pages.is_empty() {
@@ -3009,9 +3015,16 @@ pub fn maybe_process_gc_response() -> bool {
             alloc.process_gc_response(&response);
             // Page release is handled inside process_gc_response() (Phase 5).
 
-            // Adaptive threshold: next_threshold = max(live_bytes * GROWTH_FACTOR, MIN_GC_THRESHOLD)
-            let new_threshold = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
-            alloc.set_gc_threshold(new_threshold.max(MIN_GC_THRESHOLD));
+            // Adaptive threshold: floor at committed bytes to prevent perpetual GC cycling.
+            // Without the committed floor, slab fragmentation (pages with live values can't
+            // be decommitted) causes committed >> live_bytes × GROWTH_FACTOR, making
+            // committed/threshold >> 1.0 → bp_level=3 permanently → perpetual GC requests.
+            // Flooring at committed ensures ratio ≤ 1.0 post-GC; GC only re-triggers
+            // when NEW allocations push committed above the threshold.
+            let live_based = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
+            let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
+            let new_threshold = live_based.max(committed).max(MIN_GC_THRESHOLD);
+            alloc.set_gc_threshold(new_threshold);
 
             // Clear in-flight flag — aligns with TLA+ `hasGcResponse' = FALSE`
             // in ProcessGcResponse. A new GC cycle can now be triggered.

@@ -123,6 +123,11 @@ fn event_name(kind: &TraceEventKind) -> String {
         TraceEventKind::WorkPoolScaleEvent { action, .. } => format!("WP:Scale:{action}"),
         TraceEventKind::WorkPoolWorkerParked { worker_id, .. } => format!("WP:Park[{worker_id}]"),
         TraceEventKind::WorkPoolWorkerResumed { worker_id, .. } => format!("WP:Resume[{worker_id}]"),
+        TraceEventKind::WorkPoolBlockedWorkersDetected { blocked_count, .. } => format!("WP:Blocked:{blocked_count}"),
+        TraceEventKind::WorkPoolCompensatoryAction { .. } => "WP:Compensate".to_string(),
+        TraceEventKind::WorkPoolMonitorTick { .. } => "WP:Tick".to_string(),
+        TraceEventKind::WorkPoolWorkerBlocked { worker_id, .. } => format!("WP:WorkerBlocked[{worker_id}]"),
+        TraceEventKind::WorkPoolWorkerUnblocked { worker_id, .. } => format!("WP:WorkerUnblocked[{worker_id}]"),
     }
 }
 
@@ -147,6 +152,11 @@ fn event_category(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::GcSafepoint { .. } => "gc",
         TraceEventKind::WorkPoolTaskEnqueued { .. } | TraceEventKind::WorkPoolTaskDropped { .. }
         | TraceEventKind::WorkPoolTaskCompleted { .. } | TraceEventKind::WorkPoolScaleEvent { .. }
-        | TraceEventKind::WorkPoolWorkerParked { .. } | TraceEventKind::WorkPoolWorkerResumed { .. } => "workpool",
+        | TraceEventKind::WorkPoolWorkerParked { .. } | TraceEventKind::WorkPoolWorkerResumed { .. }
+        | TraceEventKind::WorkPoolBlockedWorkersDetected { .. }
+        | TraceEventKind::WorkPoolCompensatoryAction { .. }
+        | TraceEventKind::WorkPoolMonitorTick { .. }
+        | TraceEventKind::WorkPoolWorkerBlocked { .. }
+        | TraceEventKind::WorkPoolWorkerUnblocked { .. } => "workpool",
     }
 }

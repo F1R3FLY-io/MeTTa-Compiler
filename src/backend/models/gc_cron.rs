@@ -330,11 +330,11 @@ fn execute_memory_monitor(
         // Feed ratio as objective to hill climber (higher ratio = worse,
         // hill climber minimizes objective).
         let smoothed = monitor.ema_alloc_free_ratio.update(ratio);
-        let action = monitor.gc_climber.step(smoothed);
+        let decision = monitor.gc_climber.step(smoothed);
 
-        match action {
-            ScaleAction::Unpark => { gc_pool.unpark_one(); }
-            ScaleAction::Park => { gc_pool.park_one(); }
+        match decision.action {
+            ScaleAction::Unpark => { gc_pool.unpark_n(decision.count); }
+            ScaleAction::Park => { gc_pool.park_n(decision.count); }
             ScaleAction::Hold => {}
         }
     }

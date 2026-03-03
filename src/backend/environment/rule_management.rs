@@ -74,7 +74,7 @@ use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
 // mork_bytes_to_generic_value for individual binding bytes.
 // use super::mork_encoding::mork_expr_to_generic_value;
 use super::multiplicity::{
-    decrement_multiplicity, get_multiplicity, increment_multiplicity, set_multiplicity,
+    decrement_multiplicity, get_multiplicity, increment_multiplicity,
     Multiplicity,
 };
 use super::{MettaEnvironment, MettaValue};
@@ -1606,23 +1606,6 @@ impl MettaEnvironment {
         }
 
         result
-    }
-
-    /// Set the multiplicities (used for deserialization).
-    pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
-        self.make_owned();
-
-        let mut btm = self.shared.atom_space.btm.write();
-
-        for (hex_key, count) in counts {
-            if let Ok(mork_bytes) = hex::decode(&hex_key) {
-                set_multiplicity(&mut btm, &mork_bytes, count as u64);
-                self.shared.atom_space.total_atoms.fetch_add(count, Ordering::Relaxed);
-            }
-        }
-
-        drop(btm);
-        self.modified.store(true, Ordering::Release);
     }
 
     /// Rebuild bloom filter, fuzzy matcher, and RuleIndex from PathMap.

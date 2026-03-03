@@ -29,6 +29,8 @@
 //! 3. Binding application operates natively on the value type
 //! 4. Rule matching deserializes rules directly to the target type V
 
+use smallvec::SmallVec;
+
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
@@ -119,22 +121,45 @@ where
         return value.clone();
     }
 
-    // Handle S-expressions - recursively apply bindings
+    // Handle S-expressions - recursively apply bindings.
+    // Identity short-circuit: if no child was actually substituted, return the
+    // original value (O(1) pointer copy) instead of allocating a new S-expression.
+    // SmallVec<[V; 8]> avoids heap allocation for arity ≤ 8 (the vast majority).
     if let Some(items) = value.as_sexpr() {
-        let new_items: Vec<V> = items
+        let mut any_changed = false;
+        let new_items: SmallVec<[V; 8]> = items
             .iter()
-            .map(|item| apply_bindings_generic(item, bindings, factory))
+            .map(|item| {
+                let result = apply_bindings_generic(item, bindings, factory);
+                if !any_changed && result != *item {
+                    any_changed = true;
+                }
+                result
+            })
             .collect();
-        return factory.sexpr(new_items);
+        if !any_changed {
+            return value.clone();
+        }
+        return factory.sexpr_from_slice(&new_items);
     }
 
-    // Handle conjunctions
+    // Handle conjunctions - same identity short-circuit optimization
     if let Some(goals) = value.as_conjunction() {
-        let new_goals: Vec<V> = goals
+        let mut any_changed = false;
+        let new_goals: SmallVec<[V; 8]> = goals
             .iter()
-            .map(|goal| apply_bindings_generic(goal, bindings, factory))
+            .map(|goal| {
+                let result = apply_bindings_generic(goal, bindings, factory);
+                if !any_changed && result != *goal {
+                    any_changed = true;
+                }
+                result
+            })
             .collect();
-        return factory.conjunction(new_goals);
+        if !any_changed {
+            return value.clone();
+        }
+        return factory.conjunction(new_goals.into_vec());
     }
 
     // Handle errors

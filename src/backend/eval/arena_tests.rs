@@ -481,6 +481,24 @@ mod tests {
     );
 
     // Without specificity filter, both `(classify 0)` and `(classify $n)` match at input 0.
+    // Minimal test for parallel branching with SExpr result (2 matches).
+    eval_test_unordered!(
+        parallel_branch_sexpr_result,
+        "(= (g 0) (pair a b))
+         (= (g $n) other)
+         !(g 0)",
+        &["(pair a b)", "other"]
+    );
+
+    // Test parallel branching where second branch produces (empty).
+    eval_test!(
+        parallel_branch_empty_second,
+        "(= (h 0) (pair x y))
+         (= (h $n) (empty))
+         !(h 0)",
+        &["(pair x y)"]
+    );
+
     // MeTTa HE fires all matching rules nondeterministically.
     eval_test_unordered!(
         overlapping_patterns,

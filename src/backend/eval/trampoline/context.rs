@@ -243,6 +243,68 @@ impl EvalContext for StaticEvalContext {
     }
 }
 
+// ============================================================================
+// Parallel Branch Context - Trace-Aware Context for Worker Threads
+// ============================================================================
+
+/// Evaluation context for parallel branch worker threads.
+///
+/// Wraps `StaticEvalContext` and overrides `trace_collector()` to use the
+/// global `WORK_POOL_TRACE_COLLECTOR`, making parallel branch evaluation
+/// visible in trace files.
+///
+/// Without this, worker threads using bare `StaticEvalContext` return
+/// `trace_collector() -> None`, causing all parallel branch evaluation
+/// events to be silently dropped. This makes parallel execution invisible
+/// to the trace analyzer (e.g., `parallel`, `fanout`, `critical-path`
+/// subcommands see only the main thread).
+///
+/// # Trace Collector Lifetime
+///
+/// The `Arc<TraceCollector>` is upgraded from the global `Weak` at context
+/// creation time. If the collector has been dropped (session ended), the
+/// `Arc` will be `None` and `trace_collector()` degrades to the default
+/// (no tracing), which is correct.
+pub struct ParallelBranchContext {
+    factory: GcFactory,
+    /// Upgraded `Arc<TraceCollector>` from `WORK_POOL_TRACE_COLLECTOR`.
+    /// Held as `Arc` to keep the collector alive for the context's lifetime.
+    #[cfg(feature = "eval-trace")]
+    trace_collector_arc: Option<std::sync::Arc<crate::backend::trace::TraceCollector>>,
+}
+
+impl ParallelBranchContext {
+    /// Create a parallel branch context with trace collection support.
+    ///
+    /// Attempts to upgrade the global `WORK_POOL_TRACE_COLLECTOR` weak ref.
+    /// If tracing is active, the context will emit trace events for all
+    /// evaluation within the parallel branch.
+    #[inline]
+    pub fn get() -> Self {
+        Self {
+            factory: global_factory(),
+            #[cfg(feature = "eval-trace")]
+            trace_collector_arc: crate::backend::models::work_pool::get_work_pool_trace_collector(),
+        }
+    }
+}
+
+impl EvalContext for ParallelBranchContext {
+    type Value = MettaValue;
+    type Factory = GcFactory;
+
+    #[inline]
+    fn factory(&self) -> &GcFactory {
+        &self.factory
+    }
+
+    #[cfg(feature = "eval-trace")]
+    #[inline]
+    fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
+        self.trace_collector_arc.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

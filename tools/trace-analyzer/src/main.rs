@@ -14,8 +14,13 @@
 //! - `bottlenecks`   — Serialization bottleneck identification (v2)
 //! - `export-chrome` — Chrome Trace Format JSON export for Perfetto UI (v2)
 //! - `lint`          — Diagnostic passes for anti-pattern detection (v2)
+//! - `hotpath`       — Expression-level profiling by head symbol
+//! - `redundancy`    — Memoization opportunity detection
+//! - `fanout`        — Nondeterministic branching deep-dive
+//! - `critical-path` — Amdahl's Law analysis via critical path reconstruction
 
 mod reader;
+mod util;
 mod dump;
 mod stats;
 mod search;
@@ -26,6 +31,11 @@ mod parallel;
 mod bottlenecks;
 mod export_chrome;
 mod lint;
+mod workpool;
+mod hotpath;
+mod redundancy;
+mod fanout;
+mod critical_path;
 
 use clap::{Parser, Subcommand};
 
@@ -122,6 +132,49 @@ enum Commands {
         #[arg(long, default_value = "100")]
         depth_threshold: u32,
     },
+    /// Comprehensive WorkPool scaling analysis report
+    Workpool {
+        /// Path to the trace file
+        file: String,
+    },
+    /// Expression-level profiling grouped by head symbol (like `perf report`)
+    Hotpath {
+        /// Path to the trace file
+        file: String,
+        /// Number of top entries to display (default: 30)
+        #[arg(long, default_value = "30")]
+        top_n: usize,
+        /// Sort metric: "self", "inclusive", "count", or "p95"
+        #[arg(long, default_value = "self")]
+        sort_by: String,
+    },
+    /// Detect memoization opportunities (repeated identical computations)
+    Redundancy {
+        /// Path to the trace file
+        file: String,
+        /// Number of top entries to display (default: 30)
+        #[arg(long, default_value = "30")]
+        top_n: usize,
+        /// Minimum repetition count to report (default: 3)
+        #[arg(long, default_value = "3")]
+        min_count: u64,
+    },
+    /// Nondeterministic branching deep-dive (fork/branch analysis)
+    Fanout {
+        /// Path to the trace file
+        file: String,
+        /// Number of top entries to display (default: 20)
+        #[arg(long, default_value = "20")]
+        top_n: usize,
+    },
+    /// Amdahl's Law analysis via critical path reconstruction
+    CriticalPath {
+        /// Path to the trace file
+        file: String,
+        /// Worker counts for speedup prediction (comma-separated, default: "1,2,4,8,16,32")
+        #[arg(long, default_value = "1,2,4,8,16,32")]
+        workers: String,
+    },
 }
 
 fn main() {
@@ -140,6 +193,24 @@ fn main() {
         Commands::ExportChrome { file, output } => export_chrome::run(&file, &output),
         Commands::Lint { file, severity, lint, depth_threshold } =>
             lint::run(&file, &severity, lint.as_deref(), depth_threshold),
+        Commands::Workpool { file } => workpool::run(&file),
+        Commands::Hotpath { file, top_n, sort_by } =>
+            hotpath::run(&file, top_n, &sort_by),
+        Commands::Redundancy { file, top_n, min_count } =>
+            redundancy::run(&file, top_n, min_count),
+        Commands::Fanout { file, top_n } =>
+            fanout::run(&file, top_n),
+        Commands::CriticalPath { file, workers } => {
+            let worker_counts: Vec<usize> = workers
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if worker_counts.is_empty() {
+                Err("Invalid --workers: expected comma-separated integers".to_string())
+            } else {
+                critical_path::run(&file, &worker_counts)
+            }
+        }
     };
 
     if let Err(e) = result {

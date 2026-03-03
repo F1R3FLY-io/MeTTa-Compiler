@@ -66,7 +66,12 @@ fn kind_matches_pattern(kind: &TraceEventKind, pattern: &str) -> bool {
         | TraceEventKind::WorkPoolTaskCompleted { task_kind, .. } => task_kind.contains(pattern),
         TraceEventKind::WorkPoolScaleEvent { action, .. } => action.contains(pattern),
         TraceEventKind::WorkPoolWorkerParked { .. }
-        | TraceEventKind::WorkPoolWorkerResumed { .. } => false,
+        | TraceEventKind::WorkPoolWorkerResumed { .. }
+        | TraceEventKind::WorkPoolBlockedWorkersDetected { .. }
+        | TraceEventKind::WorkPoolCompensatoryAction { .. }
+        | TraceEventKind::WorkPoolMonitorTick { .. }
+        | TraceEventKind::WorkPoolWorkerBlocked { .. }
+        | TraceEventKind::WorkPoolWorkerUnblocked { .. } => false,
         _ => false,
     }
 }

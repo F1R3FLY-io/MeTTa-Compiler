@@ -96,28 +96,53 @@ impl Ema {
 /// Decision produced by the hill climber for thread scaling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleAction {
-    /// Unpark (activate) one worker thread.
+    /// Unpark (activate) worker thread(s).
     Unpark,
-    /// Park (deactivate) one worker thread.
+    /// Park (deactivate) worker thread(s).
     Park,
     /// No change — objective is stable or within dead zone.
     Hold,
+}
+
+/// Scaling decision with the number of workers to park/unpark.
+///
+/// Returned by `HillClimber::step()`. The `count` field indicates how many
+/// workers to park or unpark (0 for `Hold`). With geometric stepping, the
+/// count doubles on consecutive improvements in the same direction and
+/// resets to 1 on direction reversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScaleDecision {
+    /// The scaling action (Unpark, Park, or Hold).
+    pub action: ScaleAction,
+    /// Number of workers to park/unpark (0 for Hold).
+    pub count: usize,
 }
 
 // ============================================================================
 // Hill Climber
 // ============================================================================
 
-/// ±1 perturbation-based hill climber for adaptive thread pool sizing.
+/// Geometric-step hill climber for adaptive thread pool sizing.
 ///
-/// The climber alternates between exploring (trying ±1 thread) and evaluating
-/// (comparing the new objective to the previous). If improvement exceeds the
-/// threshold, the climber continues in that direction. Otherwise, it reverses.
+/// The climber explores by adjusting thread count in the current direction.
+/// If improvement exceeds the threshold, the climber continues and doubles
+/// the step size (geometric acceleration). On worsening, it reverses
+/// direction and resets step size to 1.
 ///
 /// A cooldown period prevents oscillation after scaling changes, allowing the
 /// system to settle before the next perturbation.
 ///
 /// The climber minimizes the objective function: lower values = better.
+///
+/// ## Geometric Step Size
+///
+/// Instead of ±1 per action, the step size doubles on consecutive improvements
+/// in the same direction, capped at `max_threads / 4`. On direction reversal,
+/// step size resets to 1. This enables rapid ramp-up:
+///
+/// ```text
+/// 1 + 2 + 4 + 8 + 16 = 31 workers in 5 actions × cooldown
+/// ```
 #[derive(Debug, Clone)]
 pub struct HillClimber {
     /// Previous objective value for comparison.
@@ -138,6 +163,9 @@ pub struct HillClimber {
     max_threads: usize,
     /// Whether the climber has been initialized with a first objective.
     initialized: bool,
+    /// Geometric step size: doubles on consecutive improvements, resets on reversal.
+    /// Capped at `max_threads / 4` to prevent overshooting.
+    step_size: usize,
 }
 
 impl HillClimber {
@@ -166,10 +194,11 @@ impl HillClimber {
             min_threads,
             max_threads,
             initialized: false,
+            step_size: 1,
         }
     }
 
-    /// Feed a new objective value and get the recommended scaling action.
+    /// Feed a new objective value and get the recommended scaling decision.
     ///
     /// The objective should be minimized (lower = better). Four-term formula:
     /// ```text
@@ -177,20 +206,26 @@ impl HillClimber {
     /// ```
     /// Weight dominance verified in `formal/rocq/work_pool_stability/theories/WeightDominance.v`.
     ///
-    /// Returns `ScaleAction::Hold` during cooldown or when at boundaries.
-    pub fn step(&mut self, objective: f64) -> ScaleAction {
+    /// Returns `ScaleDecision` with action and count. The count uses geometric
+    /// stepping: doubles on consecutive improvements, resets to 1 on reversal.
+    pub fn step(&mut self, objective: f64) -> ScaleDecision {
+        let hold = ScaleDecision { action: ScaleAction::Hold, count: 0 };
+
         // First call: initialize baseline and hold
         if !self.initialized {
             self.prev_objective = objective;
             self.initialized = true;
-            return ScaleAction::Hold;
+            return hold;
         }
 
-        // During cooldown: hold and decrement
+        // During cooldown: hold and decrement.
+        // Do NOT update prev_objective here — keep it frozen at the value when
+        // the last action was taken. This way, when cooldown expires, the
+        // comparison measures the *actual* effect of the action over the full
+        // cooldown period, rather than tracking EMA decay (which erases the signal).
         if self.cooldown_remaining > 0 {
             self.cooldown_remaining -= 1;
-            self.prev_objective = objective;
-            return ScaleAction::Hold;
+            return hold;
         }
 
         // Compare current objective to previous
@@ -198,43 +233,86 @@ impl HillClimber {
         self.prev_objective = objective;
 
         if improvement >= self.improvement_threshold {
-            // Improvement: continue in the same direction
+            // Improvement: continue in the same direction, accelerate
+            self.step_size = self.accelerated_step_size();
             self.apply_direction()
         } else if improvement <= -self.improvement_threshold {
-            // Worsening: reverse direction
+            // Worsening: reverse direction, reset step size
             self.direction = -self.direction;
+            self.step_size = 1;
             self.apply_direction()
         } else {
-            // Within dead zone: hold
-            ScaleAction::Hold
+            // Within dead zone: hold (step_size unchanged)
+            hold
         }
     }
 
-    /// Apply the current direction, respecting boundaries.
-    fn apply_direction(&mut self) -> ScaleAction {
-        let action = if self.direction > 0 {
-            if self.current_active >= self.max_threads {
-                return ScaleAction::Hold; // At ceiling
-            }
-            self.current_active += 1;
-            ScaleAction::Unpark
-        } else {
-            if self.current_active <= self.min_threads {
-                return ScaleAction::Hold; // At floor
-            }
-            self.current_active -= 1;
-            ScaleAction::Park
-        };
+    /// Compute the next step size with geometric acceleration.
+    ///
+    /// Doubles the current step size, capped at `max_threads / 4` (minimum 1).
+    /// On a 72-thread pool: max step = 18. On a 4-thread pool: max step = 1.
+    fn accelerated_step_size(&self) -> usize {
+        let cap = (self.max_threads / 4).max(1);
+        (self.step_size * 2).min(cap)
+    }
 
-        // Enter cooldown
-        self.cooldown_remaining = self.cooldown_period;
-        action
+    /// Apply the current direction with geometric step size, respecting boundaries.
+    fn apply_direction(&mut self) -> ScaleDecision {
+        if self.direction > 0 {
+            let new = (self.current_active + self.step_size).min(self.max_threads);
+            if new == self.current_active {
+                return ScaleDecision { action: ScaleAction::Hold, count: 0 }; // At ceiling
+            }
+            let count = new - self.current_active;
+            self.current_active = new;
+            self.cooldown_remaining = self.cooldown_period;
+            ScaleDecision { action: ScaleAction::Unpark, count }
+        } else {
+            let new = self.current_active.saturating_sub(self.step_size).max(self.min_threads);
+            if new == self.current_active {
+                return ScaleDecision { action: ScaleAction::Hold, count: 0 }; // At floor
+            }
+            let count = self.current_active - new;
+            self.current_active = new;
+            self.cooldown_remaining = self.cooldown_period;
+            ScaleDecision { action: ScaleAction::Park, count }
+        }
     }
 
     /// Get the current active thread count as tracked by the climber.
     #[inline]
     pub fn current_active(&self) -> usize {
         self.current_active
+    }
+
+    /// Get the current exploration direction: +1 (unpark) or -1 (park).
+    #[inline]
+    pub fn direction(&self) -> i32 {
+        self.direction
+    }
+
+    /// Get the remaining cooldown ticks (0 = ready to act).
+    #[inline]
+    pub fn cooldown_remaining(&self) -> u32 {
+        self.cooldown_remaining
+    }
+
+    /// Get the previous objective value (baseline for comparison).
+    #[inline]
+    pub fn prev_objective(&self) -> f64 {
+        self.prev_objective
+    }
+
+    /// Get the minimum improvement threshold for accepting a perturbation.
+    #[inline]
+    pub fn improvement_threshold(&self) -> f64 {
+        self.improvement_threshold
+    }
+
+    /// Get the current geometric step size.
+    #[inline]
+    pub fn step_size(&self) -> usize {
+        self.step_size
     }
 
     /// Externally update the active count (e.g., after forced scaling).
@@ -413,8 +491,9 @@ mod tests {
     #[test]
     fn test_hill_climber_first_step_holds() {
         let mut climber = HillClimber::new(3, 0.05, 1, 8, 4);
-        let action = climber.step(10.0);
-        assert_eq!(action, ScaleAction::Hold, "First step should always hold");
+        let decision = climber.step(10.0);
+        assert_eq!(decision.action, ScaleAction::Hold, "First step should always hold");
+        assert_eq!(decision.count, 0);
     }
 
     #[test]
@@ -425,12 +504,15 @@ mod tests {
         climber.step(10.0);
 
         // Feed improving objective (lower = better)
-        let action = climber.step(9.0); // improvement = 10 - 9 = 1.0 > 0.05
+        let decision = climber.step(9.0); // improvement = 10 - 9 = 1.0 > 0.05
         assert_eq!(
-            action,
+            decision.action,
             ScaleAction::Unpark,
             "Improvement should continue in default direction (unpark)"
         );
+        // First improvement: step_size doubles from 1 → 2, but capped at max/4 = 8/4 = 2
+        // apply_direction uses step_size=2, but current_active=4, new=min(4+2,8)=6, count=2
+        assert!(decision.count >= 1, "Should unpark at least 1 worker");
     }
 
     #[test]
@@ -441,12 +523,14 @@ mod tests {
         climber.step(10.0);
 
         // Feed worsening objective (higher = worse)
-        let action = climber.step(11.0); // improvement = 10 - 11 = -1.0 < -0.05
+        let decision = climber.step(11.0); // improvement = 10 - 11 = -1.0 < -0.05
         assert_eq!(
-            action,
+            decision.action,
             ScaleAction::Park,
             "Worsening should reverse direction to park"
         );
+        // Worsening resets step_size to 1
+        assert_eq!(decision.count, 1, "Worsening should reset step to 1");
     }
 
     #[test]
@@ -457,12 +541,13 @@ mod tests {
         climber.step(10.0);
 
         // Feed same objective (within dead zone)
-        let action = climber.step(10.01); // improvement = 10 - 10.01 = -0.01, abs < 0.05
+        let decision = climber.step(10.01); // improvement = 10 - 10.01 = -0.01, abs < 0.05
         assert_eq!(
-            action,
+            decision.action,
             ScaleAction::Hold,
             "Small delta should hold (dead zone)"
         );
+        assert_eq!(decision.count, 0);
     }
 
     #[test]
@@ -473,18 +558,19 @@ mod tests {
         climber.step(10.0);
 
         // Trigger action (improvement)
-        let action = climber.step(5.0);
-        assert_eq!(action, ScaleAction::Unpark);
+        let decision = climber.step(5.0);
+        assert_eq!(decision.action, ScaleAction::Unpark);
 
         // Next 3 steps should hold (cooldown = 3)
-        assert_eq!(climber.step(4.0), ScaleAction::Hold, "Cooldown tick 1");
-        assert_eq!(climber.step(3.0), ScaleAction::Hold, "Cooldown tick 2");
-        assert_eq!(climber.step(2.0), ScaleAction::Hold, "Cooldown tick 3");
+        assert_eq!(climber.step(4.0).action, ScaleAction::Hold, "Cooldown tick 1");
+        assert_eq!(climber.step(3.0).action, ScaleAction::Hold, "Cooldown tick 2");
+        assert_eq!(climber.step(2.0).action, ScaleAction::Hold, "Cooldown tick 3");
 
-        // Cooldown expired — next step with improvement should act
-        let action = climber.step(1.0); // improvement = 2.0 - 1.0 = 1.0 > 0.05
+        // Cooldown expired — prev_objective is frozen at 5.0 (Fix 3).
+        // improvement = 5.0 - 1.0 = 4.0 > 0.05 → Unpark
+        let decision = climber.step(1.0);
         assert_eq!(
-            action,
+            decision.action,
             ScaleAction::Unpark,
             "After cooldown, improvement should trigger action"
         );
@@ -498,9 +584,9 @@ mod tests {
         climber.step(10.0);
 
         // Improvement in unpark direction, but already at max
-        let action = climber.step(5.0);
+        let decision = climber.step(5.0);
         assert_eq!(
-            action,
+            decision.action,
             ScaleAction::Hold,
             "At max threads, unpark should hold"
         );
@@ -514,12 +600,51 @@ mod tests {
         climber.step(10.0);
 
         // Worsening should try to park, but we're at min
-        let action = climber.step(15.0);
+        let decision = climber.step(15.0);
         assert_eq!(
-            action,
+            decision.action,
             ScaleAction::Hold,
             "At min threads, park should hold"
         );
+    }
+
+    #[test]
+    fn test_hill_climber_geometric_acceleration() {
+        // Test that step size doubles on consecutive improvements
+        let mut climber = HillClimber::new(0, 0.05, 1, 64, 1);
+
+        // Initialize
+        climber.step(100.0);
+
+        // First improvement: step_size = min(1*2, 64/4=16) = 2 → unpark 2
+        let d1 = climber.step(90.0);
+        assert_eq!(d1.action, ScaleAction::Unpark);
+        assert_eq!(d1.count, 2, "First improvement: step_size should be 2");
+        assert_eq!(climber.current_active(), 3);
+
+        // Second improvement: step_size = min(2*2, 16) = 4 → unpark 4
+        let d2 = climber.step(80.0);
+        assert_eq!(d2.action, ScaleAction::Unpark);
+        assert_eq!(d2.count, 4, "Second improvement: step_size should be 4");
+        assert_eq!(climber.current_active(), 7);
+
+        // Third improvement: step_size = min(4*2, 16) = 8 → unpark 8
+        let d3 = climber.step(70.0);
+        assert_eq!(d3.action, ScaleAction::Unpark);
+        assert_eq!(d3.count, 8, "Third improvement: step_size should be 8");
+        assert_eq!(climber.current_active(), 15);
+
+        // Fourth improvement: step_size = min(8*2, 16) = 16 → unpark 16
+        let d4 = climber.step(60.0);
+        assert_eq!(d4.action, ScaleAction::Unpark);
+        assert_eq!(d4.count, 16, "Fourth improvement: capped at max/4=16");
+        assert_eq!(climber.current_active(), 31);
+
+        // Worsening: reverses direction, resets step_size to 1
+        let d5 = climber.step(200.0);
+        assert_eq!(d5.action, ScaleAction::Park);
+        assert_eq!(d5.count, 1, "Worsening should reset step to 1");
+        assert_eq!(climber.current_active(), 30);
     }
 
     // ========================================================================

@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use tracing::{debug, trace};
 
-use super::adaptive_pool::{Ema, HillClimber, ScaleAction, WorkerPark};
+use super::adaptive_pool::{Ema, HillClimber, ScaleAction, ScaleDecision, WorkerPark};
 use crate::backend::priority_scheduler::{
     PriorityQueue, PriorityTask, RuntimeTracker, SchedulerConfig, TaskTypeId,
 };
@@ -136,6 +136,20 @@ fn with_work_pool_trace(f: impl FnOnce(&crate::backend::trace::TraceCollector)) 
             f(&arc);
         }
     }
+}
+
+/// Get an `Arc<TraceCollector>` from the global work pool trace collector.
+///
+/// Returns `Some(Arc<TraceCollector>)` if a trace collector was registered
+/// and the session is still active (Weak upgrades successfully). Returns
+/// `None` if tracing is not active or the collector has been dropped.
+///
+/// Used by `ParallelBranchContext` to hold a strong reference to the trace
+/// collector for the duration of parallel branch evaluation.
+#[cfg(feature = "eval-trace")]
+#[inline]
+pub fn get_work_pool_trace_collector() -> Option<std::sync::Arc<crate::backend::trace::TraceCollector>> {
+    WORK_POOL_TRACE_COLLECTOR.get().and_then(|weak| weak.upgrade())
 }
 
 /// Map a `TaskTypeId` to a human-readable task kind string for trace events.
@@ -376,7 +390,14 @@ impl WorkPool {
     fn allocate(min_threads: usize, max_threads: usize) -> Self {
         let min = min_threads.max(1);
         let max = max_threads.max(min).max(2);
-        let initial = min.max(8).min(max);
+        // Start at half the CPU count (or at least 8) for faster cold-start.
+        // On a 36-core machine: initial = max(1, 18).max(8) = 18.
+        // Combined with geometric stepping, reaching full CPU count takes
+        // only 2 unpark actions (18→36) instead of 28 (8→36) with ±1 stepping.
+        let num_cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8);
+        let initial = min.max(num_cpus / 2).max(8).min(max);
         Self::allocate_with_initial(min, max, initial)
     }
 
@@ -679,6 +700,25 @@ impl WorkPool {
         false
     }
 
+    /// Unpark up to `n` workers. Returns the number actually unparked.
+    ///
+    /// Scans worker parks from lowest index, unparking each parked worker
+    /// until `n` have been unparked or no parked workers remain.
+    pub fn unpark_n(&self, n: usize) -> usize {
+        let mut unparked = 0;
+        for park in &self.worker_parks {
+            if unparked >= n {
+                break;
+            }
+            if park.is_parked() {
+                park.unpark();
+                self.active_count.fetch_add(1, Ordering::Relaxed);
+                unparked += 1;
+            }
+        }
+        unparked
+    }
+
     /// Park one worker (called by the scaling monitor).
     ///
     /// Finds the last active worker and parks it. Returns true if a worker
@@ -698,6 +738,30 @@ impl WorkPool {
             }
         }
         false
+    }
+
+    /// Park up to `n` workers. Returns the number actually parked.
+    ///
+    /// Scans worker parks from highest index, parking each active worker
+    /// until `n` have been parked, `min_threads` is reached, or no active
+    /// workers remain.
+    pub fn park_n(&self, n: usize) -> usize {
+        let mut parked = 0;
+        for park in self.worker_parks.iter().rev() {
+            if parked >= n {
+                break;
+            }
+            let active = self.active_count.load(Ordering::Relaxed);
+            if active <= self.min_threads {
+                break;
+            }
+            if !park.is_parked() {
+                park.park();
+                self.active_count.fetch_sub(1, Ordering::Relaxed);
+                parked += 1;
+            }
+        }
+        parked
     }
 
     /// Get the P2 priority queue (for external monitoring).
@@ -1497,6 +1561,7 @@ fn rss_pressure(page_size: usize, rss_limit: usize) -> f64 {
 /// Stores the previous sample's CPU and wall-clock nanoseconds so the
 /// monitor can compute `cpu_delta / wall_delta` per worker.
 #[derive(Clone)]
+#[allow(dead_code)] // prev_blocked and last_cpu_ratio are read only with eval-trace feature
 struct WorkerCpuSnapshot {
     prev_cpu_nanos: u64,
     prev_wall_nanos: u64,
@@ -1504,6 +1569,10 @@ struct WorkerCpuSnapshot {
     /// Number of consecutive ticks this worker has been considered stalled
     /// (heartbeat-only detection for non-Linux platforms).
     ticks_stalled: u32,
+    /// Whether this worker was blocked in the previous tick (for transition detection).
+    prev_blocked: bool,
+    /// CPU ratio at last detection (for trace emission).
+    last_cpu_ratio: f64,
 }
 
 impl WorkerCpuSnapshot {
@@ -1513,6 +1582,8 @@ impl WorkerCpuSnapshot {
             prev_wall_nanos: 0,
             prev_task_count: 0,
             ticks_stalled: 0,
+            prev_blocked: false,
+            last_cpu_ratio: 1.0,
         }
     }
 }
@@ -1580,14 +1651,37 @@ impl WorkMonitorState {
     ///
     /// On non-Linux platforms, falls back to heartbeat-only stall detection
     /// (workers with no task completions for >= 2 ticks are considered stalled).
-    fn detect_blocked_workers(&mut self, pool: &WorkPool) {
+    ///
+    /// Returns a Vec of blocked worker indices (for trace emission).
+    fn detect_blocked_workers(&mut self, pool: &WorkPool) -> Vec<u32> {
         let cpu_states = pool.worker_cpu_states();
         let mut blocked = 0;
+        let mut blocked_indices = Vec::new();
 
         for (i, snap) in self.worker_snapshots.iter_mut().enumerate() {
             // Skip parked workers — they're blocked by design, not by contention
             if pool.worker_parks[i].is_parked() {
                 snap.ticks_stalled = 0;
+                // Transition: was blocked, now parked → treat as unblocked
+                if snap.prev_blocked {
+                    snap.prev_blocked = false;
+                    #[cfg(feature = "eval-trace")]
+                    {
+                        let worker_id = i as u32;
+                        with_work_pool_trace(|tc| {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker,
+                                0,
+                                trace_format::TraceValue::Unit,
+                                vec![],
+                                None,
+                                trace_format::TraceEventKind::WorkPoolWorkerUnblocked {
+                                    worker_id,
+                                },
+                            );
+                        });
+                    }
+                }
                 continue;
             }
 
@@ -1603,6 +1697,7 @@ impl WorkMonitorState {
             }
 
             let task_delta = curr_tasks.wrapping_sub(snap.prev_task_count);
+            let mut is_blocked = false;
 
             #[cfg(target_os = "linux")]
             {
@@ -1611,26 +1706,71 @@ impl WorkMonitorState {
 
                 if wall_delta >= MIN_WALL_DELTA_NS {
                     let ratio = cpu_delta as f64 / wall_delta as f64;
+                    snap.last_cpu_ratio = ratio;
                     if ratio < BLOCKED_RATIO_THRESHOLD && task_delta == 0 {
-                        // Low CPU utilization + no task completions → blocked
-                        blocked += 1;
+                        is_blocked = true;
                     }
                 }
             }
 
             #[cfg(not(target_os = "linux"))]
             {
-                // Heartbeat-only: worker hasn't completed a task in this tick
-                // AND is not parked → likely stalled
                 if task_delta == 0 {
                     snap.ticks_stalled += 1;
                     if snap.ticks_stalled >= 2 {
-                        blocked += 1;
+                        is_blocked = true;
+                        snap.last_cpu_ratio = 0.0;
                     }
                 } else {
                     snap.ticks_stalled = 0;
+                    snap.last_cpu_ratio = 1.0;
                 }
             }
+
+            if is_blocked {
+                blocked += 1;
+                blocked_indices.push(i as u32);
+            }
+
+            // Emit per-worker transition events
+            #[cfg(feature = "eval-trace")]
+            {
+                if is_blocked && !snap.prev_blocked {
+                    // Transition: unblocked → blocked
+                    let worker_id = i as u32;
+                    let cpu_ratio = snap.last_cpu_ratio;
+                    with_work_pool_trace(|tc| {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            0,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::WorkPoolWorkerBlocked {
+                                worker_id,
+                                cpu_ratio,
+                            },
+                        );
+                    });
+                } else if !is_blocked && snap.prev_blocked {
+                    // Transition: blocked → unblocked
+                    let worker_id = i as u32;
+                    with_work_pool_trace(|tc| {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            0,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::WorkPoolWorkerUnblocked {
+                                worker_id,
+                            },
+                        );
+                    });
+                }
+            }
+
+            snap.prev_blocked = is_blocked;
 
             // Update snapshot for next tick
             snap.prev_cpu_nanos = curr_cpu;
@@ -1639,6 +1779,7 @@ impl WorkMonitorState {
         }
 
         self.blocked_worker_count = blocked;
+        blocked_indices
     }
 }
 
@@ -1676,20 +1817,109 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
 
     // Sample throughput: delta evals / elapsed time
     let current_eval_count = work_eval_count();
-    let delta = current_eval_count.wrapping_sub(state.prev_eval_count) as f64;
+    let delta_evals_raw = current_eval_count.wrapping_sub(state.prev_eval_count);
+    let delta = delta_evals_raw as f64;
     let throughput = delta / elapsed;
 
     state.prev_eval_count = current_eval_count;
     state.prev_sample_time = now;
 
     // Sample queue depth
-    let queue_depth = pool.queue_len() as f64;
+    let queue_len_raw = pool.queue_len();
+    let queue_depth = queue_len_raw as f64;
+
+    // Idle detection: no evals completed AND no work queued.
+    // When idle, freeze EMAs (preserve last active signal) and skip all
+    // scaling phases. This prevents EMA decay during idle periods from
+    // confusing the hill climber into parking workers.
+    let is_idle = delta_evals_raw == 0 && queue_len_raw == 0;
 
     // Sample memory pressure signals
     let slab_p = slab_pressure();
     let rss_p = rss_pressure(state.page_size, state.rss_limit);
 
-    // Update all EMAs (still maintained for trace diagnostics)
+    // Emit WorkPoolMonitorTick — raw samples before any EMA/decision processing
+    #[cfg(feature = "eval-trace")]
+    {
+        let rss_bytes = read_rss_bytes(state.page_size).unwrap_or(0) as u64;
+        let bp_lvl = super::gc_allocator::backpressure_level();
+        with_work_pool_trace(|tc| {
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                0,
+                trace_format::TraceValue::Unit,
+                vec![],
+                None,
+                trace_format::TraceEventKind::WorkPoolMonitorTick {
+                    current_eval_count,
+                    elapsed_ns: (elapsed * 1_000_000_000.0) as u64,
+                    queue_len: queue_len_raw as u32,
+                    bp_level: bp_lvl as u32,
+                    rss_bytes,
+                },
+            );
+        });
+    }
+
+    // When idle: skip EMA updates and all scaling phases.
+    // Still run housekeeping (respawns + overflow reaping).
+    if is_idle {
+        #[cfg(feature = "eval-trace")]
+        {
+            let active_workers_after = pool.active_workers() as u32;
+            let instantaneous_qd = pool.queue_len() as u32;
+            with_work_pool_trace(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::WorkPoolScaleEvent {
+                        action: "hold".to_string(),
+                        active_workers_after,
+                        min_workers: pool.min_threads() as u32,
+                        max_workers: pool.max_threads() as u32,
+                        queue_depth: instantaneous_qd,
+                        ema_throughput: state.ema_throughput.value(),
+                        ema_queue_depth: state.ema_queue_depth.value(),
+                        ema_slab_pressure: state.ema_slab_pressure.value(),
+                        ema_rss_pressure: state.ema_rss_pressure.value(),
+                        objective: 0.0,
+                        emergency: false,
+                        hc_direction: state.climber.direction(),
+                        hc_cooldown_remaining: state.climber.cooldown_remaining(),
+                        hc_prev_objective: state.climber.prev_objective(),
+                        hc_improvement: 0.0,
+                        raw_throughput: 0.0,
+                        raw_slab_pressure: slab_p,
+                        raw_rss_pressure: rss_p,
+                        bp_level: super::gc_allocator::backpressure_level() as u32,
+                        slab_amplifier: 1.0,
+                        term_throughput: 0.0,
+                        term_queue_depth: 0.0,
+                        term_slab_pressure: 0.0,
+                        term_rss_pressure: 0.0,
+                        blocked_worker_count: state.blocked_worker_count as u32,
+                        overflow_count: pool.overflow_count() as u32,
+                        decision_phase: "idle_skip".to_string(),
+                        delta_evals: 0,
+                        elapsed_seconds: elapsed,
+                    },
+                );
+            });
+        }
+
+        // Drain any overflow workers when idle — no work for them to do
+        if pool.overflow_count() > 0 {
+            pool.drain_all_overflow();
+        }
+        check_and_log_respawns(pool);
+        pool.reap_finished_overflow();
+        return;
+    }
+
+    // Update all EMAs (only when active — frozen during idle to preserve signal)
     let ema_tp = state.ema_throughput.update(throughput);
     let ema_qd = state.ema_queue_depth.update(queue_depth);
     let ema_slab = state.ema_slab_pressure.update(slab_p);
@@ -1703,35 +1933,37 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
         _ => 4.0, // bp_level 3 (heavy)
     };
 
-    // ====================================================================
-    // Phase 1: Graduated memory pressure response (highest priority)
-    // ====================================================================
-    // At bp_level >= 3 with low queue: direct park + drain overflow.
-    // This bypasses the hill climber (which doesn't respond to constant
-    // pressure — it responds to changes/gradients). Low queue means the
-    // parking won't starve pending tasks.
-    //
-    // At bp_level == 2: the slab_amplifier (2.0) feeds into the hill climber
-    // objective function in Phase 4, providing a graduated response that
-    // still considers queue depth as a counterbalancing signal.
-    let queue_len_for_pressure = pool.queue_len();
-    if bp_level >= 3 && queue_len_for_pressure < MAX_QUEUE_SIZE / 2 {
-        pool.park_one();
-        pool.drain_all_overflow();
-        trace!(
-            bp_level,
-            slab_pressure = ema_slab,
-            rss_pressure = ema_rss,
-            active = pool.active_workers(),
-            overflow = pool.overflow_count(),
-            queue_len = queue_len_for_pressure,
-            "WorkPool scaling: graduated park + overflow drain (bp_level >= 3, low queue)"
-        );
+    // Compute individual objective terms (used by both Phase 1 and Phase 4 trace blocks).
+    // Use EMA queue depth (not instantaneous) — EMA retains memory of recent queueing
+    // even when the queue transiently empties, providing counter-pressure against parking.
+    let term_throughput = -THROUGHPUT_WEIGHT * ema_tp;
+    let term_queue_depth = QUEUE_DEPTH_WEIGHT * ema_qd;
+    let term_slab_pressure = MEMORY_PRESSURE_WEIGHT * slab_amplifier * ema_slab;
+    let term_rss_pressure = RSS_PRESSURE_WEIGHT * ema_rss;
 
-        #[cfg(feature = "eval-trace")]
-        {
-            let active_workers_after = pool.active_workers() as u32;
-            let instantaneous_qd = pool.queue_len() as u32;
+    // Snapshot hill climber state BEFORE any mutations (used for trace emission)
+    #[cfg(feature = "eval-trace")]
+    let hc_direction = state.climber.direction();
+    #[cfg(feature = "eval-trace")]
+    let hc_cooldown = state.climber.cooldown_remaining();
+    #[cfg(feature = "eval-trace")]
+    let hc_prev_obj = state.climber.prev_objective();
+
+    // ====================================================================
+    // Phase 1: Blocked-worker detection
+    // ====================================================================
+    #[cfg(feature = "eval-trace")]
+    let blocked_indices = state.detect_blocked_workers(pool);
+    #[cfg(not(feature = "eval-trace"))]
+    state.detect_blocked_workers(pool);
+
+    // Emit WorkPoolBlockedWorkersDetected when any workers are blocked
+    #[cfg(feature = "eval-trace")]
+    {
+        if state.blocked_worker_count > 0 {
+            let active_workers = pool.active_workers() as u32;
+            let blocked_count = state.blocked_worker_count as u32;
+            let indices = blocked_indices;
             with_work_pool_trace(|tc| {
                 tc.emit_converted(
                     trace_format::TraceTier::TreeWalker,
@@ -1739,37 +1971,19 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                     trace_format::TraceValue::Unit,
                     vec![],
                     None,
-                    trace_format::TraceEventKind::WorkPoolScaleEvent {
-                        action: "graduated_park".to_string(),
-                        active_workers_after,
-                        min_workers: pool.min_threads() as u32,
-                        max_workers: pool.max_threads() as u32,
-                        queue_depth: instantaneous_qd,
-                        ema_throughput: ema_tp,
-                        ema_queue_depth: ema_qd,
-                        ema_slab_pressure: ema_slab,
-                        ema_rss_pressure: ema_rss,
-                        objective: 0.0, // Not computed in graduated path
-                        emergency: true,
+                    trace_format::TraceEventKind::WorkPoolBlockedWorkersDetected {
+                        blocked_count,
+                        active_workers,
+                        blocked_indices: indices,
                     },
                 );
             });
         }
-
-        check_and_log_respawns(pool);
-        pool.reap_finished_overflow();
-        return;
     }
 
     // ====================================================================
-    // Phase 2: Blocked-worker detection
+    // Phase 2: Compensatory activation (emergency bypass)
     // ====================================================================
-    state.detect_blocked_workers(pool);
-
-    // ====================================================================
-    // Phase 3: Compensatory activation (emergency bypass)
-    // ====================================================================
-    // Fires before the hill climber. Does not reset climber state.
     let active = pool.active_workers();
     let blocked = state.blocked_worker_count;
     let overflow = pool.overflow_count();
@@ -1778,10 +1992,27 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     let target = state.climber.current_active();
     let queue_len = pool.queue_len();
 
-    // Gate: no compensation if the queue is empty — there's no work to give
-    // replacement threads. Also drain any existing overflow.
+    // Track compensatory actions for trace emission
+    #[cfg(feature = "eval-trace")]
+    let mut comp_core_unparked: u32 = 0;
+    #[cfg(feature = "eval-trace")]
+    let mut comp_overflow_spawned: u32 = 0;
+    #[cfg(feature = "eval-trace")]
+    let mut comp_overflow_drained: u32 = 0;
+    #[cfg(feature = "eval-trace")]
+    let mut comp_deficit: u32 = 0;
+    #[cfg(feature = "eval-trace")]
+    let mut comp_rss_veto = false;
+    #[cfg(feature = "eval-trace")]
+    let mut comp_any_action = false;
+
     if queue_len == 0 {
         if overflow > 0 {
+            #[cfg(feature = "eval-trace")]
+            {
+                comp_overflow_drained = overflow as u32;
+                comp_any_action = true;
+            }
             pool.drain_all_overflow();
             trace!(
                 overflow,
@@ -1789,31 +2020,41 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
             );
         }
     } else if total_unblocked < target {
-        // Fewer unblocked workers than the target — need compensation
         let deficit = target - total_unblocked;
+        #[cfg(feature = "eval-trace")]
+        {
+            comp_deficit = deficit as u32;
+        }
 
-        // Step 1: Unpark core pool workers (cheapest — already OS-allocated)
         let mut compensated = 0;
         while compensated < deficit {
             if pool.unpark_one() {
                 compensated += 1;
             } else {
-                break; // No more parked workers available
+                break;
             }
         }
+        #[cfg(feature = "eval-trace")]
+        {
+            comp_core_unparked = compensated as u32;
+        }
 
-        // Step 2: Spawn overflow threads for remaining deficit
         let remaining = deficit - compensated;
-        // RSS veto: no overflow when RSS >= 100% of limit (rss_p >= 2.0)
-        // Core pool unparking (Step 1) is NOT vetoed — those threads are
-        // already OS-allocated and don't increase RSS.
         let overflow_allowed = rss_p < 2.0;
+        #[cfg(feature = "eval-trace")]
+        {
+            comp_rss_veto = !overflow_allowed;
+        }
         if remaining > 0 && overflow_allowed {
             let max_overflow = pool.max_overflow();
             let can_spawn = max_overflow.saturating_sub(overflow);
             let to_spawn = remaining.min(can_spawn);
             if to_spawn > 0 {
                 pool.spawn_overflow(to_spawn);
+                #[cfg(feature = "eval-trace")]
+                {
+                    comp_overflow_spawned = to_spawn as u32;
+                }
                 trace!(
                     to_spawn,
                     blocked,
@@ -1823,68 +2064,99 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                 );
             }
         }
+        #[cfg(feature = "eval-trace")]
+        {
+            comp_any_action = true;
+        }
     }
 
     // Drain excess overflow when blocking resolves
     if overflow > 0 && total_unblocked > target {
         let excess = (total_unblocked - target).min(overflow);
+        #[cfg(feature = "eval-trace")]
+        {
+            comp_overflow_drained = excess as u32;
+            comp_any_action = true;
+        }
         pool.drain_overflow(excess);
     }
 
-    // ====================================================================
-    // Phase 4: Hill climber (normal throughput/queue-depth optimization)
-    // ====================================================================
-    // Use instantaneous queue depth (not EMA) for the scaling decision.
-    // Queue buildup needs immediate response, not 860ms-lagged EMA.
-    // EMA is still maintained above for trace logging.
-    let queue_depth_instant = pool.queue_len() as f64;
+    // Emit WorkPoolCompensatoryAction when any compensatory action was taken
+    #[cfg(feature = "eval-trace")]
+    {
+        if comp_any_action {
+            with_work_pool_trace(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::WorkPoolCompensatoryAction {
+                        core_unparked: comp_core_unparked,
+                        overflow_spawned: comp_overflow_spawned,
+                        overflow_drained: comp_overflow_drained,
+                        target: target as u32,
+                        deficit: comp_deficit,
+                        rss_veto: comp_rss_veto,
+                    },
+                );
+            });
+        }
+    }
 
-    // Four-term composite objective: minimize (lower = better)
-    //
-    //   J(N) = −w_tp × ema_tp + w_qd × qd_instant + w_mp × amp × ema_slab + w_rss × ema_rss
-    //
-    // At bp_level=2, ema_slab=2.0: 5.0 × 2.0 × 2.0 = 20.0 vs queue 10: 2.0 × 10 = 20.0
-    // At bp_level=3, ema_slab=3.0: 5.0 × 4.0 × 3.0 = 60.0 — only queue 30+ overrides
-    let objective = -THROUGHPUT_WEIGHT * ema_tp
-        + QUEUE_DEPTH_WEIGHT * queue_depth_instant
-        + MEMORY_PRESSURE_WEIGHT * slab_amplifier * ema_slab
-        + RSS_PRESSURE_WEIGHT * ema_rss;
+    // ====================================================================
+    // Phase 3: Hill climber (normal throughput/queue-depth optimization)
+    // ====================================================================
+    let objective = term_throughput + term_queue_depth + term_slab_pressure + term_rss_pressure;
 
     // Feed to hill climber
-    let action = state.climber.step(objective);
+    let decision = state.climber.step(objective);
 
-    // Determine action string for trace event (computed before match to avoid duplication).
+    // Compute improvement after step
     #[cfg(feature = "eval-trace")]
-    let action_str = match action {
+    let hc_improvement = hc_prev_obj - objective;
+
+    // Determine action string for trace event
+    #[cfg(feature = "eval-trace")]
+    let action_str = match decision.action {
         ScaleAction::Unpark => "unpark",
         ScaleAction::Park => "park",
         ScaleAction::Hold => "hold",
     };
 
-    match action {
+    match decision.action {
         ScaleAction::Unpark => {
-            if pool.unpark_one() {
+            let actually_unparked = pool.unpark_n(decision.count);
+            if actually_unparked > 0 {
                 trace!(
                     throughput = ema_tp,
                     queue_depth = ema_qd,
                     slab_pressure = ema_slab,
                     rss_pressure = ema_rss,
                     objective,
+                    requested = decision.count,
+                    actually_unparked,
                     active = pool.active_workers(),
-                    "WorkPool scaling: unparked 1 worker"
+                    step_size = state.climber.step_size(),
+                    "WorkPool scaling: unparked workers"
                 );
             }
         }
         ScaleAction::Park => {
-            if pool.park_one() {
+            let actually_parked = pool.park_n(decision.count);
+            if actually_parked > 0 {
                 trace!(
                     throughput = ema_tp,
                     queue_depth = ema_qd,
                     slab_pressure = ema_slab,
                     rss_pressure = ema_rss,
                     objective,
+                    requested = decision.count,
+                    actually_parked,
                     active = pool.active_workers(),
-                    "WorkPool scaling: parked 1 worker"
+                    step_size = state.climber.step_size(),
+                    "WorkPool scaling: parked workers"
                 );
             }
         }
@@ -1918,6 +2190,24 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                     ema_rss_pressure: ema_rss,
                     objective,
                     emergency: false,
+                    hc_direction,
+                    hc_cooldown_remaining: hc_cooldown,
+                    hc_prev_objective: hc_prev_obj,
+                    hc_improvement,
+                    raw_throughput: throughput,
+                    raw_slab_pressure: slab_p,
+                    raw_rss_pressure: rss_p,
+                    bp_level: bp_level as u32,
+                    slab_amplifier,
+                    term_throughput,
+                    term_queue_depth,
+                    term_slab_pressure,
+                    term_rss_pressure,
+                    blocked_worker_count: state.blocked_worker_count as u32,
+                    overflow_count: pool.overflow_count() as u32,
+                    decision_phase: "phase3_hill_climber".to_string(),
+                    delta_evals: delta_evals_raw,
+                    elapsed_seconds: elapsed,
                 },
             );
         });
@@ -2227,12 +2517,16 @@ mod tests {
         // Simulate time passing
         state.prev_sample_time = Instant::now() - Duration::from_millis(200);
 
-        // Run a tick — on idle system, should just update EMAs and hold
+        // Run a tick — on idle system (no evals, no queue), EMAs should be
+        // frozen (not updated) to prevent throughput EMA decay from confusing
+        // the hill climber into parking workers.
         work_scaling_monitor_tick(&pool, &mut state);
 
-        // EMAs should be initialized now
-        assert!(state.ema_throughput.is_initialized());
-        assert!(state.ema_queue_depth.is_initialized());
+        // EMAs should NOT be initialized (idle tick skips EMA updates)
+        assert!(!state.ema_throughput.is_initialized(),
+            "Idle tick should skip EMA updates to preserve signal");
+        assert!(!state.ema_queue_depth.is_initialized(),
+            "Idle tick should skip EMA updates to preserve signal");
     }
 
     #[test]
@@ -2372,69 +2666,6 @@ mod tests {
             "Combined pressure should be worst: {} > {}",
             obj_both_pressure, obj_rss_pressure
         );
-    }
-
-    #[test]
-    fn test_graduated_pressure_parks_at_high_backpressure() {
-        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        crate::backend::models::gc_allocator::set_backpressure_level(0);
-
-        // At bp_level >= 3 with low queue, the graduated response directly parks
-        // one worker per tick (without waiting for hill climber convergence).
-        let pool = WorkPool::with_threads(2, 4);
-        let mut state = WorkMonitorState::new(&pool);
-        state.prev_sample_time = Instant::now() - Duration::from_millis(200);
-
-        // Unpark all workers first
-        while pool.unpark_one() {}
-        let initial_active = pool.active_workers();
-        assert!(initial_active > pool.min_threads(),
-            "Need more than min_threads active to test parking");
-
-        // Simulate extreme backpressure (bp_level=3) with empty queue
-        crate::backend::models::gc_allocator::set_backpressure_level(3);
-
-        // Run a tick — should park via graduated direct response
-        work_scaling_monitor_tick(&pool, &mut state);
-
-        let after_active = pool.active_workers();
-        assert!(
-            after_active < initial_active,
-            "Graduated pressure (bp=3, low queue) should reduce active workers: {} < {}",
-            after_active, initial_active
-        );
-
-        // Reset backpressure to avoid affecting other tests
-        crate::backend::models::gc_allocator::set_backpressure_level(0);
-    }
-
-    #[test]
-    fn test_graduated_pressure_respects_min_threads() {
-        let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        crate::backend::models::gc_allocator::set_backpressure_level(0);
-
-        // Graduated pressure should never go below min_threads
-        let pool = WorkPool::with_threads(2, 4);
-        let mut state = WorkMonitorState::new(&pool);
-
-        // Set high backpressure
-        crate::backend::models::gc_allocator::set_backpressure_level(3);
-
-        // Run many ticks — should not drop below min_threads
-        for _ in 0..20 {
-            state.prev_sample_time = Instant::now() - Duration::from_millis(200);
-            work_scaling_monitor_tick(&pool, &mut state);
-        }
-
-        let active = pool.active_workers();
-        assert!(
-            active >= pool.min_threads(),
-            "Active workers {} should not drop below min_threads {}",
-            active, pool.min_threads()
-        );
-
-        // Reset backpressure
-        crate::backend::models::gc_allocator::set_backpressure_level(0);
     }
 
     #[test]

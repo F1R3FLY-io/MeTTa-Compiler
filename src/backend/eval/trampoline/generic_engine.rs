@@ -34,6 +34,8 @@ use smallvec::SmallVec;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
+use super::dispatch_hints::{match_result_get, match_result_put};
+
 // MettaValue only used in tests
 #[cfg(test)]
 use crate::backend::models::MettaValue;
@@ -420,6 +422,30 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Copy + Clone,
 {
+    // Phase 5: Match result cache (MettaValue-specialized)
+    //
+    // When V = MettaValue, check the thread-local match result cache keyed by
+    // expression content hash + rule epoch. This eliminates redundant MORK
+    // serialization + extract_data for the same expression within a stable rule set.
+    let is_metta = std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>();
+    let expr_hash = expr.hash_value();
+    let expr_arity = expr.get_arity();
+
+    if is_metta {
+        if let Some(cached) = match_result_get(expr_hash, expr_arity) {
+            // Safety: V = MettaValue verified by TypeId check above.
+            // Both types have identical layout, so Vec reinterpretation is sound.
+            return unsafe {
+                let mut md = std::mem::ManuallyDrop::new(cached);
+                Vec::from_raw_parts(
+                    md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
+                    md.len(),
+                    md.capacity(),
+                )
+            };
+        }
+    }
+
     // Use native byte-level matching via RuleIndex + extract_data.
     // This replaces the old pipeline of:
     //   get_matching_rules_for_expr → pattern_match_generic → apply_bindings_generic
@@ -433,10 +459,26 @@ where
     // rhs_template + bindings — the instantiated_rhs field is discarded. This avoids
     // a redundant recursive S-expression traversal + allocation per matching rule.
     let results = env.match_rules_native(expr, |v: &V, _: &GenericBindings<V>, _: &F| v.clone());
-    results
+    let result_vec: Vec<(V, GenericBindings<V>, Option<V>)> = results
         .into_iter()
         .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
-        .collect()
+        .collect();
+
+    // Store in cache (skip empty results — they're the common case for data expressions
+    // and would waste cache slots).
+    if is_metta && !result_vec.is_empty() {
+        // Safety: V = MettaValue verified by TypeId check above.
+        let slice: &[(crate::backend::models::MettaValue, GenericBindings<crate::backend::models::MettaValue>, Option<crate::backend::models::MettaValue>)] = unsafe {
+            std::slice::from_raw_parts(
+                result_vec.as_ptr()
+                    as *const (crate::backend::models::MettaValue, GenericBindings<crate::backend::models::MettaValue>, Option<crate::backend::models::MettaValue>),
+                result_vec.len(),
+            )
+        };
+        match_result_put(expr_hash, expr_arity, slice);
+    }
+
+    result_vec
 }
 
 

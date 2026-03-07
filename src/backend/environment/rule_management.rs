@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lru::LruCache;
 
-use crate::backend::hash_utils::PtrBuildHasher;
+use crate::backend::hash_utils::{FxBuildHasher, PtrBuildHasher};
 
 /// Global epoch counter for rule/type mutations.
 ///
@@ -74,21 +74,22 @@ thread_local! {
 
     /// Thread-local MORK serialization cache for `match_rules_native`.
     ///
-    /// Keyed by `*const MettaValueInner` (slab pointer, stable between GC safepoints).
-    /// Value is the serialized MORK bytes INCLUDING the trailing 0x00 padding byte.
+    /// Content-hash keyed: `u64` (xxh3 content hash of MettaValue). This survives GC
+    /// safepoints (no pointer ABA issue) and shares entries across structurally-identical
+    /// expressions at different slab addresses. Value includes the arity for cheap
+    /// collision validation.
     ///
-    /// ABA safety: Between GC safepoints, no slab slot is reused, so pointer identity
-    /// is stable. The cache is cleared at each safepoint via `clear_mork_bytes_cache()`.
-    ///
-    /// 2048 entries × ~64 bytes avg = ~128 KB per thread. LRU eviction bounds memory.
-    static MORK_BYTES_CACHE: RefCell<LruCache<usize, Vec<u8>, PtrBuildHasher>> =
-        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(2048).expect("non-zero"), PtrBuildHasher));
+    /// 8192 entries × ~64 bytes avg = ~512 KB per thread. LRU eviction bounds memory.
+    /// Increased from 2048 to improve hit rate for PLN's working set (>2048 distinct exprs).
+    static MORK_BYTES_CACHE: RefCell<LruCache<u64, (Vec<u8>, usize), FxBuildHasher>> =
+        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(8192).expect("non-zero"), FxBuildHasher));
 }
 
 /// Clear the thread-local MORK serialization cache.
 ///
-/// Called at GC safepoints (before GC runs) to ensure no stale pointers
-/// persist across GC mark-sweep cycles where slab slots may be reused.
+/// With content-hash keying, this is only needed when the SharedMapping changes
+/// (different symbol table = different interned IDs for same bytes). GC safepoints
+/// no longer require clearing since keys are content hashes, not pointers.
 pub fn clear_mork_bytes_cache() {
     MORK_BYTES_CACHE.with(|c| c.borrow_mut().clear());
 }
@@ -716,9 +717,10 @@ where
         // previously normal-form expressions reducible.
         crate::backend::eval::trampoline::invalidate_normal_form_memo();
 
-        // Clear eval memo cache — new rules may change evaluation results
-        // for previously memoized expressions.
+        // Clear eval memo and match result caches — new rules may change
+        // evaluation and matching results for previously cached expressions.
         crate::backend::eval::trampoline::clear_eval_memo();
+        crate::backend::eval::trampoline::clear_match_result_cache();
 
         // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
         increment_rule_epoch();
@@ -1062,19 +1064,22 @@ where
         MATCH_EXPR_BUFFER.with(|buf_cell| {
             let mut buf = buf_cell.borrow_mut();
 
-            // Check the MORK bytes cache first (keyed by slab pointer, stable between
-            // GC safepoints). On hit, skip the expensive with_mork_bytes() serialization.
-            let cache_key = expr.inner_ptr() as usize;
+            // Check the MORK bytes cache first. Content-hash keyed: survives GC safepoints,
+            // shares entries across structurally-identical expressions at different addresses.
+            let cache_key = expr.hash_value();
+            let expr_arity = arity;
             let cache_hit = MORK_BYTES_CACHE.with(|cache_cell| {
                 let mut cache = cache_cell.borrow_mut();
-                if let Some(cached_bytes) = cache.get(&cache_key) {
-                    buf.clear();
-                    buf.reserve(cached_bytes.len());
-                    buf.extend_from_slice(cached_bytes);
-                    true
-                } else {
-                    false
+                if let Some(entry) = cache.get(&cache_key) {
+                    // Cheap collision validation: arity must match
+                    if entry.1 == expr_arity {
+                        buf.clear();
+                        buf.reserve(entry.0.len());
+                        buf.extend_from_slice(&entry.0);
+                        return true;
+                    }
                 }
+                false
             });
 
             let serialize_ok = if cache_hit {
@@ -1089,7 +1094,7 @@ where
                 // Cache the serialized bytes on success
                 if result.is_ok() {
                     MORK_BYTES_CACHE.with(|cache_cell| {
-                        cache_cell.borrow_mut().put(cache_key, buf.clone());
+                        cache_cell.borrow_mut().put(cache_key, (buf.clone(), expr_arity));
                     });
                 }
                 result

@@ -77,5 +77,8 @@ pub use dispatch_hints::{invalidate_normal_form_memo, is_memoized_normal_form, m
 // Expression-level eval memoization (clear on space mutation)
 pub use dispatch_hints::clear_eval_memo;
 
+// Match result cache (clear on space mutation)
+pub use dispatch_hints::clear_match_result_cache;
+
 // Re-export session context (dual-arena model)
 pub use session_context::SessionContext;

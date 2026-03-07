@@ -10,6 +10,7 @@
 //! - **Normal-form memoization**: Bloom filter for fixpoint-detected expressions
 //! - **Expected-type derivation**: `derive_arg_expected_type` for applicative evaluation
 //! - **Eval memo cache**: Thread-local LRU for pure expression memoization
+//! - **Match result cache**: Thread-local LRU for rule match result memoization
 
 use std::cell::{Cell, RefCell};
 use std::num::NonZeroUsize;
@@ -21,7 +22,10 @@ use smallvec::SmallVec;
 use crate::backend::builtin_signatures;
 use crate::backend::environment::bloom::AtomicBloomFilter;
 use crate::backend::hash_utils::IdentityU64BuildHasher;
-use crate::backend::models::{gc_sweep_epoch, MettaValue, MettaValueFactory, MettaValueTrait};
+use std::sync::atomic::Ordering;
+
+use crate::backend::environment::rule_management::RULE_EPOCH;
+use crate::backend::models::{gc_sweep_epoch, GenericBindings, MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::context::EvalContext;
 
@@ -54,8 +58,10 @@ fn check_gc_epoch() -> bool {
             local.set(global);
             // Invalidate all pointer-keyed caches on this thread.
             EVAL_MEMO.with(|memo_cell| memo_cell.borrow_mut().clear());
+            MATCH_RESULT_CACHE.with(|cache_cell| cache_cell.borrow_mut().clear());
             invalidate_normal_form_memo();
             crate::backend::environment::rule_management::clear_mork_bytes_cache();
+            crate::backend::mork_convert::clear_ground_fragment_cache();
             crate::backend::models::metta_value::clear_value_hash_cache();
             true
         } else {
@@ -369,4 +375,352 @@ pub fn clear_eval_memo() {
     EVAL_MEMO.with(|memo_cell| {
         memo_cell.borrow_mut().clear();
     });
+}
+
+// ============================================================================
+// Phase 5: Thread-local Match Result Cache
+// ============================================================================
+//
+// Caches the output of `try_match_all_rules_generic` — the set of matching
+// rules (RHS template, bindings, return type) for a given expression.
+//
+// Key: expression content hash (u64).
+// Stored alongside each entry: the rule epoch at insertion time and the
+// expression arity as a collision guard. On lookup, the cache validates
+// that the rule epoch hasn't advanced and the arity matches.
+//
+// Invalidated:
+// - Rule epoch change (automatic via stored epoch comparison)
+// - GC sweep epoch change (via `check_gc_epoch()` → cache clear)
+//
+// This eliminates redundant MORK serialization + extract_data calls when
+// the same expression is matched multiple times within the same rule epoch
+// (common in PLN nondeterministic branching).
+
+/// Cached match result: (rhs_template, bindings, rhs_type).
+type MatchResultEntry = SmallVec<[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>); 4]>;
+
+thread_local! {
+    /// Thread-local rule-match result cache.
+    ///
+    /// Key: expression content hash (via `hash_value()`)
+    /// Value: (rule_epoch, arity, cached match results)
+    ///
+    /// 4096 entries × ~120 bytes avg = ~480 KB per thread. LRU eviction bounds memory.
+    static MATCH_RESULT_CACHE: RefCell<LruCache<u64, (u64, usize, MatchResultEntry), IdentityU64BuildHasher>> =
+        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(4096).expect("non-zero"), IdentityU64BuildHasher));
+}
+
+/// Look up cached match results for an expression.
+///
+/// Returns `Some(results)` if the cache contains a valid entry for the given
+/// expression hash at the current rule epoch. The caller should use these
+/// results instead of calling `try_match_all_rules_generic`.
+///
+/// GC safety: checks GC sweep epoch before access (via `check_gc_epoch()`).
+#[inline]
+pub fn match_result_get(
+    expr_hash: u64,
+    expr_arity: usize,
+) -> Option<Vec<(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)>> {
+    // Invalidate if GC freed slab slots since our last check (ABA safety).
+    check_gc_epoch();
+    let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
+    MATCH_RESULT_CACHE.with(|cache_cell| {
+        let mut cache = cache_cell.borrow_mut();
+        if let Some((stored_epoch, stored_arity, entries)) = cache.get(&expr_hash) {
+            if *stored_epoch == current_epoch && *stored_arity == expr_arity {
+                return Some(entries.iter().cloned().collect());
+            }
+        }
+        None
+    })
+}
+
+/// Store match results in the cache.
+#[inline]
+pub fn match_result_put(
+    expr_hash: u64,
+    expr_arity: usize,
+    results: &[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)],
+) {
+    let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
+    let entries: MatchResultEntry = results.iter().cloned().collect();
+    MATCH_RESULT_CACHE.with(|cache_cell| {
+        cache_cell.borrow_mut().put(expr_hash, (current_epoch, expr_arity, entries));
+    });
+}
+
+/// Collect all MettaValue roots from the match result cache.
+///
+/// Called during GC safepoint root collection to ensure cached values survive
+/// the mark-sweep cycle.
+pub fn collect_match_result_roots(out: &mut Vec<MettaValue>) {
+    MATCH_RESULT_CACHE.with(|cache_cell| {
+        let cache = cache_cell.borrow();
+        for (_hash, (_epoch, _arity, entries)) in cache.iter() {
+            for (rhs, bindings, rhs_type) in entries.iter() {
+                out.push(*rhs);
+                for (_name, val) in bindings.iter() {
+                    out.push(val.clone());
+                }
+                if let Some(t) = rhs_type {
+                    out.push(*t);
+                }
+            }
+        }
+    });
+}
+
+/// Clear the match result cache.
+///
+/// Called on space mutation (add-atom/remove-atom) to invalidate cached results.
+pub fn clear_match_result_cache() {
+    MATCH_RESULT_CACHE.with(|cache_cell| {
+        cache_cell.borrow_mut().clear();
+    });
+}
+
+// ============================================================================
+// Phase 6 (revised): Normal-Form Short-Circuit in dispatch_rule_matches
+// ============================================================================
+//
+// After apply_bindings_generic produces an instantiated RHS, many values are
+// already in normal form (data tuples, ground atoms) and the trampoline just
+// returns them unchanged — wasting a pop/push/dispatch cycle per value.
+//
+// This module provides a bounded static predicate that identifies such values
+// without speculation. Combined with the existing NORMAL_FORM_BLOOM filter
+// (Phase 9.5), this short-circuits the trampoline for cold and hot paths.
+
+use phf::phf_set;
+
+/// Union of all head symbols that are reducible in `eval_sexpr_step_generic`
+/// (special forms) and `has_generic_grounded_op` (arithmetic/comparison ops).
+///
+/// An S-expression `(head ...)` is NOT in normal form if `head` is in this set,
+/// because the trampoline will dispatch it for evaluation.
+///
+/// Maintained in sync with `eval_sexpr_step_generic` match arms,
+/// `GROUNDED_OPS`, `SPECIAL_FORMS_REDISPATCH`, and `EAGER_SPECIAL_FORMS`
+/// via the `reducible_heads_covers_all_known_sets` test below.
+static REDUCIBLE_HEADS: phf::Set<&'static str> = phf_set! {
+    // === Special forms (eval_sexpr_step_generic match arms) ===
+    "=", "!", "quote", "unquote",
+    "if", "if-reducible", "if-equal",
+    "error", "Error", "is-error", "catch",
+    "eval", "function", "return", "chain",
+    "match", "match-or", "case",
+    "switch", "switch-minimal", "switch-internal",
+    "let", "let*", "unify", "sealed", "atom-subst",
+    ":<", ":",
+    "get-type", "check-type", "validate-atom", "get-type-space",
+    "is-function", "type-cast", "metta",
+    "match-types", "match-type-or", "first-from-pair",
+    "map-atom", "filter-atom", "foldl-atom",
+    "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
+    "max-atom", "min-atom", "index-atom",
+    "tuple-concat", "tuple-count", "without", "element-of",
+    "range", "reverse-atom", "flatten-atom", "zip-atom",
+    "take-atom", "drop-atom", "sort-tuple", "best-candidate",
+    "new-space", "add-atom", "remove-atom",
+    "collapse", "collapse-bind", "superpose", "amb",
+    "guard", "commit", "backtrack",
+    "get-atoms",
+    "new-state", "get-state", "change-state!",
+    "new-memo", "memo", "memo-first", "clear-memo!", "memo-stats",
+    "bind!", "println!", "trace!", "nop",
+    "repr", "format-args",
+    "empty", "get-metatype",
+    "include", "import!", "mod-space!", "print-mods!",
+    "exec", "coalg", "lookup", "rulify",
+    "=alpha",
+    "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+    "assertEqual", "assertAlphaEqual",
+    "assertEqualMsg", "assertAlphaEqualMsg",
+    "assertEqualToResult", "assertAlphaEqualToResult",
+    "assertEqualToResultMsg", "assertAlphaEqualToResultMsg",
+    "pragma!",
+    // === Grounded operations (has_generic_grounded_op) ===
+    "+", "-", "*", "/", "%", "min", "max",
+    "<", "<=", ">", ">=", "==", "!=",
+    "and", "or", "not", "xor",
+    "/safe", "clamp",
+    // === Extended grounded ops (GROUNDED_OPS PHF in helpers.rs) ===
+    "pow", "abs", "floor", "ceil", "round", "sqrt",
+    "floor-div",
+    "pow-math", "sqrt-math", "abs-math", "log-math", "trunc-math",
+    "ceil-math", "floor-math", "round-math",
+    "sin-math", "asin-math", "cos-math", "acos-math",
+    "tan-math", "atan-math",
+    "isnan-math", "isinf-math",
+};
+
+/// Check if a value is in normal form with bounded recursion.
+///
+/// Returns `true` only for values guaranteed to pass through
+/// `eval_step_generic_inner` and `eval_sexpr_step_generic` unchanged.
+/// Conservative: returns `false` for anything uncertain.
+///
+/// `max_depth` limits S-expression child recursion:
+/// - `0`: reject S-expr children (shallow check only)
+/// - `2`: recurse up to 2 levels (catches nested PLN data tuples)
+///
+/// Uses `MettaValueTrait` accessor methods (which are Spanned-transparent)
+/// rather than pattern matching on `MettaValueInner` directly, avoiding
+/// type mismatches between `V` and the concrete `MettaValue` stored in
+/// `MettaValueInner` fields.
+#[inline]
+pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>(
+    value: &V,
+    env: &crate::backend::environment::generic::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
+    max_depth: u8,
+) -> bool {
+    // S-expressions: check head + children
+    if let Some(items) = value.as_sexpr() {
+        if items.is_empty() { return true; }
+        // Head must be a plain atom (not a variable or nested expr)
+        let head = match items[0].as_atom() {
+            Some(name) => name,
+            None => return false,
+        };
+        // Head must not be variable, special form, or grounded op
+        if head.starts_with('$') { return false; }
+        if REDUCIBLE_HEADS.contains(head) { return false; }
+        // Head must not have user-defined rules
+        if env.may_have_rules_for(head, items.len() - 1) { return false; }
+        // Check children within depth budget
+        return items[1..].iter().all(|child| is_child_normal_form(child, env, max_depth));
+    }
+    // Atoms: normal form UNLESS &self (resolves to space) or
+    // starts with $ (variable). Tokenizer bindings (bind!) are
+    // rare and caught by bloom filter on second eval.
+    if let Some(name) = value.as_atom() {
+        return name != "&self" && !name.starts_with('$');
+    }
+    // Conjunctions: need eval_conjunction_step_generic
+    if value.as_conjunction().is_some() { return false; }
+    // Ground types (Bool, Long, Float, String, Unit, Space, State, Memo),
+    // Error, Empty, Type, Quoted — all immediately return Done.
+    // This covers all remaining MettaValueInner variants.
+    true
+}
+
+/// Check if an S-expression child element is in normal form.
+///
+/// For non-S-expression leaves, this is a direct check via trait accessors.
+/// For S-expression children, recurse with decremented depth budget.
+#[inline]
+fn is_child_normal_form<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>(
+    child: &V,
+    env: &crate::backend::environment::generic::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
+    max_depth: u8,
+) -> bool {
+    // S-expression children: recurse with depth budget
+    if child.as_sexpr().is_some() {
+        if max_depth == 0 { return false; }
+        return is_normal_form_bounded(child, env, max_depth - 1);
+    }
+    // Atoms: OK unless &self or variable
+    if let Some(name) = child.as_atom() {
+        return name != "&self" && !name.starts_with('$');
+    }
+    // Conjunctions: reducible
+    if child.as_conjunction().is_some() { return false; }
+    // All other types (ground, error, empty, type, quoted): normal form
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reducible_heads_covers_all_known_sets() {
+        use crate::backend::eval::helpers::{is_grounded_op, needs_special_form_redispatch, is_eager_special_form};
+
+        // Check GROUNDED_OPS coverage
+        let grounded_ops = [
+            "+", "-", "*", "/", "%", "min", "max",
+            "pow", "abs", "floor", "ceil", "round", "sqrt",
+            "floor-div",
+            "pow-math", "sqrt-math", "abs-math", "log-math", "trunc-math",
+            "ceil-math", "floor-math", "round-math",
+            "sin-math", "asin-math", "cos-math", "acos-math",
+            "tan-math", "atan-math",
+            "isnan-math", "isinf-math",
+            "<", "<=", ">", ">=", "==", "!=",
+            "not", "and", "or", "xor",
+            "get-type", "get-metatype", "validate-atom", "get-type-space",
+            "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
+            "max-atom", "min-atom", "index-atom",
+            "tuple-concat", "tuple-count", "without", "element-of",
+            "range", "reverse-atom", "flatten-atom", "zip-atom", "take-atom", "drop-atom",
+            "sort-tuple", "best-candidate",
+            "/safe", "clamp",
+        ];
+        for op in &grounded_ops {
+            assert!(is_grounded_op(op), "GROUNDED_OPS has '{}' but is_grounded_op doesn't recognize it", op);
+            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing grounded op: {}", op);
+        }
+
+        // Check SPECIAL_FORMS_REDISPATCH coverage
+        let special_forms = [
+            "map-atom", "filter-atom", "foldl-atom",
+            "sort-tuple", "best-candidate",
+            "if", "if-equal", "if-reducible", "case", "switch", "switch-minimal", "switch-internal",
+            "let", "let*", "unify",
+            "chain", "function", "return",
+            "sealed", "atom-subst", "match", "match-or",
+            "catch", "is-error",
+            "eval", "quote", "unquote",
+            "collapse", "collapse-bind", "amb", "guard",
+            "new-state", "get-state", "change-state!",
+            "println!", "trace!",
+            "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+            "=alpha",
+            "match-types",
+            "assertEqual", "assertAlphaEqual",
+            "assertEqualMsg", "assertAlphaEqualMsg",
+            "assertEqualToResult", "assertAlphaEqualToResult",
+            "assertEqualToResultMsg", "assertAlphaEqualToResultMsg",
+        ];
+        for op in &special_forms {
+            assert!(needs_special_form_redispatch(op), "SPECIAL_FORMS_REDISPATCH has '{}' but needs_special_form_redispatch doesn't recognize it", op);
+            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing special form: {}", op);
+        }
+
+        // Check EAGER_SPECIAL_FORMS coverage
+        let eager_forms = [
+            "map-atom", "filter-atom", "foldl-atom",
+            "sort-tuple", "best-candidate",
+            "eval", "unquote",
+            "collapse", "collapse-bind", "superpose",
+            "get-state",
+            "catch",
+            "get-metatype", "validate-atom", "get-type-space",
+            "repr", "format-args",
+            "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+            "=alpha",
+        ];
+        for op in &eager_forms {
+            assert!(is_eager_special_form(op), "EAGER_SPECIAL_FORMS has '{}' but is_eager_special_form doesn't recognize it", op);
+            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing eager form: {}", op);
+        }
+
+        // Check has_generic_grounded_op coverage
+        let generic_grounded = [
+            "+", "-", "*", "/", "%", "min", "max",
+            "<", "<=", ">", ">=", "==", "!=",
+            "and", "or", "not", "xor",
+            "/safe", "clamp",
+        ];
+        for op in &generic_grounded {
+            assert!(
+                crate::backend::grounded::has_generic_grounded_op(op),
+                "has_generic_grounded_op doesn't recognize: {}", op
+            );
+            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing generic grounded op: {}", op);
+        }
+    }
 }

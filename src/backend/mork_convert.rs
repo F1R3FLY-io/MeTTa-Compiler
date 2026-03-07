@@ -81,6 +81,54 @@ struct CachedSymbolId {
     len: u8,
 }
 
+/// Inline cache for float-to-string formatting results.
+///
+/// 16 entries, linear scan — fits in 2 cache lines (16 × 33 bytes ≈ 528 bytes).
+/// Eliminates `ryu::format64` + `write_mantissa_long` overhead (~4% CPU) for
+/// repeated PLN truth values (0.5, 0.9, 0.6, 1.0, 0.0, 0.81, etc.).
+struct FloatFormatCache {
+    entries: [(u64, [u8; 24], u8); 16], // (f64_bits, formatted_bytes, len)
+    len: u8,
+    write_idx: u8,
+}
+
+impl FloatFormatCache {
+    const fn new() -> Self {
+        Self {
+            entries: [(0u64, [0u8; 24], 0u8); 16],
+            len: 0,
+            write_idx: 0,
+        }
+    }
+
+    #[inline]
+    fn lookup(&self, bits: u64) -> Option<&[u8]> {
+        for i in 0..self.len as usize {
+            if self.entries[i].0 == bits {
+                return Some(&self.entries[i].1[..self.entries[i].2 as usize]);
+            }
+        }
+        None
+    }
+
+    #[inline]
+    fn insert(&mut self, bits: u64, formatted: &[u8]) {
+        let copy_len = formatted.len().min(24);
+        let idx = if (self.len as usize) < 16 {
+            let i = self.len as usize;
+            self.len += 1;
+            i
+        } else {
+            let i = self.write_idx as usize;
+            self.write_idx = ((self.write_idx as usize + 1) % 16) as u8;
+            i
+        };
+        self.entries[idx].0 = bits;
+        self.entries[idx].1[..copy_len].copy_from_slice(&formatted[..copy_len]);
+        self.entries[idx].2 = copy_len as u8;
+    }
+}
+
 /// Unified thread-local state for MORK conversion.
 ///
 /// Combines the buffer, scratch space, variable context, and symbol cache into a
@@ -108,6 +156,17 @@ struct ConvertState {
     /// When the caller uses a different epoch, the cache is cleared.
     /// Epochs are never reused, eliminating the ABA pointer reuse problem.
     symbol_cache_epoch: u64,
+    /// Ground sub-expression MORK fragment cache.
+    ///
+    /// Keyed by `inner_ptr as usize` (slab pointer, stable between GC safepoints).
+    /// Stores the serialized MORK byte fragment for ground (variable-free) sub-expressions.
+    /// This eliminates redundant recursive serialization of repeated ground sub-trees
+    /// (e.g., `(stv 0.5 0.9)` appearing in multiple PLN expressions).
+    ///
+    /// Invalidated on epoch change and at GC safepoints (pointer-keyed).
+    ground_cache: HashMap<usize, Vec<u8>, FxBuildHasher>,
+    /// Inline cache for float-to-string formatting (ryu bypass).
+    float_cache: FloatFormatCache,
 }
 
 impl ConvertState {
@@ -118,6 +177,8 @@ impl ConvertState {
             context: ConversionContext::new(),
             symbol_cache: HashMap::with_hasher(FxBuildHasher),
             symbol_cache_epoch: 0,
+            ground_cache: HashMap::with_hasher(FxBuildHasher),
+            float_cache: FloatFormatCache::new(),
         }
     }
 
@@ -132,9 +193,20 @@ impl ConvertState {
     fn validate_symbol_cache(&mut self, epoch: u64) {
         if self.symbol_cache_epoch != epoch {
             self.symbol_cache.clear();
+            self.ground_cache.clear();
             self.symbol_cache_epoch = epoch;
         }
     }
+}
+
+/// Clear the thread-local ground fragment cache.
+///
+/// Called at GC safepoints (before GC runs) to ensure no stale pointers
+/// persist across GC mark-sweep cycles where slab slots may be reused.
+pub fn clear_ground_fragment_cache() {
+    CONVERT_STATE.with(|state| {
+        state.borrow_mut().ground_cache.clear();
+    });
 }
 
 // ============================================================================
@@ -201,7 +273,7 @@ pub fn with_mork_bytes<V: MettaValueTrait, R>(
         let mut state = state.borrow_mut();
         // Invalidate symbol cache if the environment epoch changed.
         state.validate_symbol_cache(cache_epoch);
-        let ConvertState { buffer, scratch, context, symbol_cache, .. } = &mut *state;
+        let ConvertState { buffer, scratch, context, symbol_cache, ground_cache, float_cache, .. } = &mut *state;
         context.var_map.clear();
         context.var_names.clear();
         // buffer is initialized to MAX_MORK_BUFFER in ConvertState::new()
@@ -211,7 +283,7 @@ pub fn with_mork_bytes<V: MettaValueTrait, R>(
         let mut pdp = ParDataParser::new(sm);
         // Dispatch through MettaValueInner for efficient single-match (jump table)
         let inner = unsafe { &*value.inner_ptr() };
-        write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache)?;
+        write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache)?;
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
                 "Expression too large: {} bytes (max {})",
@@ -239,14 +311,14 @@ pub fn with_mork_query_bytes<V: MettaValueTrait, R>(
         let mut state = state.borrow_mut();
         // Invalidate symbol cache if the environment epoch changed.
         state.validate_symbol_cache(cache_epoch);
-        let ConvertState { buffer, scratch, context, symbol_cache, .. } = &mut *state;
+        let ConvertState { buffer, scratch, context, symbol_cache, ground_cache, float_cache, .. } = &mut *state;
         context.var_map.clear();
         context.var_names.clear();
         let expr = Expr { ptr: buffer.as_mut_ptr() };
         let mut ez = ExprZipper::new(expr);
         let mut pdp = ParDataParser::new(sm);
         let inner = unsafe { &*value.inner_ptr() };
-        write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache)?;
+        write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache)?;
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
                 "Expression too large: {} bytes (max {})",
@@ -318,11 +390,10 @@ fn write_metta_value_inner(
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
     symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
+    ground_cache: &mut HashMap<usize, Vec<u8>, FxBuildHasher>,
+    float_cache: &mut FloatFormatCache,
 ) -> Result<(), String> {
     // Pre-bounds-check: detect buffer overrun before any write.
-    // ExprZipper writes may advance loc past MAX_MORK_BUFFER in deeply nested
-    // expressions (e.g., PLN's 15-deep S-expression trees). Without this check,
-    // the write would corrupt stack memory and cause a SEGFAULT.
     if ez.loc >= MAX_MORK_BUFFER {
         return Err(format!(
             "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
@@ -330,8 +401,6 @@ fn write_metta_value_inner(
         ));
     }
     // GC trace mode: validate that inner ptr hasn't been freed by GC.
-    // This catches use-after-free immediately with a diagnostic message
-    // instead of a cryptic SIGSEGV deep in the match arms.
     if gc_trace_enabled() {
         let ptr = inner as *const MettaValueInner as *const u8;
         if !global_allocator().is_value_ptr_valid(ptr) {
@@ -345,8 +414,6 @@ fn write_metta_value_inner(
     }
     match inner {
         MettaValueInner::Atom(name) => {
-            // All atoms (including variables like $x and wildcards _) are written as symbols.
-            // This preserves names through MORK round-trip for correct rule matching.
             write_symbol(name.as_bytes(), pdp, ez, symbol_cache)?;
         }
 
@@ -365,9 +432,17 @@ fn write_metta_value_inner(
         }
 
         MettaValueInner::Float(f) => {
-            let mut rbuf = ryu::Buffer::new();
-            let s = rbuf.format(*f);
-            write_symbol(s.as_bytes(), pdp, ez, symbol_cache)?;
+            // Float format cache: skip ryu formatting for repeated PLN truth values
+            let bits = f.to_bits();
+            if let Some(cached_bytes) = float_cache.lookup(bits) {
+                write_symbol(cached_bytes, pdp, ez, symbol_cache)?;
+            } else {
+                let mut rbuf = ryu::Buffer::new();
+                let s = rbuf.format(*f);
+                let s_bytes = s.as_bytes();
+                float_cache.insert(bits, s_bytes);
+                write_symbol(s_bytes, pdp, ez, symbol_cache)?;
+            }
         }
 
         MettaValueInner::String(s) => {
@@ -379,13 +454,11 @@ fn write_metta_value_inner(
         }
 
         MettaValueInner::Unit => {
-            // Empty list
             ez.write_arity(0);
             ez.loc += 1;
         }
 
         MettaValueInner::SExpr(items) => {
-            // MORK arity is limited to 6 bits (0-63)
             if items.len() >= 64 {
                 return Err(format!(
                     "Expression has too many children ({}) - MORK arity limit is 63",
@@ -396,12 +469,44 @@ fn write_metta_value_inner(
             ez.loc += 1;
 
             for item in *items {
-                write_metta_value_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+                // Ground fragment cache: skip recursive serialization for ground sub-expressions.
+                // O(1) tagged pointer flag check + HashMap lookup.
+                if !item.has_variables_fast() {
+                    let key = item.inner_ptr() as usize;
+                    if let Some(frag) = ground_cache.get(&key) {
+                        let frag_len = frag.len();
+                        if ez.loc + frag_len <= MAX_MORK_BUFFER {
+                            // SAFETY: ez.root.ptr is the buffer, and we write within bounds.
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    frag.as_ptr(),
+                                    ez.root.ptr.add(ez.loc),
+                                    frag_len,
+                                );
+                            }
+                            ez.loc += frag_len;
+                            continue;
+                        }
+                    }
+                    // Cache miss: serialize normally, then capture fragment
+                    let start_loc = ez.loc;
+                    write_metta_value_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    let end_loc = ez.loc;
+                    let frag_len = end_loc - start_loc;
+                    // Only cache fragments up to 256 bytes (avoids bloating cache with large subtrees)
+                    if frag_len > 0 && frag_len <= 256 {
+                        let frag = unsafe {
+                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
+                        }.to_vec();
+                        ground_cache.insert(key, frag);
+                    }
+                } else {
+                    write_metta_value_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                }
             }
         }
 
         MettaValueInner::Error(msg, details) => {
-            // (error "msg" details)
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"error", pdp, ez, symbol_cache)?;
@@ -410,25 +515,21 @@ fn write_metta_value_inner(
             scratch.extend_from_slice(msg.as_bytes());
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez, symbol_cache)?;
-            write_metta_value_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
 
         MettaValueInner::Type(t) => {
-            // Types are just atoms/expressions
-            write_metta_value_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
 
         MettaValueInner::Quoted(inner) => {
-            // Write as (quote inner) for MORK compatibility
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"quote", pdp, ez, symbol_cache)?;
-            write_metta_value_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
 
         MettaValueInner::Conjunction(goals) => {
-            // MORK arity is limited to 6 bits (0-63)
-            // +1 for the comma symbol
             let total_arity = goals.len() + 1;
             if total_arity >= 64 {
                 return Err(format!(
@@ -438,17 +539,42 @@ fn write_metta_value_inner(
             }
             ez.write_arity(total_arity as u8);
             ez.loc += 1;
-
-            // Write the comma symbol as first child
             write_symbol(b",", pdp, ez, symbol_cache)?;
 
-            // Write each goal
             for goal in *goals {
-                write_metta_value_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+                // Ground fragment cache for conjunction children
+                if !goal.has_variables_fast() {
+                    let key = goal.inner_ptr() as usize;
+                    if let Some(frag) = ground_cache.get(&key) {
+                        let frag_len = frag.len();
+                        if ez.loc + frag_len <= MAX_MORK_BUFFER {
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    frag.as_ptr(),
+                                    ez.root.ptr.add(ez.loc),
+                                    frag_len,
+                                );
+                            }
+                            ez.loc += frag_len;
+                            continue;
+                        }
+                    }
+                    let start_loc = ez.loc;
+                    write_metta_value_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    let end_loc = ez.loc;
+                    let frag_len = end_loc - start_loc;
+                    if frag_len > 0 && frag_len <= 256 {
+                        let frag = unsafe {
+                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
+                        }.to_vec();
+                        ground_cache.insert(key, frag);
+                    }
+                } else {
+                    write_metta_value_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                }
             }
         }
 
-        // Space references are written as (Space id name)
         MettaValueInner::Space(handle) => {
             ez.write_arity(3);
             ez.loc += 1;
@@ -463,7 +589,6 @@ fn write_metta_value_inner(
             write_symbol(scratch, pdp, ez, symbol_cache)?;
         }
 
-        // State references are written as (State id)
         MettaValueInner::State(id) => {
             ez.write_arity(2);
             ez.loc += 1;
@@ -473,7 +598,6 @@ fn write_metta_value_inner(
             write_symbol(id_str.as_bytes(), pdp, ez, symbol_cache)?;
         }
 
-        // Memo tables are runtime-only and cannot be stored in MORK
         MettaValueInner::Memo(handle) => {
             return Err(format!(
                 "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
@@ -481,16 +605,14 @@ fn write_metta_value_inner(
             ));
         }
 
-        // Empty sentinel is runtime-only and should be filtered out before MORK conversion
         MettaValueInner::Empty => {
             return Err(
                 "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
             );
         }
 
-        // Spanned: strip span wrapper and serialize the inner value transparently
         MettaValueInner::Spanned(v, _) => {
-            write_metta_value_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
     }
 
@@ -509,15 +631,15 @@ fn write_metta_value_debruijn_inner(
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
     symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
+    ground_cache: &mut HashMap<usize, Vec<u8>, FxBuildHasher>,
+    float_cache: &mut FloatFormatCache,
 ) -> Result<(), String> {
-    // Pre-bounds-check: detect buffer overrun before any write.
     if ez.loc >= MAX_MORK_BUFFER {
         return Err(format!(
             "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
             ez.loc, MAX_MORK_BUFFER
         ));
     }
-    // GC trace mode: validate that inner ptr hasn't been freed by GC.
     if gc_trace_enabled() {
         let ptr = inner as *const MettaValueInner as *const u8;
         if !global_allocator().is_value_ptr_valid(ptr) {
@@ -546,8 +668,6 @@ fn write_metta_value_debruijn_inner(
                     }
                 }
             } else if *name == "_" {
-                // Wildcard — each occurrence is a unique anonymous variable.
-                // Register in context to keep De Bruijn indices in sync.
                 let mut ibuf = itoa::Buffer::new();
                 let suffix = ibuf.format(ctx.var_names.len());
                 scratch.clear();
@@ -577,9 +697,16 @@ fn write_metta_value_debruijn_inner(
         }
 
         MettaValueInner::Float(f) => {
-            let mut rbuf = ryu::Buffer::new();
-            let s = rbuf.format(*f);
-            write_symbol(s.as_bytes(), pdp, ez, symbol_cache)?;
+            let bits = f.to_bits();
+            if let Some(cached_bytes) = float_cache.lookup(bits) {
+                write_symbol(cached_bytes, pdp, ez, symbol_cache)?;
+            } else {
+                let mut rbuf = ryu::Buffer::new();
+                let s = rbuf.format(*f);
+                let s_bytes = s.as_bytes();
+                float_cache.insert(bits, s_bytes);
+                write_symbol(s_bytes, pdp, ez, symbol_cache)?;
+            }
         }
 
         MettaValueInner::String(s) => {
@@ -605,7 +732,36 @@ fn write_metta_value_debruijn_inner(
             ez.write_arity(items.len() as u8);
             ez.loc += 1;
             for item in *items {
-                write_metta_value_debruijn_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+                // Ground fragment cache for De Bruijn encoding (ground = no variables = same bytes)
+                if !item.has_variables_fast() {
+                    let key = item.inner_ptr() as usize;
+                    if let Some(frag) = ground_cache.get(&key) {
+                        let frag_len = frag.len();
+                        if ez.loc + frag_len <= MAX_MORK_BUFFER {
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    frag.as_ptr(),
+                                    ez.root.ptr.add(ez.loc),
+                                    frag_len,
+                                );
+                            }
+                            ez.loc += frag_len;
+                            continue;
+                        }
+                    }
+                    let start_loc = ez.loc;
+                    write_metta_value_debruijn_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    let end_loc = ez.loc;
+                    let frag_len = end_loc - start_loc;
+                    if frag_len > 0 && frag_len <= 256 {
+                        let frag = unsafe {
+                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
+                        }.to_vec();
+                        ground_cache.insert(key, frag);
+                    }
+                } else {
+                    write_metta_value_debruijn_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                }
             }
         }
 
@@ -618,19 +774,18 @@ fn write_metta_value_debruijn_inner(
             scratch.extend_from_slice(msg.as_bytes());
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez, symbol_cache)?;
-            write_metta_value_debruijn_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_debruijn_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
 
         MettaValueInner::Type(t) => {
-            write_metta_value_debruijn_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_debruijn_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
 
         MettaValueInner::Quoted(inner) => {
-            // Write as (quote inner) for MORK compatibility
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"quote", pdp, ez, symbol_cache)?;
-            write_metta_value_debruijn_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_debruijn_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
 
         MettaValueInner::Conjunction(goals) => {
@@ -645,7 +800,35 @@ fn write_metta_value_debruijn_inner(
             ez.loc += 1;
             write_symbol(b",", pdp, ez, symbol_cache)?;
             for goal in *goals {
-                write_metta_value_debruijn_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+                if !goal.has_variables_fast() {
+                    let key = goal.inner_ptr() as usize;
+                    if let Some(frag) = ground_cache.get(&key) {
+                        let frag_len = frag.len();
+                        if ez.loc + frag_len <= MAX_MORK_BUFFER {
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    frag.as_ptr(),
+                                    ez.root.ptr.add(ez.loc),
+                                    frag_len,
+                                );
+                            }
+                            ez.loc += frag_len;
+                            continue;
+                        }
+                    }
+                    let start_loc = ez.loc;
+                    write_metta_value_debruijn_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    let end_loc = ez.loc;
+                    let frag_len = end_loc - start_loc;
+                    if frag_len > 0 && frag_len <= 256 {
+                        let frag = unsafe {
+                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
+                        }.to_vec();
+                        ground_cache.insert(key, frag);
+                    }
+                } else {
+                    write_metta_value_debruijn_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                }
             }
         }
 
@@ -685,9 +868,8 @@ fn write_metta_value_debruijn_inner(
             );
         }
 
-        // Spanned: strip span wrapper and serialize the inner value transparently
         MettaValueInner::Spanned(v, _) => {
-            write_metta_value_debruijn_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache)?;
+            write_metta_value_debruijn_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
         }
     }
     Ok(())

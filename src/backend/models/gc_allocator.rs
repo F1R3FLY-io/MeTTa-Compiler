@@ -1176,10 +1176,12 @@ thread_local! {
 // ============================================================================
 
 /// Maximum number of cached pointers per data size class.
-const DATA_CACHE_CAPACITY: usize = 32;
+/// Doubled from 32 to 64 to halve TreiberStack::pop frequency (~3.16% CPU).
+/// Memory: 64 ptrs × 9 size classes × 8 bytes = 4.5 KB per thread.
+const DATA_CACHE_CAPACITY: usize = 64;
 
 /// Number of slots to batch-pop from global TreiberStack when the data cache is empty.
-const DATA_CACHE_REFILL: usize = 16;
+const DATA_CACHE_REFILL: usize = 32;
 
 /// Global generation counter for data pages, incremented when data pages are munmapped.
 /// Data caches compare against this to detect stale pointers.
@@ -2993,6 +2995,13 @@ pub fn maybe_quiescent_gc() -> bool {
 ///
 /// Returns `true` if a GC response was processed.
 pub fn maybe_process_gc_response() -> bool {
+    // Fast exit: if no GC cycle is in-flight AND no GC requested, skip all
+    // expensive atomics (bump_gc_reachable, OnceLock check, CAS guard).
+    // Relaxed ordering: false negatives are harmless — caught next call.
+    if !GC_CYCLE_IN_FLIGHT.load(Ordering::Relaxed) && !GC_REQUESTED.load(Ordering::Relaxed) {
+        return false;
+    }
+
     // Signal that the GC lifecycle is reachable (for cron backpressure gating)
     bump_gc_reachable();
 

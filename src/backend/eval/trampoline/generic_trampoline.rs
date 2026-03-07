@@ -64,9 +64,10 @@ fn is_debug_eval() -> bool {
 // module for icache locality. Re-import the functions used in this file.
 use super::dispatch_hints::{
     invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form,
+    is_normal_form_bounded,
     derive_arg_expected_type,
     should_memoize, eval_memo_get, eval_memo_put,
-    collect_eval_memo_roots,
+    collect_eval_memo_roots, collect_match_result_roots,
 };
 
 // =============================================================================
@@ -178,6 +179,16 @@ fn release_budget(n: u32) {
 ///
 /// `matches` must be non-empty. The caller must handle the empty-matches case
 /// before calling this function.
+/// Check if a value is already in normal form (no further evaluation possible).
+///
+/// A value is in normal form if:
+/// 1. It has no variables (ground)
+/// 2. It's not an S-expression whose head has user-defined rules
+/// 3. It's not a special form (if, let, case, etc.)
+///
+/// This avoids pushing an unnecessary Eval work item for values that would
+/// immediately return themselves from the trampoline.
+#[inline]
 fn dispatch_rule_matches<C: EvalContext>(
     mut matches: VecDeque<(C::Value, crate::backend::models::GenericBindings<C::Value>)>,
     base_results: Vec<C::Value>,
@@ -224,13 +235,26 @@ where
             }
         }
 
-        work_stack.push(GenericWorkItem::Eval {
-            value: instantiated_rhs,
-            env,
-            depth: depth + 1,
-            is_tail_call: false,
-            expected_type: None,
-        });
+        // Normal-form short-circuit: skip full trampoline cycle for values
+        // that would immediately return themselves from eval_step_generic.
+        if is_memoized_normal_form(&instantiated_rhs) {
+            work_stack.push(GenericWorkItem::Resume {
+                result: (vec![instantiated_rhs], env),
+            });
+        } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
+            memoize_normal_form(&instantiated_rhs);
+            work_stack.push(GenericWorkItem::Resume {
+                result: (vec![instantiated_rhs], env),
+            });
+        } else {
+            work_stack.push(GenericWorkItem::Eval {
+                value: instantiated_rhs,
+                env,
+                depth: depth + 1,
+                is_tail_call: false,
+                expected_type: None,
+            });
+        }
         return;
     }
 
@@ -394,13 +418,26 @@ where
             }
         }
 
-        work_stack.push(GenericWorkItem::Eval {
-            value: instantiated_rhs,
-            env,
-            depth,
-            is_tail_call: true,
-            expected_type: None,
-        });
+        // Normal-form short-circuit: skip full trampoline cycle for values
+        // that would immediately return themselves from eval_step_generic.
+        if is_memoized_normal_form(&instantiated_rhs) {
+            work_stack.push(GenericWorkItem::Resume {
+                result: (vec![instantiated_rhs], env),
+            });
+        } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
+            memoize_normal_form(&instantiated_rhs);
+            work_stack.push(GenericWorkItem::Resume {
+                result: (vec![instantiated_rhs], env),
+            });
+        } else {
+            work_stack.push(GenericWorkItem::Eval {
+                value: instantiated_rhs,
+                env,
+                depth,
+                is_tail_call: true,
+                expected_type: None,
+            });
+        }
     }
 }
 
@@ -728,12 +765,14 @@ where
                 let concrete_roots: &mut Vec<crate::backend::models::MettaValue> =
                     unsafe { &mut *(&mut roots as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 collect_eval_memo_roots(concrete_roots);
+                collect_match_result_roots(concrete_roots);
             }
 
-            // Clear thread-local MORK serialization cache before GC runs.
+            // Clear thread-local MORK serialization caches before GC runs.
             // After GC, slab slots may be reused (ABA), so cached pointer keys
             // would alias different values. Clear BEFORE perform_safepoint.
             crate::backend::environment::rule_management::clear_mork_bytes_cache();
+            crate::backend::mork_convert::clear_ground_fragment_cache();
 
             // Clear value hash cache — pointer-keyed, same ABA concern.
             crate::backend::models::metta_value::clear_value_hash_cache();
@@ -2324,13 +2363,26 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 }
 
-                work_stack.push(GenericWorkItem::Eval {
-                    value: instantiated_rhs,
-                    env,
-                    depth,
-                    is_tail_call: true,
-                    expected_type: None,
-                });
+                // Normal-form short-circuit: skip full trampoline cycle for values
+                // that would immediately return themselves from eval_step_generic.
+                if is_memoized_normal_form(&instantiated_rhs) {
+                    work_stack.push(GenericWorkItem::Resume {
+                        result: (vec![instantiated_rhs], env),
+                    });
+                } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
+                    memoize_normal_form(&instantiated_rhs);
+                    work_stack.push(GenericWorkItem::Resume {
+                        result: (vec![instantiated_rhs], env),
+                    });
+                } else {
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: instantiated_rhs,
+                        env,
+                        depth,
+                        is_tail_call: true,
+                        expected_type: None,
+                    });
+                }
             }
         }
 

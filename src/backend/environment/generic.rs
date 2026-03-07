@@ -1883,9 +1883,10 @@ where
             }
         }
 
-        // Invalidate eval memo caches — removed rules/facts change evaluation results
+        // Invalidate eval memo and match result caches — removed rules/facts change evaluation results
         crate::backend::eval::trampoline::invalidate_normal_form_memo();
         crate::backend::eval::trampoline::clear_eval_memo();
+        crate::backend::eval::trampoline::clear_match_result_cache();
     }
 
     // ========================================================================
@@ -2106,9 +2107,10 @@ where
             }
         }
 
-        // Invalidate eval memo caches — removed rules/facts change evaluation results
+        // Invalidate eval memo and match result caches — removed rules/facts change evaluation results
         crate::backend::eval::trampoline::invalidate_normal_form_memo();
         crate::backend::eval::trampoline::clear_eval_memo();
+        crate::backend::eval::trampoline::clear_match_result_cache();
 
         // Mark as modified for union() fast-path detection
         self.mark_modified();

@@ -19,6 +19,7 @@
 //! on every serialization call. Backward-compatible wrappers are provided for callers
 //! that need owned `Vec<u8>`.
 
+use super::hash_utils::FxBuildHasher;
 use super::models::gc_allocator::global_allocator;
 use super::models::{Bindings, MettaValue, MettaValueInner, MettaValueTrait};
 use mork::space::{ParDataParser, Space};
@@ -27,7 +28,6 @@ use mork_frontend::bytestring_parser::Parser;
 use mork_interning::SharedMappingHandle;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::hash::BuildHasher;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, trace, warn};
@@ -70,20 +70,6 @@ thread_local! {
     static CONVERT_STATE: RefCell<ConvertState> = RefCell::new(ConvertState::new());
 }
 
-/// xxh3-based BuildHasher for the symbol cache.
-///
-/// Uses xxh3 (SIMD-accelerated) for consistent hashing with the rest of the codebase.
-struct Xxh3BuildHasher;
-
-impl BuildHasher for Xxh3BuildHasher {
-    type Hasher = xxhash_rust::xxh3::Xxh3;
-
-    #[inline]
-    fn build_hasher(&self) -> Self::Hasher {
-        xxhash_rust::xxh3::Xxh3::with_seed(0x6D6F726B) // seed = "mork"
-    }
-}
-
 /// Cached MORK symbol ID with its actual length.
 ///
 /// Stores up to 8 bytes of the interned symbol ID returned by MORK's `tokenizer()`.
@@ -117,7 +103,7 @@ struct ConvertState {
     ///
     /// The cache grows monotonically but is bounded by the number of unique symbols
     /// (~50-200 for typical programs). Uses xxh3 hasher for fast key hashing.
-    symbol_cache: HashMap<Vec<u8>, CachedSymbolId, Xxh3BuildHasher>,
+    symbol_cache: HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
     /// Monotonic epoch of the environment that the symbol_cache is scoped to.
     /// When the caller uses a different epoch, the cache is cleared.
     /// Epochs are never reused, eliminating the ABA pointer reuse problem.
@@ -130,7 +116,7 @@ impl ConvertState {
             buffer: vec![0u8; MAX_MORK_BUFFER],
             scratch: Vec::with_capacity(256),
             context: ConversionContext::new(),
-            symbol_cache: HashMap::with_hasher(Xxh3BuildHasher),
+            symbol_cache: HashMap::with_hasher(FxBuildHasher),
             symbol_cache_epoch: 0,
         }
     }
@@ -331,7 +317,7 @@ fn write_metta_value_inner(
     ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
-    symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, Xxh3BuildHasher>,
+    symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
 ) -> Result<(), String> {
     // Pre-bounds-check: detect buffer overrun before any write.
     // ExprZipper writes may advance loc past MAX_MORK_BUFFER in deeply nested
@@ -522,7 +508,7 @@ fn write_metta_value_debruijn_inner(
     ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
-    symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, Xxh3BuildHasher>,
+    symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
 ) -> Result<(), String> {
     // Pre-bounds-check: detect buffer overrun before any write.
     if ez.loc >= MAX_MORK_BUFFER {
@@ -725,7 +711,7 @@ fn write_symbol(
     bytes: &[u8],
     pdp: &mut ParDataParser,
     ez: &mut ExprZipper,
-    symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, Xxh3BuildHasher>,
+    symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
 ) -> Result<(), String> {
     if let Some(&cached) = symbol_cache.get(bytes) {
         // Cache hit: write cached symbol ID directly (zero MORK interaction)

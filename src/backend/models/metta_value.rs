@@ -16,17 +16,160 @@
 //! All references within MettaValue are `'static`, tied to the global slab allocator.
 //! Values live for the program duration and are reclaimed by the GC when no longer reachable.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::backend::hash_utils::PtrBuildHasher;
 use crate::ir::Span;
 
 use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::{MemoHandle, SpaceHandle};
 
 use self::serialize_tags::*;
+
+// ============================================================================
+// Thread-local hash cache for MettaValue content hashing
+// ============================================================================
+
+/// Golden ratio constant for combining child hashes in SExpr.
+const HASH_GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+
+thread_local! {
+    /// Cache mapping `MettaValueInner` slab pointer → precomputed u64 content hash.
+    ///
+    /// Slab pointers are stable (never moved) until GC frees them. This cache
+    /// eliminates O(tree_size) recursive hashing for deeply nested S-expressions
+    /// (PLN Robot has depth 252). After the first hash, subsequent lookups are O(1).
+    ///
+    /// Uses `PtrBuildHasher` (Fibonacci hashing) since keys are slab pointers.
+    /// Invalidated at GC safepoints via `clear_value_hash_cache()` to prevent
+    /// ABA issues when freed slots are reused.
+    static VALUE_HASH_CACHE: RefCell<HashMap<usize, u64, PtrBuildHasher>> =
+        RefCell::new(HashMap::with_hasher(PtrBuildHasher));
+}
+
+/// Clear the thread-local hash value cache.
+///
+/// Must be called at GC safepoints before slab slots can be reused, to prevent
+/// stale cached hashes from being returned for new values at recycled addresses.
+pub fn clear_value_hash_cache() {
+    VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+/// Recursive helper: compute hash for a `MettaValue`, using `cache` for memoization.
+///
+/// For `SExpr`, children hashes are fetched from the cache (if available) and combined
+/// with golden-ratio mixing, avoiding full Xxh3 tree traversal. This turns O(tree_size)
+/// per call into O(arity) for cached children, and O(1) for fully-cached values.
+fn hash_value_cached_inner(value: &MettaValue, cache: &mut HashMap<usize, u64, PtrBuildHasher>) -> u64 {
+    // Golden ratio constants for primitive fast paths
+    const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+    const LONG_SEED: u64 = 0x517cc1b727220a95;
+    const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
+    const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
+    const UNIT_HASH: u64 = 0x756e6974_68617368;
+
+    // Primitives: compute directly (no cache needed, O(1))
+    match value.inner_ref() {
+        MettaValueInner::Unit => return UNIT_HASH,
+        MettaValueInner::Bool(b) => {
+            return if *b { BOOL_SEED.wrapping_mul(GOLDEN_RATIO) } else { BOOL_SEED };
+        }
+        MettaValueInner::Long(n) => {
+            let x = (*n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            return x ^ (x >> 32);
+        }
+        MettaValueInner::Float(f) => {
+            let bits = f.to_bits();
+            let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
+            return x ^ (x >> 32);
+        }
+        MettaValueInner::Empty => return 9u64.wrapping_mul(GOLDEN_RATIO),
+        _ => {}
+    }
+
+    // Cache lookup by slab pointer
+    let key = value.inner_ptr() as usize;
+    if let Some(&h) = cache.get(&key) {
+        return h;
+    }
+
+    // Cache miss: compute hash
+    let h = match value.inner_ref() {
+        MettaValueInner::Atom(s) => {
+            let mut hasher = Xxh3::new();
+            6u8.hash(&mut hasher);
+            s.hash(&mut hasher);
+            hasher.finish()
+        }
+        MettaValueInner::String(s) => {
+            let mut hasher = Xxh3::new();
+            5u8.hash(&mut hasher);
+            s.hash(&mut hasher);
+            hasher.finish()
+        }
+        MettaValueInner::SExpr(items) => {
+            // Combine children hashes using Boost-style hash_combine.
+            // Non-commutative, non-self-cancelling (unlike multiply-XOR which
+            // self-cancels for recursive structures like (S (S Z))).
+            // O(arity) when children are cached.
+            let mut combined: u64 = 7u64 ^ items.len() as u64;
+            for item in items.iter() {
+                let child_hash = hash_value_cached_inner(item, cache);
+                combined ^= child_hash
+                    .wrapping_add(HASH_GOLDEN_RATIO)
+                    .wrapping_add(combined << 6)
+                    .wrapping_add(combined >> 2);
+            }
+            combined
+        }
+        MettaValueInner::Quoted(inner) => {
+            let inner_hash = hash_value_cached_inner(inner, cache);
+            let mut combined = 10u64;
+            combined ^= inner_hash
+                .wrapping_add(HASH_GOLDEN_RATIO)
+                .wrapping_add(combined << 6)
+                .wrapping_add(combined >> 2);
+            combined
+        }
+        MettaValueInner::Spanned(inner, _span) => {
+            return hash_value_cached_inner(inner, cache);
+        }
+        MettaValueInner::Error(..) => 8u64.wrapping_mul(HASH_GOLDEN_RATIO),
+        // Type, Conjunction, Space, State, Memo — rare, use Xxh3 slow path
+        other => {
+            let mut hasher = Xxh3::new();
+            hash_value_for_trait_inner(other, &mut hasher);
+            hasher.finish()
+        }
+    };
+
+    cache.insert(key, h);
+    h
+}
+
+/// Low-level Xxh3 hasher for rare MettaValueInner variants (Type, Conjunction, etc.).
+/// Only called on cache miss for non-primitive, non-SExpr values.
+fn hash_value_for_trait_inner<H: Hasher>(inner: &MettaValueInner, hasher: &mut H) {
+    match inner {
+        MettaValueInner::Unit => 0u8.hash(hasher),
+        MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
+        MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
+        MettaValueInner::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
+        MettaValueInner::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
+        MettaValueInner::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
+        MettaValueInner::SExpr(_) => { 7u8.hash(hasher); } // children not traversed here
+        MettaValueInner::Error(..) => 8u8.hash(hasher),
+        MettaValueInner::Empty => 9u8.hash(hasher),
+        MettaValueInner::Quoted(_) => 10u8.hash(hasher),
+        MettaValueInner::Spanned(_, _) => 11u8.hash(hasher),
+        _ => 10u8.hash(hasher), // Type, Conjunction, Space, State, Memo
+    }
+}
 
 /// Arena-allocated MeTTa value with O(1) clone (just copies the pointer).
 ///
@@ -1589,32 +1732,10 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn hash_value(&self) -> u64 {
-        // Golden ratio constant for good hash distribution
-        const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
-        const LONG_SEED: u64 = 0x517cc1b727220a95;
-        const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
-        const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
-        const UNIT_HASH: u64 = 0x756e6974_68617368;
-
-        // Fast path for primitives
-        if self.is_unit() { return UNIT_HASH; }
-        if let Some(b) = self.as_bool() {
-            return if b { BOOL_SEED.wrapping_mul(GOLDEN_RATIO) } else { BOOL_SEED };
-        }
-        if let Some(n) = self.as_long() {
-            let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
-            return x ^ (x >> 32);
-        }
-        if let Some(f) = self.as_float() {
-            let bits = f.to_bits();
-            let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
-            return x ^ (x >> 32);
-        }
-
-        // Slow path - use xxHash3 for complex types
-        let mut hasher = Xxh3::new();
-        hash_value_for_trait(self, &mut hasher);
-        hasher.finish()
+        VALUE_HASH_CACHE.with(|cache_cell| {
+            let mut cache = cache_cell.borrow_mut();
+            hash_value_cached_inner(self, &mut cache)
+        })
     }
 
     fn friendly_repr(&self) -> std::string::String {
@@ -1893,33 +2014,8 @@ pub(crate) fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::S
     Err("unexpected end of varint".to_string())
 }
 
-/// Recursively hash an MettaValue using trait-based accessors.
-///
-/// Used by `MettaValue::hash_value()` for complex types (strings, atoms, s-expressions).
-fn hash_value_for_trait<H: Hasher>(value: &MettaValue, hasher: &mut H) {
-    match value.inner_ref() {
-        MettaValueInner::Unit => 0u8.hash(hasher),
-        MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
-        MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
-        MettaValueInner::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
-        MettaValueInner::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
-        MettaValueInner::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
-        MettaValueInner::SExpr(items) => {
-            7u8.hash(hasher);
-            items.len().hash(hasher);
-            for item in items.iter() { hash_value_for_trait(item, hasher); }
-        }
-        MettaValueInner::Error(..) => 8u8.hash(hasher),
-        MettaValueInner::Empty => 9u8.hash(hasher),
-        MettaValueInner::Quoted(inner) => {
-            10u8.hash(hasher);
-            "quote".hash(hasher);
-            hash_value_for_trait(inner, hasher);
-        }
-        MettaValueInner::Spanned(inner, _span) => hash_value_for_trait(inner, hasher),
-        _ => 10u8.hash(hasher), // Type, Conjunction, Space, State, Memo
-    }
-}
+// hash_value_for_trait removed — replaced by hash_value_cached_inner + hash_value_for_trait_inner
+// which use pointer-keyed thread-local caching + Boost hash_combine for O(1) amortized hashing.
 
 /// Serialize an MettaValue to bytes
 fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {

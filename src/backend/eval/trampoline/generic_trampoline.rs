@@ -735,6 +735,9 @@ where
             // would alias different values. Clear BEFORE perform_safepoint.
             crate::backend::environment::rule_management::clear_mork_bytes_cache();
 
+            // Clear value hash cache — pointer-keyed, same ABA concern.
+            crate::backend::models::metta_value::clear_value_hash_cache();
+
             // Clear normal-form bloom filter before GC runs.
             // After GC, slab slots may be reused (ABA), so stale bloom entries
             // keyed by inner_ptr would falsely report new values at the same

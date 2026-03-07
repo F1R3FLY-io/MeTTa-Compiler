@@ -56,6 +56,7 @@ fn check_gc_epoch() -> bool {
             EVAL_MEMO.with(|memo_cell| memo_cell.borrow_mut().clear());
             invalidate_normal_form_memo();
             crate::backend::environment::rule_management::clear_mork_bytes_cache();
+            crate::backend::models::metta_value::clear_value_hash_cache();
             true
         } else {
             false

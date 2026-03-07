@@ -4214,7 +4214,7 @@ where
     }
 
     /// Get memo cache statistics (for testing).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "track-stats"))]
     pub fn memo_cache_stats(&self) -> super::generic_memo_cache::GenericCacheStats {
         self.memo_cache.stats()
     }

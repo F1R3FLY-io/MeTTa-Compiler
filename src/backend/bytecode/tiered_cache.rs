@@ -38,6 +38,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use dashmap::DashMap;
 
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::{MettaValue, MettaValueInner};
 use crate::backend::environment::generic::MettaEnvironment;
 use crate::backend::models::work_pool::global_compile_pool;
@@ -630,7 +631,7 @@ pub enum ExecutionTier {
 /// Uses DashMap for lock-free concurrent access.
 pub struct TieredCache {
     /// Map from expression hash to compilation state
-    pub(crate) entries: DashMap<u64, Arc<ExprCompilationState>>,
+    pub(crate) entries: DashMap<u64, Arc<ExprCompilationState>, IdentityU64BuildHasher>,
 
     /// Threshold for bytecode compilation
     pub bytecode_threshold: u32,
@@ -642,21 +643,55 @@ pub struct TieredCache {
     pub jit2_threshold: u32,
 
     // Atomic statistics counters (lock-free to avoid contention at 4+ threads)
+    // Gated behind track-stats feature — zero overhead when disabled.
+    #[cfg(feature = "track-stats")]
     expressions_tracked: AtomicU64,
+    #[cfg(feature = "track-stats")]
     pub(crate) total_executions: AtomicU64,
+    #[cfg(feature = "track-stats")]
     bytecode_compilations_triggered: AtomicU64,
+    #[cfg(feature = "track-stats")]
     bytecode_compilations_completed: AtomicU64,
+    #[cfg(feature = "track-stats")]
     bytecode_compilations_failed: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit1_compilations_triggered: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit1_compilations_completed: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit1_compilations_failed: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit2_compilations_triggered: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit2_compilations_completed: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit2_compilations_failed: AtomicU64,
+    #[cfg(feature = "track-stats")]
     interpreter_executions: AtomicU64,
+    #[cfg(feature = "track-stats")]
     bytecode_executions: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit1_executions: AtomicU64,
+    #[cfg(feature = "track-stats")]
     jit2_executions: AtomicU64,
+
+    // JIT failure reason breakdown counters
+    #[cfg(feature = "track-stats")]
+    jit1_failures_nondeterminism: AtomicU64,
+    #[cfg(feature = "track-stats")]
+    jit1_failures_unsupported_opcode: AtomicU64,
+    #[cfg(feature = "track-stats")]
+    jit1_failures_compiler_init: AtomicU64,
+    #[cfg(feature = "track-stats")]
+    jit1_failures_codegen: AtomicU64,
+    #[cfg(feature = "track-stats")]
+    jit2_failures_nondeterminism: AtomicU64,
+    #[cfg(feature = "track-stats")]
+    jit2_failures_unsupported_opcode: AtomicU64,
+    #[cfg(feature = "track-stats")]
+    jit2_failures_compiler_init: AtomicU64,
+    #[cfg(feature = "track-stats")]
+    jit2_failures_codegen: AtomicU64,
 }
 
 /// Statistics for the tiered compilation cache
@@ -706,6 +741,46 @@ pub struct TieredCacheStats {
 
     /// Executions at JIT Stage 2 tier
     pub jit2_executions: u64,
+
+    // JIT failure reason breakdown
+    /// JIT Stage 1 failures due to nondeterminism in bytecode chunk
+    pub jit1_failures_nondeterminism: u64,
+    /// JIT Stage 1 failures due to unsupported opcodes
+    pub jit1_failures_unsupported_opcode: u64,
+    /// JIT Stage 1 failures due to compiler initialization error
+    pub jit1_failures_compiler_init: u64,
+    /// JIT Stage 1 failures due to code generation error
+    pub jit1_failures_codegen: u64,
+    /// JIT Stage 2 failures due to nondeterminism in bytecode chunk
+    pub jit2_failures_nondeterminism: u64,
+    /// JIT Stage 2 failures due to unsupported opcodes
+    pub jit2_failures_unsupported_opcode: u64,
+    /// JIT Stage 2 failures due to compiler initialization error
+    pub jit2_failures_compiler_init: u64,
+    /// JIT Stage 2 failures due to code generation error
+    pub jit2_failures_codegen: u64,
+}
+
+/// Per-expression stats snapshot for diagnostics display.
+/// Zero-cost at runtime — reads from existing DashMap entries at print time only.
+#[derive(Debug, Clone)]
+pub struct PerExpressionStats {
+    pub expr_hash: u64,
+    pub execution_count: u32,
+    pub bytecode_status: TierStatusKind,
+    pub jit1_status: TierStatusKind,
+    pub jit2_status: TierStatusKind,
+}
+
+impl std::fmt::Display for TierStatusKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TierStatusKind::NotStarted => write!(f, "NotStarted"),
+            TierStatusKind::Compiling => write!(f, "Compiling"),
+            TierStatusKind::Ready => write!(f, "Ready"),
+            TierStatusKind::Failed => write!(f, "Failed"),
+        }
+    }
 }
 
 impl TieredCache {
@@ -716,50 +791,112 @@ impl TieredCache {
     /// compilation thresholds.
     pub fn new() -> Self {
         Self {
-            entries: DashMap::new(),
+            entries: DashMap::with_hasher(IdentityU64BuildHasher),
             bytecode_threshold: BYTECODE_THRESHOLD,
             jit1_threshold: JIT1_THRESHOLD,
             jit2_threshold: JIT2_THRESHOLD,
+            #[cfg(feature = "track-stats")]
             expressions_tracked: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             total_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_compilations_triggered: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_compilations_completed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_compilations_failed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_compilations_triggered: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_compilations_completed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_compilations_failed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_compilations_triggered: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_compilations_completed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_compilations_failed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             interpreter_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_nondeterminism: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_unsupported_opcode: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_compiler_init: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_codegen: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_nondeterminism: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_unsupported_opcode: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_compiler_init: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_codegen: AtomicU64::new(0),
         }
     }
 
     /// Create a new cache with custom thresholds
     pub fn with_thresholds(bytecode: u32, jit1: u32, jit2: u32) -> Self {
         Self {
-            entries: DashMap::new(),
+            entries: DashMap::with_hasher(IdentityU64BuildHasher),
             bytecode_threshold: bytecode,
             jit1_threshold: jit1,
             jit2_threshold: jit2,
+            #[cfg(feature = "track-stats")]
             expressions_tracked: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             total_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_compilations_triggered: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_compilations_completed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_compilations_failed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_compilations_triggered: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_compilations_completed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_compilations_failed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_compilations_triggered: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_compilations_completed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_compilations_failed: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             interpreter_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             bytecode_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit1_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             jit2_executions: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_nondeterminism: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_unsupported_opcode: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_compiler_init: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit1_failures_codegen: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_nondeterminism: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_unsupported_opcode: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_compiler_init: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
+            jit2_failures_codegen: AtomicU64::new(0),
         }
     }
 
@@ -776,6 +913,7 @@ impl TieredCache {
         let state = Arc::new(ExprCompilationState::new(hash));
         self.entries.entry(hash).or_insert_with(|| {
             // Update stats atomically (lock-free)
+            #[cfg(feature = "track-stats")]
             self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
             Arc::clone(&state)
         });
@@ -802,6 +940,7 @@ impl TieredCache {
         let count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
 
         // Update total execution stats
+        #[cfg(feature = "track-stats")]
         self.total_executions.fetch_add(1, Ordering::Relaxed);
 
         // Check for tier transitions
@@ -843,6 +982,7 @@ impl TieredCache {
         }
 
         // Update stats atomically (lock-free)
+        #[cfg(feature = "track-stats")]
         self.bytecode_compilations_triggered
             .fetch_add(1, Ordering::Relaxed);
 
@@ -854,12 +994,14 @@ impl TieredCache {
         let compile_task = move || match compile_arc("tiered", &expr_clone) {
             Ok(chunk) => {
                 state_clone.set_bytecode_ready(chunk);
+                #[cfg(feature = "track-stats")]
                 global_tiered_cache()
                     .bytecode_compilations_completed
                     .fetch_add(1, Ordering::Relaxed);
             }
             Err(_) => {
                 state_clone.set_bytecode_failed();
+                #[cfg(feature = "track-stats")]
                 global_tiered_cache()
                     .bytecode_compilations_failed
                     .fetch_add(1, Ordering::Relaxed);
@@ -876,6 +1018,7 @@ impl TieredCache {
             // Task dropped due to backpressure — revert state so future
             // executions can re-trigger compilation
             state.revert_bytecode_to_not_started();
+            #[cfg(feature = "track-stats")]
             self.bytecode_compilations_triggered
                 .fetch_sub(1, Ordering::Relaxed);
         }
@@ -904,6 +1047,7 @@ impl TieredCache {
         }
 
         // Update stats atomically (lock-free)
+        #[cfg(feature = "track-stats")]
         self.jit1_compilations_triggered
             .fetch_add(1, Ordering::Relaxed);
 
@@ -912,6 +1056,7 @@ impl TieredCache {
             Some(c) => c,
             None => {
                 state.set_jit1_failed();
+                #[cfg(feature = "track-stats")]
                 global_tiered_cache()
                     .jit1_compilations_failed
                     .fetch_add(1, Ordering::Relaxed);
@@ -932,21 +1077,40 @@ impl TieredCache {
 
         // JIT compilation closure
         let jit_compile = move || {
-            // JIT compilation using Cranelift
-            // Check if chunk can be JIT compiled
-            if !JitCompiler::can_compile_stage1(&chunk) {
+            // Split nondeterminism check from opcode check for failure reason tracking
+            if chunk.has_nondeterminism() {
                 if is_jit_debug() {
                     eprintln!(
-                        "[JIT1] Rejected: chunk '{}' has_nondeterminism={} len={}",
+                        "[JIT1] Rejected (nondeterminism): chunk '{}' len={}",
                         chunk.name(),
-                        chunk.has_nondeterminism(),
                         chunk.len()
                     );
                 }
                 state_clone.set_jit1_failed();
-                global_tiered_cache()
-                    .jit1_compilations_failed
-                    .fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "track-stats")]
+                {
+                    let cache = global_tiered_cache();
+                    cache.jit1_failures_nondeterminism.fetch_add(1, Ordering::Relaxed);
+                    cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                return;
+            }
+
+            if !JitCompiler::can_compile_stage1(&chunk) {
+                if is_jit_debug() {
+                    eprintln!(
+                        "[JIT1] Rejected (unsupported opcode): chunk '{}' len={}",
+                        chunk.name(),
+                        chunk.len()
+                    );
+                }
+                state_clone.set_jit1_failed();
+                #[cfg(feature = "track-stats")]
+                {
+                    let cache = global_tiered_cache();
+                    cache.jit1_failures_unsupported_opcode.fetch_add(1, Ordering::Relaxed);
+                    cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                }
                 return;
             }
 
@@ -964,6 +1128,7 @@ impl TieredCache {
                             code_size: chunk.len() * 8, // Rough estimate
                         };
                         state_clone.set_jit1_ready(Arc::new(code));
+                        #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .jit1_compilations_completed
                             .fetch_add(1, Ordering::Relaxed);
@@ -973,9 +1138,12 @@ impl TieredCache {
                             eprintln!("[JIT1] Compile failed for '{}': {:?}", chunk.name(), e);
                         }
                         state_clone.set_jit1_failed();
-                        global_tiered_cache()
-                            .jit1_compilations_failed
-                            .fetch_add(1, Ordering::Relaxed);
+                        #[cfg(feature = "track-stats")]
+                        {
+                            let cache = global_tiered_cache();
+                            cache.jit1_failures_codegen.fetch_add(1, Ordering::Relaxed);
+                            cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 },
                 Err(e) => {
@@ -983,9 +1151,12 @@ impl TieredCache {
                         eprintln!("[JIT1] Compiler init failed: {:?}", e);
                     }
                     state_clone.set_jit1_failed();
-                    global_tiered_cache()
-                        .jit1_compilations_failed
-                        .fetch_add(1, Ordering::Relaxed);
+                    #[cfg(feature = "track-stats")]
+                    {
+                        let cache = global_tiered_cache();
+                        cache.jit1_failures_compiler_init.fetch_add(1, Ordering::Relaxed);
+                        cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         };
@@ -999,6 +1170,7 @@ impl TieredCache {
         );
         if !enqueued {
             state.revert_jit1_to_not_started();
+            #[cfg(feature = "track-stats")]
             self.jit1_compilations_triggered
                 .fetch_sub(1, Ordering::Relaxed);
         }
@@ -1039,6 +1211,7 @@ impl TieredCache {
         }
 
         // Update stats atomically (lock-free)
+        #[cfg(feature = "track-stats")]
         self.jit2_compilations_triggered
             .fetch_add(1, Ordering::Relaxed);
 
@@ -1047,6 +1220,7 @@ impl TieredCache {
             Some(c) => c,
             None => {
                 state.set_jit2_failed();
+                #[cfg(feature = "track-stats")]
                 global_tiered_cache()
                     .jit2_compilations_failed
                     .fetch_add(1, Ordering::Relaxed);
@@ -1073,21 +1247,40 @@ impl TieredCache {
             // - Rule inlining for high-frequency rules
             let _profile = profile_snapshot;
 
-            // Check if chunk can be JIT compiled
-            // Stage 2 uses same compilability check as Stage 1 for now
-            if !JitCompiler::can_compile_stage1(&chunk) {
+            // Split nondeterminism check from opcode check for failure reason tracking
+            if chunk.has_nondeterminism() {
                 if is_jit_debug() {
                     eprintln!(
-                        "[JIT2] Rejected: chunk '{}' has_nondeterminism={} len={}",
+                        "[JIT2] Rejected (nondeterminism): chunk '{}' len={}",
                         chunk.name(),
-                        chunk.has_nondeterminism(),
                         chunk.len()
                     );
                 }
                 state_clone.set_jit2_failed();
-                global_tiered_cache()
-                    .jit2_compilations_failed
-                    .fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "track-stats")]
+                {
+                    let cache = global_tiered_cache();
+                    cache.jit2_failures_nondeterminism.fetch_add(1, Ordering::Relaxed);
+                    cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                return;
+            }
+
+            if !JitCompiler::can_compile_stage1(&chunk) {
+                if is_jit_debug() {
+                    eprintln!(
+                        "[JIT2] Rejected (unsupported opcode): chunk '{}' len={}",
+                        chunk.name(),
+                        chunk.len()
+                    );
+                }
+                state_clone.set_jit2_failed();
+                #[cfg(feature = "track-stats")]
+                {
+                    let cache = global_tiered_cache();
+                    cache.jit2_failures_unsupported_opcode.fetch_add(1, Ordering::Relaxed);
+                    cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                }
                 return;
             }
 
@@ -1101,6 +1294,7 @@ impl TieredCache {
                             code_size: chunk.len() * 10, // Stage 2 generates more code
                         };
                         state_clone.set_jit2_ready(Arc::new(code));
+                        #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .jit2_compilations_completed
                             .fetch_add(1, Ordering::Relaxed);
@@ -1110,9 +1304,12 @@ impl TieredCache {
                             eprintln!("[JIT2] Compile failed for '{}': {:?}", chunk.name(), e);
                         }
                         state_clone.set_jit2_failed();
-                        global_tiered_cache()
-                            .jit2_compilations_failed
-                            .fetch_add(1, Ordering::Relaxed);
+                        #[cfg(feature = "track-stats")]
+                        {
+                            let cache = global_tiered_cache();
+                            cache.jit2_failures_codegen.fetch_add(1, Ordering::Relaxed);
+                            cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 },
                 Err(e) => {
@@ -1120,9 +1317,12 @@ impl TieredCache {
                         eprintln!("[JIT2] Compiler init failed: {:?}", e);
                     }
                     state_clone.set_jit2_failed();
-                    global_tiered_cache()
-                        .jit2_compilations_failed
-                        .fetch_add(1, Ordering::Relaxed);
+                    #[cfg(feature = "track-stats")]
+                    {
+                        let cache = global_tiered_cache();
+                        cache.jit2_failures_compiler_init.fetch_add(1, Ordering::Relaxed);
+                        cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         };
@@ -1135,6 +1335,7 @@ impl TieredCache {
         );
         if !enqueued {
             state.revert_jit2_to_not_started();
+            #[cfg(feature = "track-stats")]
             self.jit2_compilations_triggered
                 .fetch_sub(1, Ordering::Relaxed);
         }
@@ -1172,6 +1373,7 @@ impl TieredCache {
     }
 
     /// Get current cache statistics (builds from atomics, lock-free)
+    #[cfg(feature = "track-stats")]
     pub fn stats(&self) -> TieredCacheStats {
         TieredCacheStats {
             expressions_tracked: self.expressions_tracked.load(Ordering::Relaxed),
@@ -1193,10 +1395,39 @@ impl TieredCache {
             bytecode_executions: self.bytecode_executions.load(Ordering::Relaxed),
             jit1_executions: self.jit1_executions.load(Ordering::Relaxed),
             jit2_executions: self.jit2_executions.load(Ordering::Relaxed),
+            jit1_failures_nondeterminism: self.jit1_failures_nondeterminism.load(Ordering::Relaxed),
+            jit1_failures_unsupported_opcode: self.jit1_failures_unsupported_opcode.load(Ordering::Relaxed),
+            jit1_failures_compiler_init: self.jit1_failures_compiler_init.load(Ordering::Relaxed),
+            jit1_failures_codegen: self.jit1_failures_codegen.load(Ordering::Relaxed),
+            jit2_failures_nondeterminism: self.jit2_failures_nondeterminism.load(Ordering::Relaxed),
+            jit2_failures_unsupported_opcode: self.jit2_failures_unsupported_opcode.load(Ordering::Relaxed),
+            jit2_failures_compiler_init: self.jit2_failures_compiler_init.load(Ordering::Relaxed),
+            jit2_failures_codegen: self.jit2_failures_codegen.load(Ordering::Relaxed),
         }
     }
 
+    /// Snapshot per-expression stats for diagnostics (read-only, called only at `--tier-stats` print time).
+    ///
+    /// Iterates the existing `DashMap` entries — no new per-expression tracking overhead.
+    /// Returns entries sorted by execution count descending.
+    #[cfg(feature = "track-stats")]
+    pub fn per_expression_stats(&self) -> Vec<PerExpressionStats> {
+        let mut stats: Vec<PerExpressionStats> = self.entries.iter().map(|entry| {
+            let state = entry.value();
+            PerExpressionStats {
+                expr_hash: state.expr_hash,
+                execution_count: state.execution_count.load(Ordering::Relaxed),
+                bytecode_status: state.bytecode_status(),
+                jit1_status: state.jit1_status(),
+                jit2_status: state.jit2_status(),
+            }
+        }).collect();
+        stats.sort_by(|a, b| b.execution_count.cmp(&a.execution_count));
+        stats
+    }
+
     /// Reset statistics (lock-free via atomic stores)
+    #[cfg(feature = "track-stats")]
     pub fn reset_stats(&self) {
         self.expressions_tracked.store(0, Ordering::Relaxed);
         self.total_executions.store(0, Ordering::Relaxed);
@@ -1216,11 +1447,20 @@ impl TieredCache {
         self.bytecode_executions.store(0, Ordering::Relaxed);
         self.jit1_executions.store(0, Ordering::Relaxed);
         self.jit2_executions.store(0, Ordering::Relaxed);
+        self.jit1_failures_nondeterminism.store(0, Ordering::Relaxed);
+        self.jit1_failures_unsupported_opcode.store(0, Ordering::Relaxed);
+        self.jit1_failures_compiler_init.store(0, Ordering::Relaxed);
+        self.jit1_failures_codegen.store(0, Ordering::Relaxed);
+        self.jit2_failures_nondeterminism.store(0, Ordering::Relaxed);
+        self.jit2_failures_unsupported_opcode.store(0, Ordering::Relaxed);
+        self.jit2_failures_compiler_init.store(0, Ordering::Relaxed);
+        self.jit2_failures_codegen.store(0, Ordering::Relaxed);
     }
 
     /// Clear the entire cache
     pub fn clear(&self) {
         self.entries.clear();
+        #[cfg(feature = "track-stats")]
         self.reset_stats();
     }
 
@@ -1235,6 +1475,7 @@ impl TieredCache {
     }
 
     /// Record an execution at a specific tier (for statistics, lock-free)
+    #[cfg(feature = "track-stats")]
     pub fn record_tier_execution(&self, tier: ExecutionTier) {
         match tier {
             ExecutionTier::Interpreter => {
@@ -1251,6 +1492,7 @@ impl TieredCache {
             }
         }
     }
+
 }
 
 impl Default for TieredCache {
@@ -1264,6 +1506,7 @@ impl Default for TieredCache {
 /// Shared across all evaluations for optimal reuse of compiled code.
 static GLOBAL_TIERED_CACHE: std::sync::LazyLock<TieredCache> =
     std::sync::LazyLock::new(|| {
+        #[cfg(feature = "track-stats")]
         maybe_register_jit_summary();
         TieredCache::new()
     });
@@ -1275,8 +1518,10 @@ pub fn global_tiered_cache() -> &'static TieredCache {
 
 /// Register an atexit hook that prints a JIT summary when `METTATRON_JIT_DEBUG` is set.
 /// Called once on first access to the global tiered cache (idempotent via OnceLock).
+#[cfg(feature = "track-stats")]
 static JIT_SUMMARY_REGISTERED: OnceLock<()> = OnceLock::new();
 
+#[cfg(feature = "track-stats")]
 fn maybe_register_jit_summary() {
     if !is_jit_debug() {
         return;
@@ -1456,6 +1701,7 @@ pub fn try_sub_expr_dispatch(
     if state.jit2_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit2_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                #[cfg(feature = "track-stats")]
                 cache.record_tier_execution(ExecutionTier::JitStage2);
                 return Some((results, new_env));
             }
@@ -1464,6 +1710,7 @@ pub fn try_sub_expr_dispatch(
     if state.jit1_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit1_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                #[cfg(feature = "track-stats")]
                 cache.record_tier_execution(ExecutionTier::JitStage1);
                 return Some((results, new_env));
             }
@@ -1473,6 +1720,7 @@ pub fn try_sub_expr_dispatch(
         if let Some(chunk) = state.bytecode_chunk() {
             match super::execute_arena(chunk, env.clone()) {
                 Ok((results, new_env, unreduced)) if !unreduced => {
+                    #[cfg(feature = "track-stats")]
                     cache.record_tier_execution(ExecutionTier::Bytecode);
                     return Some((results, new_env));
                 }
@@ -1507,6 +1755,7 @@ pub fn try_sub_expr_dispatch_with_hash(
     if state.jit2_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit2_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                #[cfg(feature = "track-stats")]
                 cache.record_tier_execution(ExecutionTier::JitStage2);
                 return Some((results, new_env));
             }
@@ -1515,6 +1764,7 @@ pub fn try_sub_expr_dispatch_with_hash(
     if state.jit1_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit1_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                #[cfg(feature = "track-stats")]
                 cache.record_tier_execution(ExecutionTier::JitStage1);
                 return Some((results, new_env));
             }
@@ -1524,6 +1774,7 @@ pub fn try_sub_expr_dispatch_with_hash(
         if let Some(chunk) = state.bytecode_chunk() {
             match super::execute_arena(chunk, env.clone()) {
                 Ok((results, new_env, unreduced)) if !unreduced => {
+                    #[cfg(feature = "track-stats")]
                     cache.record_tier_execution(ExecutionTier::Bytecode);
                     return Some((results, new_env));
                 }
@@ -1718,6 +1969,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "track-stats")]
     fn test_record_tier_execution() {
         let cache = TieredCache::new();
 
@@ -1809,6 +2061,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "track-stats")]
     fn test_tiered_cache_stats_reset() {
         let cache = TieredCache::new();
         let expr = MettaValue::Long(42);

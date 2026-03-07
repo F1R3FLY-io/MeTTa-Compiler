@@ -117,7 +117,9 @@ pub mod vm;
 pub mod jit;
 
 // Re-export main types
-pub use cache::{cache_sizes, clear_caches, get_stats as cache_stats, BytecodeCacheStats};
+pub use cache::{cache_sizes, clear_caches, BytecodeCacheStatsSnapshot};
+#[cfg(feature = "track-stats")]
+pub use cache::get_stats as cache_stats;
 pub use chunk::{
     BytecodeChunk, ChunkBuilder, CompiledPattern, JumpLabel, JumpLabelShort, JumpTable,
     // Generic chunk types for zero-conversion support

@@ -94,9 +94,11 @@ const MIN_WALL_DELTA_NS: u64 = 1_000_000; // 1ms
 // ============================================================================
 
 /// Global counter of completed eval tasks (for throughput tracking).
+#[cfg(any(feature = "eval-trace", feature = "track-stats"))]
 pub static WORK_EVAL_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Read the global eval completion count.
+#[cfg(any(feature = "eval-trace", feature = "track-stats"))]
 #[inline]
 pub fn work_eval_count() -> u64 {
     WORK_EVAL_COUNT.load(Ordering::Relaxed)
@@ -1075,6 +1077,7 @@ fn overflow_worker_loop(
                     }
                     cpu_state.publish();
 
+                    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
                     if matches!(task_type, TaskTypeId::Eval(_)) {
                         WORK_EVAL_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1268,6 +1271,7 @@ fn work_pool_worker_loop(
                     }
 
                     // Track eval completions for throughput monitoring
+                    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
                     if matches!(task_type, TaskTypeId::Eval(_)) {
                         WORK_EVAL_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1595,6 +1599,7 @@ impl WorkerCpuSnapshot {
 /// function minimized by a HillClimber to decide when to park/unpark workers.
 struct WorkMonitorState {
     /// Previous eval count snapshot (for delta computation).
+    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
     prev_eval_count: u64,
     /// Previous sample timestamp.
     prev_sample_time: Instant,
@@ -1621,6 +1626,7 @@ struct WorkMonitorState {
 impl WorkMonitorState {
     fn new(pool: &WorkPool) -> Self {
         Self {
+            #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
             prev_eval_count: work_eval_count(),
             prev_sample_time: Instant::now(),
             ema_throughput: Ema::new(WORK_EMA_ALPHA),
@@ -1816,12 +1822,14 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     }
 
     // Sample throughput: delta evals / elapsed time
-    let current_eval_count = work_eval_count();
-    let delta_evals_raw = current_eval_count.wrapping_sub(state.prev_eval_count);
-    let delta = delta_evals_raw as f64;
-    let throughput = delta / elapsed;
-
-    state.prev_eval_count = current_eval_count;
+    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+    let (throughput_raw, delta_evals_raw, current_eval_count) = {
+        let current_eval_count = work_eval_count();
+        let delta_evals_raw = current_eval_count.wrapping_sub(state.prev_eval_count);
+        let throughput_raw = delta_evals_raw as f64 / elapsed;
+        state.prev_eval_count = current_eval_count;
+        (throughput_raw, delta_evals_raw, current_eval_count)
+    };
     state.prev_sample_time = now;
 
     // Sample queue depth
@@ -1832,7 +1840,10 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     // When idle, freeze EMAs (preserve last active signal) and skip all
     // scaling phases. This prevents EMA decay during idle periods from
     // confusing the hill climber into parking workers.
+    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
     let is_idle = delta_evals_raw == 0 && queue_len_raw == 0;
+    #[cfg(not(any(feature = "eval-trace", feature = "track-stats")))]
+    let is_idle = queue_len_raw == 0;
 
     // Sample memory pressure signals
     let slab_p = slab_pressure();
@@ -1841,6 +1852,8 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     // Emit WorkPoolMonitorTick — raw samples before any EMA/decision processing
     #[cfg(feature = "eval-trace")]
     {
+        // current_eval_count is available via any(eval-trace, track-stats) gate
+        let trace_eval_count = current_eval_count;
         let rss_bytes = read_rss_bytes(state.page_size).unwrap_or(0) as u64;
         let bp_lvl = super::gc_allocator::backpressure_level();
         with_work_pool_trace(|tc| {
@@ -1851,7 +1864,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                 vec![],
                 None,
                 trace_format::TraceEventKind::WorkPoolMonitorTick {
-                    current_eval_count,
+                    current_eval_count: trace_eval_count,
                     elapsed_ns: (elapsed * 1_000_000_000.0) as u64,
                     queue_len: queue_len_raw as u32,
                     bp_level: bp_lvl as u32,
@@ -1920,7 +1933,10 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     }
 
     // Update all EMAs (only when active — frozen during idle to preserve signal)
-    let ema_tp = state.ema_throughput.update(throughput);
+    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+    let ema_tp = state.ema_throughput.update(throughput_raw);
+    #[cfg(not(any(feature = "eval-trace", feature = "track-stats")))]
+    let ema_tp = state.ema_throughput.value(); // no throughput data, use current EMA
     let ema_qd = state.ema_queue_depth.update(queue_depth);
     let ema_slab = state.ema_slab_pressure.update(slab_p);
     let ema_rss = state.ema_rss_pressure.update(rss_p);
@@ -2194,7 +2210,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                     hc_cooldown_remaining: hc_cooldown,
                     hc_prev_objective: hc_prev_obj,
                     hc_improvement,
-                    raw_throughput: throughput,
+                    raw_throughput: throughput_raw,
                     raw_slab_pressure: slab_p,
                     raw_rss_pressure: rss_p,
                     bp_level: bp_level as u32,
@@ -2547,6 +2563,7 @@ mod tests {
         assert!(!state.ema_throughput.is_initialized());
     }
 
+    #[cfg(feature = "track-stats")]
     #[test]
     fn test_work_scaling_monitor_tick_with_load() {
         let _bp_guard = BP_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());

@@ -49,38 +49,10 @@ use super::metta_value::{MettaValue, MettaValueInner};
 use super::metta_value_trait::MettaValueFactory;
 
 // ============================================================================
-// Fibonacci Hash for Pointer HashSets
+// Fibonacci Hash for Pointer HashSets (re-exported from hash_utils)
 // ============================================================================
 
-/// Fast identity-like hasher for slab-allocated pointers.
-/// Uses Fibonacci hashing to spread aligned pointers across hash table buckets.
-/// SipHash (~50 cycles/hash) is overkill for pointer keys; this costs ~3 cycles.
-pub(crate) struct PtrHasher(u64);
-
-impl std::hash::Hasher for PtrHasher {
-    #[inline(always)]
-    fn finish(&self) -> u64 { self.0 }
-    #[inline(always)]
-    fn write(&mut self, _bytes: &[u8]) { unreachable!("PtrHasher only supports usize") }
-    #[inline(always)]
-    fn write_usize(&mut self, i: usize) {
-        // Fibonacci hashing: multiply by golden ratio constant, then use
-        // upper bits (which have maximal entropy after multiplication).
-        self.0 = (i as u64).wrapping_mul(0x517cc1b727220a95);
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct PtrBuildHasher;
-
-impl std::hash::BuildHasher for PtrBuildHasher {
-    type Hasher = PtrHasher;
-    #[inline(always)]
-    fn build_hasher(&self) -> PtrHasher { PtrHasher(0) }
-}
-
-/// HashSet for slab pointers using Fibonacci hashing instead of SipHash.
-pub(crate) type PtrHashSet = std::collections::HashSet<*const u8, PtrBuildHasher>;
+pub(crate) use crate::backend::hash_utils::{PtrBuildHasher, PtrHashSet};
 
 // ============================================================================
 // GC Trace Flag (METTA_GC_TRACE environment variable)
@@ -2554,6 +2526,14 @@ pub(super) static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 /// one, wasting memory and CPU on redundant GC cycles.
 static GC_CYCLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+/// Monotonic counter incremented each time a GC sweep frees slab slots.
+///
+/// Thread-local caches that hold `MettaValue` references (e.g., `EVAL_MEMO`)
+/// or pointer-keyed entries (e.g., `NORMAL_FORM_BLOOM`) compare their local
+/// epoch against this counter. When they diverge, the cache is stale and must
+/// be cleared before use — slab slots may have been freed and reused (ABA).
+static GC_SWEEP_EPOCH: AtomicU64 = AtomicU64::new(0);
+
 /// Read-locked by GC mark/sweep workers (shared access to page data).
 /// Write-locked by `release_empty_pages()` (exclusive, may munmap pages).
 ///
@@ -2571,21 +2551,27 @@ pub(crate) static PAGE_LIFECYCLE_LOCK: parking_lot::RwLock<()> =
 // ============================================================================
 
 /// Total number of sessions released (incremented in release_session_with_surviving)
+#[cfg(feature = "track-stats")]
 static SESSION_RELEASES_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Total values freed across all session releases
+#[cfg(feature = "track-stats")]
 static SESSION_VALUES_FREED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Total values promoted (context_id → 0) across all session releases
+#[cfg(feature = "track-stats")]
 static SESSION_VALUES_PROMOTED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Total values scanned during session releases
+#[cfg(feature = "track-stats")]
 static SESSION_VALUES_SCANNED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Size of the last surviving set (root trace result)
+#[cfg(feature = "track-stats")]
 static LAST_SURVIVING_SET_SIZE: AtomicU64 = AtomicU64::new(0);
 
 /// Public accessor for session GC stats (used by diagnostics module).
+#[cfg(feature = "track-stats")]
 pub fn session_gc_stats() -> SessionGcStats {
     SessionGcStats {
         releases_total: SESSION_RELEASES_TOTAL.load(Ordering::Relaxed),
@@ -2728,6 +2714,26 @@ impl Drop for GcInProgressGuard {
 /// Check if a GC cycle is currently in flight (snapshot sent, response not processed).
 pub fn gc_cycle_in_flight() -> bool {
     GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
+}
+
+/// Return the current GC sweep epoch.
+///
+/// Thread-local caches compare their local epoch against this value to detect
+/// staleness after a GC cycle frees slab slots.
+#[inline]
+pub fn gc_sweep_epoch() -> u64 {
+    GC_SWEEP_EPOCH.load(Ordering::Acquire)
+}
+
+/// Increment the GC sweep epoch after dead slab slots have been freed.
+///
+/// Called from `process_gc_response()` and `release_session_with_surviving()`
+/// after slab slots are returned to the free list. Any thread-local cache
+/// keyed by `MettaValue` or `inner_ptr` that was populated before this bump
+/// may reference freed/reused slots and must be invalidated.
+#[inline]
+pub(super) fn bump_gc_sweep_epoch() {
+    GC_SWEEP_EPOCH.fetch_add(1, Ordering::Release);
 }
 
 // ============================================================================
@@ -3970,6 +3976,7 @@ impl SlabAllocator {
                             // Fast path: reuse cached hash — skip recursive xxh3
                             if let Some(state) = cache.entries.get(&cached_hash) {
                                 state.execution_count.fetch_add(count, Ordering::Relaxed);
+                                #[cfg(feature = "track-stats")]
                                 cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
                                 let new_count = state.execution_count.load(Ordering::Relaxed);
                                 cache.maybe_trigger_jit1(&state, new_count);
@@ -3993,6 +4000,7 @@ impl SlabAllocator {
                         let state = cache.get_or_create_state(&value);
                         page.set_compilation_hash(entry.slot_idx, state.expr_hash);
                         state.execution_count.fetch_add(count, Ordering::Relaxed);
+                        #[cfg(feature = "track-stats")]
                         cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
                         let new_count = state.execution_count.load(Ordering::Relaxed);
                         cache.maybe_trigger_bytecode(&value, &state, new_count);
@@ -4068,6 +4076,13 @@ impl SlabAllocator {
 
         // Track freed values for GC scaling monitor
         GC_VALUES_FREED_TOTAL.fetch_add(non_filtered_dead.len() as u64, Ordering::Relaxed);
+
+        // Bump GC sweep epoch so thread-local caches (EVAL_MEMO,
+        // NORMAL_FORM_BLOOM, MORK_BYTES_CACHE) detect staleness and
+        // self-invalidate before accessing freed/reused slab slots.
+        if !non_filtered_dead.is_empty() {
+            bump_gc_sweep_epoch();
+        }
 
         // === Phase 4: Free dead data slots — O(D_data log P_data) ===
         // Batch by size class, build sorted page index once per class.
@@ -4264,6 +4279,11 @@ impl SlabAllocator {
             }
         } // read lock released
 
+        // Bump GC sweep epoch so thread-local caches detect staleness.
+        if !non_filtered_dead.is_empty() {
+            bump_gc_sweep_epoch();
+        }
+
         // Phase 3: Free dead data slots in batch
         self.free_data_slots_batch(dead_data_to_free);
 
@@ -4288,11 +4308,14 @@ impl SlabAllocator {
         self.committed_bytes_atomic.store(self.committed_bytes(), Ordering::Relaxed);
 
         // Phase 6: Update session GC statistics
-        SESSION_RELEASES_TOTAL.fetch_add(1, Ordering::Relaxed);
-        SESSION_VALUES_FREED_TOTAL.fetch_add(non_filtered_dead.len() as u64, Ordering::Relaxed);
-        SESSION_VALUES_PROMOTED_TOTAL.fetch_add(promoted_count, Ordering::Relaxed);
-        SESSION_VALUES_SCANNED_TOTAL.fetch_add(scanned_count, Ordering::Relaxed);
-        LAST_SURVIVING_SET_SIZE.store(surviving.len() as u64, Ordering::Relaxed);
+        #[cfg(feature = "track-stats")]
+        {
+            SESSION_RELEASES_TOTAL.fetch_add(1, Ordering::Relaxed);
+            SESSION_VALUES_FREED_TOTAL.fetch_add(non_filtered_dead.len() as u64, Ordering::Relaxed);
+            SESSION_VALUES_PROMOTED_TOTAL.fetch_add(promoted_count, Ordering::Relaxed);
+            SESSION_VALUES_SCANNED_TOTAL.fetch_add(scanned_count, Ordering::Relaxed);
+            LAST_SURVIVING_SET_SIZE.store(surviving.len() as u64, Ordering::Relaxed);
+        }
     }
 
     /// Trace the surviving set: DFS from all registered GC roots.

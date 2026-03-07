@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use trace_format::TraceEventKind;
 
 use crate::reader::TraceReader;
-use crate::util::{extract_head_symbol, format_duration_ns, format_pct};
+use crate::util::{extract_operator_name, format_duration_ns, format_pct};
 
 /// Per-symbol profiling accumulator.
 struct SymbolProfile {
@@ -107,7 +107,7 @@ pub fn run(file: &str, top_n: usize, sort_by: &str) -> Result<(), String> {
             _ => {}
         }
 
-        let head = extract_head_symbol(&event.input).to_string();
+        let head = extract_operator_name(&event.input, &event.kind);
 
         // Track inclusive time via per-thread depth stacks
         let tracker = depth_trackers

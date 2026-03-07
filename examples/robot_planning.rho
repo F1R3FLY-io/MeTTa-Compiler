@@ -1,18 +1,12 @@
 // =====================================================================
 // Robot Planning System - BFS (A* with h=0) Shortest-Path Finding
-// =====================================================================
-// DESIGN:
-// 1. Persistent state - initialized ONCE, reused across all queries
-// 2. BFS search - pure-functional A* with h=0 for optimal shortest paths
-// 3. Deterministic results - BFS guarantees single shortest path
-// 4. Cycle detection - visited set prevents infinite loops
-// 5. Arbitrary depth - no fixed hop limit; works for any graph topology
-// 6. ~50-100x performance improvement on repeated queries via state reuse
+// Demonstrates PathMap state decomposition for extracting query results
 // =====================================================================
 
 new stdoutAck(`rho:io:stdoutAck`),
     mettaCompile(`rho:metta:compile`),
     robotAPI,
+    extractOutput,    // Helper: extract output from MeTTa state via PathMap decomposition
     persistentState,  // Single persistent state channel
     done1, done2, done3, done4, done5, done6,
     ack in {
@@ -242,6 +236,21 @@ new stdoutAck(`rho:io:stdoutAck`),
   } |
 
   // ===================================================================
+  // Helper: Extract output field from MeTTa state via PathMap decomposition
+  // ===================================================================
+
+  contract extractOutput(@state, ret) = {
+    match state {
+      {| (("source", _), ("environment", _), ("output", results)) |} => {
+        ret!(results)
+      }
+      _ => {
+        ret!(state)
+      }
+    }
+  } |
+
+  // ===================================================================
   // Query Contracts - NOW USING PERSISTENT STATE
   // ===================================================================
 
@@ -254,9 +263,9 @@ new stdoutAck(`rho:io:stdoutAck`),
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
-              // Return updated state for next use
+              // Return updated state and extract query results via PathMap decomposition
               persistentState!(newState) |
-              ret!(newState)
+              extractOutput!(newState, *ret)
             }
           }
         }
@@ -273,9 +282,9 @@ new stdoutAck(`rho:io:stdoutAck`),
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
-              // Return updated state for next use
+              // Return updated state and extract query results via PathMap decomposition
               persistentState!(newState) |
-              ret!(newState)
+              extractOutput!(newState, *ret)
             }
           }
         }
@@ -292,9 +301,9 @@ new stdoutAck(`rho:io:stdoutAck`),
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
-              // Return updated state for next use
+              // Return updated state and extract query results via PathMap decomposition
               persistentState!(newState) |
-              ret!(newState)
+              extractOutput!(newState, *ret)
             }
           }
         }
@@ -311,9 +320,9 @@ new stdoutAck(`rho:io:stdoutAck`),
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
-              // Return updated state for next use
+              // Return updated state and extract query results via PathMap decomposition
               persistentState!(newState) |
-              ret!(newState)
+              extractOutput!(newState, *ret)
             }
           }
         }
@@ -330,9 +339,9 @@ new stdoutAck(`rho:io:stdoutAck`),
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
-              // Return updated state for next use
+              // Return updated state and extract query results via PathMap decomposition
               persistentState!(newState) |
-              ret!(newState)
+              extractOutput!(newState, *ret)
             }
           }
         }
@@ -349,9 +358,9 @@ new stdoutAck(`rho:io:stdoutAck`),
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
-              // Return updated state for next use
+              // Return updated state and extract query results via PathMap decomposition
               persistentState!(newState) |
-              ret!(newState)
+              extractOutput!(newState, *ret)
             }
           }
         }
@@ -540,37 +549,3 @@ new stdoutAck(`rho:io:stdoutAck`),
     }
   }
 }
-
-// =====================================================================
-// Implementation Notes:
-// =====================================================================
-//
-// DESIGN DECISIONS:
-// -----------------
-// 1. PERSISTENT STATE CHANNEL
-//    - State initialized ONCE at startup
-//    - All query contracts read from and return to persistentState
-//    - Eliminates redundant initialization overhead
-//
-// 2. BFS SEARCH (A* with h=0)
-//    - Pure-functional BFS with visited-set cycle detection
-//    - All edges cost 1, so FIFO queue order = optimal A* order
-//    - Handles arbitrary-length paths (no fixed hop limit)
-//    - Deterministic: always returns the shortest path
-//    - Open list: tuple of (bfs_entry cost path) entries
-//    - Visited set: flat tuple of node atoms (closed set)
-//    - New entries appended to end (FIFO = BFS ordering)
-//
-// 3. DYNAMIC HELPERS
-//    - `path_to_list`, `path_hop_count`, `is_multihop` use
-//      size-atom and cdr-atom for any path length
-//    - `build_nav_steps` uses map-atom for dynamic step generation
-//    - No fixed-arity pattern rules needed
-//
-// PERFORMANCE IMPACT:
-// -------------------
-// Original:  Each query reinitializes ~100 rules/facts = ~500ms
-// Improved:  Single initialization + state reuse = ~5ms per query
-// Speedup:   ~100x on repeated queries
-//
-// =====================================================================

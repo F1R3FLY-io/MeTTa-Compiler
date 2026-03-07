@@ -125,6 +125,7 @@ pub struct AdaptiveGcPool {
     max_workers: usize,
 
     /// Counter of completed session releases (for throughput tracking).
+    #[cfg(feature = "track-stats")]
     session_release_count: AtomicU32,
 }
 
@@ -189,6 +190,7 @@ impl AdaptiveGcPool {
             active_count: AtomicUsize::new(min_workers),
             min_workers,
             max_workers,
+            #[cfg(feature = "track-stats")]
             session_release_count: AtomicU32::new(0),
         }
     }
@@ -229,11 +231,13 @@ impl AdaptiveGcPool {
     }
 
     /// Get the count of completed session releases.
+    #[cfg(feature = "track-stats")]
     pub fn session_release_count(&self) -> u32 {
         self.session_release_count.load(Ordering::Relaxed)
     }
 
     /// Increment the session release counter (called by workers).
+    #[cfg(feature = "track-stats")]
     fn bump_session_release_count(&self) {
         self.session_release_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -490,6 +494,7 @@ fn gc_pool_worker_loop(
                 }
 
                 // Track for throughput monitoring (only on success)
+                #[cfg(feature = "track-stats")]
                 if release_result.is_ok() {
                     if let Some(pool) = GLOBAL_GC_POOL.get() {
                         pool.bump_session_release_count();

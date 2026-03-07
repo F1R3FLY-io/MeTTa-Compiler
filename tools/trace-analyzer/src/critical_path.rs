@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use trace_format::TraceEventKind;
 
 use crate::reader::TraceReader;
-use crate::util::{extract_head_symbol, format_duration_ns};
+use crate::util::{extract_operator_name, format_duration_ns};
 
 /// A node in the span tree.
 struct SpanNode {
@@ -76,7 +76,7 @@ pub fn run(file: &str, worker_counts: &[usize]) -> Result<(), String> {
                     let node = SpanNode {
                         duration_ns: duration,
                         start_ns: event.timestamp_ns,
-                        head_symbol: extract_head_symbol(&event.input).to_string(),
+                        head_symbol: extract_operator_name(&event.input, &event.kind),
                         depth: event.depth,
                         is_fork: true,
                         children: Vec::with_capacity(*branch_count as usize),
@@ -92,7 +92,7 @@ pub fn run(file: &str, worker_counts: &[usize]) -> Result<(), String> {
                     let node = SpanNode {
                         duration_ns: duration,
                         start_ns: event.timestamp_ns,
-                        head_symbol: extract_head_symbol(&event.input).to_string(),
+                        head_symbol: extract_operator_name(&event.input, &event.kind),
                         depth: event.depth,
                         is_fork: false,
                         children: Vec::new(),
@@ -121,7 +121,7 @@ pub fn run(file: &str, worker_counts: &[usize]) -> Result<(), String> {
                         let node = SpanNode {
                             duration_ns: duration,
                             start_ns: event.timestamp_ns,
-                            head_symbol: extract_head_symbol(&event.input).to_string(),
+                            head_symbol: extract_operator_name(&event.input, &event.kind),
                             depth: event.depth,
                             is_fork: false,
                             children: Vec::new(),
@@ -135,7 +135,7 @@ pub fn run(file: &str, worker_counts: &[usize]) -> Result<(), String> {
                         let node = SpanNode {
                             duration_ns: duration,
                             start_ns: event.timestamp_ns,
-                            head_symbol: extract_head_symbol(&event.input).to_string(),
+                            head_symbol: extract_operator_name(&event.input, &event.kind),
                             depth: event.depth,
                             is_fork: false,
                             children: Vec::new(),

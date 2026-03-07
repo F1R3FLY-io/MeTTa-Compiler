@@ -2032,9 +2032,12 @@ fn test_vm_call_cached_cache_hit() {
     assert_eq!(vm.memo_cache_len(), 1);
 
     // Check cache stats: 1 miss (first call) + 1 hit (second call)
-    let stats = vm.memo_cache_stats();
-    assert_eq!(stats.hits, 1, "Should have 1 cache hit");
-    assert_eq!(stats.misses, 1, "Should have 1 cache miss");
+    #[cfg(feature = "track-stats")]
+    {
+        let stats = vm.memo_cache_stats();
+        assert_eq!(stats.hits, 1, "Should have 1 cache hit");
+        assert_eq!(stats.misses, 1, "Should have 1 cache miss");
+    }
 }
 
 #[test]
@@ -2086,9 +2089,12 @@ fn test_vm_call_cached_different_args() {
     assert_eq!(vm.memo_cache_len(), 2);
 
     // Check cache stats: 2 misses (different args each time)
-    let stats = vm.memo_cache_stats();
-    assert_eq!(stats.hits, 0, "Should have 0 cache hits");
-    assert_eq!(stats.misses, 2, "Should have 2 cache misses");
+    #[cfg(feature = "track-stats")]
+    {
+        let stats = vm.memo_cache_stats();
+        assert_eq!(stats.hits, 0, "Should have 0 cache hits");
+        assert_eq!(stats.misses, 2, "Should have 2 cache misses");
+    }
 }
 
 #[test]
@@ -3003,8 +3009,11 @@ mod generic_vm_tests {
         let results2 = vm2.run().expect("VM should succeed on cache hit");
         assert_eq!(results, results2);
 
-        let stats = memo_cache.stats();
-        assert!(stats.hits > 0, "Should have cache hits on second call");
+        #[cfg(feature = "track-stats")]
+        {
+            let stats = memo_cache.stats();
+            assert!(stats.hits > 0, "Should have cache hits on second call");
+        }
     }
 
     /// Test DefineRule + DispatchRules through the generic VM.

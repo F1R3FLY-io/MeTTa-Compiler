@@ -84,16 +84,18 @@ pub struct MorkBridge {
     rule_cache: RwLock<HashMap<RuleCacheKey, Arc<BytecodeChunk>>>,
 
     /// Statistics for cache hit/miss tracking (lock-free atomics)
+    #[cfg(feature = "track-stats")]
     stats: BridgeStats,
 }
 
 impl std::fmt::Debug for MorkBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cache_size = self.rule_cache.read().len();
-        f.debug_struct("MorkBridge")
-            .field("cache_size", &cache_size)
-            .field("stats", &self.stats.snapshot())
-            .finish()
+        let mut s = f.debug_struct("MorkBridge");
+        s.field("cache_size", &cache_size);
+        #[cfg(feature = "track-stats")]
+        s.field("stats", &self.stats.snapshot());
+        s.finish()
     }
 }
 
@@ -163,6 +165,7 @@ impl MorkBridge {
         Self {
             env,
             rule_cache: RwLock::new(HashMap::new()),
+            #[cfg(feature = "track-stats")]
             stats: BridgeStats::default(),
         }
     }
@@ -189,6 +192,7 @@ impl MorkBridge {
     /// Vector of (compiled_rule_body, bindings) pairs for all matching rules
     pub fn dispatch_rules(&self, expr: &MettaValue) -> Vec<CompiledRule> {
         // Update stats (lock-free)
+        #[cfg(feature = "track-stats")]
         self.stats.lookups.fetch_add(1, Ordering::Relaxed);
 
         // Get matching rules from environment
@@ -196,6 +200,7 @@ impl MorkBridge {
         let matches = self.find_matching_rules(expr, &env);
 
         // Update stats with match count (lock-free)
+        #[cfg(feature = "track-stats")]
         self.stats
             .rules_found
             .fetch_add(matches.len() as u64, Ordering::Relaxed);
@@ -259,6 +264,7 @@ impl MorkBridge {
         {
             let cache = self.rule_cache.read();
             if let Some(chunk) = cache.get(&key) {
+                #[cfg(feature = "track-stats")]
                 self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(Arc::clone(chunk));
             }
@@ -272,6 +278,7 @@ impl MorkBridge {
         {
             let mut cache = self.rule_cache.write();
             cache.insert(key, Arc::clone(&chunk));
+            #[cfg(feature = "track-stats")]
             self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -279,6 +286,7 @@ impl MorkBridge {
     }
 
     /// Get bridge statistics as a snapshot (lock-free)
+    #[cfg(feature = "track-stats")]
     pub fn stats(&self) -> BridgeStatsSnapshot {
         self.stats.snapshot()
     }
@@ -370,6 +378,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "track-stats")]
     fn test_rule_caching() {
         let mut env = MettaEnvironment::default();
 

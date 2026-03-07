@@ -182,8 +182,10 @@ fn eval_inner_with_trace(
     use crate::backend::bytecode::{
         can_compile, can_compile_with_env, eval_bytecode_arena_with_env,
         execute_arena, global_tiered_cache,
-        ExecutionTier, TierStatusKind,
+        TierStatusKind,
     };
+    #[cfg(feature = "track-stats")]
+    use crate::backend::bytecode::ExecutionTier;
     use crate::backend::trace::thread_local_sink::{
         set_thread_trace_collector, clear_thread_trace_collector,
     };
@@ -213,6 +215,7 @@ fn eval_inner_with_trace(
 
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
+                        #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage2);
                         clear_thread_trace_collector();
@@ -239,6 +242,7 @@ fn eval_inner_with_trace(
 
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
+                        #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage1);
                         clear_thread_trace_collector();
@@ -268,6 +272,7 @@ fn eval_inner_with_trace(
                         if unreduced {
                             // Bytecode couldn't reduce — fall through
                         } else {
+                            #[cfg(feature = "track-stats")]
                             global_tiered_cache()
                                 .record_tier_execution(ExecutionTier::Bytecode);
                             clear_thread_trace_collector();
@@ -298,6 +303,7 @@ fn eval_inner_with_trace(
                 if unreduced {
                     // Bytecode couldn't reduce — fall through to tree-walker
                 } else {
+                    #[cfg(feature = "track-stats")]
                     global_tiered_cache()
                         .record_tier_execution(ExecutionTier::Bytecode);
                     clear_thread_trace_collector();
@@ -321,6 +327,7 @@ fn eval_inner_with_trace(
     );
 
     clear_thread_trace_collector();
+    #[cfg(feature = "track-stats")]
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
     trampoline::eval_trampoline_with_trace(value, env, state, collector)
 }
@@ -338,8 +345,10 @@ fn eval_inner(
     use crate::backend::bytecode::{
         can_compile, can_compile_with_env, eval_bytecode_arena_with_env,
         execute_arena, global_tiered_cache,
-        ExecutionTier, TierStatusKind,
+        TierStatusKind,
     };
+    #[cfg(feature = "track-stats")]
+    use crate::backend::bytecode::ExecutionTier;
 
     // Record execution in arena tiered cache
     // This triggers background bytecode and JIT compilation at thresholds
@@ -353,6 +362,7 @@ fn eval_inner(
             if let Some(code) = compilation_state.jit2_code() {
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
+                        #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage2);
                         return (results, new_env);
@@ -369,6 +379,7 @@ fn eval_inner(
             if let Some(code) = compilation_state.jit1_code() {
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
+                        #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage1);
                         return (results, new_env);
@@ -389,6 +400,7 @@ fn eval_inner(
                         if unreduced {
                             // Bytecode couldn't reduce — fall through
                         } else {
+                            #[cfg(feature = "track-stats")]
                             global_tiered_cache()
                                 .record_tier_execution(ExecutionTier::Bytecode);
                             return (results, new_env);
@@ -409,6 +421,7 @@ fn eval_inner(
                 if unreduced {
                     // Bytecode couldn't reduce — fall through to tree-walker
                 } else {
+                    #[cfg(feature = "track-stats")]
                     global_tiered_cache()
                         .record_tier_execution(ExecutionTier::Bytecode);
                     return (results, new_env);
@@ -421,6 +434,7 @@ fn eval_inner(
     }
 
     // Tier 0: Tree-walker interpreter (cold code or fallback)
+    #[cfg(feature = "track-stats")]
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
     eval_trampoline(value, env, state)
 }

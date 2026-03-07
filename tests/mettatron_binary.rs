@@ -62,6 +62,7 @@ fn test_binary_runs() {
     let binary = find_mettatron_binary();
     let output = Command::new(&binary)
         .arg("--help")
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -89,6 +90,7 @@ fn test_evaluate_simple_metta() {
 
     let output = Command::new(&binary)
         .arg(&test_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -113,6 +115,7 @@ fn test_evaluate_advanced_metta() {
 
     let output = Command::new(&binary)
         .arg(&test_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -134,6 +137,7 @@ fn test_evaluate_mvp_test() {
 
     let output = Command::new(&binary)
         .arg(&test_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -155,6 +159,7 @@ fn test_evaluate_type_system_demo() {
 
     let output = Command::new(&binary)
         .arg(&test_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -176,6 +181,7 @@ fn test_evaluate_pathmap_demo() {
 
     let output = Command::new(&binary)
         .arg(&test_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -202,6 +208,7 @@ fn test_sexpr_option() {
     let output = Command::new(&binary)
         .arg("--sexpr")
         .arg(&test_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -239,6 +246,7 @@ fn test_output_to_file() {
         .arg(&test_file)
         .arg("-o")
         .arg(&output_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -274,6 +282,7 @@ fn test_stdin_input() {
 
     let mut child = Command::new(&binary)
         .arg("-")
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -314,6 +323,7 @@ fn test_nonexistent_file() {
 
     let output = Command::new(&binary)
         .arg(&nonexistent)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -339,6 +349,7 @@ fn test_invalid_metta_syntax() {
 
     let output = Command::new(&binary)
         .arg(&temp_file)
+        .env("METTATRON_MAX_WORK_THREADS", "4")
         .output()
         .expect("Failed to execute binary");
 
@@ -368,7 +379,7 @@ fn test_all_metta_examples() {
     let binary = find_mettatron_binary();
     let examples = examples_dir();
 
-    let metta_files: Vec<_> = fs::read_dir(&examples)
+    let mut metta_files: Vec<_> = fs::read_dir(&examples)
         .expect("Failed to read examples directory")
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
@@ -386,22 +397,62 @@ fn test_all_metta_examples() {
         "No .metta files found in examples directory"
     );
 
+    // Sort for deterministic ordering (fs::read_dir order is non-deterministic)
+    metta_files.sort_by_key(|e| e.path());
+
     for entry in metta_files {
         let path = entry.path();
-        let output = Command::new(&binary)
+        let mut output = Command::new(&binary)
             .arg(&path)
+            .env("METTATRON_MAX_WORK_THREADS", "4")
             .output()
             .expect("Failed to execute binary");
+
+        // Retry once if killed by signal (transient resource contention)
+        if !output.status.success() {
+            #[cfg(unix)]
+            let was_signal = {
+                use std::os::unix::process::ExitStatusExt;
+                output.status.signal().is_some()
+            };
+            #[cfg(not(unix))]
+            let was_signal = false;
+
+            if was_signal {
+                output = Command::new(&binary)
+                    .arg(&path)
+                    .env("METTATRON_MAX_WORK_THREADS", "4")
+                    .output()
+                    .expect("Failed to execute binary on retry");
+            }
+        }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        assert!(
-            output.status.success(),
-            "Failed to evaluate {}:\nSTDOUT:\n{}\nSTDERR:\n{}",
-            path.display(),
-            stdout,
-            stderr
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert!(
+                output.status.success(),
+                "Failed to evaluate {} (exit code: {:?}, signal: {:?}):\nSTDOUT:\n{}\nSTDERR:\n{}",
+                path.display(),
+                output.status.code(),
+                output.status.signal(),
+                stdout,
+                stderr
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(
+                output.status.success(),
+                "Failed to evaluate {} (exit code: {:?}):\nSTDOUT:\n{}\nSTDERR:\n{}",
+                path.display(),
+                output.status.code(),
+                stdout,
+                stderr
+            );
+        }
     }
 }

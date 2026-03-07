@@ -67,19 +67,24 @@ pub struct GenericMemoCache<V: MettaValueTrait + Clone + Send + Sync + 'static> 
     /// Global access counter for LRU (atomic, lock-free)
     access_counter: AtomicU64,
     /// Hit count for statistics (atomic, lock-free)
+    #[cfg(feature = "track-stats")]
     hits: AtomicU64,
     /// Miss count for statistics (atomic, lock-free)
+    #[cfg(feature = "track-stats")]
     misses: AtomicU64,
 }
 
 impl<V: MettaValueTrait + Clone + Send + Sync + 'static> std::fmt::Debug for GenericMemoCache<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GenericMemoCache")
-            .field("entries", &self.cache.len())
-            .field("max_entries", &self.max_entries)
-            .field("hits", &self.hits.load(Ordering::Relaxed))
-            .field("misses", &self.misses.load(Ordering::Relaxed))
-            .finish()
+        let mut s = f.debug_struct("GenericMemoCache");
+        s.field("entries", &self.cache.len());
+        s.field("max_entries", &self.max_entries);
+        #[cfg(feature = "track-stats")]
+        {
+            s.field("hits", &self.hits.load(Ordering::Relaxed));
+            s.field("misses", &self.misses.load(Ordering::Relaxed));
+        }
+        s.finish()
     }
 }
 
@@ -96,7 +101,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> GenericMemoCache<V> {
             cache: DashMap::with_capacity(max_entries),
             max_entries,
             access_counter: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             hits: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             misses: AtomicU64::new(0),
         }
     }
@@ -108,9 +115,11 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> GenericMemoCache<V> {
         if let Some(mut entry) = self.cache.get_mut(&key) {
             let new_count = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
             entry.access_count = new_count;
+            #[cfg(feature = "track-stats")]
             self.hits.fetch_add(1, Ordering::Relaxed);
             Some(entry.result.clone())
         } else {
+            #[cfg(feature = "track-stats")]
             self.misses.fetch_add(1, Ordering::Relaxed);
             None
         }
@@ -155,6 +164,7 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> GenericMemoCache<V> {
     }
 
     /// Get cache statistics.
+    #[cfg(feature = "track-stats")]
     pub fn stats(&self) -> GenericCacheStats {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
@@ -315,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "track-stats")]
     fn test_generic_memo_cache_stats() {
         let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(100);
         let factory = GcFactory::default();

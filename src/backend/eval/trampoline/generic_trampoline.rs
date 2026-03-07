@@ -63,8 +63,10 @@ fn is_debug_eval() -> bool {
 // Evaluation memoization and type-driven dispatch helpers extracted to `dispatch_hints`
 // module for icache locality. Re-import the functions used in this file.
 use super::dispatch_hints::{
-    is_memoized_normal_form, memoize_normal_form,
+    invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form,
     derive_arg_expected_type,
+    should_memoize, eval_memo_get, eval_memo_put,
+    collect_eval_memo_roots,
 };
 
 // =============================================================================
@@ -161,6 +163,245 @@ fn try_acquire_budget(n: u32, depth: u32) -> u32 {
 
 fn release_budget(n: u32) {
     PARALLEL_BRANCH_BUDGET.fetch_add(n, Ordering::Release);
+}
+
+/// Dispatch nondeterministic rule matches either in parallel or sequentially.
+///
+/// Unified entry point for all code paths that produce `VecDeque<(V, GenericBindings<V>)>`
+/// rule matches. Checks the 4 parallel gate conditions and either:
+/// - **Parallel**: applies bindings to all matches, dispatches to work pool,
+///   work-steals until complete, pushes Resume with merged results.
+/// - **Sequential**: pops first match, pushes `ProcessRuleMatches` continuation
+///   for remaining, pushes Eval for first branch's instantiated RHS.
+///
+/// # Precondition
+///
+/// `matches` must be non-empty. The caller must handle the empty-matches case
+/// before calling this function.
+fn dispatch_rule_matches<C: EvalContext>(
+    mut matches: VecDeque<(C::Value, crate::backend::models::GenericBindings<C::Value>)>,
+    base_results: Vec<C::Value>,
+    env: ContextEnv<C>,
+    depth: usize,
+    ctx: &C,
+    work_stack: &mut Vec<GenericWorkItem<C::Value, ContextEnv<C>>>,
+    continuations: &mut Vec<GenericContinuation<C::Value, ContextEnv<C>>>,
+)
+where
+    C::Value: Clone,
+{
+    debug_assert!(!matches.is_empty(), "dispatch_rule_matches called with empty matches");
+
+    // ── Single-match fast path ──
+    // 93.3% of rule matches produce exactly 1 result. When there's exactly 1
+    // match and no accumulated base_results, skip the ProcessRuleMatches
+    // continuation entirely: no env clone, no VecDeque, no trace overhead.
+    if matches.len() == 1 && base_results.is_empty() {
+        let (rhs, bindings) = matches.pop_front().expect("matches has exactly 1 element");
+        let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
+
+        // Trace: RuleApplication (single match — no fork)
+        #[cfg(feature = "eval-trace")]
+        {
+            if let Some(tc) = ctx.trace_collector() {
+                let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                    .collect();
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    depth as u32,
+                    crate::backend::trace::trace_value_generic(&rhs),
+                    vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
+                    None,
+                    trace_format::TraceEventKind::RuleApplication {
+                        rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
+                        rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
+                        bindings: bindings_tv,
+                        rule_span: None,
+                    },
+                );
+            }
+        }
+
+        work_stack.push(GenericWorkItem::Eval {
+            value: instantiated_rhs,
+            env,
+            depth: depth + 1,
+            is_tail_call: false,
+            expected_type: None,
+        });
+        return;
+    }
+
+    // ── Parallel nondeterministic branching gate ──
+    // Check conditions: MettaValue only (compile-time constant after monomorphization),
+    // at least 2 matches, not at max parallel depth, active workers available,
+    // and budget slots remain.
+    let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
+    let budget = if matches.len() >= 2
+        && std::any::TypeId::of::<C::Value>()
+            == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+        && current_depth < max_parallel_depth()
+        && global_eval_pool().active_workers() > 0
+    {
+        try_acquire_budget((matches.len() - 1) as u32, current_depth)
+    } else {
+        0
+    };
+
+    if budget > 0 {
+        // ── Parallel path: dispatch all branches to work pool ──
+        let factory = ctx.factory();
+        let branches: Vec<crate::backend::models::MettaValue> = matches
+            .into_iter()
+            .map(|(rhs, bindings)| {
+                // SAFETY: C::Value is MettaValue (TypeId checked above).
+                // MettaValue and C::Value have identical layout (same struct).
+                let metta_rhs: &crate::backend::models::MettaValue =
+                    unsafe { &*(&rhs as *const C::Value as *const crate::backend::models::MettaValue) };
+                let metta_bindings: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
+                    unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
+                let metta_factory: &GcFactory =
+                    unsafe { &*(factory as *const C::Factory as *const GcFactory) };
+                apply_bindings_generic(metta_rhs, metta_bindings, metta_factory)
+            })
+            .collect();
+
+        // Clone env to properly increment Arc refcounts, then
+        // reinterpret as MettaEnvironment. transmute_copy alone
+        // would alias without incrementing refcounts → UAF.
+        // forget(clone) transfers ownership to metta_env.
+        let env_clone = env.clone();
+        let metta_env: crate::backend::environment::generic::MettaEnvironment =
+            unsafe { std::mem::transmute_copy(&env_clone) };
+        std::mem::forget(env_clone);
+
+        // Trace: NondeterministicFork (parallel)
+        #[cfg(feature = "eval-trace")]
+        {
+            if let Some(tc) = ctx.trace_collector() {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    depth as u32,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::NondeterministicFork {
+                        branch_count: branches.len() as u32,
+                    },
+                );
+            }
+        }
+
+        let results = parallel_branch_eval(branches, metta_env, budget, current_depth);
+
+        // SAFETY: MettaValue and C::Value are the same type (TypeId checked).
+        let generic_results: Vec<C::Value> =
+            unsafe { std::mem::transmute(results) };
+
+        // Merge with base_results from prior branches (e.g., from EvalRuleMatches)
+        let mut merged = base_results;
+        merged.extend(generic_results);
+
+        work_stack.push(GenericWorkItem::Resume {
+            result: (merged, env),
+        });
+    } else {
+        // ── Sequential path: pop first match, push ProcessRuleMatches for rest ──
+        let _total_branches = (matches.len() + 1) as u32; // +1 matches existing trace convention
+        let (rhs, bindings) = matches.pop_front().expect("matches is non-empty");
+
+        // Trace: NondeterministicFork + BranchStart for first branch
+        #[cfg(feature = "eval-trace")]
+        let _branch_span_id = {
+            if let Some(tc) = ctx.trace_collector() {
+                if _total_branches > 1 {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::NondeterministicFork {
+                            branch_count: _total_branches,
+                        },
+                    );
+                }
+                let span_id = tc.next_span_id();
+                let start_ns = tc.elapsed_ns();
+                tc.emit_timed(
+                    trace_format::TraceTier::TreeWalker,
+                    depth as u32,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::BranchStart {
+                        branch_index: 0,
+                        total_branches: _total_branches,
+                    },
+                    start_ns,
+                    None,
+                    Some(span_id),
+                );
+                span_id
+            } else {
+                0u64
+            }
+        };
+
+        continuations.push(GenericContinuation::ProcessRuleMatches {
+            remaining_matches: matches,
+            results: base_results,
+            env: env.clone(),
+            depth,
+            #[cfg(feature = "eval-trace")]
+            branch_span_id: _branch_span_id,
+            #[cfg(feature = "eval-trace")]
+            branch_start_ns: {
+                ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
+            },
+            #[cfg(feature = "eval-trace")]
+            branch_index: 0,
+            #[cfg(feature = "eval-trace")]
+            total_branches: _total_branches,
+        });
+
+        // Apply bindings to first match RHS
+        let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
+
+        // Trace: RuleApplication (first match)
+        #[cfg(feature = "eval-trace")]
+        {
+            if let Some(tc) = ctx.trace_collector() {
+                let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                    .collect();
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    depth as u32,
+                    crate::backend::trace::trace_value_generic(&rhs),
+                    vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
+                    None,
+                    trace_format::TraceEventKind::RuleApplication {
+                        rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
+                        rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
+                        bindings: bindings_tv,
+                        rule_span: None,
+                    },
+                );
+            }
+        }
+
+        work_stack.push(GenericWorkItem::Eval {
+            value: instantiated_rhs,
+            env,
+            depth,
+            is_tail_call: true,
+            expected_type: None,
+        });
+    }
 }
 
 // Thread-local depth counter for parallel branch evaluation.
@@ -456,7 +697,9 @@ where
             // Collect all live values from trampoline state as GC roots.
             // This ensures values in the work stack and continuations survive
             // the mark-sweep cycle that runs during the safepoint pause.
-            let mut roots = Vec::new();
+            // Pre-allocate estimate: ~2 values per work item + ~4 per continuation.
+            let estimated_roots = 2 + work_stack.len() * 2 + continuations.len() * 4;
+            let mut roots = Vec::with_capacity(estimated_roots);
             // Root from the work item we just popped (it's not on the stack)
             work.collect_values(&mut roots);
             for w in &work_stack {
@@ -477,6 +720,27 @@ where
                     unsafe { &mut *(&mut roots as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
             }
+            // Collect GC roots from the eval memo cache. Cached MettaValue
+            // pointers must survive the mark-sweep cycle.
+            if std::any::TypeId::of::<C::Value>()
+                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+            {
+                let concrete_roots: &mut Vec<crate::backend::models::MettaValue> =
+                    unsafe { &mut *(&mut roots as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
+                collect_eval_memo_roots(concrete_roots);
+            }
+
+            // Clear thread-local MORK serialization cache before GC runs.
+            // After GC, slab slots may be reused (ABA), so cached pointer keys
+            // would alias different values. Clear BEFORE perform_safepoint.
+            crate::backend::environment::rule_management::clear_mork_bytes_cache();
+
+            // Clear normal-form bloom filter before GC runs.
+            // After GC, slab slots may be reused (ABA), so stale bloom entries
+            // keyed by inner_ptr would falsely report new values at the same
+            // address as "normal form" — skipping evaluation incorrectly.
+            invalidate_normal_form_memo();
+
             #[cfg(feature = "eval-trace")]
             let _root_count = roots.len() as u32;
             #[cfg(feature = "eval-trace")]
@@ -542,6 +806,30 @@ where
                     });
                     continue;
                 }
+
+                // Expression-level memoization: check if we've evaluated this
+                // exact expression before (by content hash). Only for MettaValue
+                // (compile-time constant after monomorphization) and pure expressions.
+                let memo_hash = if is_sexpr
+                    && std::any::TypeId::of::<C::Value>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                    && should_memoize(&value)
+                {
+                    let h = value.hash_value();
+                    if let Some(cached_results) = eval_memo_get(h) {
+                        // Cache hit — skip evaluation entirely.
+                        // SAFETY: C::Value is MettaValue (TypeId checked above).
+                        let generic_results: Vec<C::Value> =
+                            unsafe { std::mem::transmute(cached_results) };
+                        work_stack.push(GenericWorkItem::Resume {
+                            result: (generic_results, env),
+                        });
+                        continue;
+                    }
+                    Some(h)
+                } else {
+                    None
+                };
 
                 // Sub-expression tiered dispatch: increment per-slot execution counter
                 // and attempt dispatch to compiled bytecode/JIT.
@@ -622,6 +910,17 @@ where
                         // Dispatch returned None — fall through to tree-walker
                         }
                     }
+                }
+
+                // Push MemoizeResult continuation if we got a cache miss on a
+                // memoizable expression. When the evaluation resolves, this
+                // continuation caches the results for future lookups.
+                if let Some(h) = memo_hash {
+                    continuations.push(GenericContinuation::MemoizeResult {
+                        expr_hash: h,
+                        env: env.clone(),
+                        depth,
+                    });
                 }
 
                 // Save input pointer for fixpoint detection (Phase 9.5)
@@ -908,180 +1207,11 @@ where
                                 result: (vec![], env),
                             });
                         } else {
-                            // ── Parallel nondeterministic branching gate ──
-                            // Check conditions without consuming matches: MettaValue only
-                            // (compile-time constant after monomorphization), at least 2
-                            // matches (1+ remaining after local branch 0), not at max
-                            // parallel depth (prevents recursive pool exhaustion),
-                            // active workers available, and budget slots remain.
-                            // Budget is scaled by 4^(-depth) at each nesting level.
-                            let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
-                            let budget = if matches.len() >= 2
-                                && std::any::TypeId::of::<C::Value>()
-                                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
-                                && current_depth < max_parallel_depth()
-                                && global_eval_pool().active_workers() > 0
-                            {
-                                try_acquire_budget((matches.len() - 1) as u32, current_depth)
-                            } else {
-                                0
-                            };
-
-                            if budget > 0 {
-                                // ── Parallel path: dispatch all branches to work pool ──
-                                let factory = ctx.factory();
-                                let branches: Vec<crate::backend::models::MettaValue> = matches
-                                    .into_iter()
-                                    .map(|(rhs, bindings, _rhs_type)| {
-                                        // SAFETY: C::Value is MettaValue (TypeId checked above).
-                                        // MettaValue and C::Value have identical layout (same struct).
-                                        let metta_rhs: &crate::backend::models::MettaValue =
-                                            unsafe { &*(&rhs as *const C::Value as *const crate::backend::models::MettaValue) };
-                                        let metta_bindings: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
-                                            unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
-                                        let metta_factory: &GcFactory =
-                                            unsafe { &*(factory as *const C::Factory as *const GcFactory) };
-                                        apply_bindings_generic(metta_rhs, metta_bindings, metta_factory)
-                                    })
-                                    .collect();
-
-                                // Clone env to properly increment Arc refcounts, then
-                                // reinterpret as MettaEnvironment. transmute_copy alone
-                                // would alias without incrementing refcounts → UAF.
-                                // forget(clone) transfers ownership to metta_env.
-                                let env_clone = env.clone();
-                                let metta_env: crate::backend::environment::generic::MettaEnvironment =
-                                    unsafe { std::mem::transmute_copy(&env_clone) };
-                                std::mem::forget(env_clone);
-
-                                // Trace: NondeterministicFork (parallel)
-                                #[cfg(feature = "eval-trace")]
-                                {
-                                    if let Some(tc) = ctx.trace_collector() {
-                                        tc.emit_converted(
-                                            trace_format::TraceTier::TreeWalker,
-                                            depth as u32,
-                                            trace_format::TraceValue::Unit,
-                                            vec![],
-                                            None,
-                                            trace_format::TraceEventKind::NondeterministicFork {
-                                                branch_count: branches.len() as u32,
-                                            },
-                                        );
-                                    }
-                                }
-
-                                let results = parallel_branch_eval(branches, metta_env, budget, current_depth);
-
-                                // SAFETY: MettaValue and C::Value are the same type (TypeId checked).
-                                let generic_results: Vec<C::Value> =
-                                    unsafe { std::mem::transmute(results) };
-
-                                work_stack.push(GenericWorkItem::Resume {
-                                    result: (generic_results, env),
-                                });
-                            } else {
-                            // ── Sequential path (existing code, unchanged) ──
-                            // Strip rhs_type → 2-tuples for ProcessRuleMatches
-                            let mut matches_deque: VecDeque<_> = matches.into_iter()
+                            // Strip rhs_type from 3-tuples → 2-tuples for unified dispatch
+                            let matches_deque: VecDeque<_> = matches.into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                 .collect();
-                            let total_branches = (matches_deque.len() + 1) as u32; // +1 for the one we pop
-                            let (rhs, bindings) = matches_deque.pop_front().expect("matches is non-empty");
-
-                            // Trace: NondeterministicFork + BranchStart for first branch
-                            #[cfg(feature = "eval-trace")]
-                            let _branch_span_id = {
-                                if let Some(tc) = ctx.trace_collector() {
-                                    // Emit fork event
-                                    if total_branches > 1 {
-                                        tc.emit_converted(
-                                            trace_format::TraceTier::TreeWalker,
-                                            depth as u32,
-                                            trace_format::TraceValue::Unit,
-                                            vec![],
-                                            None,
-                                            trace_format::TraceEventKind::NondeterministicFork {
-                                                branch_count: total_branches,
-                                            },
-                                        );
-                                    }
-                                    // Emit BranchStart for first branch with span ID
-                                    let span_id = tc.next_span_id();
-                                    let start_ns = tc.elapsed_ns();
-                                    tc.emit_timed(
-                                        trace_format::TraceTier::TreeWalker,
-                                        depth as u32,
-                                        trace_format::TraceValue::Unit,
-                                        vec![],
-                                        None,
-                                        trace_format::TraceEventKind::BranchStart {
-                                            branch_index: 0,
-                                            total_branches,
-                                        },
-                                        start_ns,
-                                        None, // duration filled at BranchEnd
-                                        Some(span_id),
-                                    );
-                                    span_id
-                                } else {
-                                    0u64
-                                }
-                            };
-
-                            continuations.push(GenericContinuation::ProcessRuleMatches {
-                                remaining_matches: matches_deque,
-                                results: vec![],
-                                env: env.clone(),
-                                depth,
-                                #[cfg(feature = "eval-trace")]
-                                branch_span_id: _branch_span_id,
-                                #[cfg(feature = "eval-trace")]
-                                branch_start_ns: {
-                                    ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
-                                },
-                                #[cfg(feature = "eval-trace")]
-                                branch_index: 0,
-                                #[cfg(feature = "eval-trace")]
-                                total_branches,
-                            });
-
-                            // Apply generic bindings to RHS - NO CONVERSION needed!
-                            // Both rhs and bindings are already in generic type V
-                            let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
-
-                            // Trace: RuleApplication (tree-walker, first match)
-                            #[cfg(feature = "eval-trace")]
-                            {
-                                if let Some(tc) = ctx.trace_collector() {
-                                    let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
-                                        .iter()
-                                        .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
-                                        .collect();
-                                    tc.emit_converted(
-                                        trace_format::TraceTier::TreeWalker,
-                                        depth as u32,
-                                        crate::backend::trace::trace_value_generic(&rhs),
-                                        vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
-                                        None,
-                                        trace_format::TraceEventKind::RuleApplication {
-                                            rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
-                                            rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
-                                            bindings: bindings_tv,
-                                            rule_span: None,
-                                        },
-                                    );
-                                }
-                            }
-
-                            work_stack.push(GenericWorkItem::Eval {
-                                value: instantiated_rhs,
-                                env,
-                                depth,
-                                is_tail_call: true,
-                                expected_type: None,
-                            });
-                            } // end else (sequential path)
+                            dispatch_rule_matches(matches_deque, vec![], env, depth, ctx, &mut work_stack, &mut continuations);
                         }
                     }
 
@@ -2025,65 +2155,8 @@ fn process_continuation_generic<C: EvalContext>(
                                 result: (base_results, env),
                             });
                         } else {
-                            // Already generic types - no conversion needed!
-                            let mut matches_deque = matches;
-                            let _total = (matches_deque.len() + 1) as u32;
-                            let (rhs, bindings) = matches_deque.pop_front().expect("matches is non-empty");
-
-                            // Trace: BranchStart for the first branch
-                            #[cfg(feature = "eval-trace")]
-                            let (_branch_span, _branch_start) = {
-                                if let Some(tc) = ctx.trace_collector() {
-                                    if _total > 1 {
-                                        tc.emit_converted(
-                                            trace_format::TraceTier::TreeWalker,
-                                            depth as u32,
-                                            trace_format::TraceValue::Unit,
-                                            vec![],
-                                            None,
-                                            trace_format::TraceEventKind::NondeterministicFork { branch_count: _total },
-                                        );
-                                    }
-                                    let sid = tc.next_span_id();
-                                    let sns = tc.elapsed_ns();
-                                    tc.emit_timed(
-                                        trace_format::TraceTier::TreeWalker,
-                                        depth as u32,
-                                        trace_format::TraceValue::Unit,
-                                        vec![],
-                                        None,
-                                        trace_format::TraceEventKind::BranchStart { branch_index: 0, total_branches: _total },
-                                        sns, None, Some(sid),
-                                    );
-                                    (sid, sns)
-                                } else { (0u64, 0u64) }
-                            };
-
-                            continuations.push(GenericContinuation::ProcessRuleMatches {
-                                remaining_matches: matches_deque,
-                                results: base_results,
-                                env: env.clone(),
-                                depth,
-                                #[cfg(feature = "eval-trace")]
-                                branch_span_id: _branch_span,
-                                #[cfg(feature = "eval-trace")]
-                                branch_start_ns: _branch_start,
-                                #[cfg(feature = "eval-trace")]
-                                branch_index: 0,
-                                #[cfg(feature = "eval-trace")]
-                                total_branches: _total,
-                            });
-
-                            // Apply generic bindings - no conversion needed
-                            let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
-
-                            work_stack.push(GenericWorkItem::Eval {
-                                value: instantiated_rhs,
-                                env,
-                                depth,
-                                is_tail_call: true,
-                                expected_type: None,
-                            });
+                            // Dispatch via unified parallel/sequential gate
+                            dispatch_rule_matches(matches, base_results, env, depth, ctx, work_stack, continuations);
                         }
                     }
                     GenericProcessedSExpr::EvalCombinations { combinations, env, depth } => {
@@ -2400,32 +2473,23 @@ fn process_continuation_generic<C: EvalContext>(
                         result: (vec![], result_env),
                     });
                 } else {
-                    // Rules matched - evaluate them
-                    // Strip rhs_type from 3-tuples → 2-tuples
-                    let mut matches_deque: VecDeque<_> = all_matches_with_types
+                    // Rules matched — strip rhs_type and dispatch via unified gate.
+                    // Push ProcessCombinations first (LIFO: it fires after dispatch completes).
+                    let matches_deque: VecDeque<_> = all_matches_with_types
                         .into_iter()
                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                         .collect();
-                    let (rhs, bindings) = matches_deque.pop_front().expect("non-empty");
 
                     continuations.push(GenericContinuation::ProcessCombinations {
                         combinations,
                         results,
-                        pending_rule_matches: matches_deque,
+                        pending_rule_matches: VecDeque::new(), // dispatch handles all matches
                         env: result_env.clone(),
                         depth,
                     });
 
-                    // Apply generic bindings - no conversion needed
-                    let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
-
-                    work_stack.push(GenericWorkItem::Eval {
-                        value: instantiated_rhs,
-                        env: result_env,
-                        depth,
-                        is_tail_call: true,
-                        expected_type: None,
-                    });
+                    // Dispatch rule matches (parallel or sequential)
+                    dispatch_rule_matches(matches_deque, vec![], result_env, depth, ctx, work_stack, continuations);
                 }
             } else {
                 // All combinations processed - results already contains generic values
@@ -2776,66 +2840,12 @@ fn process_continuation_generic<C: EvalContext>(
                             );
 
                             if !all_matches_with_types.is_empty() {
-                                // Rules matched — evaluate RHS
-                                // Strip rhs_type from 3-tuples → 2-tuples
-                                let mut matches_deque: VecDeque<_> =
+                                // Rules matched — strip rhs_type and dispatch via unified gate
+                                let matches_deque: VecDeque<_> =
                                     all_matches_with_types.into_iter()
                                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                         .collect();
-                                let _total_app = (matches_deque.len() + 1) as u32;
-                                let (rhs, bindings) =
-                                    matches_deque.pop_front().expect("matches is non-empty");
-
-                                #[cfg(feature = "eval-trace")]
-                                let (_app_span, _app_start) = {
-                                    if let Some(tc) = ctx.trace_collector() {
-                                        if _total_app > 1 {
-                                            tc.emit_converted(
-                                                trace_format::TraceTier::TreeWalker, depth as u32,
-                                                trace_format::TraceValue::Unit, vec![], None,
-                                                trace_format::TraceEventKind::NondeterministicFork { branch_count: _total_app },
-                                            );
-                                        }
-                                        let sid = tc.next_span_id();
-                                        let sns = tc.elapsed_ns();
-                                        tc.emit_timed(
-                                            trace_format::TraceTier::TreeWalker, depth as u32,
-                                            trace_format::TraceValue::Unit, vec![], None,
-                                            trace_format::TraceEventKind::BranchStart { branch_index: 0, total_branches: _total_app },
-                                            sns, None, Some(sid),
-                                        );
-                                        (sid, sns)
-                                    } else { (0u64, 0u64) }
-                                };
-
-                                continuations.push(
-                                    GenericContinuation::ProcessRuleMatches {
-                                        remaining_matches: matches_deque,
-                                        results: vec![],
-                                        env: result_env.clone(),
-                                        depth,
-                                        #[cfg(feature = "eval-trace")]
-                                        branch_span_id: _app_span,
-                                        #[cfg(feature = "eval-trace")]
-                                        branch_start_ns: _app_start,
-                                        #[cfg(feature = "eval-trace")]
-                                        branch_index: 0,
-                                        #[cfg(feature = "eval-trace")]
-                                        total_branches: _total_app,
-                                    },
-                                );
-
-                                let instantiated_rhs = apply_bindings_generic(
-                                    &rhs, &bindings, ctx.factory()
-                                );
-
-                                work_stack.push(GenericWorkItem::Eval {
-                                    value: instantiated_rhs,
-                                    env: result_env,
-                                    depth,
-                                    is_tail_call: true,
-                                    expected_type: None,
-                                });
+                                dispatch_rule_matches(matches_deque, vec![], result_env, depth, ctx, work_stack, continuations);
                             } else {
                                 // Step 4: No rules matched — return as data constructor
                                 work_stack.push(GenericWorkItem::Resume {
@@ -6168,18 +6178,32 @@ fn process_continuation_generic<C: EvalContext>(
                             result: (vec![ctx.factory().unit()], env_after),
                         });
                     } else {
-                        let stats = memo_handle.stats();
-                        let stats_sexpr = ctx.factory().sexpr(vec![
-                            ctx.factory().atom("hits"),
-                            ctx.factory().long(stats.0 as i64),
-                            ctx.factory().atom("misses"),
-                            ctx.factory().long(stats.1 as i64),
-                            ctx.factory().atom("size"),
-                            ctx.factory().long(stats.2 as i64),
-                        ]);
-                        work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![stats_sexpr], env_after),
-                        });
+                        #[cfg(feature = "track-stats")]
+                        {
+                            let stats = memo_handle.stats();
+                            let stats_sexpr = ctx.factory().sexpr(vec![
+                                ctx.factory().atom("hits"),
+                                ctx.factory().long(stats.0 as i64),
+                                ctx.factory().atom("misses"),
+                                ctx.factory().long(stats.1 as i64),
+                                ctx.factory().atom("size"),
+                                ctx.factory().long(stats.2 as i64),
+                            ]);
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (vec![stats_sexpr], env_after),
+                            });
+                        }
+                        #[cfg(not(feature = "track-stats"))]
+                        {
+                            let detail = ctx.factory().atom("Rebuild with: cargo build --features track-stats");
+                            let err = ctx.factory().error(
+                                "memo-stats requires track-stats feature",
+                                detail,
+                            );
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (vec![err], env_after),
+                            });
+                        }
                     }
                 } else {
                     let op_name = if is_clear { "clear-memo!" } else { "memo-stats" };
@@ -6196,6 +6220,34 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 }
             }
+        }
+
+        GenericContinuation::MemoizeResult {
+            expr_hash,
+            env: _,
+            depth: _,
+        } => {
+            let (result_values, result_env) = result;
+
+            // Cache the evaluation results in the thread-local memo table.
+            // Only for MettaValue (compile-time constant after monomorphization).
+            if std::any::TypeId::of::<C::Value>()
+                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+            {
+                // SAFETY: C::Value is MettaValue (TypeId checked above).
+                // Vec<C::Value> and Vec<MettaValue> have identical layout.
+                let concrete_slice: &[crate::backend::models::MettaValue] = unsafe {
+                    std::slice::from_raw_parts(
+                        result_values.as_ptr() as *const crate::backend::models::MettaValue,
+                        result_values.len(),
+                    )
+                };
+                eval_memo_put(expr_hash, concrete_slice);
+            }
+
+            work_stack.push(GenericWorkItem::Resume {
+                result: (result_values, result_env),
+            });
         }
     }
 }

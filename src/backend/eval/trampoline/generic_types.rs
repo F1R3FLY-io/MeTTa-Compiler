@@ -643,6 +643,20 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         /// Evaluation depth
         depth: usize,
     },
+
+    /// Memoize evaluation results for a pure expression.
+    ///
+    /// When evaluation completes, the results are stored in the thread-local
+    /// EVAL_MEMO cache keyed by the expression's content hash. Subsequent
+    /// evaluations of structurally identical expressions skip evaluation entirely.
+    MemoizeResult {
+        /// Content hash of the expression (via `hash_value()`)
+        expr_hash: u64,
+        /// Environment (for result forwarding)
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
 }
 
 // ============================================================================
@@ -1012,6 +1026,10 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 out.extend(remaining_raw.iter().cloned());
                 out.extend(evaluated.iter().cloned());
                 out.push(cases.clone());
+            }
+
+            Self::MemoizeResult { .. } => {
+                // No V values to collect — only stores a u64 hash key.
             }
         }
     }

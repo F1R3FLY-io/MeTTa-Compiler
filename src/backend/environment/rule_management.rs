@@ -23,7 +23,12 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use lru::LruCache;
+
+use crate::backend::hash_utils::PtrBuildHasher;
 
 /// Global epoch counter for rule/type mutations.
 ///
@@ -66,6 +71,26 @@ thread_local! {
         // The actual root and trace initialization happen via reset() before each use.
         ExprZipper { root: Expr { ptr: std::ptr::null_mut() }, loc: 0, trace }
     });
+
+    /// Thread-local MORK serialization cache for `match_rules_native`.
+    ///
+    /// Keyed by `*const MettaValueInner` (slab pointer, stable between GC safepoints).
+    /// Value is the serialized MORK bytes INCLUDING the trailing 0x00 padding byte.
+    ///
+    /// ABA safety: Between GC safepoints, no slab slot is reused, so pointer identity
+    /// is stable. The cache is cleared at each safepoint via `clear_mork_bytes_cache()`.
+    ///
+    /// 2048 entries × ~64 bytes avg = ~128 KB per thread. LRU eviction bounds memory.
+    static MORK_BYTES_CACHE: RefCell<LruCache<usize, Vec<u8>, PtrBuildHasher>> =
+        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(2048).expect("non-zero"), PtrBuildHasher));
+}
+
+/// Clear the thread-local MORK serialization cache.
+///
+/// Called at GC safepoints (before GC runs) to ensure no stale pointers
+/// persist across GC mark-sweep cycles where slab slots may be reused.
+pub fn clear_mork_bytes_cache() {
+    MORK_BYTES_CACHE.with(|c| c.borrow_mut().clear());
 }
 
 use super::generic::GenericEnvironment;
@@ -691,6 +716,10 @@ where
         // previously normal-form expressions reducible.
         crate::backend::eval::trampoline::invalidate_normal_form_memo();
 
+        // Clear eval memo cache — new rules may change evaluation results
+        // for previously memoized expressions.
+        crate::backend::eval::trampoline::clear_eval_memo();
+
         // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
         increment_rule_epoch();
 
@@ -1032,12 +1061,39 @@ where
         // performed inside the thread-local borrow to avoid copying the buffer out.
         MATCH_EXPR_BUFFER.with(|buf_cell| {
             let mut buf = buf_cell.borrow_mut();
-            let serialize_ok = with_mork_bytes(expr, &self.shared_mapping, self.mork_cache_epoch, |bytes| {
-                buf.clear();
-                buf.reserve(bytes.len() + 1);
-                buf.extend_from_slice(bytes);
-                buf.push(0x00); // Padding byte for ExprZipper read-past-end safety
+
+            // Check the MORK bytes cache first (keyed by slab pointer, stable between
+            // GC safepoints). On hit, skip the expensive with_mork_bytes() serialization.
+            let cache_key = expr.inner_ptr() as usize;
+            let cache_hit = MORK_BYTES_CACHE.with(|cache_cell| {
+                let mut cache = cache_cell.borrow_mut();
+                if let Some(cached_bytes) = cache.get(&cache_key) {
+                    buf.clear();
+                    buf.reserve(cached_bytes.len());
+                    buf.extend_from_slice(cached_bytes);
+                    true
+                } else {
+                    false
+                }
             });
+
+            let serialize_ok = if cache_hit {
+                Ok(())
+            } else {
+                let result = with_mork_bytes(expr, &self.shared_mapping, self.mork_cache_epoch, |bytes| {
+                    buf.clear();
+                    buf.reserve(bytes.len() + 1);
+                    buf.extend_from_slice(bytes);
+                    buf.push(0x00); // Padding byte for ExprZipper read-past-end safety
+                });
+                // Cache the serialized bytes on success
+                if result.is_ok() {
+                    MORK_BYTES_CACHE.with(|cache_cell| {
+                        cache_cell.borrow_mut().put(cache_key, buf.clone());
+                    });
+                }
+                result
+            };
 
             if serialize_ok.is_err() {
                 // MORK can't encode this expression (e.g., a child S-expression

@@ -19,7 +19,7 @@ pub use gc_allocator::{
     apply_backpressure_tier1, apply_backpressure_tier2,
     backpressure_level, collect_all_roots, committed_bytes_snapshot,
     current_context_id, disable_gc,
-    drop_eval_guard_for_safepoint, gc_cycle_in_flight,
+    drop_eval_guard_for_safepoint, gc_cycle_in_flight, gc_sweep_epoch,
     global_allocator, global_factory, global_gc_cron,
     init_global_allocator, is_gc_disabled, is_gc_requested,
     maybe_process_gc_response, maybe_quiescent_gc,

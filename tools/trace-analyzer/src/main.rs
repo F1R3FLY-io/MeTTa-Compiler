@@ -18,6 +18,9 @@
 //! - `redundancy`    — Memoization opportunity detection
 //! - `fanout`        — Nondeterministic branching deep-dive
 //! - `critical-path` — Amdahl's Law analysis via critical path reconstruction
+//! - `perf-correlate` — Cross-validate trace with perf CPU profile (folded stacks)
+//! - `massif-correlate` — Cross-validate trace with Valgrind massif memory profile
+//! - `gdb-correlate` — Cross-correlate GDB coredump backtrace with evaluation trace
 
 mod reader;
 mod util;
@@ -36,6 +39,13 @@ mod hotpath;
 mod redundancy;
 mod fanout;
 mod critical_path;
+mod function_map;
+mod perf_parser;
+mod massif_parser;
+mod perf_correlate;
+mod massif_correlate;
+mod gdb_parser;
+mod gdb_correlate;
 
 use clap::{Parser, Subcommand};
 
@@ -175,6 +185,61 @@ enum Commands {
         #[arg(long, default_value = "1,2,4,8,16,32")]
         workers: String,
     },
+    /// Cross-validate MeTTa trace with perf CPU profile (folded stacks)
+    PerfCorrelate {
+        /// Path to the trace file
+        file: String,
+        /// Path to folded perf stacks (output of `perf script | stackcollapse-perf.pl`)
+        #[arg(long)]
+        perf_stacks: String,
+        /// Number of top entries to display (default: 20)
+        #[arg(long, default_value = "20")]
+        top_n: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cross-validate MeTTa trace with Valgrind massif memory profile
+    MassifCorrelate {
+        /// Path to the trace file
+        file: String,
+        /// Path to massif output file (from `valgrind --tool=massif`)
+        #[arg(long)]
+        massif_out: String,
+        /// Number of top entries to display (default: 20)
+        #[arg(long, default_value = "20")]
+        top_n: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cross-correlate GDB coredump backtrace with MeTTa evaluation trace.
+    ///
+    /// Extract backtrace from a coredump:
+    ///   coredumpctl debug BINARY --debugger-arguments="-batch -ex 'thread apply all bt'" > bt.txt
+    ///
+    /// Or from a core file directly:
+    ///   gdb -batch -ex 'thread apply all bt' ./target/release/mettatron /path/to/core > bt.txt
+    GdbCorrelate {
+        /// Path to the trace file (.mtrace)
+        file: String,
+        /// Path to GDB backtrace file (output of `thread apply all bt`)
+        #[arg(long, long_help = "Path to GDB backtrace file.\n\n\
+            Generate with coredumpctl:\n  \
+            coredumpctl debug BINARY --debugger-arguments=\"-batch -ex 'thread apply all bt'\" > bt.txt\n\n\
+            Or from a core file:\n  \
+            gdb -batch -ex 'thread apply all bt' ./target/release/mettatron /path/to/core > bt.txt")]
+        gdb_bt: String,
+        /// Number of tail events to keep per trace thread (default: 50)
+        #[arg(long, default_value = "50")]
+        tail_n: usize,
+        /// Number of top entries to display (default: 20)
+        #[arg(long, default_value = "20")]
+        top_n: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -211,6 +276,12 @@ fn main() {
                 critical_path::run(&file, &worker_counts)
             }
         }
+        Commands::PerfCorrelate { file, perf_stacks, top_n, json } =>
+            perf_correlate::run(&file, &perf_stacks, top_n, json),
+        Commands::MassifCorrelate { file, massif_out, top_n, json } =>
+            massif_correlate::run(&file, &massif_out, top_n, json),
+        Commands::GdbCorrelate { file, gdb_bt, tail_n, top_n, json } =>
+            gdb_correlate::run(&file, &gdb_bt, tail_n, top_n, json),
     };
 
     if let Err(e) = result {

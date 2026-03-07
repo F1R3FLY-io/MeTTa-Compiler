@@ -27,8 +27,10 @@ use std::time::{Duration, Instant};
 
 use mettatron::backend::bytecode::{
     can_compile, can_compile_with_env, global_tiered_cache, ExecutionTier, TierStatusKind,
-    TieredCacheStats, BYTECODE_THRESHOLD,
+    BYTECODE_THRESHOLD,
 };
+#[cfg(feature = "track-stats")]
+use mettatron::backend::bytecode::TieredCacheStats;
 use mettatron::{compile, eval, new_env, MettaValue};
 
 // =============================================================================
@@ -36,6 +38,7 @@ use mettatron::{compile, eval, new_env, MettaValue};
 // =============================================================================
 
 /// Compute element-wise stat deltas between two snapshots.
+#[cfg(feature = "track-stats")]
 fn stat_deltas(before: &TieredCacheStats, after: &TieredCacheStats) -> TieredCacheStats {
     TieredCacheStats {
         expressions_tracked: after
@@ -83,6 +86,30 @@ fn stat_deltas(before: &TieredCacheStats, after: &TieredCacheStats) -> TieredCac
         jit2_executions: after
             .jit2_executions
             .saturating_sub(before.jit2_executions),
+        jit1_failures_nondeterminism: after
+            .jit1_failures_nondeterminism
+            .saturating_sub(before.jit1_failures_nondeterminism),
+        jit1_failures_unsupported_opcode: after
+            .jit1_failures_unsupported_opcode
+            .saturating_sub(before.jit1_failures_unsupported_opcode),
+        jit1_failures_compiler_init: after
+            .jit1_failures_compiler_init
+            .saturating_sub(before.jit1_failures_compiler_init),
+        jit1_failures_codegen: after
+            .jit1_failures_codegen
+            .saturating_sub(before.jit1_failures_codegen),
+        jit2_failures_nondeterminism: after
+            .jit2_failures_nondeterminism
+            .saturating_sub(before.jit2_failures_nondeterminism),
+        jit2_failures_unsupported_opcode: after
+            .jit2_failures_unsupported_opcode
+            .saturating_sub(before.jit2_failures_unsupported_opcode),
+        jit2_failures_compiler_init: after
+            .jit2_failures_compiler_init
+            .saturating_sub(before.jit2_failures_compiler_init),
+        jit2_failures_codegen: after
+            .jit2_failures_codegen
+            .saturating_sub(before.jit2_failures_codegen),
     }
 }
 
@@ -149,6 +176,7 @@ fn wait_for_tier_ready(
 /// Expression: `(+ 1 2)` (bare, no `!` — head `"+"` passes `can_compile`)
 #[test]
 fn test_path_a_tiered_cache_bytecode_progression() {
+    #[cfg(feature = "track-stats")]
     let before = global_tiered_cache().stats();
 
     // Compile bare `(+ 1 2)` — no `!` wrapper
@@ -239,13 +267,16 @@ fn test_path_a_tiered_cache_bytecode_progression() {
     );
 
     // Step 9: Both evals used bytecode (first via B, second via A)
-    let after = global_tiered_cache().stats();
-    let deltas = stat_deltas(&before, &after);
-    assert!(
-        deltas.bytecode_executions >= (BYTECODE_THRESHOLD + 1) as u64,
-        "Expected at least {} bytecode executions, got {}",
-        BYTECODE_THRESHOLD + 1, deltas.bytecode_executions
-    );
+    #[cfg(feature = "track-stats")]
+    {
+        let after = global_tiered_cache().stats();
+        let deltas = stat_deltas(&before, &after);
+        assert!(
+            deltas.bytecode_executions >= (BYTECODE_THRESHOLD + 1) as u64,
+            "Expected at least {} bytecode executions, got {}",
+            BYTECODE_THRESHOLD + 1, deltas.bytecode_executions
+        );
+    }
 }
 
 // =============================================================================
@@ -260,6 +291,7 @@ fn test_path_a_tiered_cache_bytecode_progression() {
 /// Expression: `!(if True 42 0)`
 #[test]
 fn test_path_b_bang_prefixed_inline_bytecode() {
+    #[cfg(feature = "track-stats")]
     let before = global_tiered_cache().stats();
 
     let state = compile("!(if True 42 0)").expect("compile failed");
@@ -291,13 +323,16 @@ fn test_path_b_bang_prefixed_inline_bytecode() {
     // Note: The outer `!` wrapper triggers eval of the inner expression, which
     // may dispatch sub-expressions to other tiers. We only assert the top-level
     // dispatch recorded at least one bytecode execution.
-    let after = global_tiered_cache().stats();
-    let deltas = stat_deltas(&before, &after);
-    assert!(
-        deltas.bytecode_executions >= 1,
-        "Expected at least 1 bytecode execution (Path B inline), got {}",
-        deltas.bytecode_executions
-    );
+    #[cfg(feature = "track-stats")]
+    {
+        let after = global_tiered_cache().stats();
+        let deltas = stat_deltas(&before, &after);
+        assert!(
+            deltas.bytecode_executions >= 1,
+            "Expected at least 1 bytecode execution (Path B inline), got {}",
+            deltas.bytecode_executions
+        );
+    }
 }
 
 // =============================================================================
@@ -312,6 +347,7 @@ fn test_path_b_bang_prefixed_inline_bytecode() {
 /// - Collapse: `!(collapse (superpose (1 2 3)))` — `collapse` falls to _ => false in both
 #[test]
 fn test_path_c_interpreter_fallback() {
+    #[cfg(feature = "track-stats")]
     let before = global_tiered_cache().stats();
 
     let mut env = new_env();
@@ -364,13 +400,16 @@ fn test_path_c_interpreter_fallback() {
     let _ = collapse_results;
 
     // --- Verify interpreter tier was used ---
-    let after = global_tiered_cache().stats();
-    let deltas = stat_deltas(&before, &after);
-    assert!(
-        deltas.interpreter_executions >= 3,
-        "Expected at least 3 interpreter executions (rule + match + collapse), got {}",
-        deltas.interpreter_executions
-    );
+    #[cfg(feature = "track-stats")]
+    {
+        let after = global_tiered_cache().stats();
+        let deltas = stat_deltas(&before, &after);
+        assert!(
+            deltas.interpreter_executions >= 3,
+            "Expected at least 3 interpreter executions (rule + match + collapse), got {}",
+            deltas.interpreter_executions
+        );
+    }
 }
 
 // =============================================================================

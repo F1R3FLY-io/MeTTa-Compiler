@@ -30,11 +30,12 @@ fn print_usage() {
     eprintln!("    --repl                  Start interactive REPL");
     eprintln!("    --eval                  Evaluate and print results (default)");
     eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
-    eprintln!("    --no-gc                 Disable garbage collection
-    --gc-stats              Print GC statistics to stderr on exit
+    eprintln!("    --no-gc                 Disable garbage collection");
+    #[cfg(feature = "track-stats")]
+    eprintln!("    --gc-stats              Print GC statistics to stderr on exit
     --tier-stats            Print tiered compilation stats to stderr on exit
-    --pool-stats            Print thread pool statistics to stderr on exit
-    --startup-timing        Print per-phase startup timing to stderr");
+    --pool-stats            Print thread pool statistics to stderr on exit");
+    eprintln!("    --startup-timing        Print per-phase startup timing to stderr");
     #[cfg(feature = "eval-trace")]
     eprintln!("    --trace <FILE>          Write binary evaluation trace to FILE");
     eprintln!();
@@ -59,8 +60,11 @@ struct Options {
     repl_mode: bool,
     strict_mode: bool,
     no_gc: bool,
+    #[cfg(feature = "track-stats")]
     gc_stats: bool,
+    #[cfg(feature = "track-stats")]
     tier_stats: bool,
+    #[cfg(feature = "track-stats")]
     pool_stats: bool,
     startup_timing: bool,
     #[cfg(feature = "eval-trace")]
@@ -76,8 +80,11 @@ fn parse_args() -> Result<Options, String> {
     let mut repl_mode = false;
     let mut strict_mode = false;
     let mut no_gc = false;
+    #[cfg(feature = "track-stats")]
     let mut gc_stats = false;
+    #[cfg(feature = "track-stats")]
     let mut tier_stats = false;
+    #[cfg(feature = "track-stats")]
     let mut pool_stats = false;
     let mut startup_timing = false;
     #[cfg(feature = "eval-trace")]
@@ -116,12 +123,15 @@ fn parse_args() -> Result<Options, String> {
             "--no-gc" => {
                 no_gc = true;
             }
+            #[cfg(feature = "track-stats")]
             "--gc-stats" => {
                 gc_stats = true;
             }
+            #[cfg(feature = "track-stats")]
             "--tier-stats" => {
                 tier_stats = true;
             }
+            #[cfg(feature = "track-stats")]
             "--pool-stats" => {
                 pool_stats = true;
             }
@@ -156,8 +166,11 @@ fn parse_args() -> Result<Options, String> {
         repl_mode,
         strict_mode,
         no_gc,
+        #[cfg(feature = "track-stats")]
         gc_stats,
+        #[cfg(feature = "track-stats")]
         tier_stats,
+        #[cfg(feature = "track-stats")]
         pool_stats,
         startup_timing,
         #[cfg(feature = "eval-trace")]
@@ -607,14 +620,17 @@ fn main() {
     // REPL mode
     if options.repl_mode {
         run_repl(&options);
-        if options.gc_stats {
-            mettatron::backend::diagnostics::print_gc_stats();
-        }
-        if options.tier_stats {
-            mettatron::backend::diagnostics::print_tier_stats();
-        }
-        if options.pool_stats {
-            mettatron::backend::diagnostics::print_pool_stats();
+        #[cfg(feature = "track-stats")]
+        {
+            if options.gc_stats {
+                mettatron::backend::diagnostics::print_gc_stats();
+            }
+            if options.tier_stats {
+                mettatron::backend::diagnostics::print_tier_stats();
+            }
+            if options.pool_stats {
+                mettatron::backend::diagnostics::print_pool_stats();
+            }
         }
         if options.startup_timing {
             timings.print();
@@ -653,14 +669,17 @@ fn main() {
         process::exit(1);
     }
 
-    if options.gc_stats {
-        mettatron::backend::diagnostics::print_gc_stats();
-    }
-    if options.tier_stats {
-        mettatron::backend::diagnostics::print_tier_stats();
-    }
-    if options.pool_stats {
-        mettatron::backend::diagnostics::print_pool_stats();
+    #[cfg(feature = "track-stats")]
+    {
+        if options.gc_stats {
+            mettatron::backend::diagnostics::print_gc_stats();
+        }
+        if options.tier_stats {
+            mettatron::backend::diagnostics::print_tier_stats();
+        }
+        if options.pool_stats {
+            mettatron::backend::diagnostics::print_pool_stats();
+        }
     }
     if options.startup_timing {
         timings.print();

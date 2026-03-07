@@ -28,6 +28,8 @@
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 use std::sync::Arc;
 
 use super::cache::hash_path;
@@ -132,10 +134,10 @@ pub struct ModuleRegistry {
     modules: Vec<MettaMod>,
 
     /// Path UID → ModId (primary lookup by path).
-    path_to_module: HashMap<u64, ModId>,
+    path_to_module: HashMap<u64, ModId, IdentityU64BuildHasher>,
 
     /// Content hash → ModId (deduplication across paths).
-    content_to_module: HashMap<u64, ModId>,
+    content_to_module: HashMap<u64, ModId, IdentityU64BuildHasher>,
 
     /// Content hashes currently being loaded (cycle detection).
     loading_modules: HashSet<u64>,
@@ -157,8 +159,8 @@ impl ModuleRegistry {
     pub fn with_options(options: LoadOptions) -> Self {
         Self {
             modules: Vec::new(),
-            path_to_module: HashMap::new(),
-            content_to_module: HashMap::new(),
+            path_to_module: HashMap::with_hasher(IdentityU64BuildHasher),
+            content_to_module: HashMap::with_hasher(IdentityU64BuildHasher),
             loading_modules: HashSet::new(),
             options,
             next_mod_id: 0,

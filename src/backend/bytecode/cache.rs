@@ -14,6 +14,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
+#[cfg(feature = "track-stats")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use parking_lot::RwLock;
@@ -22,9 +23,11 @@ use xxhash_rust::xxh3::Xxh3;
 use lru::LruCache;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::{register_root_provider, MettaValue, MettaValueInner, RootProvider};
 
 /// Statistics for bytecode cache monitoring (lock-free atomics).
+#[cfg(feature = "track-stats")]
 #[derive(Debug)]
 pub struct BytecodeCacheStats {
     /// can_compile cache hits
@@ -37,6 +40,7 @@ pub struct BytecodeCacheStats {
     pub bytecode_misses: AtomicU64,
 }
 
+#[cfg(feature = "track-stats")]
 impl Default for BytecodeCacheStats {
     fn default() -> Self {
         Self {
@@ -48,6 +52,7 @@ impl Default for BytecodeCacheStats {
     }
 }
 
+#[cfg(feature = "track-stats")]
 impl BytecodeCacheStats {
     /// Create a snapshot of current statistics.
     pub fn snapshot(&self) -> BytecodeCacheStatsSnapshot {
@@ -82,18 +87,19 @@ pub struct BytecodeCacheStatsSnapshot {
 }
 
 /// Global cache for can_compile results
-static CAN_COMPILE_CACHE: LazyLock<RwLock<LruCache<u64, bool>>> = LazyLock::new(|| {
+static CAN_COMPILE_CACHE: LazyLock<RwLock<LruCache<u64, bool, IdentityU64BuildHasher>>> = LazyLock::new(|| {
     let size = get_can_compile_cache_size();
-    RwLock::new(LruCache::new(size))
+    RwLock::new(LruCache::with_hasher(size, IdentityU64BuildHasher))
 });
 
 /// Global cache for compiled bytecode chunks
-static BYTECODE_CACHE: LazyLock<RwLock<LruCache<u64, Arc<BytecodeChunk>>>> = LazyLock::new(|| {
+static BYTECODE_CACHE: LazyLock<RwLock<LruCache<u64, Arc<BytecodeChunk>, IdentityU64BuildHasher>>> = LazyLock::new(|| {
     let size = get_bytecode_cache_size();
-    RwLock::new(LruCache::new(size))
+    RwLock::new(LruCache::with_hasher(size, IdentityU64BuildHasher))
 });
 
 /// Global statistics (lock-free atomics, no RwLock needed)
+#[cfg(feature = "track-stats")]
 static CACHE_STATS: LazyLock<BytecodeCacheStats> = LazyLock::new(BytecodeCacheStats::default);
 
 fn get_can_compile_cache_size() -> NonZeroUsize {
@@ -197,6 +203,7 @@ pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
 }
 
 /// Get current cache statistics (lock-free snapshot)
+#[cfg(feature = "track-stats")]
 pub fn get_stats() -> BytecodeCacheStatsSnapshot {
     CACHE_STATS.snapshot()
 }
@@ -206,6 +213,7 @@ pub fn clear_caches() {
     CAN_COMPILE_CACHE.write().clear();
     BYTECODE_CACHE.write().clear();
     // Reset stats atomically (no lock needed)
+    #[cfg(feature = "track-stats")]
     CACHE_STATS.reset();
 }
 

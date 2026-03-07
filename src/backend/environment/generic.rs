@@ -45,6 +45,7 @@ use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use pathmap::PathMap;
 use tracing::trace;
 
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 use super::bloom::HeadArityBloomFilter;
 use super::mork_encoding::mork_bytes_to_generic_value;
 use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
@@ -179,7 +180,7 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     // ========================================================================
     /// Mutable state cells registry (stores V directly - no serialization)
     /// Uses RwLock<HashMap> — protected by CoW semantics
-    pub(crate) states: RwLock<HashMap<u64, V>>,
+    pub(crate) states: RwLock<HashMap<u64, V, IdentityU64BuildHasher>>,
 
     /// Counter for generating unique state IDs (lock-free atomic)
     pub(crate) next_state_id: AtomicU64,
@@ -190,7 +191,7 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// Named spaces registry: Maps space_id -> (name, atoms)
     /// Uses RwLock<HashMap> — protected by CoW semantics
     #[allow(clippy::type_complexity)]
-    pub(crate) named_spaces: RwLock<HashMap<u64, (String, Vec<V>)>>,
+    pub(crate) named_spaces: RwLock<HashMap<u64, (String, Vec<V>), IdentityU64BuildHasher>>,
 
     /// Counter for generating unique space IDs (lock-free atomic)
     pub(crate) next_space_id: AtomicU64,
@@ -369,11 +370,11 @@ where
             atom_space: super::atom_space::AtomSpace::new(shared_mapping.clone(), 10000),
 
             // Mutable state
-            states: RwLock::new(HashMap::new()),
+            states: RwLock::new(HashMap::with_hasher(IdentityU64BuildHasher)),
             next_state_id: AtomicU64::new(1),
 
             // Generic named spaces
-            named_spaces: RwLock::new(HashMap::new()),
+            named_spaces: RwLock::new(HashMap::with_hasher(IdentityU64BuildHasher)),
             next_space_id: AtomicU64::new(1),
 
             // Generic symbol bindings
@@ -764,7 +765,7 @@ where
         };
 
         // Merge states (other takes precedence)
-        let merged_states: HashMap<u64, V> = {
+        let merged_states: HashMap<u64, V, IdentityU64BuildHasher> = {
             let mut merged = self.shared.states.read().clone();
             for (k, v) in other.shared.states.read().iter() {
                 merged.insert(*k, v.clone());
@@ -773,7 +774,7 @@ where
         };
 
         // Merge named spaces (combine atoms within same space)
-        let merged_named_spaces: HashMap<u64, (String, Vec<V>)> = {
+        let merged_named_spaces: HashMap<u64, (String, Vec<V>), IdentityU64BuildHasher> = {
             let mut merged = self.shared.named_spaces.read().clone();
             for (id, (name, atoms)) in other.shared.named_spaces.read().iter() {
                 merged
@@ -1123,7 +1124,7 @@ where
         };
 
         // Merge states (later environments take precedence)
-        let merged_states: HashMap<u64, V> = {
+        let merged_states: HashMap<u64, V, IdentityU64BuildHasher> = {
             let mut base_states = base.shared.states.read().clone();
             for other in &others[merge_start_idx..] {
                 for (k, v) in other.shared.states.read().iter() {
@@ -1134,7 +1135,7 @@ where
         };
 
         // Merge named spaces
-        let merged_named_spaces: HashMap<u64, (String, Vec<V>)> = {
+        let merged_named_spaces: HashMap<u64, (String, Vec<V>), IdentityU64BuildHasher> = {
             let mut base_spaces = base.shared.named_spaces.read().clone();
             for other in &others[merge_start_idx..] {
                 for (id, (name, atoms)) in other.shared.named_spaces.read().iter() {
@@ -1881,6 +1882,10 @@ where
                 self.shared.atom_space.head_arity_bloom.write().note_deletion();
             }
         }
+
+        // Invalidate eval memo caches — removed rules/facts change evaluation results
+        crate::backend::eval::trampoline::invalidate_normal_form_memo();
+        crate::backend::eval::trampoline::clear_eval_memo();
     }
 
     // ========================================================================
@@ -2100,6 +2105,10 @@ where
                 self.shared.atom_space.head_arity_bloom.write().note_deletion();
             }
         }
+
+        // Invalidate eval memo caches — removed rules/facts change evaluation results
+        crate::backend::eval::trampoline::invalidate_normal_form_memo();
+        crate::backend::eval::trampoline::clear_eval_memo();
 
         // Mark as modified for union() fast-path detection
         self.mark_modified();

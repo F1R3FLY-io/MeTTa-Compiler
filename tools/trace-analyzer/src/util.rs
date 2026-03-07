@@ -3,12 +3,14 @@
 //! Provides:
 //! - `hash_trace_value()` — recursive hashing for `TraceValue` (handles `f64` via `to_bits()`)
 //! - `extract_head_symbol()` — extract the head symbol (first atom) from S-expressions
+//! - `extract_operator_name()` — event-kind-aware operator name extraction (uses `TraceEventKind`
+//!   to disambiguate structural events like forks/branches from real operators)
 //! - `BoundedVec<T>` — reservoir-sampled, memory-bounded collection for percentile computation
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use trace_format::TraceValue;
+use trace_format::{TraceEventKind, TraceValue};
 
 // ── TraceValue Hashing ─────────────────────────────────────────────────────
 
@@ -82,6 +84,27 @@ pub fn extract_head_symbol(value: &TraceValue) -> &str {
         TraceValue::Type(_) => "<Type>",
         TraceValue::Empty => "<Empty>",
         TraceValue::Quoted(_) => "<Quoted>",
+    }
+}
+
+/// Extract a meaningful operator name from a trace event.
+///
+/// For structural/bookkeeping events (forks, branches, eval lifecycle, GC
+/// safepoints), the `input` field is typically `TraceValue::Unit`, which
+/// `extract_head_symbol()` maps to the uninformative `"()"`. This function
+/// uses the `TraceEventKind` to produce descriptive pseudo-operator names
+/// for these events, falling back to `extract_head_symbol()` for all others.
+pub fn extract_operator_name(input: &TraceValue, kind: &TraceEventKind) -> String {
+    match kind {
+        TraceEventKind::NondeterministicFork { branch_count } => {
+            format!("<fork:{branch_count}>")
+        }
+        TraceEventKind::BranchStart { .. } => "<branch-start>".to_string(),
+        TraceEventKind::BranchEnd { .. } => "<branch-end>".to_string(),
+        TraceEventKind::EvalStart => "<eval-start>".to_string(),
+        TraceEventKind::EvalEnd { .. } => "<eval-end>".to_string(),
+        TraceEventKind::GcSafepoint { .. } => "<gc-safepoint>".to_string(),
+        _ => extract_head_symbol(input).to_string(),
     }
 }
 
@@ -250,6 +273,61 @@ mod tests {
             TraceValue::Long(1),
         ]);
         assert_eq!(extract_head_symbol(&v), "inner");
+    }
+
+    #[test]
+    fn test_extract_operator_name_fork() {
+        let v = TraceValue::Unit;
+        let kind = TraceEventKind::NondeterministicFork { branch_count: 3 };
+        assert_eq!(extract_operator_name(&v, &kind), "<fork:3>");
+    }
+
+    #[test]
+    fn test_extract_operator_name_branch_start() {
+        let v = TraceValue::Unit;
+        let kind = TraceEventKind::BranchStart { branch_index: 0, total_branches: 3 };
+        assert_eq!(extract_operator_name(&v, &kind), "<branch-start>");
+    }
+
+    #[test]
+    fn test_extract_operator_name_branch_end() {
+        let v = TraceValue::Unit;
+        let kind = TraceEventKind::BranchEnd { branch_index: 1, result_count: 2 };
+        assert_eq!(extract_operator_name(&v, &kind), "<branch-end>");
+    }
+
+    #[test]
+    fn test_extract_operator_name_eval_lifecycle() {
+        assert_eq!(
+            extract_operator_name(&TraceValue::Unit, &TraceEventKind::EvalStart),
+            "<eval-start>"
+        );
+        assert_eq!(
+            extract_operator_name(&TraceValue::Unit, &TraceEventKind::EvalEnd { result_count: 1 }),
+            "<eval-end>"
+        );
+    }
+
+    #[test]
+    fn test_extract_operator_name_gc_safepoint() {
+        let kind = TraceEventKind::GcSafepoint { root_count: 42, allocation_delta_bytes: 1024 };
+        assert_eq!(extract_operator_name(&TraceValue::Unit, &kind), "<gc-safepoint>");
+    }
+
+    #[test]
+    fn test_extract_operator_name_falls_through_to_head_symbol() {
+        // For non-structural events, should use extract_head_symbol
+        let v = TraceValue::SExpr(vec![
+            TraceValue::Atom("fact".to_string()),
+            TraceValue::Long(5),
+        ]);
+        let kind = TraceEventKind::RuleApplication {
+            rule_lhs: TraceValue::Unit,
+            rule_rhs: TraceValue::Unit,
+            bindings: vec![],
+            rule_span: None,
+        };
+        assert_eq!(extract_operator_name(&v, &kind), "fact");
     }
 
     #[test]

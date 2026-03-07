@@ -247,7 +247,7 @@ fn execute_memory_monitor(
     gc_threshold: &AtomicUsize,
     monitor: &mut MonitorState,
     gc_pool: &super::gc_pool::AdaptiveGcPool,
-) {
+) -> bool {
     let now = Instant::now();
     let current_alloc_count = alloc_count.load(AtomicOrdering::Relaxed);
     let elapsed = now.duration_since(monitor.prev_poll_time);
@@ -303,6 +303,10 @@ fn execute_memory_monitor(
         request_gc();
     }
 
+    // Return whether GC was requested (used by unit tests to avoid TOCTOU
+    // races on the global GC_REQUESTED flag).
+    let result = should_gc;
+
     // --- GC Pool Hill Climbing ---
     // Compute alloc rate and free rate, then feed the alloc/free ratio
     // (clamped to [0, 10]) into the EMA → HillClimber for adaptive sizing.
@@ -350,6 +354,8 @@ fn execute_memory_monitor(
             "GC memory monitor: respawned dead GC workers"
         );
     }
+
+    result
 }
 
 
@@ -421,6 +427,7 @@ fn execute_counter_sync() {
                 // Fast path: reuse cached hash — DashMap lookup by u64, no recursive xxh3
                 if let Some(state) = cache.entries.get(&cached_hash) {
                     state.execution_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+                    #[cfg(feature = "track-stats")]
                     cache.total_executions.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
                     page.exec_count_fetch_sub(slot_idx, count);
                     let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -448,6 +455,7 @@ fn execute_counter_sync() {
             let state = cache.get_or_create_state(&value);
             page.set_compilation_hash(slot_idx, state.expr_hash);
             state.execution_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(feature = "track-stats")]
             cache.total_executions.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
             page.exec_count_fetch_sub(slot_idx, count);
             let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -537,9 +545,6 @@ mod tests {
     /// Unit test: rate calculation triggers GC when rate > threshold.
     #[test]
     fn test_monitor_state_rate_calculation() {
-        // Clear any prior GC request from other tests
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
-
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
@@ -554,18 +559,15 @@ mod tests {
         alloc_count.store(50_000, Ordering::Relaxed);
 
         // Second poll: rate = 50k / 0.1s = 500k/s > threshold
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
-        assert!(is_gc_requested(), "should request GC at 500k allocs/s");
+        assert!(triggered, "should request GC at 500k allocs/s");
         pool.shutdown();
     }
 
     /// Unit test: low rate does NOT trigger GC.
     #[test]
     fn test_monitor_state_below_threshold() {
-        // Clear any prior GC request from other tests
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
-
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
@@ -575,19 +577,15 @@ mod tests {
         // First poll: set baseline
         execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
-        // Clear again after first poll — parallel tests may set GC_REQUESTED
-        // between our initial clear and the first poll.
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
-
         // Simulate time passing and low allocations
         monitor.prev_poll_time = Instant::now() - Duration::from_millis(100);
         alloc_count.store(100, Ordering::Relaxed); // 100 / 0.1s = 1000/s < 100k threshold
 
-        // Second poll
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        // Second poll — assert on return value instead of global flag (race-free)
+        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         assert!(
-            !is_gc_requested(),
+            !triggered,
             "should NOT request GC at 1000 allocs/s"
         );
         pool.shutdown();
@@ -596,21 +594,17 @@ mod tests {
     /// Unit test: committed bytes >= threshold triggers GC.
     #[test]
     fn test_threshold_based_trigger() {
-        // Clear any prior GC request from other tests
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
-
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(8 * 1024 * 1024); // 8 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
         let mut monitor = MonitorState::with_params(1, 2, 1);
         let pool = AdaptiveGcPool::with_workers(1, 2);
 
-        // First poll: set baseline
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        // First poll: committed (8 MB) >= gc_threshold (4 MB) should trigger
+        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
-        // committed (8 MB) >= gc_threshold (4 MB) should trigger
         assert!(
-            is_gc_requested(),
+            triggered,
             "should request GC when committed bytes exceed threshold"
         );
         pool.shutdown();
@@ -619,33 +613,17 @@ mod tests {
     /// Unit test: committed bytes < threshold does NOT trigger GC.
     #[test]
     fn test_threshold_not_triggered_below() {
-        // Clear any prior GC request from other tests
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
-
         let alloc_count = AtomicU64::new(0);
         let committed = AtomicUsize::new(2 * 1024 * 1024); // 2 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
         let mut monitor = MonitorState::with_params(1, 2, 1);
         let pool = AdaptiveGcPool::with_workers(1, 2);
 
-        // Clear immediately before poll — minimize race window with parallel tests
-        // that may set GC_REQUESTED via their own cron monitors.
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
-
-        // First poll: set baseline (should NOT set GC_REQUESTED since committed < threshold)
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
-
-        // Clear again and re-poll to get a clean read.
-        // This double-poll pattern isolates us from parallel tests: the first poll
-        // sets baselines, the second poll computes rates from zero delta + checks
-        // committed < threshold. We clear right before the second poll.
-        monitor.prev_poll_time = Instant::now() - Duration::from_millis(100);
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::SeqCst);
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
-
         // committed (2 MB) < gc_threshold (4 MB) should NOT trigger
+        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+
         assert!(
-            !is_gc_requested(),
+            !triggered,
             "should NOT request GC when committed bytes below threshold"
         );
         pool.shutdown();

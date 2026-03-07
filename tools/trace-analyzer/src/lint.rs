@@ -1695,8 +1695,8 @@ impl LintPass {
                     TraceEventKind::RuleApplication { .. }
                     | TraceEventKind::GroundedOp { .. } => {
                         let input_hash = crate::util::hash_trace_value(&event.input);
-                        let head = crate::util::extract_head_symbol(&event.input);
-                        acc.record(input_hash, head, ts);
+                        let head = crate::util::extract_operator_name(&event.input, &event.kind);
+                        acc.record(input_hash, &head, ts);
                     }
                     _ => {}
                 }
@@ -1715,13 +1715,13 @@ impl LintPass {
                 // O. empty-branch-ratio
                 if let Some(acc) = &mut self.empty_branch_ratio {
                     let input_hash = crate::util::hash_trace_value(&event.input);
-                    let head = crate::util::extract_head_symbol(&event.input);
-                    acc.record_fork(tid, ts, *branch_count, input_hash, head);
+                    let head = crate::util::extract_operator_name(&event.input, &event.kind);
+                    acc.record_fork(tid, ts, *branch_count, input_hash, &head);
                 }
                 // R. fork-depth-explosion
                 if let Some(acc) = &mut self.fork_depth_explosion {
-                    let head = crate::util::extract_head_symbol(&event.input);
-                    acc.record_fork(ts, tid, head);
+                    let head = crate::util::extract_operator_name(&event.input, &event.kind);
+                    acc.record_fork(ts, tid, &head);
                 }
             }
 
@@ -1772,8 +1772,8 @@ impl LintPass {
             TraceEventKind::RuleMatchSet { match_count, .. } => {
                 // P. rule-match-explosion
                 if let Some(acc) = &mut self.rule_match_explosion {
-                    let head = crate::util::extract_head_symbol(&event.input);
-                    acc.record(ts, *match_count, head);
+                    let head = crate::util::extract_operator_name(&event.input, &event.kind);
+                    acc.record(ts, *match_count, &head);
                 }
             }
 
@@ -1793,8 +1793,8 @@ impl LintPass {
                 }
                 // U. tier-promotion-opportunity
                 if let Some(acc) = &mut self.tier_promotion_opportunity {
-                    let head = crate::util::extract_head_symbol(&event.input);
-                    acc.record(*expression_hash, *execution_count, *selected_tier, head, ts);
+                    let head = crate::util::extract_operator_name(&event.input, &event.kind);
+                    acc.record(*expression_hash, *execution_count, *selected_tier, &head, ts);
                 }
             }
 

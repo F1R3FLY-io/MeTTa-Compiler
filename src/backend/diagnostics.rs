@@ -185,23 +185,26 @@ fn dump_gc_state() {
     eprintln!("  data_committed:     {:>12} ({:.1} MB)", ps.data_committed_bytes, ps.data_committed_bytes as f64 / (1024.0 * 1024.0));
     eprintln!();
 
-    // Session GC statistics
-    let sgc = gc_allocator::session_gc_stats();
-    eprintln!("── Session GC ────────────────────────────────────────────────");
-    eprintln!("  sessions_released:  {:>12}", sgc.releases_total);
-    eprintln!("  values_freed:       {:>12}", sgc.values_freed_total);
-    eprintln!("  values_promoted:    {:>12}", sgc.values_promoted_total);
-    eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
-    eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
-    if sgc.releases_total > 0 {
-        eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
-        eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
-        if sgc.values_freed_total == 0 {
-            eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
-            eprintln!("        all values remain reachable from the live environment.");
+    // Session GC statistics (requires track-stats feature)
+    #[cfg(feature = "track-stats")]
+    {
+        let sgc = gc_allocator::session_gc_stats();
+        eprintln!("── Session GC ────────────────────────────────────────────────");
+        eprintln!("  sessions_released:  {:>12}", sgc.releases_total);
+        eprintln!("  values_freed:       {:>12}", sgc.values_freed_total);
+        eprintln!("  values_promoted:    {:>12}", sgc.values_promoted_total);
+        eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
+        eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
+        if sgc.releases_total > 0 {
+            eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
+            eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
+            if sgc.values_freed_total == 0 {
+                eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
+                eprintln!("        all values remain reachable from the live environment.");
+            }
         }
+        eprintln!();
     }
-    eprintln!();
 }
 
 /// Dump evaluator state.
@@ -325,6 +328,8 @@ fn reraise_sigterm() {
 ///
 /// Uses the same data sources as the signal-triggered diagnostic dump,
 /// but formatted for post-run analysis rather than livelock debugging.
+/// Requires the `track-stats` feature.
+#[cfg(feature = "track-stats")]
 pub fn print_gc_stats() {
     use crate::backend::models::gc_allocator;
 
@@ -376,29 +381,34 @@ pub fn print_gc_stats() {
     eprintln!("  data_committed:     {:>12} ({:.1} MB)", ps.data_committed_bytes, ps.data_committed_bytes as f64 / (1024.0 * 1024.0));
     eprintln!();
 
-    // Session GC statistics
-    let sgc = gc_allocator::session_gc_stats();
-    eprintln!("── Session GC ────────────────────────────────────────────────");
-    eprintln!("  sessions_released:  {:>12}", sgc.releases_total);
-    eprintln!("  values_freed:       {:>12}", sgc.values_freed_total);
-    eprintln!("  values_promoted:    {:>12}", sgc.values_promoted_total);
-    eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
-    eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
-    if sgc.releases_total > 0 {
-        eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
-        eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
-        if sgc.values_freed_total == 0 {
-            eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
-            eprintln!("        all values remain reachable from the live environment.");
+    // Session GC statistics (requires track-stats feature)
+    #[cfg(feature = "track-stats")]
+    {
+        let sgc = gc_allocator::session_gc_stats();
+        eprintln!("── Session GC ────────────────────────────────────────────────");
+        eprintln!("  sessions_released:  {:>12}", sgc.releases_total);
+        eprintln!("  values_freed:       {:>12}", sgc.values_freed_total);
+        eprintln!("  values_promoted:    {:>12}", sgc.values_promoted_total);
+        eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
+        eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
+        if sgc.releases_total > 0 {
+            eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
+            eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
+            if sgc.values_freed_total == 0 {
+                eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
+                eprintln!("        all values remain reachable from the live environment.");
+            }
         }
+        eprintln!();
     }
-    eprintln!();
 }
 
 /// Print tiered compilation statistics to stderr.
 ///
 /// Shows execution distribution across interpreter/bytecode/JIT tiers
 /// and compilation trigger/completion/failure counts.
+/// Requires the `track-stats` feature.
+#[cfg(feature = "track-stats")]
 pub fn print_tier_stats() {
     let stats = crate::backend::bytecode::tiered_cache::global_tiered_cache().stats();
 
@@ -447,12 +457,63 @@ pub fn print_tier_stats() {
         stats.jit2_compilations_completed,
         stats.jit2_compilations_failed);
     eprintln!();
+
+    // JIT failure reason breakdown (only if any JIT failures exist)
+    let total_jit1_failures = stats.jit1_failures_nondeterminism
+        + stats.jit1_failures_unsupported_opcode
+        + stats.jit1_failures_compiler_init
+        + stats.jit1_failures_codegen;
+    let total_jit2_failures = stats.jit2_failures_nondeterminism
+        + stats.jit2_failures_unsupported_opcode
+        + stats.jit2_failures_compiler_init
+        + stats.jit2_failures_codegen;
+
+    if total_jit1_failures > 0 {
+        eprintln!("── JIT Stage 1 Failure Reasons ───────────────────────────────");
+        eprintln!("  nondeterminism:     {:>12}", stats.jit1_failures_nondeterminism);
+        eprintln!("  unsupported opcode: {:>12}", stats.jit1_failures_unsupported_opcode);
+        eprintln!("  compiler init:      {:>12}", stats.jit1_failures_compiler_init);
+        eprintln!("  codegen error:      {:>12}", stats.jit1_failures_codegen);
+        eprintln!();
+    }
+
+    if total_jit2_failures > 0 {
+        eprintln!("── JIT Stage 2 Failure Reasons ───────────────────────────────");
+        eprintln!("  nondeterminism:     {:>12}", stats.jit2_failures_nondeterminism);
+        eprintln!("  unsupported opcode: {:>12}", stats.jit2_failures_unsupported_opcode);
+        eprintln!("  compiler init:      {:>12}", stats.jit2_failures_compiler_init);
+        eprintln!("  codegen error:      {:>12}", stats.jit2_failures_codegen);
+        eprintln!();
+    }
+
+    // Per-expression breakdown (top 20 by execution count)
+    let per_expr = crate::backend::bytecode::tiered_cache::global_tiered_cache()
+        .per_expression_stats();
+    if !per_expr.is_empty() {
+        let limit = per_expr.len().min(20);
+        eprintln!("── Per-Expression Detail (top {} by exec count) ──────────────", limit);
+        eprintln!("  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
+            "hash", "execs", "bytecode", "jit1", "jit2");
+        eprintln!("  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
+            "──────────────────", "────────", "──────────", "──────────", "──────────");
+        for entry in per_expr.iter().take(limit) {
+            eprintln!("  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
+                format!("0x{:016x}", entry.expr_hash),
+                entry.execution_count,
+                entry.bytecode_status,
+                entry.jit1_status,
+                entry.jit2_status);
+        }
+        eprintln!();
+    }
 }
 
 /// Print thread pool statistics to stderr.
 ///
 /// Shows worker counts, queue depths, and throughput metrics for all
 /// thread pool subsystems (WorkPool, GcPool).
+/// Requires the `track-stats` feature.
+#[cfg(feature = "track-stats")]
 pub fn print_pool_stats() {
     use crate::backend::models::work_pool::{global_eval_pool, global_compile_pool, work_eval_count};
     use crate::backend::models::gc_pool::global_gc_pool;
@@ -469,13 +530,13 @@ pub fn print_pool_stats() {
     let ep_median_ms = ep_median_ns / 1_000_000.0;
 
     eprintln!();
-    eprintln!("── Eval Pool ──────────────────────────────────────────────────");
+    eprintln!("── Eval Pool (parallel nondeterministic branches) ──────────────");
     eprintln!("  min_threads:        {:>12}", ep_min);
     eprintln!("  max_threads:        {:>12}", ep_max);
     eprintln!("  active_workers:     {:>12}", ep_active);
     eprintln!("  parked_workers:     {:>12}", ep_parked);
     eprintln!("  queue_depth:        {:>12}", ep_queue);
-    eprintln!("  total_evals:        {:>12}", ep_evals);
+    eprintln!("  parallel_branches:  {:>12}", ep_evals);
     eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", ep_median_ns, ep_median_ms);
     eprintln!();
 
@@ -506,5 +567,26 @@ pub fn print_pool_stats() {
     eprintln!("  active_workers:     {:>12}", gp_active);
     eprintln!("  parked_workers:     {:>12}", gp_parked);
     eprintln!("  session_releases:   {:>12}", gp_releases);
+    eprintln!();
+
+    // ── Cron Pool ──
+    use crate::backend::models::gc_cron::cron_work_pool;
+
+    let crp = cron_work_pool();
+    let crp_min = crp.min_threads();
+    let crp_max = crp.max_threads();
+    let crp_active = crp.active_workers();
+    let crp_parked = crp_max.saturating_sub(crp_active);
+    let crp_queue = crp.queue_len();
+    let crp_median_ns = crp.runtime_tracker().global_median();
+    let crp_median_ms = crp_median_ns / 1_000_000.0;
+
+    eprintln!("── Cron Pool (GC scheduling + counter sync) ────────────────────");
+    eprintln!("  min_threads:        {:>12}", crp_min);
+    eprintln!("  max_threads:        {:>12}", crp_max);
+    eprintln!("  active_workers:     {:>12}", crp_active);
+    eprintln!("  parked_workers:     {:>12}", crp_parked);
+    eprintln!("  queue_depth:        {:>12}", crp_queue);
+    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", crp_median_ns, crp_median_ms);
     eprintln!();
 }

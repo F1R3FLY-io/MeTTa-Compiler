@@ -80,7 +80,7 @@ pub fn run(file: &str, top_n: usize, min_count: u64) -> Result<(), String> {
                 }
             }
 
-            let head_symbol = crate::util::extract_head_symbol(&event.input).to_string();
+            let head_symbol = crate::util::extract_operator_name(&event.input, &event.kind);
             let input_display = format!("{}", event.input);
             let input_display = if input_display.len() > 60 {
                 format!("{}...", &input_display[..57])

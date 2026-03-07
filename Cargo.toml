@@ -243,6 +243,11 @@ symbol-interning = ["lasso"]
 # Enable with: cargo build --release --features eval-trace
 eval-trace = ["dep:postcard", "dep:trace-format"]
 
+# Diagnostic statistics tracking: atomic counters for --gc-stats, --tier-stats, --pool-stats.
+# Zero overhead when disabled (no atomic increments on hot paths).
+# Enable with: cargo build --release --features track-stats
+track-stats = []
+
 [dev-dependencies]
 # For integration tests
 regex = "1.10"

@@ -9,14 +9,59 @@
 //!
 //! - **Normal-form memoization**: Bloom filter for fixpoint-detected expressions
 //! - **Expected-type derivation**: `derive_arg_expected_type` for applicative evaluation
+//! - **Eval memo cache**: Thread-local LRU for pure expression memoization
 
+use std::cell::{Cell, RefCell};
+use std::num::NonZeroUsize;
 use std::sync::LazyLock;
+
+use lru::LruCache;
+use smallvec::SmallVec;
 
 use crate::backend::builtin_signatures;
 use crate::backend::environment::bloom::AtomicBloomFilter;
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::hash_utils::IdentityU64BuildHasher;
+use crate::backend::models::{gc_sweep_epoch, MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::context::EvalContext;
+
+// ============================================================================
+// GC Epoch Tracking — Thread-local staleness detection
+// ============================================================================
+//
+// When GC frees slab slots, it bumps a global monotonic `GC_SWEEP_EPOCH`.
+// Thread-local caches that store `MettaValue` or pointer-keyed entries compare
+// their local epoch snapshot against the global epoch before every access.
+// If they diverge, the cache is stale (slab slots may have been freed and
+// reused — ABA) and must be cleared.
+
+thread_local! {
+    /// Thread-local snapshot of `GC_SWEEP_EPOCH` at last cache validation.
+    /// When the global epoch advances past this value, all pointer-keyed
+    /// caches on this thread are invalidated.
+    static LOCAL_GC_EPOCH: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Check if thread-local caches are stale w.r.t. the global GC sweep epoch.
+/// If so, clear EVAL_MEMO and NORMAL_FORM_BLOOM, and update the local epoch.
+///
+/// Returns `true` if the caches were stale and cleared.
+#[inline]
+fn check_gc_epoch() -> bool {
+    let global = gc_sweep_epoch();
+    LOCAL_GC_EPOCH.with(|local| {
+        if local.get() != global {
+            local.set(global);
+            // Invalidate all pointer-keyed caches on this thread.
+            EVAL_MEMO.with(|memo_cell| memo_cell.borrow_mut().clear());
+            invalidate_normal_form_memo();
+            crate::backend::environment::rule_management::clear_mork_bytes_cache();
+            true
+        } else {
+            false
+        }
+    })
+}
 
 // ============================================================================
 // Phase 9.5: Evaluated-expression normal-form memoization
@@ -53,6 +98,11 @@ static NORMAL_FORM_BLOOM_ACTIVE: std::sync::atomic::AtomicBool =
 pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
     // Fast path: if no entries have been inserted since the last clear,
     // skip bloom hash computation entirely.
+    if !NORMAL_FORM_BLOOM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    // Invalidate if GC freed slab slots since our last check (ABA safety).
+    check_gc_epoch();
     if !NORMAL_FORM_BLOOM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
@@ -186,4 +236,136 @@ where
     }
 
     consistent_name.map(|name| factory.atom(name))
+}
+
+// ============================================================================
+// Phase 3: Thread-local Evaluation Memoization Cache
+// ============================================================================
+//
+// Pure expression memoization: caches evaluation results keyed by content hash.
+// Eliminates redundant computation of overlapping subproblems in PLN reasoning
+// (e.g., `(Truth_Deduction (stv 0.9 0.9) (stv 0.8 0.9))` evaluated many times).
+//
+// Impure operations (space mutations, state, I/O) are excluded by head symbol.
+// The cache is cleared on space mutation (add-atom/remove-atom) and at GC
+// safepoints to ensure correctness.
+
+/// Check whether a head symbol names an impure operation that must NOT be
+/// memoized.  These operations have side effects or depend on mutable state.
+///
+/// Implemented as a `match` expression so the compiler can emit a perfect-hash
+/// jump table — O(1) regardless of the number of heads (vs O(n) linear scan
+/// through an `&[&str]` slice).
+#[inline]
+fn is_impure_head(head: &str) -> bool {
+    matches!(
+        head,
+        "add-atom" | "remove-atom" | "get-atoms"
+            | "new-state" | "change-state!" | "get-state"
+            | "match" | "match-or"
+            | "import!" | "include"
+            | "println!" | "trace!" | "nop"
+            | "new-space" | "mod-space!"
+            | "bind!"
+            | "new-memo" | "memo" | "clear-memo!" | "memo-stats"
+            | "pragma!"
+            | "=" | ":" | ":<"
+    )
+}
+
+thread_local! {
+    /// Thread-local evaluation memoization cache.
+    ///
+    /// Key: content hash of the S-expression (via `hash_value()`)
+    /// Value: cached evaluation results (SmallVec avoids heap for ≤4 results)
+    ///
+    /// 8192 entries × ~40 bytes avg = ~320 KB per thread. LRU eviction bounds memory.
+    static EVAL_MEMO: RefCell<LruCache<u64, SmallVec<[MettaValue; 4]>, IdentityU64BuildHasher>> =
+        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(8192).expect("non-zero"), IdentityU64BuildHasher));
+}
+
+/// Check if an S-expression should be memoized (pure head, ≥2 items,
+/// no free variables).
+#[inline]
+pub fn should_memoize<V: MettaValueTrait>(value: &V) -> bool {
+    if let Some(items) = value.as_sexpr() {
+        if items.len() < 2 {
+            return false;
+        }
+        // Expressions containing variables produce context-dependent results
+        // (the same expression text evaluates differently depending on which
+        // bindings are active in the enclosing let/pattern match). Memoizing
+        // these by content hash would conflate different binding contexts.
+        if value.has_variables_fast() {
+            return false;
+        }
+        if let Some(head) = items.first().and_then(|h| h.as_atom()) {
+            // Skip impure operations
+            if is_impure_head(head) {
+                return false;
+            }
+            // `!` and `eval` are transparent wrappers — their purity
+            // depends on the inner expression, so recurse.
+            if (head == "!" || head == "eval") && items.len() == 2 {
+                return should_memoize(&items[1]);
+            }
+            true
+        } else {
+            // Variable-headed S-expressions — don't memoize (result depends
+            // on which rules match the resolved head)
+            false
+        }
+    } else {
+        false
+    }
+}
+
+/// Look up cached evaluation results for an expression hash.
+///
+/// Returns `Some(results)` on cache hit. The caller should push a Resume
+/// with these results instead of evaluating the expression.
+///
+/// GC safety: Before accessing cached values, checks the GC sweep epoch.
+/// If GC freed slab slots since the cache was populated, the entire cache
+/// is cleared (returning `None`) to avoid use-after-free on stale pointers.
+#[inline]
+pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
+    // Invalidate if GC freed slab slots since our last check (ABA safety).
+    check_gc_epoch();
+    EVAL_MEMO.with(|memo_cell| {
+        let mut memo = memo_cell.borrow_mut();
+        memo.get(&expr_hash).map(|entries| entries.to_vec())
+    })
+}
+
+/// Store evaluation results in the memo cache.
+#[inline]
+pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
+    let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
+    EVAL_MEMO.with(|memo_cell| {
+        memo_cell.borrow_mut().put(expr_hash, entries);
+    });
+}
+
+/// Collect all MettaValue roots from the eval memo cache.
+///
+/// Called during GC safepoint root collection to ensure cached values survive
+/// the mark-sweep cycle.
+pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
+    EVAL_MEMO.with(|memo_cell| {
+        let memo = memo_cell.borrow();
+        for (_hash, entries) in memo.iter() {
+            out.extend_from_slice(entries);
+        }
+    });
+}
+
+/// Clear the eval memo cache.
+///
+/// Called on space mutation (add-atom/remove-atom) to invalidate cached results
+/// that may depend on the changed rules/facts.
+pub fn clear_eval_memo() {
+    EVAL_MEMO.with(|memo_cell| {
+        memo_cell.borrow_mut().clear();
+    });
 }

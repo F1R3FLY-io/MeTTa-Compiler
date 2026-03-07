@@ -74,5 +74,8 @@ pub use generic_trampoline::eval_trampoline_generic;
 // Phase 9.5: Normal-form memoization (check, insert, invalidate)
 pub use dispatch_hints::{invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form};
 
+// Expression-level eval memoization (clear on space mutation)
+pub use dispatch_hints::clear_eval_memo;
+
 // Re-export session context (dual-arena model)
 pub use session_context::SessionContext;

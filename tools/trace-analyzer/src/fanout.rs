@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use trace_format::TraceEventKind;
 
 use crate::reader::TraceReader;
-use crate::util::{extract_head_symbol, format_duration_ns};
+use crate::util::{extract_operator_name, format_duration_ns};
 
 /// Record of a nondeterministic fork event.
 struct ForkRecord {
@@ -91,7 +91,7 @@ pub fn run(file: &str, top_n: usize) -> Result<(), String> {
                     .or_insert_with(ThreadForkStack::new);
                 let nesting = stack.enter_fork(event.depth);
 
-                let head = extract_head_symbol(&event.input).to_string();
+                let head = extract_operator_name(&event.input, &event.kind);
                 let fork_idx = forks.len();
                 fork_by_head
                     .entry(head.clone())

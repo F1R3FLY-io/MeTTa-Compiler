@@ -957,9 +957,13 @@ impl TaskSchedulerSingleton {
             let _ = handle.join();
         }
         drop(guard);
-        // Then shut down the worker pool and join all workers to drain in-flight tasks
+        // Only shut down the worker pool if we hold the last reference.
+        // Shared pools (e.g., the global CRON_WORK_POOL singleton) are held by
+        // multiple owners and must not be destroyed by a single shutdown call.
         if let Some(pool) = &self.worker_pool {
-            pool.shutdown_and_join();
+            if Arc::strong_count(pool) <= 1 {
+                pool.shutdown_and_join();
+            }
         }
     }
 }

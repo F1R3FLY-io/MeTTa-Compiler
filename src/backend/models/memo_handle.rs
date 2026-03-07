@@ -18,6 +18,7 @@ use parking_lot::RwLock;
 
 use xxhash_rust::xxh3::xxh3_64;
 
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
 use super::{GcFactory, MettaValue};
 
@@ -45,8 +46,10 @@ pub struct MemoHandle {
     /// Shared mutable state (cache only)
     inner: Arc<RwLock<MemoInner>>,
     /// Cache hit counter (lock-free atomic)
+    #[cfg(feature = "track-stats")]
     hits: AtomicU64,
     /// Cache miss counter (lock-free atomic)
+    #[cfg(feature = "track-stats")]
     misses: AtomicU64,
 }
 
@@ -54,7 +57,7 @@ pub struct MemoHandle {
 #[derive(Debug)]
 struct MemoInner {
     /// Cache: expression_hash -> cached results (stored as bytes)
-    cache: HashMap<u64, MemoEntry>,
+    cache: HashMap<u64, MemoEntry, IdentityU64BuildHasher>,
     /// Maximum cache size (0 = unlimited)
     max_size: usize,
     /// LRU order tracking (most recent at end)
@@ -82,11 +85,13 @@ impl MemoHandle {
             id,
             name,
             inner: Arc::new(RwLock::new(MemoInner {
-                cache: HashMap::new(),
+                cache: HashMap::with_hasher(IdentityU64BuildHasher),
                 max_size,
                 lru_order: Vec::new(),
             })),
+            #[cfg(feature = "track-stats")]
             hits: AtomicU64::new(0),
+            #[cfg(feature = "track-stats")]
             misses: AtomicU64::new(0),
         }
     }
@@ -132,12 +137,14 @@ impl MemoHandle {
                         inner.lru_order.push(hash);
                     }
                 }
+                #[cfg(feature = "track-stats")]
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 return Some(results);
             }
         }
 
         // Cache miss - only atomic increment needed
+        #[cfg(feature = "track-stats")]
         self.misses.fetch_add(1, Ordering::Relaxed);
         None
     }
@@ -202,6 +209,7 @@ impl MemoHandle {
     /// Get statistics about this memo table
     ///
     /// Returns (hits, misses, current_size, max_size)
+    #[cfg(feature = "track-stats")]
     pub fn stats(&self) -> (u64, u64, usize, usize) {
         let inner = self.inner.read();
         let hits = self.hits.load(Ordering::Relaxed);
@@ -210,6 +218,7 @@ impl MemoHandle {
     }
 
     /// Get the hit rate as a percentage (0.0 - 100.0)
+    #[cfg(feature = "track-stats")]
     pub fn hit_rate(&self) -> f64 {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
@@ -220,6 +229,7 @@ impl MemoHandle {
             (hits as f64 / total as f64) * 100.0
         }
     }
+
 }
 
 impl Clone for MemoHandle {
@@ -228,7 +238,9 @@ impl Clone for MemoHandle {
             id: self.id,
             name: self.name.clone(),
             inner: Arc::clone(&self.inner),
+            #[cfg(feature = "track-stats")]
             hits: AtomicU64::new(self.hits.load(Ordering::Relaxed)),
+            #[cfg(feature = "track-stats")]
             misses: AtomicU64::new(self.misses.load(Ordering::Relaxed)),
         }
     }
@@ -276,10 +288,13 @@ mod tests {
         assert_eq!(cached.unwrap(), results);
 
         // Stats should show 1 miss, 1 hit
-        let (hits, misses, size, _) = memo.stats();
-        assert_eq!(hits, 1);
-        assert_eq!(misses, 1);
-        assert_eq!(size, 1);
+        #[cfg(feature = "track-stats")]
+        {
+            let (hits, misses, size, _) = memo.stats();
+            assert_eq!(hits, 1);
+            assert_eq!(misses, 1);
+            assert_eq!(size, 1);
+        }
     }
 
     #[test]
@@ -323,6 +338,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "track-stats")]
     fn test_memo_hit_rate() {
         let memo = MemoHandle::new("hit-rate-test".to_string());
 

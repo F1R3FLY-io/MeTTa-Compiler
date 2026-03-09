@@ -635,6 +635,177 @@ fn parallel_branch_eval(
     merged
 }
 
+/// Minimum number of collapse results to trigger parallel evaluation.
+/// Below this threshold, the sequential `ProcessCollapseEvalResults` path
+/// is cheaper due to lower overhead (no Arc, no Mutex, no condvar).
+const PARALLEL_COLLAPSE_THRESHOLD: usize = 16;
+
+
+/// Evaluate collapse results in parallel via the work pool.
+///
+/// Structurally identical to `parallel_branch_eval`, but evaluates each item
+/// to normal form at depth+1 (matching `ProcessCollapseEvalResults` semantics)
+/// and filters out empty results.
+///
+/// # Arguments
+/// - `items`: Nondeterministic results from the inner expression of `collapse`
+/// - `env`: The evaluation environment (cloned per item)
+/// - `budget_acquired`: Number of budget slots to release on completion
+/// - `caller_depth`: Parallel nesting depth of the caller
+/// - `eval_depth`: The MeTTa evaluation depth (used as depth+1 for each item)
+///
+/// # Returns
+/// Vec of all evaluated results (empty values filtered out), in item order.
+fn parallel_collapse_eval(
+    items: Vec<crate::backend::models::MettaValue>,
+    env: crate::backend::environment::generic::MettaEnvironment,
+    budget_acquired: u32,
+    caller_depth: u32,
+    eval_depth: usize,
+) -> Vec<crate::backend::models::MettaValue> {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use super::context::ParallelBranchContext;
+
+    type MettaValue = crate::backend::models::MettaValue;
+
+    let num_items = items.len();
+    debug_assert!(num_items >= 2, "parallel_collapse_eval requires at least 2 items");
+
+    // Pre-allocate result slots: Vec<Option<Vec<MettaValue>>>
+    let results: Arc<Mutex<Vec<Option<Vec<MettaValue>>>>> =
+        Arc::new(Mutex::new(vec![None; num_items]));
+    let remaining = Arc::new(AtomicU32::new((num_items - 1) as u32));
+    let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
+
+    let pool = global_eval_pool();
+    let child_depth = caller_depth + 1;
+
+    // Spawn items 1..N to the work pool
+    for (slot, item_expr) in items.iter().enumerate().skip(1) {
+        let item_expr = item_expr.clone();
+        let env = env.clone();
+        let results = Arc::clone(&results);
+        let remaining = Arc::clone(&remaining);
+        let done_pair = Arc::clone(&done_pair);
+
+        pool.spawn_eval(
+            move || {
+                PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+
+                let _guard = EvalGuard::enter();
+                let ctx = ParallelBranchContext::get();
+                let (eval_results, _new_env) =
+                    eval_trampoline_generic(item_expr, env, &ctx);
+
+                // Store result in pre-allocated slot
+                {
+                    let mut guard = results.lock().expect("results mutex poisoned");
+                    guard[slot] = Some(eval_results);
+                }
+
+                // Decrement barrier; if last task, notify waiter
+                if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    let (lock, cvar) = &*done_pair;
+                    let mut done = lock.lock().expect("done mutex poisoned");
+                    *done = true;
+                    cvar.notify_one();
+                }
+            },
+            TaskTypeId::Eval(0),
+            priority_levels::NORMAL,
+        );
+    }
+
+    // Evaluate item 0 locally
+    let item0_results = {
+        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
+        let ctx = ParallelBranchContext::get();
+        let (eval_results, _new_env) =
+            eval_trampoline_generic(items[0].clone(), env.clone(), &ctx);
+        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
+        eval_results
+    };
+
+    // Store item 0 results
+    {
+        let mut guard = results.lock().expect("results mutex poisoned");
+        guard[0] = Some(item0_results);
+    }
+
+    // Wait for all spawned tasks to complete, with work-stealing
+    {
+        let mut prev_remaining = remaining.load(Ordering::Acquire);
+        let mut stall_count = 0u32;
+        let mut overflow_requested = false;
+        let queue = pool.queue();
+
+        let (lock, cvar) = &*done_pair;
+        let mut done = lock.lock().expect("done mutex poisoned");
+        while !*done {
+            let result = cvar
+                .wait_timeout(done, std::time::Duration::from_millis(1))
+                .expect("done condvar wait failed");
+            done = result.0;
+            if *done {
+                break;
+            }
+
+            // Work-stealing: up to 4 stolen tasks per wake cycle
+            for _ in 0..4 {
+                if remaining.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+                if let Some(task) = queue.try_pop() {
+                    drop(done);
+                    task.execute();
+                    done = lock.lock().expect("done mutex poisoned");
+                    if *done {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            if !*done {
+                let curr_remaining = remaining.load(Ordering::Acquire);
+                if curr_remaining > 0 && curr_remaining == prev_remaining {
+                    stall_count += 1;
+                    if stall_count >= 20 && !overflow_requested {
+                        pool.spawn_overflow(curr_remaining as usize);
+                        overflow_requested = true;
+                        tracing::warn!(
+                            remaining = curr_remaining,
+                            active_workers = pool.active_workers(),
+                            overflow = pool.overflow_count(),
+                            "parallel_collapse_eval: stall detected, spawned overflow workers"
+                        );
+                    }
+                } else {
+                    stall_count = 0;
+                }
+                prev_remaining = curr_remaining;
+            }
+        }
+    }
+
+    // Release budget slots
+    release_budget(budget_acquired);
+
+    // Merge results in item order, filtering empty values
+    let _ = eval_depth; // depth used by caller for trace; items already eval'd at depth+1
+    let mut merged = Vec::new();
+    let guard = results.lock().expect("results mutex poisoned");
+    for slot_result in guard.iter() {
+        if let Some(ref item_results) = slot_result {
+            merged.extend(item_results.iter().filter(|v| !v.is_empty()).cloned());
+        }
+    }
+
+    merged
+}
+
 /// Generic trampoline evaluation entry point.
 ///
 /// This function provides a unified evaluation engine that works with any value type
@@ -1743,23 +1914,85 @@ where
                                 result: (vec![], env),
                             });
                         } else {
-                            let mut alts_deque: VecDeque<_> = alternatives.into_iter().collect();
-                            let first = alts_deque.pop_front().expect("alternatives is non-empty");
+                            // ── Parallel path: when inside a collapse barrier, evaluate
+                            // all superpose alternatives concurrently ──
+                            let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
+                            // Parallelize superpose alternatives when budget allows.
+                            // MeTTa evaluation is pure (read-only env during eval),
+                            // so alternatives are independent. Budget + depth decay +
+                            // queue pressure backoff prevent over-parallelization.
+                            let par_budget = if alternatives.len() >= 2
+                                && std::any::TypeId::of::<C::Value>()
+                                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                                && current_depth < max_parallel_depth()
+                                && global_eval_pool().active_workers() > 0
+                            {
+                                try_acquire_budget((alternatives.len() - 1) as u32, current_depth)
+                            } else {
+                                0
+                            };
 
-                            continuations.push(GenericContinuation::ProcessAmb {
-                                remaining_alts: alts_deque,
-                                results: Vec::new(),
-                                env: env.clone(),
-                                depth,
-                            });
+                            if par_budget > 0 {
+                                // Transmute alternatives to MettaValue
+                                let metta_alts: Vec<crate::backend::models::MettaValue> = unsafe {
+                                    std::mem::transmute(alternatives)
+                                };
 
-                            work_stack.push(GenericWorkItem::Eval {
-                                value: first,
-                                env,
-                                depth: depth + 1,
-                                is_tail_call: false,
-                                expected_type: None,
-                            });
+                                // Clone env and transmute to MettaEnvironment
+                                let env_clone = env.clone();
+                                let metta_env: crate::backend::environment::generic::MettaEnvironment =
+                                    unsafe { std::mem::transmute_copy(&env_clone) };
+                                std::mem::forget(env_clone);
+
+                                // Trace: NondeterministicFork (parallel amb)
+                                #[cfg(feature = "eval-trace")]
+                                {
+                                    if let Some(tc) = ctx.trace_collector() {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            depth as u32,
+                                            trace_format::TraceValue::Unit,
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::NondeterministicFork {
+                                                branch_count: metta_alts.len() as u32,
+                                            },
+                                        );
+                                    }
+                                }
+
+                                let results = parallel_branch_eval(
+                                    metta_alts, metta_env, par_budget, current_depth,
+                                );
+
+                                // Transmute back to C::Value
+                                let generic_results: Vec<C::Value> = unsafe {
+                                    std::mem::transmute(results)
+                                };
+
+                                work_stack.push(GenericWorkItem::Resume {
+                                    result: (generic_results, env),
+                                });
+                            } else {
+                                // ── Sequential path (original) ──
+                                let mut alts_deque: VecDeque<_> = alternatives.into_iter().collect();
+                                let first = alts_deque.pop_front().expect("alternatives is non-empty");
+
+                                continuations.push(GenericContinuation::ProcessAmb {
+                                    remaining_alts: alts_deque,
+                                    results: Vec::new(),
+                                    env: env.clone(),
+                                    depth,
+                                });
+
+                                work_stack.push(GenericWorkItem::Eval {
+                                    value: first,
+                                    env,
+                                    depth: depth + 1,
+                                    is_tail_call: false,
+                                    expected_type: None,
+                                });
+                            }
                         }
                     }
 
@@ -2259,6 +2492,7 @@ fn process_continuation_generic<C: EvalContext>(
             #[cfg(feature = "eval-trace")]
             total_branches,
         } => {
+            #[cfg(feature = "eval-trace")]
             let result_count = result.0.len() as u32;
             results.extend(result.0);
             let env = result.1;
@@ -2589,95 +2823,116 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                     }
 
-                    let mut values: VecDeque<C::Value> = result_values.into_iter().collect();
-
-                    // Try to find a matching value
-                    loop {
-                        match values.pop_front() {
-                            Some(value) => {
-                                // Phase 8.5: Type pre-check for typed patterns (: $var Type)
-                                // Only apply to ground-type values (Number/Bool/String) where
-                                // type inference is definitive. S-expressions and atoms may
-                                // structurally match the pattern even if type inference says otherwise.
-                                if let Some(ref tc) = type_constraint {
-                                    if get_ground_type(&value).is_some() {
-                                        let value_type = infer_type_generic(&value, ctx.factory(), &result_env);
-                                        if !types_match_with_subtypes(&value_type, tc, &result_env) {
-                                            continue; // Type mismatch — skip
-                                        }
-                                    }
+                    // Collect ALL matching values and their instantiated bodies.
+                    // This enables parallel dispatch when multiple values match.
+                    let mut instantiated_bodies: Vec<C::Value> = Vec::new();
+                    for value in result_values.iter() {
+                        // Phase 8.5: Type pre-check for typed patterns
+                        if let Some(ref tc) = type_constraint {
+                            if get_ground_type(value).is_some() {
+                                let value_type = infer_type_generic(value, ctx.factory(), &result_env);
+                                if !types_match_with_subtypes(&value_type, tc, &result_env) {
+                                    continue;
                                 }
-                                // Use generic pattern matching - NO conversion needed
-                                if let Some(bindings) = pattern_match_generic(&pattern, &value) {
-                                    // Trace: pattern-match phase
-                                    #[cfg(feature = "eval-trace")]
-                                    {
-                                        if let Some(tc) = ctx.trace_collector() {
-                                            tc.emit_converted(
-                                                trace_format::TraceTier::TreeWalker,
-                                                depth as u32,
-                                                crate::backend::trace::trace_value_generic(&pattern),
-                                                vec![crate::backend::trace::trace_value_generic(&value)],
-                                                None,
-                                                trace_format::TraceEventKind::SpecialForm {
-                                                    form_name: "let".to_string(),
-                                                    phase: "pattern-match".to_string(),
-                                                },
-                                            );
-                                        }
-                                    }
-
-                                    // Pattern matches - instantiate body and evaluate
-                                    let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
-
-                                    // Restore continuation for collecting more results
-                                    continuations.push(GenericContinuation::ProcessLet {
-                                        pending_values: Some(values),
-                                        pattern,
-                                        body,
-                                        results,
-                                        env: result_env.clone(),
-                                        depth,
-                                    });
-
-                                    // Push body evaluation - THIS IS TAIL CALL (TCO)
-                                    work_stack.push(GenericWorkItem::Eval {
-                                        value: instantiated_body,
-                                        env: result_env,
-                                        depth, // TCO: reuse depth for body eval
-                                        is_tail_call: true,
-                                        expected_type: None,
-                                    });
-                                    return;
-                                }
-                                // Trace: pattern-no-match phase
-                                #[cfg(feature = "eval-trace")]
-                                {
-                                    if let Some(tc) = ctx.trace_collector() {
-                                        tc.emit_converted(
-                                            trace_format::TraceTier::TreeWalker,
-                                            depth as u32,
-                                            crate::backend::trace::trace_value_generic(&pattern),
-                                            vec![],
-                                            None,
-                                            trace_format::TraceEventKind::SpecialForm {
-                                                form_name: "let".to_string(),
-                                                phase: "pattern-no-match".to_string(),
-                                            },
-                                        );
-                                    }
-                                }
-                                // Pattern doesn't match - continue to next value
-                            }
-                            None => {
-                                // No pattern matched - return results to parent
-                                work_stack.push(GenericWorkItem::Resume {
-                                    result: (results, result_env),
-                                });
-                                return;
                             }
                         }
+                        if let Some(bindings) = pattern_match_generic(&pattern, value) {
+                            let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
+                            instantiated_bodies.push(instantiated_body);
+                        }
                     }
+
+                    if instantiated_bodies.is_empty() {
+                        // No pattern matched - return results to parent
+                        work_stack.push(GenericWorkItem::Resume {
+                            result: (results, result_env),
+                        });
+                        return;
+                    }
+
+                    if instantiated_bodies.len() == 1 {
+                        // Single match - evaluate directly (TCO)
+                        let single_body = instantiated_bodies.into_iter().next().expect("len == 1");
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: single_body,
+                            env: result_env,
+                            depth,
+                            is_tail_call: true,
+                            expected_type: None,
+                        });
+                        return;
+                    }
+
+                    // ── Parallel path: evaluate all matched bodies concurrently ──
+                    // When multiple values match, their body evaluations are
+                    // independent (read-only env, no side effects). Dispatch to
+                    // work pool for parallel evaluation.
+                    let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
+                    let par_budget = if std::any::TypeId::of::<C::Value>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                        && current_depth < max_parallel_depth()
+                        && global_eval_pool().active_workers() > 0
+                    {
+                        try_acquire_budget(
+                            (instantiated_bodies.len() - 1) as u32,
+                            current_depth,
+                        )
+                    } else {
+                        0
+                    };
+
+                    if par_budget > 0 {
+                        // Transmute bodies to MettaValue for parallel dispatch
+                        let metta_bodies: Vec<crate::backend::models::MettaValue> = unsafe {
+                            std::mem::transmute(instantiated_bodies)
+                        };
+
+                        // Clone env and transmute to MettaEnvironment
+                        let env_clone = result_env.clone();
+                        let metta_env: crate::backend::environment::generic::MettaEnvironment =
+                            unsafe { std::mem::transmute_copy(&env_clone) };
+                        std::mem::forget(env_clone);
+
+                        let par_results = parallel_branch_eval(
+                            metta_bodies, metta_env, par_budget, current_depth,
+                        );
+
+                        // Transmute back to C::Value
+                        let generic_results: Vec<C::Value> = unsafe {
+                            std::mem::transmute(par_results)
+                        };
+
+                        // Merge with accumulated results
+                        let mut merged = results;
+                        merged.extend(generic_results);
+
+                        work_stack.push(GenericWorkItem::Resume {
+                            result: (merged, result_env),
+                        });
+                    } else {
+                        // ── Sequential path: process bodies one at a time ──
+                        // Use ProcessAmb continuation to evaluate instantiated bodies
+                        // sequentially and merge their results. This avoids re-pattern-
+                        // matching since bodies are already instantiated.
+                        let mut bodies_deque: VecDeque<C::Value> = instantiated_bodies.into_iter().collect();
+                        let first_body = bodies_deque.pop_front().expect("bodies is non-empty");
+
+                        continuations.push(GenericContinuation::ProcessAmb {
+                            remaining_alts: bodies_deque,
+                            results,
+                            env: result_env.clone(),
+                            depth,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: first_body,
+                            env: result_env,
+                            depth,
+                            is_tail_call: true,
+                            expected_type: None,
+                        });
+                    }
+                    return;
                 }
                 Some(mut remaining_values) => {
                     // Subsequent resumption: result_values are body evaluation results
@@ -4811,27 +5066,90 @@ fn process_continuation_generic<C: EvalContext>(
                 return;
             }
 
-            // MeTTa HE collapse semantics: evaluate each result to normal form.
-            // HE's collapse calls `metta` (the full recursive interpreter) which
-            // evaluates every nondeterministic result before assembling the tuple.
-            let mut remaining_raw: VecDeque<C::Value> = expr_results.into_iter().collect();
-            let first_raw = remaining_raw.pop_front().expect("expr_results is non-empty");
+            // ── Parallel path: evaluate all collapse results concurrently ──
+            // When there are enough results, dispatch to work pool for parallel
+            // evaluation. MeTTa HE collapse results are unordered, so parallel
+            // evaluation that changes result order is semantically correct.
+            let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
+            let n_results = expr_results.len();
+            let par_budget = if n_results >= PARALLEL_COLLAPSE_THRESHOLD
+                && std::any::TypeId::of::<C::Value>()
+                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                && current_depth < max_parallel_depth()
+                && global_eval_pool().active_workers() > 0
+            {
+                try_acquire_budget((n_results - 1) as u32, current_depth)
+            } else {
+                0
+            };
 
-            continuations.push(GenericContinuation::ProcessCollapseEvalResults {
-                remaining_raw,
-                evaluated: Vec::new(),
-                is_bind: false,
-                env: result_env.clone(),
-                depth,
-            });
+            if par_budget > 0 {
+                // Transmute values to MettaValue for parallel dispatch
+                let metta_items: Vec<crate::backend::models::MettaValue> = unsafe {
+                    std::mem::transmute(expr_results)
+                };
 
-            work_stack.push(GenericWorkItem::Eval {
-                value: first_raw,
-                env: result_env,
-                depth: depth + 1,
-                is_tail_call: false,
-                expected_type: None,
-            });
+                // Clone env and transmute to MettaEnvironment
+                let env_clone = result_env.clone();
+                let metta_env: crate::backend::environment::generic::MettaEnvironment =
+                    unsafe { std::mem::transmute_copy(&env_clone) };
+                std::mem::forget(env_clone);
+
+                let evaluated = parallel_collapse_eval(
+                    metta_items, metta_env, par_budget, current_depth, depth,
+                );
+
+                // Transmute back to C::Value
+                let generic_evaluated: Vec<C::Value> = unsafe {
+                    std::mem::transmute(evaluated)
+                };
+
+                // Assemble the tuple
+                let result_list = ctx.factory().sexpr(generic_evaluated);
+
+                // Trace: collapse-result phase
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(&result_list),
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::SpecialForm {
+                                form_name: "collapse".to_string(),
+                                phase: "collapse-result-parallel".to_string(),
+                            },
+                        );
+                    }
+                }
+
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (vec![result_list], result_env),
+                });
+            } else {
+                // ── Sequential path: evaluate one-at-a-time ──
+                // MeTTa HE collapse semantics: evaluate each result to normal form.
+                let mut remaining_raw: VecDeque<C::Value> = expr_results.into_iter().collect();
+                let first_raw = remaining_raw.pop_front().expect("expr_results is non-empty");
+
+                continuations.push(GenericContinuation::ProcessCollapseEvalResults {
+                    remaining_raw,
+                    evaluated: Vec::new(),
+                    is_bind: false,
+                    env: result_env.clone(),
+                    depth,
+                });
+
+                work_stack.push(GenericWorkItem::Eval {
+                    value: first_raw,
+                    env: result_env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                });
+            }
         }
 
         GenericContinuation::ProcessCollapseBind {
@@ -4849,25 +5167,80 @@ fn process_continuation_generic<C: EvalContext>(
                 return;
             }
 
-            // MeTTa HE collapse-bind semantics: evaluate each result to normal form.
-            let mut remaining_raw: VecDeque<C::Value> = expr_results.into_iter().collect();
-            let first_raw = remaining_raw.pop_front().expect("expr_results is non-empty");
+            // ── Parallel path: identical to ProcessCollapse ──
+            let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
+            let par_budget = if expr_results.len() >= PARALLEL_COLLAPSE_THRESHOLD
+                && std::any::TypeId::of::<C::Value>()
+                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                && current_depth < max_parallel_depth()
+                && global_eval_pool().active_workers() > 0
+            {
+                try_acquire_budget((expr_results.len() - 1) as u32, current_depth)
+            } else {
+                0
+            };
 
-            continuations.push(GenericContinuation::ProcessCollapseEvalResults {
-                remaining_raw,
-                evaluated: Vec::new(),
-                is_bind: true,
-                env: result_env.clone(),
-                depth,
-            });
+            if par_budget > 0 {
+                let metta_items: Vec<crate::backend::models::MettaValue> = unsafe {
+                    std::mem::transmute(expr_results)
+                };
 
-            work_stack.push(GenericWorkItem::Eval {
-                value: first_raw,
-                env: result_env,
-                depth: depth + 1,
-                is_tail_call: false,
-                expected_type: None,
-            });
+                let env_clone = result_env.clone();
+                let metta_env: crate::backend::environment::generic::MettaEnvironment =
+                    unsafe { std::mem::transmute_copy(&env_clone) };
+                std::mem::forget(env_clone);
+
+                let evaluated = parallel_collapse_eval(
+                    metta_items, metta_env, par_budget, current_depth, depth,
+                );
+
+                let generic_evaluated: Vec<C::Value> = unsafe {
+                    std::mem::transmute(evaluated)
+                };
+
+                let result_list = ctx.factory().sexpr(generic_evaluated);
+
+                #[cfg(feature = "eval-trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            depth as u32,
+                            crate::backend::trace::trace_value_generic(&result_list),
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::SpecialForm {
+                                form_name: "collapse-bind".to_string(),
+                                phase: "collapse-result-parallel".to_string(),
+                            },
+                        );
+                    }
+                }
+
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (vec![result_list], result_env),
+                });
+            } else {
+                // ── Sequential path ──
+                let mut remaining_raw: VecDeque<C::Value> = expr_results.into_iter().collect();
+                let first_raw = remaining_raw.pop_front().expect("expr_results is non-empty");
+
+                continuations.push(GenericContinuation::ProcessCollapseEvalResults {
+                    remaining_raw,
+                    evaluated: Vec::new(),
+                    is_bind: true,
+                    env: result_env.clone(),
+                    depth,
+                });
+
+                work_stack.push(GenericWorkItem::Eval {
+                    value: first_raw,
+                    env: result_env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                });
+            }
         }
 
         GenericContinuation::ProcessCollapseEvalResults {

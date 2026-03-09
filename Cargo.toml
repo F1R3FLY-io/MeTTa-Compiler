@@ -115,11 +115,15 @@ tokio = { version = "1", features = ["rt", "sync"], optional = true }
 # PathMap - Trie-map library used by MORK
 # Note: Windows is not currently supported due to jemalloc incompatibility
 # MORK's workspace enables jemalloc which requires Unix build tools
-pathmap = { path = "../PathMap", features = [
-    "jemalloc",
-    "arena_compact",
-    "viz",
-] }
+pathmap = {
+    git = "https://github.com/dylon/PathMap.git",
+    branch = "feature/mettatron-fixes",
+    features = [
+        "jemalloc",
+        "arena_compact",
+        "viz",
+    ]
+}
 # pathmap = { git = "https://github.com/Adam-Vandervorst/PathMap.git", branch = "master", features = ["jemalloc", "arena_compact"] }
 # pathmap = { version = "0.2.0-alpha0", features = ["jemalloc", "arena_compact"] }
 
@@ -387,3 +391,13 @@ assets = [
 # registry version.
 [patch."https://github.com/luketpeterson/gxhash/"]
 gxhash = "3.5"
+
+# Unify all pathmap sources to the single local clone.
+# MORK and f1r3node use a git dep; liblevenshtein uses crates.io 0.2.2.
+# Without these patches, three different pathmap instances cause
+# global_allocator conflicts and trait/type mismatches (44 errors).
+[patch."https://github.com/dylon/PathMap.git"]
+pathmap = { path = "../PathMap" }
+
+[patch.crates-io]
+pathmap = { path = "../PathMap" }

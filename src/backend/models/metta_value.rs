@@ -295,6 +295,39 @@ unsafe impl Send for MettaValueInner {}
 // SAFETY: MettaValueInner can be shared between threads for the same reasons
 unsafe impl Sync for MettaValueInner {}
 
+/// Discriminated view of a `MettaValue` that separates frequently-matched
+/// inline-representable variants (Bool, Long, Float, Unit, Empty) from
+/// slab-allocated variants.
+///
+/// This replaces `inner()` for pattern matching in hot paths, enabling future
+/// NaN-boxing by centralising the decode logic. For slab-backed values the
+/// Spanned wrapper is stripped automatically.
+///
+/// Every `MettaValueInner` variant (except `Spanned`, which is transparent)
+/// has a corresponding `ValueView` variant. This enables exhaustive pattern
+/// matching: adding a new `MettaValueInner` variant forces updates at every
+/// `match value.view()` site.
+#[derive(Debug, Clone, Copy)]
+pub enum ValueView {
+    // Inline-representable types (future NaN-boxing candidates)
+    Float(f64),
+    Bool(bool),
+    Long(i64),
+    Unit,
+    Empty,
+    // Slab-allocated types (Spanned layers are stripped by view())
+    Atom(&'static str),
+    String(&'static str),
+    SExpr(&'static [MettaValue]),
+    Error(&'static str, MettaValue),
+    Type(MettaValue),
+    Conjunction(&'static [MettaValue]),
+    Space(&'static SpaceHandle),
+    State(u64),
+    Memo(&'static MemoHandle),
+    Quoted(MettaValue),
+}
+
 impl MettaValue {
     /// Dereference the tagged pointer to get the inner value.
     /// Masks off flag bits before dereferencing.
@@ -338,6 +371,35 @@ impl MettaValue {
                 MettaValueInner::Spanned(v, _) => current = v.inner_ref(),
                 _ => return current,
             }
+        }
+    }
+
+    /// Return a [`ValueView`] that decomposes this value into one variant per
+    /// logical type, stripping Spanned layers automatically.
+    ///
+    /// This centralises the decode logic for pattern matching and is the
+    /// preferred entry point for `match` expressions in hot paths.
+    #[inline]
+    pub fn view(&self) -> ValueView {
+        let inner = self.inner();
+        match inner {
+            MettaValueInner::Float(f) => ValueView::Float(*f),
+            MettaValueInner::Bool(b) => ValueView::Bool(*b),
+            MettaValueInner::Long(n) => ValueView::Long(*n),
+            MettaValueInner::Unit => ValueView::Unit,
+            MettaValueInner::Empty => ValueView::Empty,
+            MettaValueInner::Atom(s) => ValueView::Atom(s),
+            MettaValueInner::String(s) => ValueView::String(s),
+            MettaValueInner::SExpr(items) => ValueView::SExpr(items),
+            MettaValueInner::Error(msg, details) => ValueView::Error(msg, *details),
+            MettaValueInner::Type(inner_val) => ValueView::Type(*inner_val),
+            MettaValueInner::Conjunction(goals) => ValueView::Conjunction(goals),
+            MettaValueInner::Space(handle) => ValueView::Space(handle),
+            MettaValueInner::State(id) => ValueView::State(*id),
+            MettaValueInner::Memo(handle) => ValueView::Memo(handle),
+            MettaValueInner::Quoted(inner_val) => ValueView::Quoted(*inner_val),
+            // Spanned is stripped by inner() — this is unreachable
+            MettaValueInner::Spanned(..) => unreachable!("inner() strips Spanned"),
         }
     }
 
@@ -1314,6 +1376,11 @@ impl MettaValueTrait for MettaValue {
     #[inline]
     fn inner_raw(&self) -> &MettaValueInner {
         self.inner_ref() // Raw field, no Spanned stripping
+    }
+
+    #[inline]
+    fn view(&self) -> ValueView {
+        MettaValue::view(self) // Delegates to inherent method
     }
 
     #[inline]

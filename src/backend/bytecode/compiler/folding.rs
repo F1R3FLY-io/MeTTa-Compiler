@@ -3,31 +3,32 @@
 //! This module provides functions to evaluate constant expressions
 //! at compile time, reducing runtime overhead.
 
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 /// Try to recursively evaluate an expression to a constant at compile time.
 /// Returns None if the expression contains variables or other non-constant values.
 pub fn try_eval_constant(expr: &MettaValue) -> Option<MettaValue> {
-    match expr.inner() {
+    match expr.view() {
         // Base cases: these are already constants
-        MettaValueInner::Long(_)
-        | MettaValueInner::Float(_)
-        | MettaValueInner::Bool(_)
-        | MettaValueInner::String(_)
-        | MettaValueInner::Unit => Some(expr.clone()),
+        ValueView::Long(_)
+        | ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Unit => Some(expr.clone()),
+
+        ValueView::String(_) => Some(expr.clone()),
 
         // Variables cannot be evaluated at compile time
-        MettaValueInner::Atom(name)
+        ValueView::Atom(name)
             if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') =>
         {
             None
         }
 
         // S-expressions need recursive evaluation
-        MettaValueInner::SExpr(items) if !items.is_empty() => {
-            if let MettaValueInner::Atom(op) = items[0].inner() {
-                let args = &(*items)[1..];
-                match *op {
+        ValueView::SExpr(items) if !items.is_empty() => {
+            if let ValueView::Atom(op) = items[0].view() {
+                let args = &items[1..];
+                match op {
                     // Binary arithmetic
                     "+" | "-" | "*" | "/" | "%" | "mod" | "pow" | "pow-math" | "floor-div"
                         if args.len() == 2 =>
@@ -63,9 +64,9 @@ pub fn try_eval_constant(expr: &MettaValue) -> Option<MettaValue> {
                     // Conditionals
                     "if" if args.len() == 3 => {
                         let cond = try_eval_constant(&args[0])?;
-                        match cond.inner() {
-                            MettaValueInner::Bool(true) => try_eval_constant(&args[1]),
-                            MettaValueInner::Bool(false) => try_eval_constant(&args[2]),
+                        match cond.view() {
+                            ValueView::Bool(true) => try_eval_constant(&args[1]),
+                            ValueView::Bool(false) => try_eval_constant(&args[2]),
                             _ => None,
                         }
                     }
@@ -95,40 +96,40 @@ pub fn try_fold_binary_arith_values(
     a: &MettaValue,
     b: &MettaValue,
 ) -> Option<MettaValue> {
-    match (a.inner(), b.inner()) {
-        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => match op {
-            "+" => Some(MettaValue::Long(x.wrapping_add(*y))),
-            "-" => Some(MettaValue::Long(x.wrapping_sub(*y))),
-            "*" => Some(MettaValue::Long(x.wrapping_mul(*y))),
-            "/" if *y != 0 => x.checked_div(*y).map(MettaValue::Long),
-            "%" | "mod" if *y != 0 => x.checked_rem(*y).map(MettaValue::Long),
-            "pow" | "pow-math" if *y >= 0 => x.checked_pow(*y as u32).map(MettaValue::Long),
-            "floor-div" if *y != 0 => Some(MettaValue::Long(x.div_euclid(*y))),
+    match (a.view(), b.view()) {
+        (ValueView::Long(x), ValueView::Long(y)) => match op {
+            "+" => Some(MettaValue::Long(x.wrapping_add(y))),
+            "-" => Some(MettaValue::Long(x.wrapping_sub(y))),
+            "*" => Some(MettaValue::Long(x.wrapping_mul(y))),
+            "/" if y != 0 => x.checked_div(y).map(MettaValue::Long),
+            "%" | "mod" if y != 0 => x.checked_rem(y).map(MettaValue::Long),
+            "pow" | "pow-math" if y >= 0 => x.checked_pow(y as u32).map(MettaValue::Long),
+            "floor-div" if y != 0 => Some(MettaValue::Long(x.div_euclid(y))),
             _ => None,
         },
-        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => match op {
+        (ValueView::Float(x), ValueView::Float(y)) => match op {
             "+" => Some(MettaValue::Float(x + y)),
             "-" => Some(MettaValue::Float(x - y)),
             "*" => Some(MettaValue::Float(x * y)),
-            "/" if *y != 0.0 => Some(MettaValue::Float(x / y)),
-            "%" | "mod" if *y != 0.0 => Some(MettaValue::Float(x % y)),
-            "pow" | "pow-math" => Some(MettaValue::Float(x.powf(*y))),
+            "/" if y != 0.0 => Some(MettaValue::Float(x / y)),
+            "%" | "mod" if y != 0.0 => Some(MettaValue::Float(x % y)),
+            "pow" | "pow-math" => Some(MettaValue::Float(x.powf(y))),
             _ => None,
         },
-        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
-            let x = *x as f64;
+        (ValueView::Long(x), ValueView::Float(y)) => {
+            let x = x as f64;
             match op {
                 "+" => Some(MettaValue::Float(x + y)),
                 "-" => Some(MettaValue::Float(x - y)),
                 "*" => Some(MettaValue::Float(x * y)),
-                "/" if *y != 0.0 => Some(MettaValue::Float(x / y)),
-                "%" | "mod" if *y != 0.0 => Some(MettaValue::Float(x % y)),
-                "pow" | "pow-math" => Some(MettaValue::Float(x.powf(*y))),
+                "/" if y != 0.0 => Some(MettaValue::Float(x / y)),
+                "%" | "mod" if y != 0.0 => Some(MettaValue::Float(x % y)),
+                "pow" | "pow-math" => Some(MettaValue::Float(x.powf(y))),
                 _ => None,
             }
         }
-        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
-            let y = *y as f64;
+        (ValueView::Float(x), ValueView::Long(y)) => {
+            let y = y as f64;
             match op {
                 "+" => Some(MettaValue::Float(x + y)),
                 "-" => Some(MettaValue::Float(x - y)),
@@ -145,12 +146,12 @@ pub fn try_fold_binary_arith_values(
 
 /// Try to fold a unary arithmetic operation at compile time
 pub fn try_fold_unary_arith(op: &str, a: &MettaValue) -> Option<MettaValue> {
-    match a.inner() {
-        MettaValueInner::Long(x) => {
+    match a.view() {
+        ValueView::Long(x) => {
             match op {
                 "abs" | "abs-math" => {
                     // i64::MIN.abs() overflows - let runtime handle the error
-                    if *x == i64::MIN {
+                    if x == i64::MIN {
                         None
                     } else {
                         Some(MettaValue::Long(x.abs()))
@@ -160,7 +161,7 @@ pub fn try_fold_unary_arith(op: &str, a: &MettaValue) -> Option<MettaValue> {
                 _ => None,
             }
         }
-        MettaValueInner::Float(x) => match op {
+        ValueView::Float(x) => match op {
             "abs" | "abs-math" => Some(MettaValue::Float(x.abs())),
             "neg" => Some(MettaValue::Float(-x)),
             _ => None,
@@ -192,8 +193,8 @@ pub fn try_fold_comparison_values(op: &str, a: &MettaValue, b: &MettaValue) -> O
         }
     }
 
-    match (a.inner(), b.inner()) {
-        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => match op {
+    match (a.view(), b.view()) {
+        (ValueView::Long(x), ValueView::Long(y)) => match op {
             "<" => Some(MettaValue::Bool(x < y)),
             "<=" => Some(MettaValue::Bool(x <= y)),
             ">" => Some(MettaValue::Bool(x > y)),
@@ -202,15 +203,15 @@ pub fn try_fold_comparison_values(op: &str, a: &MettaValue, b: &MettaValue) -> O
             "!=" => Some(MettaValue::Bool(x != y)),
             _ => None,
         },
-        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => compare_nums(*x, *y, op),
-        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => compare_nums(*x as f64, *y, op),
-        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => compare_nums(*x, *y as f64, op),
-        (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => match op {
+        (ValueView::Float(x), ValueView::Float(y)) => compare_nums(x, y, op),
+        (ValueView::Long(x), ValueView::Float(y)) => compare_nums(x as f64, y, op),
+        (ValueView::Float(x), ValueView::Long(y)) => compare_nums(x, y as f64, op),
+        (ValueView::Bool(x), ValueView::Bool(y)) => match op {
             "==" => Some(MettaValue::Bool(x == y)),
             "!=" => Some(MettaValue::Bool(x != y)),
             _ => None,
         },
-        (MettaValueInner::String(x), MettaValueInner::String(y)) => match op {
+        (ValueView::String(x), ValueView::String(y)) => match op {
             "<" => Some(MettaValue::Bool(x < y)),
             "<=" => Some(MettaValue::Bool(x <= y)),
             ">" => Some(MettaValue::Bool(x > y)),
@@ -220,7 +221,7 @@ pub fn try_fold_comparison_values(op: &str, a: &MettaValue, b: &MettaValue) -> O
             _ => None,
         },
         // Unit comparisons
-        (MettaValueInner::Unit, MettaValueInner::Unit) => match op {
+        (ValueView::Unit, ValueView::Unit) => match op {
             "==" => Some(MettaValue::Bool(true)),
             "!=" => Some(MettaValue::Bool(false)),
             _ => None,
@@ -248,9 +249,9 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
                 return None;
             }
             // Only fold when both args are booleans to preserve type error semantics
-            match (args[0].inner(), args[1].inner()) {
-                (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => {
-                    Some(MettaValue::Bool(*a && *b))
+            match (args[0].view(), args[1].view()) {
+                (ValueView::Bool(a), ValueView::Bool(b)) => {
+                    Some(MettaValue::Bool(a && b))
                 }
                 _ => None,
             }
@@ -260,9 +261,9 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
                 return None;
             }
             // Only fold when both args are booleans to preserve type error semantics
-            match (args[0].inner(), args[1].inner()) {
-                (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => {
-                    Some(MettaValue::Bool(*a || *b))
+            match (args[0].view(), args[1].view()) {
+                (ValueView::Bool(a), ValueView::Bool(b)) => {
+                    Some(MettaValue::Bool(a || b))
                 }
                 _ => None,
             }
@@ -271,8 +272,8 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
             if args.len() != 1 {
                 return None;
             }
-            match args[0].inner() {
-                MettaValueInner::Bool(b) => Some(MettaValue::Bool(!b)),
+            match args[0].view() {
+                ValueView::Bool(b) => Some(MettaValue::Bool(!b)),
                 _ => None,
             }
         }
@@ -280,8 +281,8 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
             if args.len() != 2 {
                 return None;
             }
-            match (args[0].inner(), args[1].inner()) {
-                (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => {
+            match (args[0].view(), args[1].view()) {
+                (ValueView::Bool(a), ValueView::Bool(b)) => {
                     Some(MettaValue::Bool(a ^ b))
                 }
                 _ => None,

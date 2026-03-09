@@ -258,7 +258,7 @@ pub fn global_space_registry() -> &'static SpaceRegistry {
     &GLOBAL_SPACE_REGISTRY
 }
 
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 /// Error type for bytecode evaluation
 #[derive(Debug)]
@@ -308,75 +308,50 @@ impl std::error::Error for BytecodeEvalError {}
 /// can also be compiled. This prevents the bytecode VM from returning wrong results
 /// when a subexpression needs rule resolution.
 pub fn can_compile(expr: &MettaValue) -> bool {
-    match expr.inner_ref() {
-        // Always compilable literals
-        MettaValueInner::Unit
-        | MettaValueInner::Bool(_)
-        | MettaValueInner::Long(_)
-        | MettaValueInner::Float(_)
-        | MettaValueInner::String(_) => true,
+    match expr.view() {
+        // Always compilable inline literals
+        ValueView::Unit
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Float(_)
+        | ValueView::Empty => true,
+
+        ValueView::String(_) => true,
 
         // Atoms: only variables and known constants are safe
-        // - Variables (start with $) are OK - they'll be substituted
-        // - Other atoms might need rule resolution, so reject them
-        MettaValueInner::Atom(name) => {
-            // Variables are OK
+        ValueView::Atom(name) => {
             if name.starts_with('$') {
                 return true;
             }
-            // Known constants are OK
-            match *name {
+            match name {
                 "True" | "False" | "Nil" | "Unit" | "_" => true,
-                // Other atoms could be function calls - reject
                 _ => false,
             }
         }
 
         // S-expressions - check head AND all operands recursively
-        MettaValueInner::SExpr(items) if items.is_empty() => true,
-        MettaValueInner::SExpr(items) => {
-            // Check head for supported operations
-            if let MettaValueInner::Atom(head) = items[0].inner() {
-                let head_ok = match *head {
-                    // Arithmetic
+        ValueView::SExpr(items) if items.is_empty() => true,
+        ValueView::SExpr(items) => {
+            if let ValueView::Atom(head) = items[0].view() {
+                let head_ok = match head {
                     "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
-                    // Comparison
                     "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
-                    // Boolean
                     "and" | "or" | "not" | "xor" => true,
-                    // Control flow - if needs compilable condition and branches
                     "if" => true,
-                    // Quote - argument is NOT evaluated, so always OK
-                    "quote" => return true, // Early return - don't check args
-                    // Unquote - unwraps Quoted variant
+                    "quote" => return true,
                     "unquote" => true,
-                    // Nondeterminism — superpose's argument is a data list of
-                    // alternatives, not an expression to compile recursively.
                     "superpose" => return true,
-                    // NOTE: collapse intentionally NOT included - needs EvalCollapse VM impl
-                    // List operations
                     "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" => true,
-                    // Extended list operations
                     "decons-atom" | "empty" => true,
-                    // String operations
                     "repr" => true,
-                    // Type operations (only get-metatype doesn't need env type assertions)
                     "get-metatype" => true,
-                    // Note: get-type and check-type need environment type assertions
-                    // Binding forms
                     "let" | "let*" => true,
-                    // Chain operation (sequence/binding)
                     "chain" => return can_compile_chain(items),
-                    // Higher-order list operations
                     "map-atom" => return can_compile_map_atom(items),
                     "filter-atom" => return can_compile_filter_atom(items),
                     "foldl-atom" => return can_compile_foldl_atom(items),
-                    // Control flow pattern matching (case doesn't need space)
                     "case" => true,
-                    // Note: match and unify need space access, use tree-walker
-                    // Error handling
                     "error" | "is-error" | "catch" => true,
-                    // Reject everything else
                     _ => false,
                 };
 
@@ -384,35 +359,24 @@ pub fn can_compile(expr: &MettaValue) -> bool {
                     return false;
                 }
 
-                // IMPORTANT: Recursively check all operands
-                // This ensures we don't compile (+ 1 (foo $x)) where (foo $x)
-                // would need rule resolution
                 items.iter().skip(1).all(can_compile)
             } else {
-                // Non-atom head - this is a data list like (1 2 3), not a function call
-                // All elements must be compilable
                 items.iter().all(can_compile)
             }
         }
 
-        // Errors can be compiled (they just push the error value)
-        MettaValueInner::Error(_, _) => true,
+        // Errors can be compiled
+        ValueView::Error(_, _) => true,
 
-        // Quoted values can be compiled (inner value + MakeQuote)
-        MettaValueInner::Quoted(inner) => can_compile(inner),
+        // Quoted values can be compiled
+        ValueView::Quoted(inner) => can_compile(&inner),
 
         // Types that need environment or special runtime support
-        MettaValueInner::Space(_)
-        | MettaValueInner::State(_)
-        | MettaValueInner::Type(_)
-        | MettaValueInner::Conjunction(_)
-        | MettaValueInner::Memo(_) => false,
-
-        // Empty is a sentinel that should be filtered, but can be compiled if needed
-        MettaValueInner::Empty => true,
-
-        // Delegate through Spanned wrapper to the inner value
-        MettaValueInner::Spanned(v, _) => can_compile(v),
+        ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Memo(_) => false,
     }
 }
 
@@ -445,90 +409,56 @@ pub fn can_compile_cached(expr: &MettaValue) -> bool {
 /// Use this when bytecode execution will have access to an Environment for
 /// rule lookup and definition (e.g., mmverify workloads).
 pub fn can_compile_with_env(expr: &MettaValue) -> bool {
-    match expr.inner_ref() {
-        // Always compilable literals
-        MettaValueInner::Unit
-        | MettaValueInner::Bool(_)
-        | MettaValueInner::Long(_)
-        | MettaValueInner::Float(_)
-        | MettaValueInner::String(_) => true,
+    match expr.view() {
+        // Always compilable inline literals
+        ValueView::Unit
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Float(_)
+        | ValueView::Empty => true,
+
+        ValueView::String(_) => true,
 
         // Atoms: variables, known constants, AND unknown atoms (for rule dispatch)
-        MettaValueInner::Atom(name) => {
-            // Variables are OK
+        ValueView::Atom(name) => {
             if name.starts_with('$') {
                 return true;
             }
-            // Grounded references (&self, &kb, etc.) need special tree-walker handling
             if name.starts_with('&') {
                 return false;
             }
-            // Known constants are OK
-            match *name {
+            match name {
                 "True" | "False" | "Nil" | "Unit" | "_" => true,
-                // With environment: unknown atoms are compilable as DispatchRules calls
                 _ => true,
             }
         }
 
         // S-expressions - check head AND all operands recursively
-        MettaValueInner::SExpr(items) if items.is_empty() => true,
-        MettaValueInner::SExpr(items) => {
-            // Check head for supported operations
-            if let MettaValueInner::Atom(head) = items[0].inner() {
-                let head_ok = match *head {
-                    // Rule definitions need tree-walker (bytecode compiler doesn't emit DefineRule)
+        ValueView::SExpr(items) if items.is_empty() => true,
+        ValueView::SExpr(items) => {
+            if let ValueView::Atom(head) = items[0].view() {
+                let head_ok = match head {
                     "=" => false,
-                    // Evaluation
                     "!" => true,
-                    // Arithmetic
                     "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
-                    // Comparison
                     "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
-                    // Boolean
                     "and" | "or" | "not" | "xor" => true,
-                    // Control flow
                     "if" => true,
-                    // Quote - argument is NOT evaluated
                     "quote" => return true,
-                    // Unquote - unwraps Quoted variant
                     "unquote" => true,
-                    // Nondeterminism — superpose's argument is a data list of
-                    // alternatives, not an expression to compile recursively.
                     "superpose" => return true,
-                    // List operations
                     "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" | "decons-atom"
                     | "empty" => true,
-                    // String operations
                     "repr" => true,
-                    // Type operations (only get-metatype doesn't need env type assertions)
                     "get-metatype" => true,
-                    // Note: get-type and check-type need environment type assertions
-                    // Binding forms
                     "let" | "let*" => true,
-                    // Chain operation
                     "chain" => return can_compile_chain_with_env(items),
-                    // Higher-order list operations
                     "map-atom" => return can_compile_map_atom_with_env(items),
                     "filter-atom" => return can_compile_filter_atom_with_env(items),
                     "foldl-atom" => return can_compile_foldl_atom_with_env(items),
-                    // Control flow pattern matching (case doesn't need space)
                     "case" => true,
-                    // Note: match and unify need space access, use tree-walker
-                    // Error handling
                     "error" | "is-error" | "catch" => true,
-                    // Type query (get-type can use env type declarations)
                     "get-type" => true,
-                    // Unknown atom heads: user-defined functions need rules
-                    // from the environment. The bytecode VM's DispatchRules
-                    // matches rules and returns the instantiated RHS, but only
-                    // performs single-step reduction — it does NOT continue
-                    // evaluating the result. Multi-step reductions (recursion,
-                    // nested function calls) produce partially-reduced results.
-                    // Keep as non-compilable so the tree-walker's trampoline
-                    // loop handles full iterative reduction.
-                    // The identity check in eval_inner guards against the case
-                    // where known-head expressions are returned unreduced.
                     _ => false,
                 };
 
@@ -536,32 +466,24 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     return false;
                 }
 
-                // Recursively check all operands with env support
                 items.iter().skip(1).all(can_compile_with_env)
             } else {
-                // Non-atom head - data list, all elements must be compilable
                 items.iter().all(can_compile_with_env)
             }
         }
 
         // Errors can be compiled
-        MettaValueInner::Error(_, _) => true,
+        ValueView::Error(_, _) => true,
 
-        // Quoted values can be compiled (inner value + MakeQuote)
-        MettaValueInner::Quoted(inner) => can_compile_with_env(inner),
+        // Quoted values can be compiled
+        ValueView::Quoted(inner) => can_compile_with_env(&inner),
 
-        // Types that need special runtime support (even with environment)
-        MettaValueInner::Space(_)
-        | MettaValueInner::State(_)
-        | MettaValueInner::Type(_)
-        | MettaValueInner::Conjunction(_)
-        | MettaValueInner::Memo(_) => false,
-
-        // Empty sentinel
-        MettaValueInner::Empty => true,
-
-        // Delegate through Spanned wrapper to the inner value
-        MettaValueInner::Spanned(v, _) => can_compile_with_env(v),
+        // Types that need special runtime support
+        ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Memo(_) => false,
     }
 }
 
@@ -570,7 +492,7 @@ fn can_compile_chain_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1]) && can_compile_with_env(&items[3])
 }
 
@@ -579,7 +501,7 @@ fn can_compile_map_atom_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1])
 }
 
@@ -588,7 +510,7 @@ fn can_compile_filter_atom_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1])
 }
 
@@ -597,7 +519,7 @@ fn can_compile_foldl_atom_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 5 {
         return false;
     }
-    let var_ok = matches!(items[3].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[3].view(), ValueView::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1]) && can_compile_with_env(&items[2])
 }
 
@@ -607,11 +529,7 @@ fn can_compile_chain(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    // items[0] is "chain"
-    // items[1] is expr - must be compilable
-    // items[2] is $var - must be a variable
-    // items[3] is body - must be compilable
-    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
     var_ok && can_compile(&items[1]) && can_compile(&items[3])
 }
 
@@ -621,11 +539,7 @@ fn can_compile_map_atom(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    // items[0] is "map-atom"
-    // items[1] is list - must be compilable
-    // items[2] is $var - must be a variable
-    // items[3] is template - compiled as sub-chunk, so we accept it
-    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
     var_ok && can_compile(&items[1])
 }
 
@@ -635,7 +549,7 @@ fn can_compile_filter_atom(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
     var_ok && can_compile(&items[1])
 }
 
@@ -645,14 +559,8 @@ fn can_compile_foldl_atom(items: &[MettaValue]) -> bool {
     if items.len() != 6 {
         return false;
     }
-    // items[0] is "foldl-atom"
-    // items[1] is list
-    // items[2] is init
-    // items[3] is $acc
-    // items[4] is $item
-    // items[5] is op (compiled as sub-chunk)
-    let acc_ok = matches!(items[3].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
-    let item_ok = matches!(items[4].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let acc_ok = matches!(items[3].view(), ValueView::Atom(s) if s.starts_with('$'));
+    let item_ok = matches!(items[4].view(), ValueView::Atom(s) if s.starts_with('$'));
     acc_ok && item_ok && can_compile(&items[1]) && can_compile(&items[2])
 }
 

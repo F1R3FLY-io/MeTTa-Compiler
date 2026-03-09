@@ -16,7 +16,7 @@ use super::work_item::{
 use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::{register_root_provider, MettaValue, MettaValueInner, RootProvider};
+use crate::backend::models::{register_root_provider, MettaValue, MettaValueInner, RootProvider, ValueView};
 
 // ============================================================================
 // Cached Synthetic Atoms
@@ -489,111 +489,83 @@ impl Compiler {
         work_stack: &mut Vec<CompileWork>,
         _continuations: &mut Vec<Continuation>,
     ) -> CompileResult<()> {
-        match expr.inner_ref() {
+        match expr.view() {
             // ================================================================
-            // Literals - direct emit, no recursion
+            // Literals - direct emit, no recursion (inline types)
             // ================================================================
-            MettaValueInner::Unit => {
+            ValueView::Unit => {
                 self.builder.emit(Opcode::PushUnit);
             }
-            MettaValueInner::Bool(true) => {
-                self.builder.emit(Opcode::PushTrue);
+            ValueView::Bool(b) => {
+                if b {
+                    self.builder.emit(Opcode::PushTrue);
+                } else {
+                    self.builder.emit(Opcode::PushFalse);
+                }
             }
-            MettaValueInner::Bool(false) => {
-                self.builder.emit(Opcode::PushFalse);
+            ValueView::Long(n) => {
+                self.compile_long(n)?;
             }
-            MettaValueInner::Long(n) => {
-                self.compile_long(*n)?;
+            ValueView::Float(f) => {
+                self.compile_float(f)?;
             }
-            MettaValueInner::Float(f) => {
-                self.compile_float(*f)?;
-            }
-            MettaValueInner::String(s) => {
-                let idx = self.builder.add_constant(MettaValue::String(*s));
-                self.builder.emit_u16(Opcode::PushString, idx);
-            }
-
-            // ================================================================
-            // Atoms (symbols and variables)
-            // ================================================================
-            MettaValueInner::Atom(name) => {
-                self.compile_atom(*name, Some(expr))?;
-            }
-
-            // ================================================================
-            // S-expressions - dispatch to builtin or generic
-            // ================================================================
-            MettaValueInner::SExpr(items) => {
-                self.compile_sexpr_iterative(items.to_vec(), cont_id, work_stack)?;
-            }
-
-            // ================================================================
-            // Type
-            // ================================================================
-            MettaValueInner::Type(t) => {
-                let idx = self.builder.add_constant(MettaValue::Type(t.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-
-            // ================================================================
-            // Conjunction (multiple values)
-            // ================================================================
-            MettaValueInner::Conjunction(values) => {
-                work_stack.push(CompileWork::CompileConjunction {
-                    values: (*values).iter().cloned().collect(),
-                });
-            }
-
-            // ================================================================
-            // Error
-            // ================================================================
-            MettaValueInner::Error(msg, details) => {
-                let idx = self
-                    .builder
-                    .add_constant(MettaValue::Error(*msg, details.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-
-            // ================================================================
-            // Space and State are runtime values, compile as constants
-            // ================================================================
-            MettaValueInner::Space(handle) => {
-                let idx = self.builder.add_constant(MettaValue::Space(handle.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-            MettaValueInner::State(handle) => {
-                let idx = self.builder.add_constant(MettaValue::State(*handle));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-            MettaValueInner::Memo(handle) => {
-                let idx = self.builder.add_constant(MettaValue::Memo(handle.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-            MettaValueInner::Empty => {
+            ValueView::Empty => {
                 let idx = self.builder.add_constant(MettaValue::Empty());
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
 
             // ================================================================
-            // Quoted expression — compile inner value then wrap with MakeQuote
+            // Slab-backed types
             // ================================================================
-            MettaValueInner::Quoted(inner) => {
-                work_stack.push(CompileWork::CompileQuoted {
-                    expr: *inner,
-                    cont_id,
+            ValueView::String(s) => {
+                let idx = self.builder.add_constant(MettaValue::String(s));
+                self.builder.emit_u16(Opcode::PushString, idx);
+            }
+
+            ValueView::Atom(name) => {
+                self.compile_atom(name, Some(expr))?;
+            }
+
+            ValueView::SExpr(items) => {
+                self.compile_sexpr_iterative(items.to_vec(), cont_id, work_stack)?;
+            }
+
+            ValueView::Type(t) => {
+                let idx = self.builder.add_constant(MettaValue::Type(t));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
+
+            ValueView::Conjunction(values) => {
+                work_stack.push(CompileWork::CompileConjunction {
+                    values: values.iter().cloned().collect(),
                 });
             }
 
-            // ================================================================
-            // Spanned — delegate to wrapped value, preserving position info
-            // ================================================================
-            MettaValueInner::Spanned(v, _) => {
-                work_stack.push(CompileWork::CompileExpr {
-                    expr: *v,
-                    in_tail_position: self.in_tail_position,
+            ValueView::Error(msg, details) => {
+                let idx = self
+                    .builder
+                    .add_constant(MettaValue::Error(msg, details));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
+
+            ValueView::Space(handle) => {
+                let idx = self.builder.add_constant(MettaValue::Space(handle.clone()));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
+            ValueView::State(id) => {
+                let idx = self.builder.add_constant(MettaValue::State(id));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
+            ValueView::Memo(handle) => {
+                let idx = self.builder.add_constant(MettaValue::Memo(handle.clone()));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
+
+            ValueView::Quoted(inner) => {
+                work_stack.push(CompileWork::CompileQuoted {
+                    expr: inner,
                     cont_id,
                 });
-                return Ok(());
             }
         }
         Ok(())
@@ -612,7 +584,7 @@ impl Compiler {
         }
 
         // Check if the head is a known operation
-        if let Some(MettaValueInner::Atom(op_name)) = items.first().map(|v| v.inner()) {
+        if let Some(ValueView::Atom(op_name)) = items.first().map(|v| v.view()) {
             let head_value = items[0]; // Original slab-allocated head (Copy)
             let args = &items[1..];
 
@@ -818,13 +790,13 @@ impl Compiler {
             "*" => {
                 self.check_arity("*", args.len(), 2)?;
                 // Special cases for multiplication
-                if matches!(args[0].inner(), MettaValueInner::Long(0))
-                    || matches!(args[1].inner(), MettaValueInner::Long(0))
+                if matches!(args[0].view(), ValueView::Long(0))
+                    || matches!(args[1].view(), ValueView::Long(0))
                 {
                     self.builder.emit_byte(Opcode::PushLongSmall, 0);
                     return Ok(Some(()));
                 }
-                if matches!(args[0].inner(), MettaValueInner::Long(1)) {
+                if matches!(args[0].view(), ValueView::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[1].clone(),
                         in_tail_position: false,
@@ -832,7 +804,7 @@ impl Compiler {
                     });
                     return Ok(Some(()));
                 }
-                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
+                if matches!(args[1].view(), ValueView::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[0].clone(),
                         in_tail_position: false,
@@ -852,7 +824,7 @@ impl Compiler {
             }
             "/" => {
                 self.check_arity("/", args.len(), 2)?;
-                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
+                if matches!(args[1].view(), ValueView::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[0].clone(),
                         in_tail_position: false,
@@ -884,11 +856,11 @@ impl Compiler {
             }
             "pow" | "pow-math" => {
                 self.check_arity("pow", args.len(), 2)?;
-                if matches!(args[1].inner(), MettaValueInner::Long(0)) {
+                if matches!(args[1].view(), ValueView::Long(0)) {
                     self.builder.emit_byte(Opcode::PushLongSmall, 1);
                     return Ok(Some(()));
                 }
-                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
+                if matches!(args[1].view(), ValueView::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[0].clone(),
                         in_tail_position: false,
@@ -1220,8 +1192,8 @@ impl Compiler {
                 self.check_arity("if", args.len(), 3)?;
                 // Try constant condition folding
                 if let Some(cond_val) = self.try_eval_constant(&args[0]) {
-                    if let MettaValueInner::Bool(cond) = cond_val.inner() {
-                        let branch = if *cond {
+                    if let ValueView::Bool(cond) = cond_val.view() {
+                        let branch = if cond {
                             args[1].clone()
                         } else {
                             args[2].clone()
@@ -1268,11 +1240,11 @@ impl Compiler {
             }
             "let*" => {
                 self.check_arity("let*", args.len(), 2)?;
-                let bindings = match args[0].inner() {
-                    MettaValueInner::SExpr(items) => items
+                let bindings = match args[0].view() {
+                    ValueView::SExpr(items) => items
                         .iter()
-                        .map(|b| match b.inner() {
-                            MettaValueInner::SExpr(pair) if pair.len() == 2 => {
+                        .map(|b| match b.view() {
+                            ValueView::SExpr(pair) if pair.len() == 2 => {
                                 Ok((pair[0].clone(), pair[1].clone()))
                             }
                             _ => Err(CompileError::InvalidExpression(
@@ -1281,7 +1253,7 @@ impl Compiler {
                         })
                         .collect::<CompileResult<VecDeque<_>>>()?,
                     // Unit is the normalized form of SExpr([]) - empty bindings
-                    MettaValueInner::Unit => VecDeque::new(),
+                    ValueView::Unit => VecDeque::new(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "let* bindings must be a list".to_string(),
@@ -1440,10 +1412,10 @@ impl Compiler {
             // ================================================================
             "superpose" => {
                 self.check_arity("superpose", args.len(), 1)?;
-                let alternatives = match args[0].inner() {
-                    MettaValueInner::SExpr(items) => items.to_vec(),
+                let alternatives = match args[0].view() {
+                    ValueView::SExpr(items) => items.to_vec(),
                     // Unit is the normalized form of SExpr([]) - empty alternatives
-                    MettaValueInner::Unit => vec![],
+                    ValueView::Unit => vec![],
                     _ => vec![args[0].clone()],
                 };
                 work_stack.push(CompileWork::CompileSuperpose {
@@ -1741,8 +1713,8 @@ impl Compiler {
             // ================================================================
             "map-atom" => {
                 self.check_arity("map-atom", args.len(), 3)?;
-                let var_name = match args[1].inner() {
-                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let var_name = match args[1].view() {
+                    ValueView::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "map-atom variable must be $var".to_string(),
@@ -1761,8 +1733,8 @@ impl Compiler {
             }
             "filter-atom" => {
                 self.check_arity("filter-atom", args.len(), 3)?;
-                let var_name = match args[1].inner() {
-                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let var_name = match args[1].view() {
+                    ValueView::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "filter-atom variable must be $var".to_string(),
@@ -1781,16 +1753,16 @@ impl Compiler {
             }
             "foldl-atom" => {
                 self.check_arity("foldl-atom", args.len(), 5)?;
-                let acc_name = match args[2].inner() {
-                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let acc_name = match args[2].view() {
+                    ValueView::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "foldl-atom accumulator must be $var".to_string(),
                         ))
                     }
                 };
-                let item_name = match args[3].inner() {
-                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let item_name = match args[3].view() {
+                    ValueView::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "foldl-atom item must be $var".to_string(),
@@ -1859,11 +1831,11 @@ impl Compiler {
             }
             "case" => {
                 self.check_arity("case", args.len(), 2)?;
-                let cases = match args[1].inner() {
-                    MettaValueInner::SExpr(items) => items
+                let cases = match args[1].view() {
+                    ValueView::SExpr(items) => items
                         .iter()
-                        .map(|c| match c.inner() {
-                            MettaValueInner::SExpr(pair) if pair.len() == 2 => {
+                        .map(|c| match c.view() {
+                            ValueView::SExpr(pair) if pair.len() == 2 => {
                                 Ok((pair[0].clone(), pair[1].clone()))
                             }
                             _ => Err(CompileError::InvalidExpression(
@@ -1895,9 +1867,9 @@ impl Compiler {
                 self.check_arity("error", args.len(), 2)?;
                 // Construct MettaValue::Error at compile time, matching tree-walker semantics
                 // (error msg details) - arguments are NOT evaluated, taken as-is
-                let msg = match args[0].inner() {
-                    MettaValueInner::String(s) => (*s).to_string(),
-                    MettaValueInner::Atom(s) => (*s).to_string(),
+                let msg = match args[0].view() {
+                    ValueView::String(s) => s.to_string(),
+                    ValueView::Atom(s) => s.to_string(),
                     _ => format!("{:?}", args[0]),
                 };
                 let details = args[1].clone();
@@ -2712,8 +2684,8 @@ impl Compiler {
         cont_id: usize,
         work_stack: &mut Vec<CompileWork>,
     ) -> CompileResult<()> {
-        match expr.inner_ref() {
-            MettaValueInner::Atom(name) => {
+        match expr.view() {
+            ValueView::Atom(name) => {
                 let idx = self.builder.add_constant(MettaValue::Atom(name));
                 if name.starts_with('$') {
                     self.builder.emit_u16(Opcode::PushVariable, idx);
@@ -2721,7 +2693,7 @@ impl Compiler {
                     self.builder.emit_u16(Opcode::PushAtom, idx);
                 }
             }
-            MettaValueInner::SExpr(items) => {
+            ValueView::SExpr(items) => {
                 let total = items.len();
                 work_stack.push(CompileWork::CompileQuotedSExprElements {
                     items: items.iter().cloned().collect(),
@@ -2729,14 +2701,20 @@ impl Compiler {
                     cont_id,
                 });
             }
-            MettaValueInner::Spanned(v, _) => {
-                work_stack.push(CompileWork::CompileQuoted {
-                    expr: *v,
-                    cont_id,
-                });
-            }
-            _ => {
-                // Other values can be compiled normally
+            // Other values (including inline types) can be compiled normally
+            ValueView::Float(_)
+            | ValueView::Bool(_)
+            | ValueView::Long(_)
+            | ValueView::Unit
+            | ValueView::Empty
+            | ValueView::String(_)
+            | ValueView::Error(_, _)
+            | ValueView::Type(_)
+            | ValueView::Conjunction(_)
+            | ValueView::Space(_)
+            | ValueView::State(_)
+            | ValueView::Memo(_)
+            | ValueView::Quoted(_) => {
                 work_stack.push(CompileWork::CompileExpr {
                     expr,
                     in_tail_position: false,
@@ -2824,9 +2802,9 @@ impl Compiler {
     ) -> CompileResult<()> {
         match state {
             PatternBindingState::Binding => {
-                match pattern.inner_ref() {
-                    MettaValueInner::Atom(name) if name.starts_with('$') => {
-                        let var_name = (*name)[1..].to_string();
+                match pattern.view() {
+                    ValueView::Atom(name) if name.starts_with('$') => {
+                        let var_name = name[1..].to_string();
                         let slot = self.context.declare_local(var_name)?;
                         if slot <= 255 {
                             self.builder.emit_byte(Opcode::StoreLocal, slot as u8);
@@ -2834,15 +2812,15 @@ impl Compiler {
                             self.builder.emit_u16(Opcode::StoreLocalWide, slot);
                         }
                     }
-                    MettaValueInner::Atom(name) if *name == "_" => {
+                    ValueView::Atom(name) if name == "_" => {
                         self.builder.emit(Opcode::Pop);
                     }
-                    MettaValueInner::SExpr(items) => {
+                    ValueView::SExpr(items) => {
                         // Destructuring pattern
                         let total = items.len();
                         if total > 0 {
                             // Push work for each element in reverse order
-                            for (i, item) in (*items).iter().cloned().enumerate().rev() {
+                            for (i, item) in items.iter().cloned().enumerate().rev() {
                                 work_stack.push(CompileWork::CompilePatternBinding {
                                     pattern: item,
                                     element_index: i,
@@ -2856,17 +2834,21 @@ impl Compiler {
                             self.builder.emit(Opcode::Pop);
                         }
                     }
-                    MettaValueInner::Spanned(v, _) => {
-                        work_stack.push(CompileWork::CompilePatternBinding {
-                            pattern: *v,
-                            element_index,
-                            total_elements,
-                            state: PatternBindingState::Binding,
-                            cont_id: 0,
-                        });
-                    }
-                    _ => {
-                        // Non-binding pattern - just pop
+                    // Non-binding patterns (including inline types) - just pop
+                    ValueView::Atom(_)
+                    | ValueView::Float(_)
+                    | ValueView::Bool(_)
+                    | ValueView::Long(_)
+                    | ValueView::Unit
+                    | ValueView::Empty
+                    | ValueView::String(_)
+                    | ValueView::Error(_, _)
+                    | ValueView::Type(_)
+                    | ValueView::Conjunction(_)
+                    | ValueView::Space(_)
+                    | ValueView::State(_)
+                    | ValueView::Memo(_)
+                    | ValueView::Quoted(_) => {
                         self.builder.emit(Opcode::Pop);
                     }
                 }

@@ -11,7 +11,7 @@ use crate::backend::bytecode::jit::types::{
     JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
     MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_PTR, TAG_UNIT,
 };
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // Non-Determinism Runtime (Choice Points)
@@ -339,7 +339,7 @@ pub unsafe extern "C" fn jit_runtime_collect(
             let jit_val = *ctx_ref.results.add(i);
             let metta_val = jit_val.to_metta();
             // Filter out Unit values (matches VM collapse semantics)
-            if !matches!(*metta_val.inner(), MettaValueInner::Unit) {
+            if !matches!(metta_val.view(), ValueView::Unit) {
                 items.push(metta_val);
             }
         }
@@ -730,7 +730,7 @@ pub unsafe extern "C" fn jit_runtime_collect_native(ctx: *mut JitContext) -> u64
             let jit_val = *ctx_ref.results.add(i);
             let metta_val = jit_val.to_metta();
             // Filter out Unit values (matches VM collapse semantics)
-            if !matches!(*metta_val.inner(), MettaValueInner::Unit) {
+            if !matches!(metta_val.view(), ValueView::Unit) {
                 items.push(metta_val);
             }
         }

@@ -9,7 +9,7 @@
 
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_UNIT};
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // S-Expression Operations (Stage 14: Head/Tail/Arity/Element)
@@ -60,8 +60,8 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
     }
 
     let metta_val = MettaValue::from_inner(&*inner_ptr);
-    match metta_val.inner() {
-        MettaValueInner::SExpr(items) => {
+    match metta_val.view() {
+        ValueView::SExpr(items) => {
             if items.is_empty() {
                 TAG_UNIT
             } else {
@@ -78,11 +78,14 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
             }
         }
         // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
-        MettaValueInner::Quoted(_) => {
+        ValueView::Quoted(_) => {
             let quote_atom = MettaValue::Atom("quote".to_string());
             metta_to_jit(&quote_atom).to_bits()
         }
-        _ => TAG_UNIT,
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) => TAG_UNIT,
     }
 }
 
@@ -120,8 +123,8 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
     }
 
     let metta_val = MettaValue::from_inner(&*inner_ptr);
-    match metta_val.inner() {
-        MettaValueInner::SExpr(items) => {
+    match metta_val.view() {
+        ValueView::SExpr(items) => {
             // Return tail (skip first element)
             let tail: Vec<MettaValue> = if items.len() > 1 {
                 items[1..].to_vec()
@@ -133,8 +136,8 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
             JitValue::from_inner_ptr(ptr).to_bits()
         }
         // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
-        MettaValueInner::Quoted(inner) => {
-            let tail = MettaValue::SExpr(vec![*inner]);
+        ValueView::Quoted(inner) => {
+            let tail = MettaValue::SExpr(vec![inner]);
             let ptr = tail.inner_ptr();
             JitValue::from_inner_ptr(ptr).to_bits()
         }
@@ -176,9 +179,14 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
     }
 
     let metta_val = MettaValue::from_inner(&*inner_ptr);
-    match metta_val.inner() {
-        MettaValueInner::SExpr(items) => JitValue::from_long(items.len() as i64).to_bits(),
-        _ => JitValue::from_long(0).to_bits(),
+    match metta_val.view() {
+        ValueView::SExpr(items) => JitValue::from_long(items.len() as i64).to_bits(),
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
+            JitValue::from_long(0).to_bits()
+        }
     }
 }
 
@@ -219,8 +227,8 @@ pub unsafe extern "C" fn jit_runtime_get_element(
     let metta_val = MettaValue::from_inner(&*inner_ptr);
     let idx = index as usize;
 
-    match metta_val.inner() {
-        MettaValueInner::SExpr(items) => {
+    match metta_val.view() {
+        ValueView::SExpr(items) => {
             if idx >= items.len() {
                 TAG_UNIT
             } else {
@@ -235,6 +243,9 @@ pub unsafe extern "C" fn jit_runtime_get_element(
                 }
             }
         }
-        _ => TAG_UNIT,
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => TAG_UNIT,
     }
 }

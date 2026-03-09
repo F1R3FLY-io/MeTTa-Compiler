@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::{
     JitContext, JitValue, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_LONG, TAG_UNIT,
     VAR_INDEX_CACHE_SIZE,
 };
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // Phase B: Pattern Matching Runtime Functions
@@ -206,8 +206,8 @@ pub(crate) unsafe fn lookup_var_index_cached(
             // Verify the cached index is valid and matches the name
             let idx = cached_idx as usize;
             if idx < constants.len() {
-                if let MettaValueInner::Atom(s) = constants[idx].inner() {
-                    if *s == name {
+                if let ValueView::Atom(s) = constants[idx].view() {
+                    if s == name {
                         return Some(idx);
                     }
                 }
@@ -219,7 +219,7 @@ pub(crate) unsafe fn lookup_var_index_cached(
     // Cache miss - linear search
     let name_idx = constants
         .iter()
-        .position(|c| matches!(c.inner(), MettaValueInner::Atom(s) if *s == name));
+        .position(|c| matches!(c.view(), ValueView::Atom(s) if s == name));
 
     // Update cache on successful lookup
     if let Some(idx) = name_idx {
@@ -429,9 +429,12 @@ pub unsafe extern "C" fn jit_runtime_match_arity(
 ) -> u64 {
     let val = JitValue::from_raw(value).to_metta();
 
-    let matches = match val.inner() {
-        MettaValueInner::SExpr(items) => items.len() == expected_arity as usize,
-        _ => false,
+    let matches = match val.view() {
+        ValueView::SExpr(items) => items.len() == expected_arity as usize,
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => false,
     };
 
     if matches {
@@ -476,9 +479,13 @@ pub unsafe extern "C" fn jit_runtime_match_head(
             return TAG_BOOL; // false - invalid index
         };
 
-    let matches = match val.inner() {
-        MettaValueInner::SExpr(items) if !items.is_empty() => &items[0] == expected_head,
-        _ => false,
+    let matches = match val.view() {
+        ValueView::SExpr(items) if !items.is_empty() => &items[0] == expected_head,
+        ValueView::SExpr(_) | ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_)
+        | ValueView::Unit | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::Space(_) | ValueView::State(_) | ValueView::Memo(_)
+        | ValueView::Quoted(_) => false,
     };
 
     if matches {
@@ -585,20 +592,20 @@ pub unsafe extern "C" fn jit_runtime_unify_bind(
 
 /// Pattern match implementation (without binding)
 pub(crate) fn pattern_matches_impl(pattern: &MettaValue, value: &MettaValue) -> bool {
-    match (pattern.inner(), value.inner()) {
+    match (pattern.view(), value.view()) {
         // Variable matches anything (Atom starting with $)
-        (MettaValueInner::Atom(s), _) if s.starts_with('$') => true,
+        (ValueView::Atom(s), _) if s.starts_with('$') => true,
         // Wildcard matches anything
-        (MettaValueInner::Atom(s), _) if *s == "_" => true,
+        (ValueView::Atom(s), _) if s == "_" => true,
         // Exact match for atoms
-        (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
+        (ValueView::Atom(a), ValueView::Atom(b)) => a == b,
         // Exact match for literals
-        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
-        (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
-        (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+        (ValueView::Long(a), ValueView::Long(b)) => a == b,
+        (ValueView::Bool(a), ValueView::Bool(b)) => a == b,
+        (ValueView::String(a), ValueView::String(b)) => a == b,
+        (ValueView::Unit, ValueView::Unit) => true,
         // S-expression matching
-        (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
+        (ValueView::SExpr(ps), ValueView::SExpr(vs)) => {
             ps.len() == vs.len()
                 && ps
                     .iter()
@@ -615,23 +622,23 @@ fn pattern_match_bind_impl(
     value: &MettaValue,
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
-    match (pattern.inner(), value.inner()) {
+    match (pattern.view(), value.view()) {
         // Variable binds to value (Atom starting with $)
-        (MettaValueInner::Atom(name), _) if name.starts_with('$') => {
+        (ValueView::Atom(name), _) if name.starts_with('$') => {
             bindings.push((name.to_string(), value.clone()));
             true
         }
         // Wildcard matches without binding
-        (MettaValueInner::Atom(s), _) if *s == "_" => true,
+        (ValueView::Atom(s), _) if s == "_" => true,
         // Exact match for atoms
-        (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
+        (ValueView::Atom(a), ValueView::Atom(b)) => a == b,
         // Exact match for literals
-        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
-        (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
-        (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+        (ValueView::Long(a), ValueView::Long(b)) => a == b,
+        (ValueView::Bool(a), ValueView::Bool(b)) => a == b,
+        (ValueView::String(a), ValueView::String(b)) => a == b,
+        (ValueView::Unit, ValueView::Unit) => true,
         // S-expression matching
-        (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
+        (ValueView::SExpr(ps), ValueView::SExpr(vs)) => {
             ps.len() == vs.len()
                 && ps
                     .iter()
@@ -644,26 +651,26 @@ fn pattern_match_bind_impl(
 
 /// Unification implementation (bidirectional)
 fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaValue)>) -> bool {
-    match (a.inner(), b.inner()) {
+    match (a.view(), b.view()) {
         // Variables unify with anything (Atom starting with $)
-        (MettaValueInner::Atom(name), _) if name.starts_with('$') => {
+        (ValueView::Atom(name), _) if name.starts_with('$') => {
             bindings.push((name.to_string(), b.clone()));
             true
         }
-        (_, MettaValueInner::Atom(name)) if name.starts_with('$') => {
+        (_, ValueView::Atom(name)) if name.starts_with('$') => {
             bindings.push((name.to_string(), a.clone()));
             true
         }
         // Wildcard matches without binding (both directions)
-        (MettaValueInner::Atom(s), _) if *s == "_" => true,
-        (_, MettaValueInner::Atom(s)) if *s == "_" => true,
+        (ValueView::Atom(s), _) if s == "_" => true,
+        (_, ValueView::Atom(s)) if s == "_" => true,
         // Same structure
-        (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,
-        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
-        (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
-        (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
-        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
-        (MettaValueInner::SExpr(xs), MettaValueInner::SExpr(ys)) => {
+        (ValueView::Atom(x), ValueView::Atom(y)) => x == y,
+        (ValueView::Long(x), ValueView::Long(y)) => x == y,
+        (ValueView::Bool(x), ValueView::Bool(y)) => x == y,
+        (ValueView::String(x), ValueView::String(y)) => x == y,
+        (ValueView::Unit, ValueView::Unit) => true,
+        (ValueView::SExpr(xs), ValueView::SExpr(ys)) => {
             xs.len() == ys.len()
                 && xs
                     .iter()

@@ -9,7 +9,7 @@ use super::constants::{
     PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_PTR, TAG_LONG,
     TAG_MASK, TAG_UNIT, TAG_VAR,
 };
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, MettaValueInner, ValueView};
 
 // =============================================================================
 // JitValue - NaN-Boxed Value
@@ -281,20 +281,20 @@ impl JitValue {
     ///
     /// Returns None for values that cannot be NaN-boxed (e.g., large integers)
     pub fn try_from_metta(value: &MettaValue) -> Option<Self> {
-        match value.inner() {
-            MettaValueInner::Long(n) => {
+        match value.view() {
+            ValueView::Long(n) => {
                 // Check if fits in 48 bits (signed)
                 let min_48 = -(1i64 << 47);
                 let max_48 = (1i64 << 47) - 1;
-                if *n >= min_48 && *n <= max_48 {
-                    Some(JitValue::from_long(*n))
+                if n >= min_48 && n <= max_48 {
+                    Some(JitValue::from_long(n))
                 } else {
                     // Large integer - needs heap allocation
                     None
                 }
             }
-            MettaValueInner::Bool(b) => Some(JitValue::from_bool(*b)),
-            MettaValueInner::Unit => Some(JitValue::unit()),
+            ValueView::Bool(b) => Some(JitValue::from_bool(b)),
+            ValueView::Unit => Some(JitValue::unit()),
             // Other types need heap allocation
             _ => None,
         }

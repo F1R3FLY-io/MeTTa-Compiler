@@ -31,7 +31,7 @@ use crate::backend::bytecode::jit::types::{
     JitAlternative, JitBailoutReason, JitBindingEntry, JitContext, JitValue, JIT_SIGNAL_FAIL,
 };
 use crate::backend::eval::pattern_match;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // Phase E: Special Forms
@@ -289,8 +289,8 @@ pub unsafe extern "C" fn jit_runtime_eval_unquote(
     let metta = expr_val.to_metta();
 
     // If it's Quoted(inner), unwrap it; otherwise return as-is
-    match metta.inner() {
-        MettaValueInner::Quoted(inner) => metta_to_jit(inner).to_bits(),
+    match metta.view() {
+        ValueView::Quoted(inner) => metta_to_jit(&inner).to_bits(),
         _ => expr,
     }
 }
@@ -437,8 +437,8 @@ pub unsafe extern "C" fn jit_runtime_eval_collapse(
     let metta = expr_val.to_metta();
 
     // If already a list, return as-is (could be result of superpose)
-    match metta.inner() {
-        MettaValueInner::SExpr(_) => expr,
+    match metta.view() {
+        ValueView::SExpr(_) => expr,
         _ => metta_to_jit(&MettaValue::SExpr(vec![metta])).to_bits(),
     }
 }
@@ -463,8 +463,8 @@ pub unsafe extern "C" fn jit_runtime_eval_superpose(
     let list_val = JitValue::from_raw(list);
     let metta = list_val.to_metta();
 
-    match metta.inner() {
-        MettaValueInner::SExpr(elems) if !elems.is_empty() => {
+    match metta.view() {
+        ValueView::SExpr(elems) if !elems.is_empty() => {
             let ctx_ref = match ctx.as_mut() {
                 Some(c) => c,
                 None => return metta_to_jit(&elems[0]).to_bits(),
@@ -507,11 +507,11 @@ pub unsafe extern "C" fn jit_runtime_eval_superpose(
             // Return first element
             metta_to_jit(&elems[0]).to_bits()
         }
-        MettaValueInner::SExpr(elems) if elems.is_empty() => {
+        ValueView::SExpr(elems) if elems.is_empty() => {
             // Empty superpose - signal failure
             JIT_SIGNAL_FAIL as u64
         }
-        MettaValueInner::Unit => {
+        ValueView::Unit => {
             // Unit is the normalized form of SExpr([]) - empty superpose
             JIT_SIGNAL_FAIL as u64
         }
@@ -706,17 +706,17 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
     let closure_val = JitValue::from_raw(closure).to_metta();
 
     // Extract closure components: (lambda param_count (captured_env...) body_ip)
-    if let MettaValueInner::SExpr(items) = closure_val.inner() {
+    if let ValueView::SExpr(items) = closure_val.view() {
         if items.len() >= 3 {
-            let is_lambda = matches!(items[0].inner(), MettaValueInner::Atom(s) if *s == "lambda");
+            let is_lambda = matches!(items[0].view(), ValueView::Atom(s) if s == "lambda");
             if !is_lambda {
                 // Not a lambda - return unchanged
                 return closure;
             }
 
             // Get parameter count from closure
-            let param_count = match items[1].inner() {
-                MettaValueInner::Long(n) => *n as u64,
+            let param_count = match items[1].view() {
+                ValueView::Long(n) => n as u64,
                 _ => 0,
             };
 
@@ -734,16 +734,16 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
             }
 
             // Install captured environment bindings
-            if let MettaValueInner::SExpr(captured_env) = items[2].inner() {
+            if let ValueView::SExpr(captured_env) = items[2].view() {
                 // Push a new binding frame for the closure scope
                 jit_runtime_push_binding_frame(ctx);
 
                 // Install each captured binding
                 // Variables in MeTTa are Atoms that start with $
-                for captured in *captured_env {
-                    if let MettaValueInner::SExpr(binding) = captured.inner() {
+                for captured in captured_env {
+                    if let ValueView::SExpr(binding) = captured.view() {
                         if binding.len() >= 2 {
-                            if let MettaValueInner::Atom(name) = binding[0].inner() {
+                            if let ValueView::Atom(name) = binding[0].view() {
                                 // Variables start with $ - strip it for binding name
                                 let binding_name = if name.starts_with('$') {
                                     &name[1..]

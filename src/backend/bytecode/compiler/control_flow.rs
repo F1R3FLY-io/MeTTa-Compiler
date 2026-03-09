@@ -3,7 +3,7 @@
 //! This module implements compilation of quoted expressions.
 
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 use super::error::CompileResult;
 use super::Compiler;
@@ -11,10 +11,10 @@ use super::Compiler;
 impl Compiler {
     /// Compile a quoted expression (no evaluation)
     pub(crate) fn compile_quoted(&mut self, expr: &MettaValue) -> CompileResult<()> {
-        match expr.inner() {
+        match expr.view() {
             // Atoms can be pushed directly
-            MettaValueInner::Atom(name) => {
-                let idx = self.builder.add_constant(MettaValue::Atom(*name));
+            ValueView::Atom(name) => {
+                let idx = self.builder.add_constant(MettaValue::Atom(name));
                 if name.starts_with('$') {
                     self.builder.emit_u16(Opcode::PushVariable, idx);
                 } else {
@@ -22,8 +22,8 @@ impl Compiler {
                 }
             }
             // S-expressions need to be built
-            MettaValueInner::SExpr(items) => {
-                for item in *items {
+            ValueView::SExpr(items) => {
+                for item in items {
                     self.compile_quoted(item)?;
                 }
                 if items.len() <= 255 {

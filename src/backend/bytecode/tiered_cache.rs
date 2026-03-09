@@ -39,7 +39,7 @@ use xxhash_rust::xxh3::Xxh3;
 use dashmap::DashMap;
 
 use crate::backend::hash_utils::IdentityU64BuildHasher;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, MettaValueInner, ValueView};
 use crate::backend::environment::generic::MettaEnvironment;
 use crate::backend::models::work_pool::global_compile_pool;
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
@@ -1613,24 +1613,36 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
     const UNIT_HASH: u64 = 0x756e6974_68617368; // "unit_hash" as bytes
 
     // Fast path for primitives, slow path for complex types
-    match expr.inner_ref() {
-        MettaValueInner::Unit => UNIT_HASH,
-        MettaValueInner::Bool(b) => if *b {
+    match expr.view() {
+        ValueView::Unit => UNIT_HASH,
+        ValueView::Bool(b) => if b {
             BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
         } else {
             BOOL_SEED
         },
-        MettaValueInner::Long(n) => {
-            let x = (*n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+        ValueView::Long(n) => {
+            let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
             x ^ (x >> 32)
         }
-        MettaValueInner::Float(f) => {
+        ValueView::Float(f) => {
             let bits = f.to_bits();
             let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
             x ^ (x >> 32)
         }
-        MettaValueInner::Spanned(inner, _span) => hash_value(inner),
-        _ => {
+        ValueView::Empty => {
+            // Use a distinct seed for Empty
+            0x656d7074_79686173 // "empty_has" as bytes
+        }
+        ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::SExpr(_)
+        | ValueView::Error(..)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             let mut hasher = Xxh3::new();
             hash_value_recursive(expr, &mut hasher);
             hasher.finish()
@@ -1640,29 +1652,29 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
 
 /// Recursively hash an MettaValue for complex types.
 fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H) {
-    match expr.inner_ref() {
-        MettaValueInner::Unit => 0u8.hash(hasher),
-        MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
-        MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
-        MettaValueInner::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
-        MettaValueInner::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
-        MettaValueInner::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
-        MettaValueInner::SExpr(items) => {
+    match expr.view() {
+        ValueView::Unit => 0u8.hash(hasher),
+        ValueView::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
+        ValueView::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
+        ValueView::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
+        ValueView::Empty => 9u8.hash(hasher),
+        ValueView::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
+        ValueView::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
+        ValueView::SExpr(items) => {
             7u8.hash(hasher);
             items.len().hash(hasher);
             for item in items.iter() {
                 hash_value_recursive(item, hasher);
             }
         }
-        MettaValueInner::Error(..) => 8u8.hash(hasher),
-        MettaValueInner::Empty => 9u8.hash(hasher),
-        MettaValueInner::Quoted(inner) => {
+        ValueView::Error(..) => 8u8.hash(hasher),
+        ValueView::Quoted(inner) => {
             10u8.hash(hasher);
             "quote".hash(hasher);
-            hash_value_recursive(inner, hasher);
+            hash_value_recursive(&inner, hasher);
         }
-        MettaValueInner::Spanned(inner, _span) => hash_value_recursive(inner, hasher),
-        _ => 10u8.hash(hasher), // Type, Conjunction, Space, State, Memo
+        ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) => 10u8.hash(hasher),
     }
 }
 

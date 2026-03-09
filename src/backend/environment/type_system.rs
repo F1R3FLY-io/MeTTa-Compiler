@@ -13,7 +13,7 @@ use tracing::trace;
 
 use super::generic::GenericEnvironment;
 use super::{MettaEnvironment, MettaValue};
-use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueTrait, ValueView};
 
 // ============================================================================
 // Generic Type Operations (for GenericEnvironment<V, F>)
@@ -469,7 +469,7 @@ impl MettaEnvironment {
 
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Extract TYPE from (: name TYPE)
-                if let MettaValueInner::SExpr(items) = value.inner() {
+                if let ValueView::SExpr(items) = value.view() {
                     if items.len() >= 3 {
                         // items[0] = ":", items[1] = name, items[2] = TYPE
                         results.push(items[2].clone());
@@ -482,12 +482,12 @@ impl MettaEnvironment {
                     ptr: rz.path().as_ptr().cast_mut(),
                 };
                 if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
-                    if let MettaValueInner::SExpr(items) = value.inner() {
+                    if let ValueView::SExpr(items) = value.view() {
                         if items.len() >= 3 {
-                            if let (MettaValueInner::Atom(op), MettaValueInner::Atom(atom_name)) =
-                                (items[0].inner(), items[1].inner())
+                            if let (ValueView::Atom(op), ValueView::Atom(atom_name)) =
+                                (items[0].view(), items[1].view())
                             {
-                                if *op == ":" && *atom_name == name {
+                                if op == ":" && atom_name == name {
                                     let typ = items[2].clone();
                                     if !results.contains(&typ) {
                                         results.push(typ);
@@ -533,12 +533,12 @@ impl MettaEnvironment {
             #[allow(clippy::collapsible_match)]
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Check if this is a type assertion: (: name type)
-                if let MettaValueInner::SExpr(items) = value.inner() {
+                if let ValueView::SExpr(items) = value.view() {
                     if items.len() == 3 {
-                        if let (MettaValueInner::Atom(op), MettaValueInner::Atom(atom_name)) =
-                            (items[0].inner(), items[1].inner())
+                        if let (ValueView::Atom(op), ValueView::Atom(atom_name)) =
+                            (items[0].view(), items[1].view())
                         {
-                            if *op == ":" && *atom_name == name {
+                            if op == ":" && atom_name == name {
                                 let typ = items[2].clone();
                                 if !results.contains(&typ) {
                                     results.push(typ);

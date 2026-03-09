@@ -11,7 +11,7 @@ use pathmap::PathMap;
 use tracing::trace;
 
 use super::multiplicity::Multiplicity;
-use super::{MettaEnvironment, MettaValue, MettaValueInner};
+use super::{MettaEnvironment, MettaValue};
 use crate::backend::models::metta_value_trait::MettaValueTrait;
 use crate::backend::mork_convert::with_mork_bytes;
 

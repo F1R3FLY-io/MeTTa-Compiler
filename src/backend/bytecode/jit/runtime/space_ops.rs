@@ -20,7 +20,7 @@ use crate::backend::bytecode::jit::types::{
     JitAlternative, JitAlternativeTag, JitBailoutReason, JitBindingEntry, JitChoicePoint,
     JitContext, JitValue, TAG_UNIT,
 };
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // Phase D: Space Operations
@@ -51,12 +51,15 @@ pub unsafe extern "C" fn jit_runtime_space_add(
     let space_metta = space_val.to_metta();
     let atom_metta = atom_val.to_metta();
 
-    match space_metta.inner() {
-        MettaValueInner::Space(handle) => {
+    match space_metta.view() {
+        ValueView::Space(handle) => {
             handle.add_atom(atom_metta);
             JitValue::unit().to_bits()
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error - not a space
             JitValue::unit().to_bits()
         }
@@ -88,12 +91,15 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
     let space_metta = space_val.to_metta();
     let atom_metta = atom_val.to_metta();
 
-    match space_metta.inner() {
-        MettaValueInner::Space(handle) => {
+    match space_metta.view() {
+        ValueView::Space(handle) => {
             let removed = handle.remove_atom(&atom_metta);
             JitValue::from_bool(removed).to_bits()
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error - not a space
             JitValue::from_bool(false).to_bits()
         }
@@ -120,12 +126,15 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
     let space_val = JitValue::from_raw(space);
     let space_metta = space_val.to_metta();
 
-    match space_metta.inner() {
-        MettaValueInner::Space(handle) => {
+    match space_metta.view() {
+        ValueView::Space(handle) => {
             let atoms = handle.collapse();
             metta_to_jit(&MettaValue::SExpr(atoms)).to_bits()
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error - return empty S-expression
             metta_to_jit(&MettaValue::SExpr(vec![])).to_bits()
         }
@@ -159,8 +168,8 @@ pub unsafe extern "C" fn jit_runtime_space_match(
     let space_metta = space_val.to_metta();
     let pattern_metta = pattern_val.to_metta();
 
-    match space_metta.inner() {
-        MettaValueInner::Space(handle) => {
+    match space_metta.view() {
+        ValueView::Space(handle) => {
             let atoms = handle.collapse();
             let mut results = Vec::new();
 
@@ -173,7 +182,10 @@ pub unsafe extern "C" fn jit_runtime_space_match(
 
             metta_to_jit(&MettaValue::SExpr(results)).to_bits()
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error - return empty S-expression
             metta_to_jit(&MettaValue::SExpr(vec![])).to_bits()
         }
@@ -236,9 +248,12 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
     let template_metta = template_val.to_metta();
 
     // Validate we have a space
-    let handle = match space_metta.inner() {
-        MettaValueInner::Space(h) => h,
-        _ => {
+    let handle = match space_metta.view() {
+        ValueView::Space(h) => h,
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error - not a space
             ctx_ref.bailout = true;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;
@@ -426,25 +441,25 @@ fn pattern_matches_with_bindings_impl(
     value: &MettaValue,
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
-    match (pattern.inner(), value.inner()) {
+    match (pattern.view(), value.view()) {
         // Variable pattern (atom starting with $) - always matches and binds
-        (MettaValueInner::Atom(var), _) if var.starts_with('$') => {
+        (ValueView::Atom(var), _) if var.starts_with('$') => {
             bindings.push((var.to_string(), value.clone()));
             true
         }
 
         // Wildcard - always matches
-        (MettaValueInner::Atom(s), _) if *s == "_" => true,
+        (ValueView::Atom(s), _) if s == "_" => true,
 
         // Same type matching
-        (MettaValueInner::Atom(p), MettaValueInner::Atom(v)) => p == v,
-        (MettaValueInner::Long(p), MettaValueInner::Long(v)) => p == v,
-        (MettaValueInner::Bool(p), MettaValueInner::Bool(v)) => p == v,
-        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
-        (MettaValueInner::String(p), MettaValueInner::String(v)) => p == v,
+        (ValueView::Atom(p), ValueView::Atom(v)) => p == v,
+        (ValueView::Long(p), ValueView::Long(v)) => p == v,
+        (ValueView::Bool(p), ValueView::Bool(v)) => p == v,
+        (ValueView::Unit, ValueView::Unit) => true,
+        (ValueView::String(p), ValueView::String(v)) => p == v,
 
         // S-expression matching - recursive with same length
-        (MettaValueInner::SExpr(pats), MettaValueInner::SExpr(vals)) => {
+        (ValueView::SExpr(pats), ValueView::SExpr(vals)) => {
             if pats.len() != vals.len() {
                 return false;
             }
@@ -468,9 +483,9 @@ fn instantiate_template_impl(
     template: &MettaValue,
     bindings: &[(String, MettaValue)],
 ) -> MettaValue {
-    match template.inner() {
+    match template.view() {
         // Variable substitution (atoms starting with $)
-        MettaValueInner::Atom(var) if var.starts_with('$') => {
+        ValueView::Atom(var) if var.starts_with('$') => {
             for (name, value) in bindings {
                 if name == var {
                     return value.clone();
@@ -481,7 +496,7 @@ fn instantiate_template_impl(
         }
 
         // S-expression - recurse
-        MettaValueInner::SExpr(items) => MettaValue::SExpr(
+        ValueView::SExpr(items) => MettaValue::SExpr(
             items
                 .iter()
                 .map(|item| instantiate_template_impl(item, bindings))
@@ -489,7 +504,7 @@ fn instantiate_template_impl(
         ),
 
         // Conjunction - recurse
-        MettaValueInner::Conjunction(items) => MettaValue::Conjunction(
+        ValueView::Conjunction(items) => MettaValue::Conjunction(
             items
                 .iter()
                 .map(|item| instantiate_template_impl(item, bindings))

@@ -12,6 +12,7 @@ use rustyline::history::DefaultHistory;
 use rustyline::Editor;
 
 use mettatron::backend::*;
+use mettatron::backend::models::ValueView;
 use mettatron::repl::{MettaHelper, QueryHighlighter};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -214,31 +215,30 @@ fn write_output(output: Option<&str>, content: &str) -> Result<(), String> {
 
 /// Format an MettaValue result for display.
 fn format_result(value: &MettaValue) -> String {
-    match value.inner() {
-        MettaValueInner::Atom(s) => s.to_string(),
-        MettaValueInner::Bool(b) => b.to_string(),
-        MettaValueInner::Long(n) => n.to_string(),
-        MettaValueInner::Float(f) => f.to_string(),
-        MettaValueInner::String(s) => format!("\"{}\"", s),
-        MettaValueInner::Error(msg, details) => {
-            format!("(Error {} {})", msg, format_result(details))
+    match value.view() {
+        ValueView::Bool(b) => b.to_string(),
+        ValueView::Long(n) => n.to_string(),
+        ValueView::Float(f) => f.to_string(),
+        ValueView::Unit => "()".to_string(),
+        ValueView::Empty => "Empty".to_string(),
+        ValueView::Atom(s) => s.to_string(),
+        ValueView::String(s) => format!("\"{}\"", s),
+        ValueView::Error(msg, details) => {
+            format!("(Error {} {})", msg, format_result(&details))
         }
-        MettaValueInner::Type(t) => format!("Type({})", format_result(t)),
-        MettaValueInner::SExpr(items) => {
+        ValueView::Type(t) => format!("Type({})", format_result(&t)),
+        ValueView::SExpr(items) => {
             let formatted: Vec<String> = items.iter().map(format_result).collect();
             format!("({})", formatted.join(" "))
         }
-        MettaValueInner::Conjunction(goals) => {
+        ValueView::Conjunction(goals) => {
             let formatted: Vec<String> = goals.iter().map(format_result).collect();
             format!("(, {})", formatted.join(" "))
         }
-        MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-        MettaValueInner::State(id) => format!("(State {})", id),
-        MettaValueInner::Unit => "()".to_string(),
-        MettaValueInner::Quoted(inner) => format!("(quote {})", format_result(inner)),
-        MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-        MettaValueInner::Empty => "Empty".to_string(),
-        MettaValueInner::Spanned(_, _) => unreachable!("inner() strips Spanned"),
+        ValueView::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        ValueView::State(id) => format!("(State {})", id),
+        ValueView::Quoted(inner) => format!("(quote {})", format_result(&inner)),
+        ValueView::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
     }
 }
 

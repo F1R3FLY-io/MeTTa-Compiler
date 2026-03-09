@@ -17,7 +17,7 @@ use crate::backend::eval::trampoline::{new_env, MettaEnvironment};
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{
     EvalGuard, MettaState, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
-    SessionGuard, global_factory,
+    SessionGuard, ValueView, global_factory,
 };
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
@@ -211,61 +211,60 @@ fn matching_open(close: char) -> char {
 /// Convert MettaValue to a JSON-like string representation
 /// Used for debugging and human-readable output
 fn value_to_json_string(value: &MettaValue) -> String {
-    match value.inner_ref() {
-        MettaValueInner::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
-        MettaValueInner::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
-        MettaValueInner::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
-        MettaValueInner::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
-        MettaValueInner::String(s) => {
+    match value.view() {
+        ValueView::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
+        ValueView::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+        ValueView::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
+        ValueView::Unit => r#"{"type":"unit"}"#.to_string(),
+        ValueView::Empty => r#"{"type":"empty"}"#.to_string(),
+        ValueView::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
+        ValueView::String(s) => {
             format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s))
         }
-        MettaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
-        MettaValueInner::SExpr(items) => {
+        ValueView::SExpr(items) => {
             let items_json: Vec<String> = items.iter().map(value_to_json_string).collect();
             format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
         }
-        MettaValueInner::Error(msg, details) => {
+        ValueView::Error(msg, details) => {
             format!(
                 r#"{{"type":"error","message":"{}","details":{}}}"#,
                 escape_json(msg),
                 value_to_json_string(&details)
             )
         }
-        MettaValueInner::Type(t) => {
+        ValueView::Type(t) => {
             format!(
                 r#"{{"type":"metatype","value":{}}}"#,
                 value_to_json_string(&t)
             )
         }
-        MettaValueInner::Conjunction(goals) => {
+        ValueView::Conjunction(goals) => {
             let goals_json: Vec<String> = goals.iter().map(value_to_json_string).collect();
             format!(
                 r#"{{"type":"conjunction","goals":[{}]}}"#,
                 goals_json.join(",")
             )
         }
-        MettaValueInner::Space(handle) => {
+        ValueView::Space(handle) => {
             format!(
                 r#"{{"type":"space","id":{},"name":"{}"}}"#,
                 handle.id,
                 escape_json(&handle.name)
             )
         }
-        MettaValueInner::State(id) => {
+        ValueView::State(id) => {
             format!(r#"{{"type":"state","id":{}}}"#, id)
         }
-        MettaValueInner::Memo(handle) => {
+        ValueView::Memo(handle) => {
             format!(
                 r#"{{"type":"memo","id":{},"name":"{}"}}"#,
                 handle.id,
                 escape_json(&handle.name)
             )
         }
-        MettaValueInner::Quoted(inner) => {
-            format!(r#"{{"type":"quoted","value":{}}}"#, value_to_json_string(inner))
+        ValueView::Quoted(inner) => {
+            format!(r#"{{"type":"quoted","value":{}}}"#, value_to_json_string(&inner))
         }
-        MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
-        MettaValueInner::Spanned(v, _) => value_to_json_string(v),
     }
 }
 
@@ -409,8 +408,8 @@ pub async fn run_state_async(
     let source_exprs: Vec<MettaValue> = compiled_state.source().iter().copied().collect();
     for (idx, &expr) in source_exprs.iter().enumerate() {
         let is_eval_expr = is_eval_expression(&expr);
-        let is_rule_def = matches!(expr.inner(), MettaValueInner::SExpr(items)
-            if items.len() >= 1 && matches!(items[0].inner(), MettaValueInner::Atom("=")));
+        let is_rule_def = matches!(expr.view(), ValueView::SExpr(items)
+            if items.len() >= 1 && matches!(items[0].view(), ValueView::Atom("=")));
 
         // Check if this is a ground fact (S-expression that's not a rule and not an eval)
         let is_ground_fact = expr.is_sexpr() && !is_rule_def && !is_eval_expr;

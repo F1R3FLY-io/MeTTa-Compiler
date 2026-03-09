@@ -3,7 +3,7 @@
 //! Stores command history with support for pattern matching and structural search
 
 use crate::backend::compile::compile;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 use std::collections::VecDeque;
 
 /// History entry with source and parsed representation
@@ -142,13 +142,13 @@ impl PatternHistory {
 
     /// Check if a MettaValue contains a specific atom
     fn value_contains_atom(value: &MettaValue, atom: &str) -> bool {
-        match value.inner() {
-            MettaValueInner::Atom(s) => *s == atom,
-            MettaValueInner::SExpr(items) => {
+        match value.view() {
+            ValueView::Atom(s) => s == atom,
+            ValueView::SExpr(items) => {
                 items.iter().any(|v| Self::value_contains_atom(v, atom))
             }
-            MettaValueInner::Error(_, details) => Self::value_contains_atom(details, atom),
-            MettaValueInner::Type(inner) => Self::value_contains_atom(inner, atom),
+            ValueView::Error(_, details) => Self::value_contains_atom(&details, atom),
+            ValueView::Type(inner) => Self::value_contains_atom(&inner, atom),
             _ => false,
         }
     }

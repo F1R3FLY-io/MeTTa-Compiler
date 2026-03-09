@@ -6,7 +6,7 @@
 //! - Peano numbers: Z < (S Z) < (S (S Z))
 //! - Mixed: (0 0) < (0 1) < (1 Z) < (1 (S Z)) < (2 0)
 
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 use std::cmp::Ordering;
 
 /// Compare two priority values for ordering exec rules
@@ -57,17 +57,17 @@ use std::cmp::Ordering;
 /// assert_eq!(compare_priorities(&t1, &t2), Ordering::Less);
 /// ```
 pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
-    match (p1.inner(), p2.inner()) {
+    match (p1.view(), p2.view()) {
         // Both integers
-        (MettaValueInner::Long(n1), MettaValueInner::Long(n2)) => n1.cmp(n2),
+        (ValueView::Long(n1), ValueView::Long(n2)) => n1.cmp(&n2),
 
         // Both Peano numbers or atoms
-        (MettaValueInner::Atom(a1), MettaValueInner::Atom(a2)) => {
-            if *a1 == "Z" && *a2 == "Z" {
+        (ValueView::Atom(a1), ValueView::Atom(a2)) => {
+            if a1 == "Z" && a2 == "Z" {
                 Ordering::Equal
-            } else if *a1 == "Z" {
+            } else if a1 == "Z" {
                 Ordering::Less // Z is smallest
-            } else if *a2 == "Z" {
+            } else if a2 == "Z" {
                 Ordering::Greater
             } else {
                 // Non-Peano atoms: lexicographic
@@ -76,7 +76,7 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
         }
 
         // Peano: Z vs (S ...)
-        (MettaValueInner::Atom(a), MettaValueInner::SExpr(_)) if *a == "Z" => {
+        (ValueView::Atom(a), ValueView::SExpr(_)) if a == "Z" => {
             if is_peano(p2) {
                 Ordering::Less // Z < (S ...)
             } else {
@@ -86,7 +86,7 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
         }
 
         // Peano: (S ...) vs Z
-        (MettaValueInner::SExpr(_), MettaValueInner::Atom(a)) if *a == "Z" => {
+        (ValueView::SExpr(_), ValueView::Atom(a)) if a == "Z" => {
             if is_peano(p1) {
                 Ordering::Greater // (S ...) > Z
             } else {
@@ -96,7 +96,7 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
         }
 
         // Both S-expressions: could be Peano or tuples
-        (MettaValueInner::SExpr(items1), MettaValueInner::SExpr(items2)) => {
+        (ValueView::SExpr(items1), ValueView::SExpr(items2)) => {
             let p1_is_peano = is_peano(p1);
             let p2_is_peano = is_peano(p2);
 
@@ -117,12 +117,12 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
 
         // Mixed types: use type precedence
         // Order: Integer < Atom < SExpr
-        (MettaValueInner::Long(_), MettaValueInner::Atom(_)) => Ordering::Less,
-        (MettaValueInner::Long(_), MettaValueInner::SExpr(_)) => Ordering::Less,
-        (MettaValueInner::Atom(_), MettaValueInner::Long(_)) => Ordering::Greater,
-        (MettaValueInner::Atom(_), MettaValueInner::SExpr(_)) => Ordering::Less,
-        (MettaValueInner::SExpr(_), MettaValueInner::Long(_)) => Ordering::Greater,
-        (MettaValueInner::SExpr(_), MettaValueInner::Atom(_)) => Ordering::Greater,
+        (ValueView::Long(_), ValueView::Atom(_)) => Ordering::Less,
+        (ValueView::Long(_), ValueView::SExpr(_)) => Ordering::Less,
+        (ValueView::Atom(_), ValueView::Long(_)) => Ordering::Greater,
+        (ValueView::Atom(_), ValueView::SExpr(_)) => Ordering::Less,
+        (ValueView::SExpr(_), ValueView::Long(_)) => Ordering::Greater,
+        (ValueView::SExpr(_), ValueView::Atom(_)) => Ordering::Greater,
 
         // All other types: not comparable priorities, use Equal
         _ => Ordering::Equal,
@@ -131,13 +131,13 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
 
 /// Check if a MettaValue is a Peano number (Z or (S ...))
 fn is_peano(value: &MettaValue) -> bool {
-    match value.inner() {
-        MettaValueInner::Atom(a) => *a == "Z",
-        MettaValueInner::SExpr(items) => {
+    match value.view() {
+        ValueView::Atom(a) => a == "Z",
+        ValueView::SExpr(items) => {
             // Must be (S ...) where ... is also Peano
             if items.len() == 2 {
-                if let MettaValueInner::Atom(op) = items[0].inner() {
-                    if *op == "S" {
+                if let ValueView::Atom(op) = items[0].view() {
+                    if op == "S" {
                         return is_peano(&items[1]);
                     }
                 }
@@ -154,11 +154,11 @@ fn is_peano(value: &MettaValue) -> bool {
 /// - (S (S Z)) = 2
 /// - etc.
 fn count_peano_depth(value: &MettaValue) -> usize {
-    match value.inner() {
-        MettaValueInner::Atom(a) if *a == "Z" => 0,
-        MettaValueInner::SExpr(items) if items.len() == 2 => {
-            if let MettaValueInner::Atom(op) = items[0].inner() {
-                if *op == "S" {
+    match value.view() {
+        ValueView::Atom(a) if a == "Z" => 0,
+        ValueView::SExpr(items) if items.len() == 2 => {
+            if let ValueView::Atom(op) = items[0].view() {
+                if op == "S" {
                     return 1 + count_peano_depth(&items[1]);
                 }
             }

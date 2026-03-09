@@ -15,7 +15,7 @@
 use crate::backend::bytecode::jit::types::{
     JitValue, PAYLOAD_MASK, TAG_PTR, TAG_LONG,
 };
-use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait, ValueView};
 
 // =============================================================================
 // NaN-Boxing Helpers
@@ -54,10 +54,10 @@ pub fn box_long(n: i64) -> u64 {
 /// For simple types (Long, Bool, Unit), creates a NaN-boxed value directly.
 /// For complex types, stores the inner pointer (slab-allocated, 'static).
 pub fn metta_to_jit(val: &MettaValue) -> JitValue {
-    match val.inner() {
-        MettaValueInner::Long(n) => JitValue::from_long(*n),
-        MettaValueInner::Bool(b) => JitValue::from_bool(*b),
-        MettaValueInner::Unit => JitValue::unit(),
+    match val.view() {
+        ValueView::Long(n) => JitValue::from_long(n),
+        ValueView::Bool(b) => JitValue::from_bool(b),
+        ValueView::Unit => JitValue::unit(),
         // Store pointer to slab-allocated inner data (no Box needed)
         _ => JitValue::from_inner_ptr(val.inner_ptr()),
     }

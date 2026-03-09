@@ -13,7 +13,7 @@ pub mod space_handle;
 pub mod task_scheduler;
 pub mod work_pool;
 
-pub use metta_value::{numeric_equal, numeric_equal_generic, numeric_not_equal, MettaValue, MettaValueInner};
+pub use metta_value::{numeric_equal, numeric_equal_generic, numeric_not_equal, MettaValue, MettaValueInner, ValueView};
 pub use gc_allocator::{
     active_evaluator_count, alloc_count_snapshot,
     apply_backpressure_tier1, apply_backpressure_tier2,

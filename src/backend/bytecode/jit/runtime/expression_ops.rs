@@ -7,7 +7,7 @@
 
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext, JitValue};
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // Expression Manipulation Operations
@@ -29,8 +29,8 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
     let expr_mv = expr_jv.to_metta();
     let index_mv = index_jv.to_metta();
 
-    let idx = match index_mv.inner() {
-        MettaValueInner::Long(i) => *i,
+    let idx = match index_mv.view() {
+        ValueView::Long(i) => i,
         _ => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
@@ -42,8 +42,8 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
         }
     };
 
-    let result = match expr_mv.inner() {
-        MettaValueInner::SExpr(items) => {
+    let result = match expr_mv.view() {
+        ValueView::SExpr(items) => {
             if idx < 0 || idx as usize >= items.len() {
                 // Index out of bounds - return nil
                 MettaValue::Unit()
@@ -51,7 +51,10 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
                 items[idx as usize].clone()
             }
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;
@@ -74,8 +77,8 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
     let expr_jv = JitValue::from_raw(expr);
     let expr_mv = expr_jv.to_metta();
 
-    match expr_mv.inner() {
-        MettaValueInner::SExpr(items) => {
+    match expr_mv.view() {
+        ValueView::SExpr(items) => {
             if items.is_empty() {
                 return JitValue::unit().to_bits();
             }
@@ -83,10 +86,10 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
             let mut min_val: Option<f64> = None;
             let mut min_item: Option<&MettaValue> = None;
 
-            for item in *items {
-                let val = match item.inner() {
-                    MettaValueInner::Long(x) => Some(*x as f64),
-                    MettaValueInner::Float(x) => Some(*x),
+            for item in items {
+                let val = match item.view() {
+                    ValueView::Long(x) => Some(x as f64),
+                    ValueView::Float(x) => Some(x),
                     _ => None,
                 };
 
@@ -110,7 +113,10 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
                 None => JitValue::unit().to_bits(),
             }
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;
@@ -131,8 +137,8 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
     let expr_jv = JitValue::from_raw(expr);
     let expr_mv = expr_jv.to_metta();
 
-    match expr_mv.inner() {
-        MettaValueInner::SExpr(items) => {
+    match expr_mv.view() {
+        ValueView::SExpr(items) => {
             if items.is_empty() {
                 return JitValue::unit().to_bits();
             }
@@ -140,10 +146,10 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
             let mut max_val: Option<f64> = None;
             let mut max_item: Option<&MettaValue> = None;
 
-            for item in *items {
-                let val = match item.inner() {
-                    MettaValueInner::Long(x) => Some(*x as f64),
-                    MettaValueInner::Float(x) => Some(*x),
+            for item in items {
+                let val = match item.view() {
+                    ValueView::Long(x) => Some(x as f64),
+                    ValueView::Float(x) => Some(x),
                     _ => None,
                 };
 
@@ -167,7 +173,10 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
                 None => JitValue::unit().to_bits(),
             }
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;

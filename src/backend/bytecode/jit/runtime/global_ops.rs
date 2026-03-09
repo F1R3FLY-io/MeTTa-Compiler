@@ -14,7 +14,7 @@
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // Phase 1.5: Global/Space Access - LoadGlobal, StoreGlobal, LoadSpace
@@ -45,8 +45,8 @@ pub unsafe extern "C" fn jit_runtime_load_global(
     let symbol_name = if symbol_idx < ctx_ref.constants_len as u64 {
         let constant_ptr = ctx_ref.constants.add(symbol_idx as usize);
         let constant = &*constant_ptr;
-        match constant.inner() {
-            MettaValueInner::Atom(name) => Some(name.to_string()),
+        match constant.view() {
+            ValueView::Atom(name) => Some(name.to_string()),
             _ => None,
         }
     } else {
@@ -127,9 +127,9 @@ pub unsafe extern "C" fn jit_runtime_load_space(
     let space_name = if name_idx < ctx_ref.constants_len as u64 {
         let constant_ptr = ctx_ref.constants.add(name_idx as usize);
         let constant = &*constant_ptr;
-        match constant.inner() {
-            MettaValueInner::Atom(name) => name.to_string(),
-            MettaValueInner::String(name) => name.to_string(),
+        match constant.view() {
+            ValueView::Atom(name) => name.to_string(),
+            ValueView::String(name) => name.to_string(),
             _ => {
                 // Not a valid space name
                 return JitValue::unit().to_bits();

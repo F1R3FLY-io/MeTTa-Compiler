@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::backend::builtin_signatures::TypeExpr;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 use crate::backend::MettaEnvironment;
 
 use super::types::SuggestionConfidence;
@@ -104,52 +104,52 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnviro
 
         // Concrete types - check structural compatibility
         TypeExpr::Number => matches!(
-            actual.inner(),
-            MettaValueInner::Long(_) | MettaValueInner::Float(_)
+            actual.view(),
+            ValueView::Long(_) | ValueView::Float(_)
         ),
 
         TypeExpr::Bool => {
-            matches!(actual.inner(), MettaValueInner::Bool(_))
-                || matches!(actual.inner(), MettaValueInner::Atom(s) if *s == "True" || *s == "False")
+            matches!(actual.view(), ValueView::Bool(_))
+                || matches!(actual.view(), ValueView::Atom(s) if s == "True" || s == "False")
         }
 
-        TypeExpr::String => matches!(actual.inner(), MettaValueInner::String(_)),
+        TypeExpr::String => matches!(actual.view(), ValueView::String(_)),
 
         // Atom meta-type: matches any atom (symbol)
-        TypeExpr::Atom => matches!(actual.inner(), MettaValueInner::Atom(_)),
+        TypeExpr::Atom => matches!(actual.view(), ValueView::Atom(_)),
 
         // Expression meta-type: matches any S-expression
-        TypeExpr::Expression => matches!(actual.inner(), MettaValueInner::SExpr(_) | MettaValueInner::Unit),
+        TypeExpr::Expression => matches!(actual.view(), ValueView::SExpr(_) | ValueView::Unit),
 
         // Variable meta-type: matches variable atoms ($x, $var, etc.)
-        TypeExpr::Variable => matches!(actual.inner(), MettaValueInner::Atom(s) if s.starts_with('$')),
+        TypeExpr::Variable => matches!(actual.view(), ValueView::Atom(s) if s.starts_with('$')),
 
         TypeExpr::Space => {
-            matches!(actual.inner(), MettaValueInner::Space(_))
-                || matches!(actual.inner(), MettaValueInner::Atom(s) if s.starts_with('&'))
+            matches!(actual.view(), ValueView::Space(_))
+                || matches!(actual.view(), ValueView::Atom(s) if s.starts_with('&'))
         }
 
-        TypeExpr::State | TypeExpr::StateMonad(_) => matches!(actual.inner(), MettaValueInner::State(_)),
+        TypeExpr::State | TypeExpr::StateMonad(_) => matches!(actual.view(), ValueView::State(_)),
 
-        TypeExpr::Unit => matches!(actual.inner(), MettaValueInner::Unit),
+        TypeExpr::Unit => matches!(actual.view(), ValueView::Unit),
 
-        TypeExpr::Error => matches!(actual.inner(), MettaValueInner::Error(_, _)),
+        TypeExpr::Error => matches!(actual.view(), ValueView::Error(_, _)),
 
         TypeExpr::Type => {
-            matches!(actual.inner(), MettaValueInner::Type(_))
-                || matches!(actual.inner(), MettaValueInner::Atom(s) if is_type_name(s))
+            matches!(actual.view(), ValueView::Type(_))
+                || matches!(actual.view(), ValueView::Atom(s) if is_type_name(s))
         }
 
         // Grounded type: matches grounded atoms
-        TypeExpr::Grounded => matches!(actual.inner(), MettaValueInner::Atom(_)),
+        TypeExpr::Grounded => matches!(actual.view(), ValueView::Atom(_)),
 
         // List type - check if it's an s-expression (Unit is normalized SExpr([]))
-        TypeExpr::List(_) => matches!(actual.inner(), MettaValueInner::SExpr(_) | MettaValueInner::Unit),
+        TypeExpr::List(_) => matches!(actual.view(), ValueView::SExpr(_) | ValueView::Unit),
 
         // Arrow type - callable things (atoms/s-expressions)
         TypeExpr::Arrow(_, _) => matches!(
-            actual.inner(),
-            MettaValueInner::Atom(_) | MettaValueInner::SExpr(_)
+            actual.view(),
+            ValueView::Atom(_) | ValueView::SExpr(_)
         ),
     }
 }
@@ -205,32 +205,31 @@ pub fn validate_type_vars(
 /// Used for type variable unification - ensures values bound to the same
 /// type variable have compatible types.
 pub fn values_compatible(a: &MettaValue, b: &MettaValue) -> bool {
-    use crate::backend::models::metta_value::MettaValueInner::*;
-
-    match (a.inner(), b.inner()) {
+    match (a.view(), b.view()) {
         // Same ground types are compatible
-        (Long(_), Long(_)) | (Long(_), Float(_)) | (Float(_), Long(_)) | (Float(_), Float(_)) => {
-            true
-        }
-        (Bool(_), Bool(_)) => true,
-        (String(_), String(_)) => true,
-        (Unit, Unit) => true,
+        (ValueView::Long(_), ValueView::Long(_))
+        | (ValueView::Long(_), ValueView::Float(_))
+        | (ValueView::Float(_), ValueView::Long(_))
+        | (ValueView::Float(_), ValueView::Float(_)) => true,
+        (ValueView::Bool(_), ValueView::Bool(_)) => true,
+        (ValueView::String(_), ValueView::String(_)) => true,
+        (ValueView::Unit, ValueView::Unit) => true,
 
         // Atoms - could be same type
-        (Atom(_), Atom(_)) => true,
+        (ValueView::Atom(_), ValueView::Atom(_)) => true,
 
         // S-expressions could have compatible types
-        (SExpr(_), SExpr(_)) => true,
+        (ValueView::SExpr(_), ValueView::SExpr(_)) => true,
 
         // Space and State
-        (Space(_), Space(_)) => true,
-        (State(_), State(_)) => true,
+        (ValueView::Space(_), ValueView::Space(_)) => true,
+        (ValueView::State(_), ValueView::State(_)) => true,
 
         // Errors
-        (Error(_, _), Error(_, _)) => true,
+        (ValueView::Error(_, _), ValueView::Error(_, _)) => true,
 
         // Type values
-        (Type(_), Type(_)) => true,
+        (ValueView::Type(_), ValueView::Type(_)) => true,
 
         // Different structural types are not compatible
         _ => false,

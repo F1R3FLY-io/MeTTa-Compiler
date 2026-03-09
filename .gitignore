@@ -16,7 +16,7 @@ benchmark_results/**/*.txt
 proptest-regressions/
 valgrind.*
 vgcore.*
-massif.*
+massif*.*
 heaptrack.*
 tla/states/*
 

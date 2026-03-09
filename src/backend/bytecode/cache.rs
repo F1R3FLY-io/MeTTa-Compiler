@@ -24,7 +24,7 @@ use lru::LruCache;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::hash_utils::IdentityU64BuildHasher;
-use crate::backend::models::{register_root_provider, MettaValue, MettaValueInner, RootProvider};
+use crate::backend::models::{register_root_provider, MettaValue, RootProvider, ValueView};
 
 /// Statistics for bytecode cache monitoring (lock-free atomics).
 #[cfg(feature = "track-stats")]
@@ -137,24 +137,24 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
     const NIL_HASH: u64 = 0x6e696c5f_68617368; // "nil_hash" as bytes
     const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
 
-    match expr.inner() {
-        MettaValueInner::Long(n) => {
+    match expr.view() {
+        ValueView::Long(n) => {
             // FxHash-style mixing with type-specific seed
-            let x = (*n as u64)
+            let x = (n as u64)
                 .wrapping_add(LONG_SEED)
                 .wrapping_mul(GOLDEN_RATIO);
             x ^ (x >> 32)
         }
-        MettaValueInner::Bool(b) => {
+        ValueView::Bool(b) => {
             // Distinct well-distributed values for true/false with type seed
-            if *b {
+            if b {
                 BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
             } else {
                 BOOL_SEED
             }
         }
-        MettaValueInner::Unit => NIL_HASH,
-        MettaValueInner::Float(f) => {
+        ValueView::Unit => NIL_HASH,
+        ValueView::Float(f) => {
             // Use bit representation with type-specific seed and mixing
             let bits = f.to_bits();
             let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);

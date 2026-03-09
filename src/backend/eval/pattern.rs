@@ -5,7 +5,7 @@
 
 use tracing::trace;
 
-use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
+use crate::backend::models::{Bindings, MettaValue, ValueView};
 
 /// Match a pattern against a value, returning variable bindings if successful.
 ///
@@ -58,102 +58,103 @@ pub(crate) fn pattern_match_impl(
 ) -> bool {
     // Work stack: (pattern, value) pairs to match
     // Use Vec as stack (push/pop from end) - more efficient than VecDeque for this use case
-    let mut work_stack: Vec<(&MettaValue, &MettaValue)> = Vec::with_capacity(16);
-    work_stack.push((pattern, value));
+    // MettaValue is Copy (8 bytes) so owned values are equally efficient as references
+    let mut work_stack: Vec<(MettaValue, MettaValue)> = Vec::with_capacity(16);
+    work_stack.push((*pattern, *value));
 
     while let Some((pat, val)) = work_stack.pop() {
         // Process each pattern-value pair
-        let matches = match (pat.inner(), val.inner()) {
+        let matches = match (pat.view(), val.view()) {
             // Wildcard matches anything
-            (MettaValueInner::Atom(p), _) if *p == "_" => true,
+            (ValueView::Atom(p), _) if p == "_" => true,
 
             // FAST PATH: First variable binding (empty bindings)
             // Optimization: Skip lookup when bindings are empty - directly insert
             // This reduces single-variable regression from 16.8% to ~5-7%
-            (MettaValueInner::Atom(p), _)
+            (ValueView::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
-                    && *p != "&"
+                    && p != "&"
                     && bindings.is_empty()
                     && work_stack.is_empty() =>
             {
-                bindings.insert(p.to_string(), val.clone());
+                bindings.insert(p.to_string(), val);
                 true
             }
 
             // GENERAL PATH: Variable with potential existing bindings
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            (MettaValueInner::Atom(p), _)
+            (ValueView::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
-                    && *p != "&" =>
+                    && p != "&" =>
             {
                 // Check if variable is already bound (linear search for SmartBindings)
-                if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == *p) {
-                    existing == val
+                if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
+                    existing == &val
                 } else {
-                    bindings.insert(p.to_string(), val.clone());
+                    bindings.insert(p.to_string(), val);
                     true
                 }
             }
 
             // Atoms must match exactly
-            (MettaValueInner::Atom(p), MettaValueInner::Atom(v)) => p == v,
-            (MettaValueInner::Bool(p), MettaValueInner::Bool(v)) => p == v,
-            (MettaValueInner::Long(p), MettaValueInner::Long(v)) => p == v,
-            (MettaValueInner::Float(p), MettaValueInner::Float(v)) => p == v,
-            (MettaValueInner::String(p), MettaValueInner::String(v)) => p == v,
-            (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+            (ValueView::Atom(p), ValueView::Atom(v)) => p == v,
+            (ValueView::Bool(p), ValueView::Bool(v)) => p == v,
+            (ValueView::Long(p), ValueView::Long(v)) => p == v,
+            (ValueView::Float(p), ValueView::Float(v)) => p == v,
+            (ValueView::String(p), ValueView::String(v)) => p == v,
+            (ValueView::Unit, ValueView::Unit) => true,
             // Unit pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
             // This is needed because case converts empty results to Atom("Empty") internally
-            (MettaValueInner::Unit, MettaValueInner::Atom(v)) if *v == "Empty" => true,
+            (ValueView::Unit, ValueView::Atom(v)) if v == "Empty" => true,
             // Empty atom pattern matches Unit (symmetry: Empty pattern matches () values)
-            (MettaValueInner::Atom(p), MettaValueInner::Unit) if *p == "Empty" => true,
+            (ValueView::Atom(p), ValueView::Unit) if p == "Empty" => true,
 
             // Unit pattern matches only empty values (Unit, empty S-expr, or Empty atom)
             // For discard pattern, use wildcard _ instead
-            (MettaValueInner::Unit, MettaValueInner::SExpr(v_items)) if v_items.is_empty() => true,
+            (ValueView::Unit, ValueView::SExpr(v_items)) if v_items.is_empty() => true,
 
             // Empty S-expression () matches only empty values (empty S-expr, Unit, or Empty atom)
             // For discard pattern, use wildcard _ instead
-            (MettaValueInner::SExpr(p_items), MettaValueInner::SExpr(v_items))
+            (ValueView::SExpr(p_items), ValueView::SExpr(v_items))
                 if p_items.is_empty() && v_items.is_empty() =>
             {
                 true
             }
-            (MettaValueInner::SExpr(p_items), MettaValueInner::Unit) if p_items.is_empty() => true,
-            (MettaValueInner::SExpr(p_items), MettaValueInner::Atom(v))
-                if p_items.is_empty() && *v == "Empty" =>
+            (ValueView::SExpr(p_items), ValueView::Unit) if p_items.is_empty() => true,
+            (ValueView::SExpr(p_items), ValueView::Atom(v))
+                if p_items.is_empty() && v == "Empty" =>
             {
                 true
             }
 
             // S-expressions: push children onto work stack (replaces recursion)
-            (MettaValueInner::SExpr(p_items), MettaValueInner::SExpr(v_items)) => {
+            (ValueView::SExpr(p_items), ValueView::SExpr(v_items)) => {
                 if p_items.len() != v_items.len() {
                     return false; // Early exit on length mismatch
                 }
                 // Push in reverse order so first element is processed first (LIFO)
                 for (p, v) in p_items.iter().zip(v_items.iter()).rev() {
-                    work_stack.push((p, v));
+                    work_stack.push((*p, *v));
                 }
                 true // Continue processing the work stack
             }
 
             // Conjunctions: push children onto work stack (replaces recursion)
-            (MettaValueInner::Conjunction(p_goals), MettaValueInner::Conjunction(v_goals)) => {
+            (ValueView::Conjunction(p_goals), ValueView::Conjunction(v_goals)) => {
                 if p_goals.len() != v_goals.len() {
                     return false; // Early exit on length mismatch
                 }
                 // Push in reverse order so first element is processed first
                 for (p, v) in p_goals.iter().zip(v_goals.iter()).rev() {
-                    work_stack.push((p, v));
+                    work_stack.push((*p, *v));
                 }
                 true // Continue processing the work stack
             }
 
             // Errors: check message match, push details onto work stack
             (
-                MettaValueInner::Error(p_msg, p_details),
-                MettaValueInner::Error(v_msg, v_details),
+                ValueView::Error(p_msg, p_details),
+                ValueView::Error(v_msg, v_details),
             ) => {
                 if p_msg != v_msg {
                     return false; // Message mismatch
@@ -164,17 +165,17 @@ pub(crate) fn pattern_match_impl(
             }
 
             // Quoted: match inner values
-            (MettaValueInner::Quoted(p_inner), MettaValueInner::Quoted(v_inner)) => {
+            (ValueView::Quoted(p_inner), ValueView::Quoted(v_inner)) => {
                 work_stack.push((p_inner, v_inner));
                 true
             }
 
             // Transparency: SExpr pattern (quote $x) matches Quoted(v)
-            (MettaValueInner::SExpr(p_items), MettaValueInner::Quoted(v_inner))
+            (ValueView::SExpr(p_items), ValueView::Quoted(v_inner))
                 if p_items.len() == 2
-                    && matches!(p_items[0].inner(), MettaValueInner::Atom(s) if *s == "quote") =>
+                    && matches!(p_items[0].view(), ValueView::Atom(s) if s == "quote") =>
             {
-                work_stack.push((&p_items[1], v_inner));
+                work_stack.push((p_items[1], v_inner));
                 true
             }
 

@@ -9,7 +9,7 @@
 //! - Varints encode lengths with no upper limit
 //! - Strings/bytes follow length-prefixed format
 
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 /// Tag bytes for different MettaValue variants
 mod tags {
@@ -44,83 +44,72 @@ pub fn metta_to_varint_key(value: &MettaValue) -> Vec<u8> {
 
 /// Encode a MettaValue recursively into the buffer
 fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
-    match value.inner_ref() {
-        MettaValueInner::SExpr(items) => {
-            buf.push(tags::SEXPR);
-            encode_varint(buf, items.len() as u64); // No 63 limit!
-            for item in *items {
-                encode_metta(buf, item);
-            }
-        }
-        MettaValueInner::Atom(s) => {
-            buf.push(tags::ATOM);
-            encode_string(buf, s);
-        }
-        MettaValueInner::Long(n) => {
+    match value.view() {
+        ValueView::Long(n) => {
             buf.push(tags::LONG);
             buf.extend_from_slice(&n.to_le_bytes());
         }
-        MettaValueInner::Float(f) => {
+        ValueView::Float(f) => {
             buf.push(tags::FLOAT);
             buf.extend_from_slice(&f.to_le_bytes());
         }
-        MettaValueInner::Bool(true) => {
-            buf.push(tags::BOOL_TRUE);
+        ValueView::Bool(b) => {
+            buf.push(if b { tags::BOOL_TRUE } else { tags::BOOL_FALSE });
         }
-        MettaValueInner::Bool(false) => {
-            buf.push(tags::BOOL_FALSE);
+        ValueView::Unit => {
+            buf.push(tags::UNIT);
         }
-        MettaValueInner::String(s) => {
+        ValueView::Empty => {
+            buf.push(tags::EMPTY);
+        }
+        ValueView::SExpr(items) => {
+            buf.push(tags::SEXPR);
+            encode_varint(buf, items.len() as u64);
+            for item in items {
+                encode_metta(buf, item);
+            }
+        }
+        ValueView::Atom(s) => {
+            buf.push(tags::ATOM);
+            encode_string(buf, s);
+        }
+        ValueView::String(s) => {
             buf.push(tags::STRING);
             encode_string(buf, s);
         }
-        MettaValueInner::Unit => {
-            buf.push(tags::UNIT);
-        }
-        MettaValueInner::Error(msg, details) => {
+        ValueView::Error(msg, details) => {
             buf.push(tags::ERROR);
             encode_string(buf, msg);
-            encode_metta(buf, details);
+            encode_metta(buf, &details);
         }
-        MettaValueInner::Type(inner) => {
+        ValueView::Type(inner) => {
             buf.push(tags::TYPE);
-            encode_metta(buf, inner);
+            encode_metta(buf, &inner);
         }
-        MettaValueInner::Conjunction(goals) => {
+        ValueView::Conjunction(goals) => {
             buf.push(tags::CONJUNCTION);
             encode_varint(buf, goals.len() as u64);
-            for goal in *goals {
+            for goal in goals {
                 encode_metta(buf, goal);
             }
         }
-        MettaValueInner::Space(handle) => {
-            // For spaces, encode the id and name as a proxy
+        ValueView::Space(handle) => {
             buf.push(tags::SPACE);
             encode_varint(buf, handle.id);
             encode_string(buf, &handle.name);
         }
-        MettaValueInner::State(id) => {
-            // For state cells, encode the id
+        ValueView::State(id) => {
             buf.push(tags::STATE);
-            encode_varint(buf, *id);
+            encode_varint(buf, id);
         }
-        MettaValueInner::Memo(handle) => {
-            // For memo tables, encode the id and name
+        ValueView::Memo(handle) => {
             buf.push(tags::MEMO);
             encode_varint(buf, handle.id);
             encode_string(buf, &handle.name);
         }
-        MettaValueInner::Quoted(inner) => {
+        ValueView::Quoted(inner) => {
             buf.push(tags::QUOTED);
-            encode_metta(buf, inner);
-        }
-        MettaValueInner::Empty => {
-            // Empty sentinel - simple tag byte
-            buf.push(tags::EMPTY);
-        }
-        // Spanned: strip span wrapper and encode the inner value transparently
-        MettaValueInner::Spanned(v, _) => {
-            encode_metta(buf, v);
+            encode_metta(buf, &inner);
         }
     }
 }
@@ -297,8 +286,21 @@ pub fn value_to_varint_key_generic<V: MettaValueTrait>(value: &V) -> Vec<u8> {
 
 /// Encode a value recursively into the buffer using pattern matching on inner.
 fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
-    match value.inner_raw() {
-        MettaValueInner::SExpr(_) => {
+    match value.view() {
+        ValueView::Long(n) => {
+            buf.push(tags::LONG);
+            buf.extend_from_slice(&n.to_le_bytes());
+        }
+        ValueView::Float(f) => {
+            buf.push(tags::FLOAT);
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        ValueView::Bool(b) => {
+            buf.push(if b { tags::BOOL_TRUE } else { tags::BOOL_FALSE });
+        }
+        ValueView::Unit => buf.push(tags::UNIT),
+        ValueView::Empty => buf.push(tags::EMPTY),
+        ValueView::SExpr(_) => {
             let items = value.as_sexpr().expect("matched SExpr");
             buf.push(tags::SEXPR);
             encode_varint(buf, items.len() as u64);
@@ -306,7 +308,7 @@ fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
                 encode_value_generic(buf, item);
             }
         }
-        MettaValueInner::Conjunction(_) => {
+        ValueView::Conjunction(_) => {
             let goals = value.as_conjunction().expect("matched Conjunction");
             buf.push(tags::CONJUNCTION);
             encode_varint(buf, goals.len() as u64);
@@ -314,60 +316,43 @@ fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
                 encode_value_generic(buf, goal);
             }
         }
-        MettaValueInner::Atom(s) => {
+        ValueView::Atom(s) => {
             buf.push(tags::ATOM);
             encode_string(buf, s);
         }
-        MettaValueInner::Long(n) => {
-            buf.push(tags::LONG);
-            buf.extend_from_slice(&n.to_le_bytes());
-        }
-        MettaValueInner::Float(f) => {
-            buf.push(tags::FLOAT);
-            buf.extend_from_slice(&f.to_le_bytes());
-        }
-        MettaValueInner::Bool(b) => {
-            buf.push(if *b { tags::BOOL_TRUE } else { tags::BOOL_FALSE });
-        }
-        MettaValueInner::String(s) => {
+        ValueView::String(s) => {
             buf.push(tags::STRING);
             encode_string(buf, s);
         }
-        MettaValueInner::Unit => buf.push(tags::UNIT),
-        MettaValueInner::Error(msg, _) => {
+        ValueView::Error(msg, _) => {
             let (_, details) = value.as_error().expect("matched Error");
             buf.push(tags::ERROR);
             encode_string(buf, msg);
             encode_value_generic(buf, details);
         }
-        MettaValueInner::Type(_) => {
+        ValueView::Type(_) => {
             let inner = value.as_type().expect("matched Type");
             buf.push(tags::TYPE);
             encode_value_generic(buf, inner);
         }
-        MettaValueInner::Space(handle) => {
+        ValueView::Space(handle) => {
             buf.push(tags::SPACE);
             encode_varint(buf, handle.id);
             encode_string(buf, &handle.name);
         }
-        MettaValueInner::State(id) => {
+        ValueView::State(id) => {
             buf.push(tags::STATE);
-            encode_varint(buf, *id);
+            encode_varint(buf, id);
         }
-        MettaValueInner::Memo(handle) => {
+        ValueView::Memo(handle) => {
             buf.push(tags::MEMO);
             encode_varint(buf, handle.id);
             encode_string(buf, &handle.name);
         }
-        MettaValueInner::Empty => buf.push(tags::EMPTY),
-        MettaValueInner::Quoted(_) => {
+        ValueView::Quoted(_) => {
             let inner = value.as_quoted_ref().expect("matched Quoted");
             buf.push(tags::QUOTED);
             encode_value_generic(buf, inner);
-        }
-        MettaValueInner::Spanned(..) => {
-            let stripped = value.strip_one_span();
-            encode_value_generic(buf, &stripped);
         }
     }
 }

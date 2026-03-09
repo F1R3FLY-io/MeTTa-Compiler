@@ -14,9 +14,7 @@ use crate::backend::models::{MettaValue, global_factory};
 use std::sync::Arc;
 use tracing::warn;
 
-// MettaValueInner is MettaValueInner; .inner() returns &MettaValueInner.
-// Atom(s) gives s: &&str, SExpr(items) gives items: &&[MettaValue], etc.
-use crate::backend::models::MettaValueInner;
+use crate::backend::models::ValueView;
 
 // =============================================================================
 // Phase F: Advanced Calls
@@ -134,9 +132,9 @@ pub unsafe extern "C" fn jit_runtime_call_external(
     }
 
     let name_constant = &*ctx_ref.constants.add(name_index);
-    let func_name = match name_constant.inner() {
-        MettaValueInner::Atom(s) => *s,
-        MettaValueInner::String(s) => *s,
+    let func_name = match name_constant.view() {
+        ValueView::Atom(s) => s,
+        ValueView::String(s) => s,
         _ => {
             // Name must be an atom or string
             for _ in 0..arg_count {
@@ -239,8 +237,8 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     }
 
     let head_constant = &*ctx_ref.constants.add(head_index);
-    let func_head = match head_constant.inner() {
-        MettaValueInner::Atom(s) => s.to_string(),
+    let func_head = match head_constant.view() {
+        ValueView::Atom(s) => s.to_string(),
         _ => {
             // Head must be an atom
             for _ in 0..arg_count {

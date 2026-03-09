@@ -11,7 +11,7 @@ use super::helpers::metta_to_jit;
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext, JitValue};
 use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 use std::sync::Arc;
 
 // =============================================================================
@@ -42,19 +42,22 @@ pub unsafe extern "C" fn jit_runtime_decon_atom(_ctx: *mut JitContext, val: u64,
 
     let metta_val = jit_val.to_metta();
 
-    match metta_val.inner() {
-        MettaValueInner::SExpr(elems) if !elems.is_empty() => {
+    match metta_val.view() {
+        ValueView::SExpr(elems) if !elems.is_empty() => {
             let head = elems[0].clone();
             let tail = MettaValue::SExpr(elems[1..].to_vec());
             let result = MettaValue::SExpr(vec![head, tail]);
             metta_to_jit(&result).to_bits()
         }
-        MettaValueInner::SExpr(_) => {
+        ValueView::SExpr(_) => {
             // Empty S-expression - return (Nil, ())
             let result = MettaValue::SExpr(vec![MettaValue::Unit(), MettaValue::SExpr(vec![])]);
             metta_to_jit(&result).to_bits()
         }
-        _ => {
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
+        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
             // Non-S-expression - return Unit
             JitValue::unit().to_bits()
         }
@@ -171,8 +174,8 @@ pub unsafe extern "C" fn jit_runtime_map_atom(
     );
 
     let metta_list = jit_list.to_metta();
-    let items = match metta_list.inner() {
-        MettaValueInner::SExpr(items) => items.to_vec(),
+    let items = match metta_list.view() {
+        ValueView::SExpr(items) => items.to_vec(),
         _ => {
             // Not a list, return original
             return list;
@@ -247,8 +250,8 @@ pub unsafe extern "C" fn jit_runtime_filter_atom(
     );
 
     let metta_list = jit_list.to_metta();
-    let items = match metta_list.inner() {
-        MettaValueInner::SExpr(items) => items.to_vec(),
+    let items = match metta_list.view() {
+        ValueView::SExpr(items) => items.to_vec(),
         _ => return list,
     };
 
@@ -269,7 +272,7 @@ pub unsafe extern "C" fn jit_runtime_filter_atom(
     for item in items {
         let result = execute_template_single(&predicate_chunk, item.clone());
         // Check if predicate returned true
-        if matches!(result.inner(), MettaValueInner::Bool(true)) {
+        if matches!(result.view(), ValueView::Bool(true)) {
             results.push(item);
         }
     }
@@ -330,8 +333,8 @@ pub unsafe extern "C" fn jit_runtime_foldl_atom(
     );
 
     let metta_list = jit_list.to_metta();
-    let items = match metta_list.inner() {
-        MettaValueInner::SExpr(items) => items.to_vec(),
+    let items = match metta_list.view() {
+        ValueView::SExpr(items) => items.to_vec(),
         _ => return init, // Not a list, return init
     };
 

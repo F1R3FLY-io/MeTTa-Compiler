@@ -16,7 +16,7 @@ use crate::backend::bytecode::jit::types::{
 };
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 use std::sync::Arc;
 
 // =============================================================================
@@ -241,9 +241,13 @@ pub unsafe extern "C" fn jit_runtime_call(
     }
 
     let head_value = &*ctx_ref.constants.add(head_index);
-    let head: &str = match head_value.inner() {
-        MettaValueInner::Atom(s) => s,
-        _ => {
+    let head: &str = match head_value.view() {
+        ValueView::Atom(s) => s,
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::String(_) | ValueView::SExpr(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::Space(_) | ValueView::State(_) | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             // Head must be an atom
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;
@@ -496,9 +500,13 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
     }
 
     let head_value = &*ctx_ref.constants.add(head_index);
-    let head: &str = match head_value.inner() {
-        MettaValueInner::Atom(s) => s,
-        _ => {
+    let head: &str = match head_value.view() {
+        ValueView::Atom(s) => s,
+        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
+        | ValueView::Empty | ValueView::String(_) | ValueView::SExpr(_)
+        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
+        | ValueView::Space(_) | ValueView::State(_) | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;
@@ -631,7 +639,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
     let head_metta = head_jit.to_metta();
 
     // Phase 9.1: Variable-head guard — ($f x) is data, not callable
-    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
+    if let ValueView::Atom(head_str) = head_metta.view() {
         if head_str.starts_with('$') {
             // Variable head — return as data S-expression
             let mut items = Vec::with_capacity(arity + 1);
@@ -648,7 +656,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
 
     // Optimization 3.2: Fast path for grounded functions
     // Try to execute grounded ops directly without MorkBridge lookup
-    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
+    if let ValueView::Atom(head_str) = head_metta.view() {
         if !args_ptr.is_null() {
             if let Some(result) = try_grounded_fast_path(head_str, args_ptr, arity) {
                 return result;
@@ -744,7 +752,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
     let head_metta = head_jit.to_metta();
 
     // Phase 9.1: Variable-head guard — ($f x) is data, not callable
-    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
+    if let ValueView::Atom(head_str) = head_metta.view() {
         if head_str.starts_with('$') {
             // Variable head — return as data S-expression
             let mut items = Vec::with_capacity(arity + 1);
@@ -761,7 +769,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
 
     // Optimization 3.2: Fast path for grounded functions
     // Try to execute grounded ops directly without MorkBridge lookup
-    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
+    if let ValueView::Atom(head_str) = head_metta.view() {
         if !args_ptr.is_null() {
             if let Some(result) = try_grounded_fast_path(head_str, args_ptr, arity) {
                 return result;

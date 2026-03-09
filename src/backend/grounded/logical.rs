@@ -7,8 +7,9 @@
 
 use super::{
     friendly_type_name, MettaEnvironment, EvalFn, ExecError, GroundedOperation, GroundedResult,
-    MettaValue, MettaValueInner,
+    MettaValue,
 };
+use crate::backend::models::ValueView;
 
 /// Logical AND operation: (and a b)
 pub struct AndOp;
@@ -36,18 +37,18 @@ impl GroundedOperation for AndOp {
 
         let mut results = Vec::new();
         for a in &a_results {
-            match a.inner() {
-                MettaValueInner::Bool(false) => {
+            match a.view() {
+                ValueView::Bool(false) => {
                     // Short-circuit: false AND anything = false
                     results.push((MettaValue::Bool(false), None));
                 }
-                MettaValueInner::Bool(true) => {
+                ValueView::Bool(true) => {
                     // Need to evaluate second argument
                     let (b_results, _) = eval_fn(args[1].clone(), env1.clone());
                     for b in &b_results {
-                        match b.inner() {
-                            MettaValueInner::Bool(bv) => {
-                                results.push((MettaValue::Bool(*bv), None));
+                        match b.view() {
+                            ValueView::Bool(bv) => {
+                                results.push((MettaValue::Bool(bv), None));
                             }
                             _ => {
                                 return Err(ExecError::Runtime(format!(
@@ -96,18 +97,18 @@ impl GroundedOperation for OrOp {
 
         let mut results = Vec::new();
         for a in &a_results {
-            match a.inner() {
-                MettaValueInner::Bool(true) => {
+            match a.view() {
+                ValueView::Bool(true) => {
                     // Short-circuit: true OR anything = true
                     results.push((MettaValue::Bool(true), None));
                 }
-                MettaValueInner::Bool(false) => {
+                ValueView::Bool(false) => {
                     // Need to evaluate second argument
                     let (b_results, _) = eval_fn(args[1].clone(), env1.clone());
                     for b in &b_results {
-                        match b.inner() {
-                            MettaValueInner::Bool(bv) => {
-                                results.push((MettaValue::Bool(*bv), None));
+                        match b.view() {
+                            ValueView::Bool(bv) => {
+                                results.push((MettaValue::Bool(bv), None));
                             }
                             _ => {
                                 return Err(ExecError::Runtime(format!(
@@ -155,8 +156,8 @@ impl GroundedOperation for NotOp {
 
         let mut results = Vec::new();
         for a in &a_results {
-            match a.inner() {
-                MettaValueInner::Bool(v) => {
+            match a.view() {
+                ValueView::Bool(v) => {
                     results.push((MettaValue::Bool(!v), None));
                 }
                 _ => {

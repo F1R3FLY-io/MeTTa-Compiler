@@ -7,7 +7,7 @@
 
 use super::helpers::{make_jit_error, make_jit_error_with_details, metta_to_jit};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 // =============================================================================
 // State Operations Runtime (Phase D.1)
@@ -92,8 +92,8 @@ pub unsafe extern "C" fn jit_runtime_get_state(
     let state_id = {
         let jit_val = JitValue::from_raw(state_handle);
         let metta_val = jit_val.to_metta();
-        match metta_val.inner() {
-            MettaValueInner::State(id) => *id,
+        match metta_val.view() {
+            ValueView::State(id) => id,
             _ => {
                 return make_jit_error_with_details(
                     "get-state: expected State",
@@ -166,8 +166,8 @@ pub unsafe extern "C" fn jit_runtime_change_state(
     let state_id = {
         let jit_val = JitValue::from_raw(state_handle);
         let metta_val = jit_val.to_metta();
-        match metta_val.inner() {
-            MettaValueInner::State(id) => *id,
+        match metta_val.view() {
+            ValueView::State(id) => id,
             _ => {
                 return make_jit_error_with_details(
                     "change-state!: expected State",

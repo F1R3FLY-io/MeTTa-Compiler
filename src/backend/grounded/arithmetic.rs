@@ -11,7 +11,7 @@ use super::{
     find_error, friendly_type_name, MettaEnvironment, EvalFn, ExecError, GroundedOperation,
     GroundedResult, MettaValue,
 };
-use crate::backend::models::MettaValueInner;
+use crate::backend::models::ValueView;
 
 /// Addition operation: (+ a b)
 pub struct AddOp;
@@ -50,8 +50,8 @@ impl GroundedOperation for AddOp {
         let mut results = Vec::new();
         for a in &a_results {
             for b in &b_results {
-                match (a.inner(), b.inner()) {
-                    (MettaValueInner::Long(x), MettaValueInner::Long(y)) => match x.checked_add(*y)
+                match (a.view(), b.view()) {
+                    (ValueView::Long(x), ValueView::Long(y)) => match x.checked_add(y)
                     {
                         Some(sum) => results.push((MettaValue::Long(sum), None)),
                         None => {
@@ -61,22 +61,22 @@ impl GroundedOperation for AddOp {
                             )))
                         }
                     },
-                    (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+                    (ValueView::Float(x), ValueView::Float(y)) => {
                         results.push((MettaValue::Float(x + y), None));
                     }
-                    (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
-                        results.push((MettaValue::Float(*x as f64 + y), None));
+                    (ValueView::Long(x), ValueView::Float(y)) => {
+                        results.push((MettaValue::Float(x as f64 + y), None));
                     }
-                    (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
-                        results.push((MettaValue::Float(x + *y as f64), None));
+                    (ValueView::Float(x), ValueView::Long(y)) => {
+                        results.push((MettaValue::Float(x + y as f64), None));
                     }
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "Cannot perform '+': expected Number (integer), got {}",
                             friendly_type_name(
                                 if !matches!(
-                                    a.inner(),
-                                    MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                    a.view(),
+                                    ValueView::Long(_) | ValueView::Float(_)
                                 ) {
                                     a
                                 } else {
@@ -127,8 +127,8 @@ impl GroundedOperation for SubOp {
         let mut results = Vec::new();
         for a in &a_results {
             for b in &b_results {
-                match (a.inner(), b.inner()) {
-                    (MettaValueInner::Long(x), MettaValueInner::Long(y)) => match x.checked_sub(*y)
+                match (a.view(), b.view()) {
+                    (ValueView::Long(x), ValueView::Long(y)) => match x.checked_sub(y)
                     {
                         Some(diff) => results.push((MettaValue::Long(diff), None)),
                         None => {
@@ -138,22 +138,22 @@ impl GroundedOperation for SubOp {
                             )))
                         }
                     },
-                    (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+                    (ValueView::Float(x), ValueView::Float(y)) => {
                         results.push((MettaValue::Float(x - y), None));
                     }
-                    (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
-                        results.push((MettaValue::Float(*x as f64 - y), None));
+                    (ValueView::Long(x), ValueView::Float(y)) => {
+                        results.push((MettaValue::Float(x as f64 - y), None));
                     }
-                    (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
-                        results.push((MettaValue::Float(x - *y as f64), None));
+                    (ValueView::Float(x), ValueView::Long(y)) => {
+                        results.push((MettaValue::Float(x - y as f64), None));
                     }
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "Cannot perform '-': expected Number (integer), got {}",
                             friendly_type_name(
                                 if !matches!(
-                                    a.inner(),
-                                    MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                    a.view(),
+                                    ValueView::Long(_) | ValueView::Float(_)
                                 ) {
                                     a
                                 } else {
@@ -204,8 +204,8 @@ impl GroundedOperation for MulOp {
         let mut results = Vec::new();
         for a in &a_results {
             for b in &b_results {
-                match (a.inner(), b.inner()) {
-                    (MettaValueInner::Long(x), MettaValueInner::Long(y)) => match x.checked_mul(*y)
+                match (a.view(), b.view()) {
+                    (ValueView::Long(x), ValueView::Long(y)) => match x.checked_mul(y)
                     {
                         Some(prod) => results.push((MettaValue::Long(prod), None)),
                         None => {
@@ -215,22 +215,22 @@ impl GroundedOperation for MulOp {
                             )))
                         }
                     },
-                    (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+                    (ValueView::Float(x), ValueView::Float(y)) => {
                         results.push((MettaValue::Float(x * y), None));
                     }
-                    (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
-                        results.push((MettaValue::Float(*x as f64 * y), None));
+                    (ValueView::Long(x), ValueView::Float(y)) => {
+                        results.push((MettaValue::Float(x as f64 * y), None));
                     }
-                    (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
-                        results.push((MettaValue::Float(x * *y as f64), None));
+                    (ValueView::Float(x), ValueView::Long(y)) => {
+                        results.push((MettaValue::Float(x * y as f64), None));
                     }
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "Cannot perform '*': expected Number (integer), got {}",
                             friendly_type_name(
                                 if !matches!(
-                                    a.inner(),
-                                    MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                    a.view(),
+                                    ValueView::Long(_) | ValueView::Float(_)
                                 ) {
                                     a
                                 } else {
@@ -281,38 +281,38 @@ impl GroundedOperation for DivOp {
         let mut results = Vec::new();
         for a in &a_results {
             for b in &b_results {
-                match (a.inner(), b.inner()) {
-                    (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
-                        if *y == 0 {
+                match (a.view(), b.view()) {
+                    (ValueView::Long(x), ValueView::Long(y)) => {
+                        if y == 0 {
                             return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
                         results.push((MettaValue::Long(x / y), None));
                     }
-                    (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
-                        if *y == 0.0 {
+                    (ValueView::Float(x), ValueView::Float(y)) => {
+                        if y == 0.0 {
                             return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
                         results.push((MettaValue::Float(x / y), None));
                     }
-                    (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
-                        if *y == 0.0 {
+                    (ValueView::Long(x), ValueView::Float(y)) => {
+                        if y == 0.0 {
                             return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
-                        results.push((MettaValue::Float(*x as f64 / y), None));
+                        results.push((MettaValue::Float(x as f64 / y), None));
                     }
-                    (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
-                        if *y == 0 {
+                    (ValueView::Float(x), ValueView::Long(y)) => {
+                        if y == 0 {
                             return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
-                        results.push((MettaValue::Float(x / *y as f64), None));
+                        results.push((MettaValue::Float(x / y as f64), None));
                     }
                     _ => {
                         return Err(ExecError::Runtime(format!(
                             "Cannot perform '/': expected Number (integer), got {}",
                             friendly_type_name(
                                 if !matches!(
-                                    a.inner(),
-                                    MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                    a.view(),
+                                    ValueView::Long(_) | ValueView::Float(_)
                                 ) {
                                     a
                                 } else {
@@ -355,35 +355,35 @@ impl GroundedOperation for ModOp {
         let mut results = Vec::new();
         for a in &a_results {
             for b in &b_results {
-                match (a.inner(), b.inner()) {
-                    (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
-                        if *y == 0 {
+                match (a.view(), b.view()) {
+                    (ValueView::Long(x), ValueView::Long(y)) => {
+                        if y == 0 {
                             return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
                         }
-                        match x.checked_rem(*y) {
+                        match x.checked_rem(y) {
                             Some(r) => results.push((MettaValue::Long(r), None)),
                             None => {
                                 return Err(ExecError::Arithmetic("Modulo overflow".to_string()))
                             }
                         }
                     }
-                    (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
-                        if *y == 0.0 {
+                    (ValueView::Float(x), ValueView::Float(y)) => {
+                        if y == 0.0 {
                             return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
                         }
                         results.push((MettaValue::Float(x % y), None));
                     }
-                    (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
-                        if *y == 0.0 {
+                    (ValueView::Long(x), ValueView::Float(y)) => {
+                        if y == 0.0 {
                             return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
                         }
-                        results.push((MettaValue::Float(*x as f64 % y), None));
+                        results.push((MettaValue::Float(x as f64 % y), None));
                     }
-                    (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
-                        if *y == 0 {
+                    (ValueView::Float(x), ValueView::Long(y)) => {
+                        if y == 0 {
                             return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
                         }
-                        results.push((MettaValue::Float(x % *y as f64), None));
+                        results.push((MettaValue::Float(x % y as f64), None));
                     }
                     _ => {
                         return Err(ExecError::Runtime(format!(

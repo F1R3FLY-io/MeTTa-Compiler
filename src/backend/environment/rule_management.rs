@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lru::LruCache;
 
-use crate::backend::hash_utils::{FxBuildHasher, PtrBuildHasher};
+use crate::backend::hash_utils::FxBuildHasher;
 
 /// Global epoch counter for rule/type mutations.
 ///
@@ -104,7 +104,7 @@ use super::multiplicity::{
     Multiplicity,
 };
 use super::{MettaEnvironment, MettaValue};
-use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait, ValueView};
 use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
 
 /// Extract (lhs, rhs) from a deserialized rule value `(= lhs rhs)`.
@@ -1895,10 +1895,10 @@ impl MettaEnvironment {
 
     /// Check if a MettaValue is a rule s-expression (= lhs rhs)
     pub fn is_rule_sexpr(value: &MettaValue) -> bool {
-        if let MettaValueInner::SExpr(items) = value.inner() {
+        if let ValueView::SExpr(items) = value.view() {
             if items.len() == 3 {
-                if let MettaValueInner::Atom(op) = items[0].inner() {
-                    return *op == "=";
+                if let ValueView::Atom(op) = items[0].view() {
+                    return op == "=";
                 }
             }
         }

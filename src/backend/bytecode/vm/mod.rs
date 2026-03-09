@@ -38,8 +38,8 @@ use super::opcodes::Opcode;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::eval::bindings_generic::apply_bindings_generic;
 use crate::backend::models::{
-    numeric_equal_generic, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
-    SpaceHandle,
+    numeric_equal_generic, MettaValue, MettaValueFactory, MettaValueTrait,
+    SpaceHandle, ValueView,
 };
 
 // === Submodules ===
@@ -821,7 +821,7 @@ where
                 let cond = self.pop()?;
                 // MeTTa HE: only Bool(false) is falsy. Unit is NOT falsy —
                 // it falls through to JumpIfNotBool which returns unreduced.
-                let taken = matches!(cond.inner_raw(), MettaValueInner::Bool(false));
+                let taken = matches!(cond.view(), ValueView::Bool(false));
                 if taken {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
@@ -830,21 +830,21 @@ where
             Opcode::JumpIfTrue => {
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
-                if matches!(cond.inner_raw(), MettaValueInner::Bool(true)) {
+                if matches!(cond.view(), ValueView::Bool(true)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
             Opcode::JumpIfUnit => {
                 let offset = self.read_i16()?;
                 let value = self.pop()?;
-                if matches!(value.inner_raw(), MettaValueInner::Unit) {
+                if matches!(value.view(), ValueView::Unit) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
             Opcode::JumpIfError => {
                 let offset = self.read_i16()?;
                 let value = self.peek()?;
-                if matches!(value.inner_raw(), MettaValueInner::Error(..)) {
+                if matches!(value.view(), ValueView::Error(..)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -854,7 +854,7 @@ where
                 let branch_offset = self.ip as u32;
                 let offset = self.read_i16()?;
                 let value = self.peek()?;
-                let taken = !matches!(value.inner_raw(), MettaValueInner::Bool(_));
+                let taken = !matches!(value.view(), ValueView::Bool(_));
                 if taken {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
@@ -868,14 +868,14 @@ where
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
                 // MeTTa HE: only Bool(false) is falsy (consistent with JumpIfFalse).
-                if matches!(cond.inner_raw(), MettaValueInner::Bool(false)) {
+                if matches!(cond.view(), ValueView::Bool(false)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
             Opcode::JumpIfTrueShort => {
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
-                if matches!(cond.inner_raw(), MettaValueInner::Bool(true)) {
+                if matches!(cond.view(), ValueView::Bool(true)) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1056,33 +1056,33 @@ where
             }
             Opcode::Trunc => {
                 let a = self.pop()?;
-                match a.inner_raw() {
-                    MettaValueInner::Float(x) => self.push(self.make_long(x.trunc() as i64)),
-                    MettaValueInner::Long(_) => self.push(a),
+                match a.view() {
+                    ValueView::Float(x) => self.push(self.make_long(x.trunc() as i64)),
+                    ValueView::Long(_) => self.push(a),
                     _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
                 }
             }
             Opcode::Ceil => {
                 let a = self.pop()?;
-                match a.inner_raw() {
-                    MettaValueInner::Float(x) => self.push(self.make_long(x.ceil() as i64)),
-                    MettaValueInner::Long(_) => self.push(a),
+                match a.view() {
+                    ValueView::Float(x) => self.push(self.make_long(x.ceil() as i64)),
+                    ValueView::Long(_) => self.push(a),
                     _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
             Opcode::FloorMath => {
                 let a = self.pop()?;
-                match a.inner_raw() {
-                    MettaValueInner::Float(x) => self.push(self.make_long(x.floor() as i64)),
-                    MettaValueInner::Long(_) => self.push(a),
+                match a.view() {
+                    ValueView::Float(x) => self.push(self.make_long(x.floor() as i64)),
+                    ValueView::Long(_) => self.push(a),
                     _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
             Opcode::Round => {
                 let a = self.pop()?;
-                match a.inner_raw() {
-                    MettaValueInner::Float(x) => self.push(self.make_long(x.round() as i64)),
-                    MettaValueInner::Long(_) => self.push(a),
+                match a.view() {
+                    ValueView::Float(x) => self.push(self.make_long(x.round() as i64)),
+                    ValueView::Long(_) => self.push(a),
                     _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
@@ -1094,17 +1094,17 @@ where
             Opcode::Atan => self.op_unary_float(f64::atan)?,
             Opcode::IsNan => {
                 let a = self.pop()?;
-                match a.inner_raw() {
-                    MettaValueInner::Float(x) => self.push(self.make_bool(x.is_nan())),
-                    MettaValueInner::Long(_) => self.push(self.make_bool(false)),
+                match a.view() {
+                    ValueView::Float(x) => self.push(self.make_bool(x.is_nan())),
+                    ValueView::Long(_) => self.push(self.make_bool(false)),
                     _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
             Opcode::IsInf => {
                 let a = self.pop()?;
-                match a.inner_raw() {
-                    MettaValueInner::Float(x) => self.push(self.make_bool(x.is_infinite())),
-                    MettaValueInner::Long(_) => self.push(self.make_bool(false)),
+                match a.view() {
+                    ValueView::Float(x) => self.push(self.make_bool(x.is_infinite())),
+                    ValueView::Long(_) => self.push(self.make_bool(false)),
                     _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
                 }
             }
@@ -2014,7 +2014,7 @@ where
 
     fn op_get_metatype(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let metatype = metatype_of(value.inner_raw());
+        let metatype = metatype_of_view(value.view());
         self.push(self.make_atom(metatype));
         Ok(())
     }
@@ -2022,16 +2022,10 @@ where
     /// is-function: check if a value is an arrow type (-> ...)
     fn op_is_function(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let is_fn = match value.inner_raw() {
-            MettaValueInner::SExpr(items) => {
+        let is_fn = match value.view() {
+            ValueView::SExpr(items) => {
                 items.first().and_then(|v| v.as_atom()) == Some("->")
             }
-            MettaValueInner::Spanned(inner, _) => match &inner.inner_ref() {
-                MettaValueInner::SExpr(items) => {
-                    items.first().and_then(|v| v.as_atom()) == Some("->")
-                }
-                _ => false,
-            },
             _ => false,
         };
         self.push(self.make_bool(is_fn));
@@ -4049,9 +4043,9 @@ where
 
     /// Check if pattern matches value using trait methods.
     fn pattern_matches_generic(&self, pattern: &V, value: &V) -> bool {
-        match pattern.inner_raw() {
-            MettaValueInner::Atom(s) if s.starts_with('$') || *s == "_" => true,
-            MettaValueInner::SExpr(_) => {
+        match pattern.view() {
+            ValueView::Atom(s) if s.starts_with('$') || s == "_" => true,
+            ValueView::SExpr(_) => {
                 if let Some(v_items) = value.as_sexpr() {
                     let p_items = pattern.as_sexpr().expect("matched SExpr");
                     p_items.len() == v_items.len()
@@ -4060,10 +4054,6 @@ where
                 } else {
                     false
                 }
-            }
-            MettaValueInner::Spanned(..) => {
-                let stripped = pattern.strip_one_span();
-                self.pattern_matches_generic(&stripped, value)
             }
             _ => pattern.structurally_equivalent(value),
         }
@@ -4085,13 +4075,13 @@ where
         value: &V,
         bindings: &mut Vec<(String, V)>,
     ) -> bool {
-        match pattern.inner_raw() {
-            MettaValueInner::Atom(s) if s.starts_with('$') => {
+        match pattern.view() {
+            ValueView::Atom(s) if s.starts_with('$') => {
                 bindings.push((s.to_string(), value.clone()));
                 true
             }
-            MettaValueInner::Atom(s) if *s == "_" => true,
-            MettaValueInner::SExpr(_) => {
+            ValueView::Atom(s) if s == "_" => true,
+            ValueView::SExpr(_) => {
                 if let Some(v_items) = value.as_sexpr() {
                     let p_items = pattern.as_sexpr().expect("matched SExpr");
                     if p_items.len() != v_items.len() {
@@ -4106,10 +4096,6 @@ where
                 } else {
                     false
                 }
-            }
-            MettaValueInner::Spanned(..) => {
-                let stripped = pattern.strip_one_span();
-                self.pattern_match_bind_recursive(&stripped, value, bindings)
             }
             _ => pattern.structurally_equivalent(value),
         }
@@ -4127,14 +4113,14 @@ where
 
     fn unify_recursive(&self, a: &V, b: &V, bindings: &mut Vec<(String, V)>) -> bool {
         // Check if a is a variable
-        if let MettaValueInner::Atom(name) = a.inner_raw() {
+        if let ValueView::Atom(name) = a.view() {
             if name.starts_with('$') {
                 bindings.push((name.to_string(), b.clone()));
                 return true;
             }
         }
         // Check if b is a variable
-        if let MettaValueInner::Atom(name) = b.inner_raw() {
+        if let ValueView::Atom(name) = b.view() {
             if name.starts_with('$') {
                 bindings.push((name.to_string(), a.clone()));
                 return true;
@@ -4142,8 +4128,8 @@ where
         }
 
         // Dispatch on a's variant
-        match a.inner_raw() {
-            MettaValueInner::SExpr(_) => {
+        match a.view() {
+            ValueView::SExpr(_) => {
                 if let Some(b_items) = b.as_sexpr() {
                     let a_items = a.as_sexpr().expect("matched SExpr");
                     if a_items.len() != b_items.len() {
@@ -4158,10 +4144,6 @@ where
                 } else {
                     false
                 }
-            }
-            MettaValueInner::Spanned(..) => {
-                let stripped = a.strip_one_span();
-                self.unify_recursive(&stripped, b, bindings)
             }
             _ => a.structurally_equivalent(b),
         }
@@ -4224,23 +4206,23 @@ where
 // Free Helper Functions
 // ============================================================================
 
-/// Map a `MettaValueInner` variant to its MeTTa metatype string.
+/// Map a `ValueView` to its MeTTa metatype string.
 ///
-/// Used by `op_get_metatype` (VM) and the generic trampoline's get-metatype
-/// continuation. Handles `Spanned` by recursing on the inner value.
-fn metatype_of(inner: &MettaValueInner) -> &'static str {
-    match inner {
-        MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
-        MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
-        MettaValueInner::Atom(_) => "Symbol",
-        MettaValueInner::Bool(_) => "Bool",
-        MettaValueInner::Long(_) | MettaValueInner::Float(_) => "Number",
-        MettaValueInner::String(_) => "String",
-        MettaValueInner::Unit => "Unit",
-        MettaValueInner::Error(..) => "Error",
-        MettaValueInner::State(_) => "State",
-        MettaValueInner::Spanned(inner, _span) => metatype_of(inner.inner_raw()),
-        _ => "Grounded",
+/// Used by `op_get_metatype` (VM). Spanned layers are already stripped by `view()`.
+fn metatype_of_view(view: ValueView) -> &'static str {
+    match view {
+        ValueView::Bool(_) => "Bool",
+        ValueView::Long(_) | ValueView::Float(_) => "Number",
+        ValueView::Unit => "Unit",
+        ValueView::Empty => "Grounded",
+        ValueView::Quoted(_) | ValueView::SExpr(_) => "Expression",
+        ValueView::Atom(s) if s.starts_with('$') => "Variable",
+        ValueView::Atom(_) => "Symbol",
+        ValueView::String(_) => "String",
+        ValueView::Error(..) => "Error",
+        ValueView::State(_) => "State",
+        ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        | ValueView::Memo(_) => "Grounded",
     }
 }
 

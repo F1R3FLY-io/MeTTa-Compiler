@@ -40,7 +40,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::environment::MettaEnvironment;
-use super::models::{MettaValue, MettaValueInner};
+use super::models::{MettaValue, ValueView};
 
 // Re-export generic types (active code path)
 pub use generic_arithmetic::{
@@ -113,23 +113,22 @@ pub(crate) fn find_error(results: &[MettaValue]) -> Option<&MettaValue> {
 
 /// Helper function to get a friendly type name for error messages
 pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
-    match value.inner_ref() {
-        MettaValueInner::Long(_) => "Number (integer)",
-        MettaValueInner::Float(_) => "Number (float)",
-        MettaValueInner::Bool(_) => "Bool",
-        MettaValueInner::String(_) => "String",
-        MettaValueInner::Atom(_) => "Symbol",
-        MettaValueInner::SExpr(_) => "Expression",
-        MettaValueInner::Unit => "Expression",
-        MettaValueInner::Error(_, _) => "Error",
-        MettaValueInner::Type(_) => "Type",
-        MettaValueInner::Conjunction(_) => "Conjunction",
-        MettaValueInner::Space(_) => "Space",
-        MettaValueInner::State(_) => "State",
-        MettaValueInner::Quoted(_) => "Quoted expression",
-        MettaValueInner::Memo(_) => "Memo",
-        MettaValueInner::Empty => "Empty",
-        MettaValueInner::Spanned(v, _) => friendly_type_name(v),
+    match value.view() {
+        ValueView::Long(_) => "Number (integer)",
+        ValueView::Float(_) => "Number (float)",
+        ValueView::Bool(_) => "Bool",
+        ValueView::Unit => "Expression",
+        ValueView::Empty => "Empty",
+        ValueView::String(_) => "String",
+        ValueView::Atom(_) => "Symbol",
+        ValueView::SExpr(_) => "Expression",
+        ValueView::Error(_, _) => "Error",
+        ValueView::Type(_) => "Type",
+        ValueView::Conjunction(_) => "Conjunction",
+        ValueView::Space(_) => "Space",
+        ValueView::State(_) => "State",
+        ValueView::Quoted(_) => "Quoted expression",
+        ValueView::Memo(_) => "Memo",
     }
 }
 

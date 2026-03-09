@@ -21,7 +21,7 @@
 
 use std::fmt::Debug;
 
-use super::{MemoHandle, MettaValue, MettaValueInner, SpaceHandle};
+use super::{MemoHandle, MettaValue, MettaValueInner, SpaceHandle, ValueView};
 
 /// Core trait for MeTTa values.
 ///
@@ -199,6 +199,53 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Returns a reference to the underlying `MettaValueInner` without
     /// stripping `Spanned` layers. Callers must handle `Spanned` explicitly.
     fn inner_raw(&self) -> &MettaValueInner;
+
+    /// Unified dispatch view for pattern matching.
+    ///
+    /// Returns a `ValueView` with one variant per logical type.
+    /// Spanned layers are stripped automatically.
+    ///
+    /// The default implementation dispatches on `inner_raw()` with Spanned
+    /// stripping. Concrete types may override for optimized decode paths.
+    fn view(&self) -> ValueView {
+        let mut inner = self.inner_raw();
+        // Strip Spanned layers (mirrors MettaValue::inner() behavior)
+        loop {
+            match inner {
+                MettaValueInner::Spanned(wrapped, _) => inner = wrapped.inner_raw(),
+                _ => break,
+            }
+        }
+        match inner {
+            MettaValueInner::Float(f) => ValueView::Float(*f),
+            MettaValueInner::Bool(b) => ValueView::Bool(*b),
+            MettaValueInner::Long(n) => ValueView::Long(*n),
+            MettaValueInner::Unit => ValueView::Unit,
+            MettaValueInner::Empty => ValueView::Empty,
+            MettaValueInner::Atom(s) => ValueView::Atom(s),
+            MettaValueInner::String(s) => ValueView::String(s),
+            // SAFETY: All MettaValueInner references are slab-allocated with
+            // 'static lifetime. The trait's inner_raw() uses an anonymous
+            // lifetime tied to &self, but the actual data outlives all callers.
+            MettaValueInner::SExpr(items) => {
+                ValueView::SExpr(unsafe { &*((*items) as *const [MettaValue]) })
+            }
+            MettaValueInner::Error(msg, details) => ValueView::Error(msg, *details),
+            MettaValueInner::Type(inner_val) => ValueView::Type(*inner_val),
+            MettaValueInner::Conjunction(goals) => {
+                ValueView::Conjunction(unsafe { &*((*goals) as *const [MettaValue]) })
+            }
+            MettaValueInner::Space(handle) => {
+                ValueView::Space(unsafe { &*(handle as *const SpaceHandle) })
+            }
+            MettaValueInner::State(id) => ValueView::State(*id),
+            MettaValueInner::Memo(handle) => {
+                ValueView::Memo(unsafe { &*(handle as *const MemoHandle) })
+            }
+            MettaValueInner::Quoted(inner_val) => ValueView::Quoted(*inner_val),
+            MettaValueInner::Spanned(..) => unreachable!("Spanned stripped above"),
+        }
+    }
 
     /// Get a raw pointer to the slab-allocated inner representation.
     ///

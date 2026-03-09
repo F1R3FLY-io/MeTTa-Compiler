@@ -10,7 +10,7 @@
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::eval::alpha_equiv;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, ValueView};
 
 /// eval_if_equal: alpha-equivalence conditional
 ///
@@ -54,9 +54,9 @@ pub unsafe extern "C" fn jit_runtime_unique_atom(
     let metta_list = jit_list.to_metta();
 
     // Handle Unit as empty list
-    let items = match metta_list.inner() {
-        MettaValueInner::SExpr(items) => *items,
-        MettaValueInner::Unit => return list, // Unit is already deduplicated
+    let items = match metta_list.view() {
+        ValueView::SExpr(items) => items,
+        ValueView::Unit => return list, // Unit is already deduplicated
         _ => return list, // Not a list, return as-is
     };
 
@@ -93,14 +93,14 @@ pub unsafe extern "C" fn jit_runtime_union_atom(
 
     // Handle Unit as empty list
     let empty: &[MettaValue] = &[];
-    let left_items = match left_val.inner() {
-        MettaValueInner::SExpr(items) => &**items,
-        MettaValueInner::Unit => empty,
+    let left_items = match left_val.view() {
+        ValueView::SExpr(items) => items,
+        ValueView::Unit => empty,
         _ => return JitValue::unit().to_bits(),
     };
-    let right_items = match right_val.inner() {
-        MettaValueInner::SExpr(items) => &**items,
-        MettaValueInner::Unit => empty,
+    let right_items = match right_val.view() {
+        ValueView::SExpr(items) => items,
+        ValueView::Unit => empty,
         _ => return JitValue::unit().to_bits(),
     };
 
@@ -130,14 +130,14 @@ pub unsafe extern "C" fn jit_runtime_intersection_atom(
 
     // Handle Unit as empty list
     let empty: &[MettaValue] = &[];
-    let left_items = match left_val.inner() {
-        MettaValueInner::SExpr(items) => &**items,
-        MettaValueInner::Unit => empty,
+    let left_items = match left_val.view() {
+        ValueView::SExpr(items) => items,
+        ValueView::Unit => empty,
         _ => return JitValue::unit().to_bits(),
     };
-    let right_items = match right_val.inner() {
-        MettaValueInner::SExpr(items) => &**items,
-        MettaValueInner::Unit => empty,
+    let right_items = match right_val.view() {
+        ValueView::SExpr(items) => items,
+        ValueView::Unit => empty,
         _ => return JitValue::unit().to_bits(),
     };
 
@@ -191,14 +191,14 @@ pub unsafe extern "C" fn jit_runtime_subtraction_atom(
 
     // Handle Unit as empty list
     let empty: &[MettaValue] = &[];
-    let left_items = match left_val.inner() {
-        MettaValueInner::SExpr(items) => &**items,
-        MettaValueInner::Unit => empty,
+    let left_items = match left_val.view() {
+        ValueView::SExpr(items) => items,
+        ValueView::Unit => empty,
         _ => return JitValue::unit().to_bits(),
     };
-    let right_items = match right_val.inner() {
-        MettaValueInner::SExpr(items) => &**items,
-        MettaValueInner::Unit => empty,
+    let right_items = match right_val.view() {
+        ValueView::SExpr(items) => items,
+        ValueView::Unit => empty,
         _ => return JitValue::unit().to_bits(),
     };
 

@@ -52,5 +52,4 @@ pub use pattern_matching::MultiplicityMatch;
 pub use rule_management::RuleHeadsIter;
 pub use scope::ScopeTracker;
 
-use super::models::MettaValueInner;
 use super::MettaValue;

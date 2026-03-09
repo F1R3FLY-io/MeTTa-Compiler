@@ -9,7 +9,7 @@ use super::{
     friendly_type_name, MettaEnvironment, EvalFn, ExecError, GroundedOperation, GroundedResult,
     MettaValue,
 };
-use crate::backend::models::MettaValueInner;
+use crate::backend::models::ValueView;
 
 /// Less than operation: (< a b)
 pub struct LessOp;
@@ -159,22 +159,22 @@ fn eval_comparison(
     let mut results = Vec::new();
     for a in &a_results {
         for b in &b_results {
-            match (a.inner(), b.inner()) {
-                (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(x, y)), None));
+            match (a.view(), b.view()) {
+                (ValueView::Long(x), ValueView::Long(y)) => {
+                    results.push((MettaValue::Bool(kind.compare(&x, &y)), None));
                 }
-                (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(x, y)), None));
+                (ValueView::Float(x), ValueView::Float(y)) => {
+                    results.push((MettaValue::Bool(kind.compare(&x, &y)), None));
                 }
-                (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(&(*x as f64), y)), None));
+                (ValueView::Long(x), ValueView::Float(y)) => {
+                    results.push((MettaValue::Bool(kind.compare(&(x as f64), &y)), None));
                 }
-                (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(x, &(*y as f64))), None));
+                (ValueView::Float(x), ValueView::Long(y)) => {
+                    results.push((MettaValue::Bool(kind.compare(&x, &(y as f64))), None));
                 }
                 // String comparison (lexicographic)
-                (MettaValueInner::String(x), MettaValueInner::String(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(x, y)), None));
+                (ValueView::String(x), ValueView::String(y)) => {
+                    results.push((MettaValue::Bool(kind.compare(&x, &y)), None));
                 }
                 _ => {
                     return Err(ExecError::Runtime(format!(
@@ -223,35 +223,35 @@ fn eval_equality(
 /// Supports numeric promotion: Long(2) == Float(2.0) → true.
 /// Uses epsilon tolerance for float comparison.
 pub(crate) fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
-    match (a.inner(), b.inner()) {
-        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
-        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+    match (a.view(), b.view()) {
+        (ValueView::Long(x), ValueView::Long(y)) => x == y,
+        (ValueView::Float(x), ValueView::Float(y)) => {
             if x.is_nan() || y.is_nan() {
                 return false;
             }
             (x - y).abs() < f64::EPSILON
         }
         // Mixed Long/Float: promote Long to f64 (MeTTa HE compatibility)
-        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+        (ValueView::Long(x), ValueView::Float(y)) => {
             if y.is_nan() {
                 return false;
             }
-            (*x as f64 - y).abs() < f64::EPSILON
+            (x as f64 - y).abs() < f64::EPSILON
         }
-        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+        (ValueView::Float(x), ValueView::Long(y)) => {
             if x.is_nan() {
                 return false;
             }
-            (x - *y as f64).abs() < f64::EPSILON
+            (x - y as f64).abs() < f64::EPSILON
         }
-        (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
-        (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
-        (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,
-        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+        (ValueView::Bool(x), ValueView::Bool(y)) => x == y,
+        (ValueView::String(x), ValueView::String(y)) => x == y,
+        (ValueView::Atom(x), ValueView::Atom(y)) => x == y,
+        (ValueView::Unit, ValueView::Unit) => true,
         // HE compatibility: Unit equals empty SExpr
-        (MettaValueInner::Unit, MettaValueInner::SExpr(items))
-        | (MettaValueInner::SExpr(items), MettaValueInner::Unit) => items.is_empty(),
-        (MettaValueInner::SExpr(x), MettaValueInner::SExpr(y)) => {
+        (ValueView::Unit, ValueView::SExpr(items))
+        | (ValueView::SExpr(items), ValueView::Unit) => items.is_empty(),
+        (ValueView::SExpr(x), ValueView::SExpr(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
         }
         // Different types are not equal

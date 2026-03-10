@@ -381,9 +381,11 @@ where
 
     // Narrow to pattern-side variables only
     let mut result = GenericBindings::new();
+    let alloc = crate::backend::models::gc_allocator::global_allocator();
     for (name, value) in &bindings {
         if pattern_vars.contains(name) {
-            result.insert(name.clone(), value.clone());
+            let interned: &'static str = alloc.alloc_str(name);
+            result.insert(interned, value.clone());
         }
     }
 

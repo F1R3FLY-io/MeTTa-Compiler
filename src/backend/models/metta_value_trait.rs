@@ -128,8 +128,9 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     // Accessor methods
     // =========================================================================
 
-    /// Try to extract as atom string
-    fn as_atom(&self) -> Option<&str>;
+    /// Try to extract as atom string.
+    /// Returns `&'static str` because atom strings are slab-allocated with static lifetime.
+    fn as_atom(&self) -> Option<&'static str>;
 
     /// Try to extract as bool
     fn as_bool(&self) -> Option<bool>;

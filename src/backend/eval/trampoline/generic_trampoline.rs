@@ -209,7 +209,6 @@ where
     // continuation entirely: no env clone, no VecDeque, no trace overhead.
     if matches.len() == 1 && base_results.is_empty() {
         let (rhs, bindings) = matches.pop().expect("matches has exactly 1 element");
-        let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
 
         // Trace: RuleApplication (single match — no fork)
         #[cfg(feature = "eval-trace")]
@@ -219,15 +218,16 @@ where
                     .iter()
                     .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
                     .collect();
+                let trace_rhs = crate::backend::trace::trace_value_generic(&rhs);
                 tc.emit_converted(
                     trace_format::TraceTier::TreeWalker,
                     depth as u32,
-                    crate::backend::trace::trace_value_generic(&rhs),
-                    vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
+                    trace_rhs.clone(),
+                    vec![trace_rhs.clone()],
                     None,
                     trace_format::TraceEventKind::RuleApplication {
-                        rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
-                        rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
+                        rule_lhs: trace_rhs.clone(),
+                        rule_rhs: trace_rhs,
                         bindings: bindings_tv,
                         rule_span: None,
                     },
@@ -235,25 +235,37 @@ where
             }
         }
 
-        // Normal-form short-circuit: skip full trampoline cycle for values
-        // that would immediately return themselves from eval_step_generic.
-        if is_memoized_normal_form(&instantiated_rhs) {
-            work_stack.push(GenericWorkItem::Resume {
-                result: (smallvec![instantiated_rhs], env),
-            });
-        } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
-            memoize_normal_form(&instantiated_rhs);
-            work_stack.push(GenericWorkItem::Resume {
-                result: (smallvec![instantiated_rhs], env),
-            });
-        } else {
-            work_stack.push(GenericWorkItem::Eval {
-                value: instantiated_rhs,
+        // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings.
+        // When RHS has no variables, push as Eval directly (O(1) pointer copy).
+        if rhs.has_variables_fast() {
+            work_stack.push(GenericWorkItem::EvalWithBindings {
+                template: rhs,
+                bindings,
                 env,
                 depth: depth + 1,
                 is_tail_call: false,
                 expected_type: None,
             });
+        } else {
+            // Normal-form short-circuit for ground RHS
+            if is_memoized_normal_form(&rhs) {
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (smallvec![rhs], env),
+                });
+            } else if is_normal_form_bounded(&rhs, &env, 2) {
+                memoize_normal_form(&rhs);
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (smallvec![rhs], env),
+                });
+            } else {
+                work_stack.push(GenericWorkItem::Eval {
+                    value: rhs,
+                    env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                });
+            }
         }
         return;
     }
@@ -288,7 +300,11 @@ where
                     unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
                 let metta_factory: &GcFactory =
                     unsafe { &*(factory as *const C::Factory as *const GcFactory) };
-                apply_bindings_generic(metta_rhs, metta_bindings, metta_factory)
+                if metta_rhs.has_variables_fast() {
+                    apply_bindings_generic(metta_rhs, metta_bindings, metta_factory)
+                } else {
+                    metta_rhs.clone()
+                }
             })
             .collect();
 
@@ -392,9 +408,6 @@ where
             total_branches: _total_branches,
         });
 
-        // Apply bindings to first match RHS
-        let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
-
         // Trace: RuleApplication (first match)
         #[cfg(feature = "eval-trace")]
         {
@@ -403,15 +416,16 @@ where
                     .iter()
                     .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
                     .collect();
+                let trace_rhs = crate::backend::trace::trace_value_generic(&rhs);
                 tc.emit_converted(
                     trace_format::TraceTier::TreeWalker,
                     depth as u32,
-                    crate::backend::trace::trace_value_generic(&rhs),
-                    vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
+                    trace_rhs.clone(),
+                    vec![trace_rhs.clone()],
                     None,
                     trace_format::TraceEventKind::RuleApplication {
-                        rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
-                        rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
+                        rule_lhs: trace_rhs.clone(),
+                        rule_rhs: trace_rhs,
                         bindings: bindings_tv,
                         rule_span: None,
                     },
@@ -419,25 +433,35 @@ where
             }
         }
 
-        // Normal-form short-circuit: skip full trampoline cycle for values
-        // that would immediately return themselves from eval_step_generic.
-        if is_memoized_normal_form(&instantiated_rhs) {
-            work_stack.push(GenericWorkItem::Resume {
-                result: (smallvec![instantiated_rhs], env),
-            });
-        } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
-            memoize_normal_form(&instantiated_rhs);
-            work_stack.push(GenericWorkItem::Resume {
-                result: (smallvec![instantiated_rhs], env),
-            });
-        } else {
-            work_stack.push(GenericWorkItem::Eval {
-                value: instantiated_rhs,
+        // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
+        if rhs.has_variables_fast() {
+            work_stack.push(GenericWorkItem::EvalWithBindings {
+                template: rhs,
+                bindings,
                 env,
                 depth,
                 is_tail_call: true,
                 expected_type: None,
             });
+        } else {
+            if is_memoized_normal_form(&rhs) {
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (smallvec![rhs], env),
+                });
+            } else if is_normal_form_bounded(&rhs, &env, 2) {
+                memoize_normal_form(&rhs);
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (smallvec![rhs], env),
+                });
+            } else {
+                work_stack.push(GenericWorkItem::Eval {
+                    value: rhs,
+                    env,
+                    depth,
+                    is_tail_call: true,
+                    expected_type: None,
+                });
+            }
         }
     }
 }
@@ -953,6 +977,9 @@ where
             // Clear value hash cache — pointer-keyed, same ABA concern.
             crate::backend::models::metta_value::clear_value_hash_cache();
 
+            // Clear hash-consing table — entries reference slab pointers, same ABA concern.
+            crate::backend::models::gc_allocator::clear_hash_cons_table();
+
             // Clear normal-form bloom filter before GC runs.
             // After GC, slab slots may be reused (ABA), so stale bloom entries
             // keyed by inner_ptr would falsely report new values at the same
@@ -1347,6 +1374,7 @@ where
                             pending_values: None,
                             pattern,
                             body,
+                            outer_bindings: None,
                             results: Vec::with_capacity(4),
                             env: env.clone(),
                             depth,
@@ -2349,6 +2377,141 @@ where
                 }
             }
 
+            // ── Lazy binding: evaluate template with deferred bindings ──
+            //
+            // Instead of eagerly materializing the entire expression tree via
+            // `apply_bindings_generic` (O(tree_depth) recursive alloc), we carry
+            // `(template, bindings)` and resolve lazily. For nested `let*` chains,
+            // this reduces O(N^2) tree materialization to O(N) by composing
+            // bindings at each level and only materializing the innermost body.
+            GenericWorkItem::EvalWithBindings {
+                template,
+                bindings,
+                env,
+                depth,
+                is_tail_call,
+                expected_type,
+            } => {
+                // Fast path: empty bindings or no variables → just Eval
+                if bindings.is_empty() || !template.has_variables_fast() {
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: template,
+                        env,
+                        depth,
+                        is_tail_call,
+                        expected_type,
+                    });
+                    continue;
+                }
+
+                // Template is a variable atom → resolve from bindings
+                if let Some(var_name) = template.as_atom() {
+                    if is_variable_str(var_name) {
+                        if let Some(bound) = bindings.get(var_name) {
+                            let resolved = bound.clone();
+                            if resolved.has_variables_fast() {
+                                // Resolved value still has variables → recurse
+                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                    template: resolved,
+                                    bindings,
+                                    env,
+                                    depth,
+                                    is_tail_call,
+                                    expected_type,
+                                });
+                            } else {
+                                work_stack.push(GenericWorkItem::Eval {
+                                    value: resolved,
+                                    env,
+                                    depth,
+                                    is_tail_call,
+                                    expected_type,
+                                });
+                            }
+                        } else {
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: template, env, depth, is_tail_call, expected_type,
+                            });
+                        }
+                    } else {
+                        // Non-variable atom: self-evaluating
+                        work_stack.push(GenericWorkItem::Resume {
+                            result: (smallvec![template], env),
+                        });
+                    }
+                    continue;
+                }
+
+                // Template is an S-expression → check for `let` special form
+                if let Some(items) = template.as_sexpr() {
+                    if items.is_empty() {
+                        work_stack.push(GenericWorkItem::Resume {
+                            result: (smallvec![template], env),
+                        });
+                        continue;
+                    }
+
+                    // Resolve head through bindings if it's a variable
+                    let head = &items[0];
+                    let resolved_head_atom = if let Some(var) = head.as_atom() {
+                        if is_variable_str(var) {
+                            bindings.get(var).and_then(|v| v.as_atom())
+                        } else {
+                            Some(var)
+                        }
+                    } else {
+                        None
+                    };
+
+                    // ── `let` with lazy body: the key optimization ──
+                    //
+                    // For `(let pattern value_expr body)` with pending bindings B:
+                    // 1. Materialize pattern and value_expr with B (needed immediately)
+                    // 2. Keep body RAW + store B as outer_bindings on ProcessLet
+                    // 3. When ProcessLet produces pattern-match bindings B2:
+                    //    compose(B, B2) and push EvalWithBindings{body, compose(B, B2)}
+                    //
+                    // For nested let* of depth N, the body is never materialized
+                    // until the innermost level, giving O(N) instead of O(N^2).
+                    if resolved_head_atom == Some("let") && items.len() == 4 {
+                        let pattern = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+                        let value_expr = apply_bindings_generic(&items[2], &bindings, ctx.factory());
+
+                        continuations.push(GenericContinuation::ProcessLet {
+                            pending_values: None,
+                            pattern,
+                            body: items[3].clone(), // RAW body — not materialized
+                            outer_bindings: Some(bindings),
+                            results: Vec::with_capacity(4),
+                            env: env.clone(),
+                            depth,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: value_expr,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                        continue;
+                    }
+
+                    // All other S-expressions: full materialization + Eval
+                    let materialized = apply_bindings_generic(&template, &bindings, ctx.factory());
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: materialized, env, depth, is_tail_call, expected_type,
+                    });
+                    continue;
+                }
+
+                // Non-S-expression (type, conjunction, etc.): materialize
+                let materialized = apply_bindings_generic(&template, &bindings, ctx.factory());
+                work_stack.push(GenericWorkItem::Eval {
+                    value: materialized, env, depth, is_tail_call, expected_type,
+                });
+            }
+
             GenericWorkItem::Resume { result } => {
                 // Take ownership of continuation for processing
                 let cont = continuations.pop().expect("non-empty continuation stack");
@@ -2582,9 +2745,6 @@ fn process_continuation_generic<C: EvalContext>(
                     total_branches,
                 });
 
-                // Apply generic bindings - no conversion needed
-                let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
-
                 // Trace: RuleApplication (tree-walker, subsequent match)
                 #[cfg(feature = "eval-trace")]
                 {
@@ -2593,15 +2753,16 @@ fn process_continuation_generic<C: EvalContext>(
                             .iter()
                             .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
                             .collect();
+                        let trace_rhs = crate::backend::trace::trace_value_generic(&rhs);
                         tc.emit_converted(
                             trace_format::TraceTier::TreeWalker,
                             depth as u32,
-                            crate::backend::trace::trace_value_generic(&rhs),
-                            vec![crate::backend::trace::trace_value_generic(&instantiated_rhs)],
+                            trace_rhs.clone(),
+                            vec![trace_rhs.clone()],
                             None,
                             trace_format::TraceEventKind::RuleApplication {
-                                rule_lhs: crate::backend::trace::trace_value_generic(&rhs),
-                                rule_rhs: crate::backend::trace::trace_value_generic(&instantiated_rhs),
+                                rule_lhs: trace_rhs.clone(),
+                                rule_rhs: trace_rhs,
                                 bindings: bindings_tv,
                                 rule_span: None,
                             },
@@ -2609,25 +2770,35 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 }
 
-                // Normal-form short-circuit: skip full trampoline cycle for values
-                // that would immediately return themselves from eval_step_generic.
-                if is_memoized_normal_form(&instantiated_rhs) {
-                    work_stack.push(GenericWorkItem::Resume {
-                        result: (smallvec![instantiated_rhs], env),
-                    });
-                } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
-                    memoize_normal_form(&instantiated_rhs);
-                    work_stack.push(GenericWorkItem::Resume {
-                        result: (smallvec![instantiated_rhs], env),
-                    });
-                } else {
-                    work_stack.push(GenericWorkItem::Eval {
-                        value: instantiated_rhs,
+                // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
+                if rhs.has_variables_fast() {
+                    work_stack.push(GenericWorkItem::EvalWithBindings {
+                        template: rhs,
+                        bindings,
                         env,
                         depth,
                         is_tail_call: true,
                         expected_type: None,
                     });
+                } else {
+                    if is_memoized_normal_form(&rhs) {
+                        work_stack.push(GenericWorkItem::Resume {
+                            result: (smallvec![rhs], env),
+                        });
+                    } else if is_normal_form_bounded(&rhs, &env, 2) {
+                        memoize_normal_form(&rhs);
+                        work_stack.push(GenericWorkItem::Resume {
+                            result: (smallvec![rhs], env),
+                        });
+                    } else {
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: rhs,
+                            env,
+                            depth,
+                            is_tail_call: true,
+                            expected_type: None,
+                        });
+                    }
                 }
             }
         }
@@ -2738,16 +2909,25 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                // Apply generic bindings - no conversion needed
-                let instantiated_rhs = apply_bindings_generic(&rhs, &bindings, ctx.factory());
-
-                work_stack.push(GenericWorkItem::Eval {
-                    value: instantiated_rhs,
-                    env: result_env,
-                    depth,
-                    is_tail_call: true,
-                    expected_type: None,
-                });
+                // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
+                if rhs.has_variables_fast() {
+                    work_stack.push(GenericWorkItem::EvalWithBindings {
+                        template: rhs,
+                        bindings,
+                        env: result_env,
+                        depth,
+                        is_tail_call: true,
+                        expected_type: None,
+                    });
+                } else {
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: rhs,
+                        env: result_env,
+                        depth,
+                        is_tail_call: true,
+                        expected_type: None,
+                    });
+                }
                 return;
             }
 
@@ -2806,6 +2986,7 @@ fn process_continuation_generic<C: EvalContext>(
             pending_values,
             pattern,
             body,
+            outer_bindings,
             mut results,
             env: _,
             depth,
@@ -2837,9 +3018,19 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                     }
 
-                    // Collect ALL matching values and their instantiated bodies.
-                    // This enables parallel dispatch when multiple values match.
-                    let mut instantiated_bodies: Vec<C::Value> = Vec::new();
+                    // Collect ALL matching values and their bound bodies.
+                    // When outer_bindings is present, we compose bindings and
+                    // defer body materialization via EvalWithBindings.
+                    //
+                    // Each entry is either:
+                    // - BoundBody::Materialized(value) — body fully instantiated
+                    // - BoundBody::Deferred(bindings) — body + composed bindings
+                    enum BoundBody<V: MettaValueTrait + Clone> {
+                        Materialized(V),
+                        Deferred(crate::backend::models::GenericBindings<V>),
+                    }
+
+                    let mut bound_bodies: Vec<BoundBody<C::Value>> = Vec::new();
                     for value in result_values.iter() {
                         // Phase 8.5: Type pre-check for typed patterns
                         if let Some(ref tc) = type_constraint {
@@ -2850,33 +3041,62 @@ fn process_continuation_generic<C: EvalContext>(
                                 }
                             }
                         }
-                        if let Some(bindings) = pattern_match_generic(&pattern, value) {
-                            let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
-                            instantiated_bodies.push(instantiated_body);
+                        if let Some(pm_bindings) = pattern_match_generic(&pattern, value) {
+                            if let Some(ref ob) = outer_bindings {
+                                // Compose outer + pattern-match bindings, defer body
+                                let composed = ob.compose(&pm_bindings);
+                                bound_bodies.push(BoundBody::Deferred(composed));
+                            } else {
+                                // No outer bindings — materialize body as before
+                                let instantiated = apply_bindings_generic(&body, &pm_bindings, ctx.factory());
+                                bound_bodies.push(BoundBody::Materialized(instantiated));
+                            }
                         }
                     }
 
-                    if instantiated_bodies.is_empty() {
-                        // No pattern matched - return results to parent
+                    if bound_bodies.is_empty() {
                         work_stack.push(GenericWorkItem::Resume {
                             result: (SmallVec::from_vec(results), result_env),
-
                         });
                         return;
                     }
 
-                    if instantiated_bodies.len() == 1 {
+                    if bound_bodies.len() == 1 {
                         // Single match - evaluate directly (TCO)
-                        let single_body = instantiated_bodies.into_iter().next().expect("len == 1");
-                        work_stack.push(GenericWorkItem::Eval {
-                            value: single_body,
-                            env: result_env,
-                            depth,
-                            is_tail_call: true,
-                            expected_type: None,
-                        });
+                        let single = bound_bodies.into_iter().next().expect("len == 1");
+                        match single {
+                            BoundBody::Materialized(val) => {
+                                work_stack.push(GenericWorkItem::Eval {
+                                    value: val,
+                                    env: result_env,
+                                    depth,
+                                    is_tail_call: true,
+                                    expected_type: None,
+                                });
+                            }
+                            BoundBody::Deferred(composed_bindings) => {
+                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                    template: body.clone(),
+                                    bindings: composed_bindings,
+                                    env: result_env,
+                                    depth,
+                                    is_tail_call: true,
+                                    expected_type: None,
+                                });
+                            }
+                        }
                         return;
                     }
+
+                    // Multiple matches: materialize all deferred bodies for dispatch
+                    let instantiated_bodies: Vec<C::Value> = bound_bodies.into_iter().map(|bb| {
+                        match bb {
+                            BoundBody::Materialized(val) => val,
+                            BoundBody::Deferred(composed_bindings) => {
+                                apply_bindings_generic(&body, &composed_bindings, ctx.factory())
+                            }
+                        }
+                    }).collect();
 
                     // ── Parallel path: evaluate all matched bodies concurrently ──
                     // When multiple values match, their body evaluations are
@@ -2990,27 +3210,38 @@ fn process_continuation_generic<C: EvalContext>(
                                         }
                                     }
 
-                                    // Pattern matches - evaluate body with bindings
-                                    let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
-
                                     // Restore continuation for collecting more results
                                     continuations.push(GenericContinuation::ProcessLet {
                                         pending_values: Some(remaining_values),
                                         pattern,
-                                        body,
+                                        body: body.clone(),
+                                        outer_bindings: outer_bindings.clone(),
                                         results,
                                         env: result_env.clone(),
                                         depth,
                                     });
 
-                                    // Push body evaluation - THIS IS TAIL CALL (TCO)
-                                    work_stack.push(GenericWorkItem::Eval {
-                                        value: instantiated_body,
-                                        env: result_env,
-                                        depth, // TCO: reuse depth for body eval
-                                        is_tail_call: true,
-                                        expected_type: None,
-                                    });
+                                    // Pattern matches - evaluate body with bindings
+                                    if let Some(ref ob) = outer_bindings {
+                                        let composed = ob.compose(&bindings);
+                                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                                            template: body,
+                                            bindings: composed,
+                                            env: result_env,
+                                            depth,
+                                            is_tail_call: true,
+                                            expected_type: None,
+                                        });
+                                    } else {
+                                        let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
+                                        work_stack.push(GenericWorkItem::Eval {
+                                            value: instantiated_body,
+                                            env: result_env,
+                                            depth,
+                                            is_tail_call: true,
+                                            expected_type: None,
+                                        });
+                                    }
                                     return;
                                 }
                                 // Trace: pattern-no-match phase (subsequent resumption)
@@ -5508,7 +5739,7 @@ fn process_continuation_generic<C: EvalContext>(
                                         let results: Vec<C::Value> = matching_atoms.iter()
                                             .map(|name| {
                                                 let mut bindings = crate::backend::models::GenericBindings::new();
-                                                bindings.insert(var.to_string(), ctx.factory().atom(name));
+                                                bindings.insert(var, ctx.factory().atom(name));
                                                 apply_bindings_generic(&template, &bindings, ctx.factory())
                                             })
                                             .collect();

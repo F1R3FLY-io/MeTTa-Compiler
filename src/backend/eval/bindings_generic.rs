@@ -188,7 +188,7 @@ pub fn pattern_match_simple_generic<V: MettaValueTrait + Clone>(
     if let Some(name) = pattern.as_atom() {
         if name.starts_with('$') {
             let mut bindings = GenericBindings::new();
-            bindings.insert(name.to_string(), value.clone());
+            bindings.insert(name, value.clone());
             return Some(bindings);
         }
     }
@@ -279,7 +279,7 @@ fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
                     }
                 } else {
                     // New variable - bind to value
-                    bindings.insert(p_name.to_string(), val.clone());
+                    bindings.insert(p_name, val.clone());
                 }
                 continue;
             }

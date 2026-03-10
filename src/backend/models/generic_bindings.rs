@@ -48,10 +48,10 @@ pub enum GenericBindings<V: MettaValueTrait + Clone> {
     /// No bindings (zero-cost)
     Empty,
     /// Single binding (inline, no allocation)
-    Single((String, V)),
+    Single((&'static str, V)),
     /// 2-8 bindings (stack-allocated via SmallVec)
     /// >8 bindings (SmallVec spills to heap automatically)
-    Small(SmallVec<[(String, V); 8]>),
+    Small(SmallVec<[(&'static str, V); 8]>),
 }
 
 impl<V: MettaValueTrait + Clone> GenericBindings<V> {
@@ -67,13 +67,13 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
         match self {
             GenericBindings::Empty => None,
             GenericBindings::Single((n, v)) => {
-                if n == name {
+                if *n == name {
                     Some(v)
                 } else {
                     None
                 }
             }
-            GenericBindings::Small(vec) => vec.iter().find(|(n, _)| n == name).map(|(_, v)| v),
+            GenericBindings::Small(vec) => vec.iter().find(|(n, _)| *n == name).map(|(_, v)| v),
         }
     }
 
@@ -84,7 +84,7 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     /// - Single → Small (with 2 elements)
     /// - Small → Small (push)
     #[inline]
-    pub fn insert(&mut self, name: String, value: V) {
+    pub fn insert(&mut self, name: &'static str, value: V) {
         match self {
             GenericBindings::Empty => {
                 *self = GenericBindings::Single((name, value));
@@ -142,7 +142,7 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
                 }
                 // Same value, skip insertion
             } else {
-                self.insert(name.clone(), value.clone());
+                self.insert(name, value.clone());
             }
         }
         true
@@ -151,11 +151,61 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     /// Extend bindings from an iterator of (name, value) pairs.
     pub fn extend<I>(&mut self, iter: I)
     where
-        I: IntoIterator<Item = (String, V)>,
+        I: IntoIterator<Item = (&'static str, V)>,
     {
         for (name, value) in iter {
             self.insert(name, value);
         }
+    }
+
+    /// Insert or replace: if the name already exists, update its value.
+    /// Unlike `insert` which always appends, this avoids duplicate entries.
+    #[inline]
+    pub fn insert_or_replace(&mut self, name: &'static str, value: V) {
+        match self {
+            GenericBindings::Empty => {
+                *self = GenericBindings::Single((name, value));
+            }
+            GenericBindings::Single((existing_name, existing_value)) => {
+                if *existing_name == name {
+                    *existing_value = value;
+                } else {
+                    let mut vec = SmallVec::new();
+                    vec.push((*existing_name, existing_value.clone()));
+                    vec.push((name, value));
+                    *self = GenericBindings::Small(vec);
+                }
+            }
+            GenericBindings::Small(vec) => {
+                for entry in vec.iter_mut() {
+                    if entry.0 == name {
+                        entry.1 = value;
+                        return;
+                    }
+                }
+                vec.push((name, value));
+            }
+        }
+    }
+
+    /// Compose two binding sets for scope chaining: `self` is the outer scope,
+    /// `inner` bindings shadow outer bindings on name conflicts.
+    ///
+    /// This does NOT perform substitutive composition (i.e., it does NOT apply
+    /// inner bindings to the values of outer bindings). The evaluator handles
+    /// transitive variable resolution through recursive `EvalWithBindings` dispatch.
+    pub fn compose(&self, inner: &GenericBindings<V>) -> GenericBindings<V> {
+        if self.is_empty() {
+            return inner.clone();
+        }
+        if inner.is_empty() {
+            return self.clone();
+        }
+        let mut result = self.clone();
+        for (name, value) in inner.iter() {
+            result.insert_or_replace(name, value.clone());
+        }
+        result
     }
 }
 
@@ -187,7 +237,7 @@ pub struct GenericBindingsIter<'a, V: MettaValueTrait + Clone> {
 }
 
 impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsIter<'a, V> {
-    type Item = (&'a String, &'a V);
+    type Item = (&'static str, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.bindings {
@@ -195,7 +245,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsIter<'a, V> {
             GenericBindings::Single((n, v)) => {
                 if self.index == 0 {
                     self.index += 1;
-                    Some((n, v))
+                    Some((*n, v))
                 } else {
                     None
                 }
@@ -204,7 +254,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsIter<'a, V> {
                 if self.index < vec.len() {
                     let result = &vec[self.index];
                     self.index += 1;
-                    Some((&result.0, &result.1))
+                    Some((result.0, &result.1))
                 } else {
                     None
                 }
@@ -234,6 +284,7 @@ impl<'a, V: MettaValueTrait + Clone> ExactSizeIterator for GenericBindingsIter<'
 mod tests {
     use super::*;
     use crate::backend::models::MettaValue;
+    use crate::backend::models::gc_allocator::global_allocator;
 
     #[test]
     fn test_empty_bindings() {
@@ -246,7 +297,7 @@ mod tests {
     #[test]
     fn test_single_binding() {
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
+        bindings.insert("$x", MettaValue::Long(42));
 
         assert!(!bindings.is_empty());
         assert_eq!(bindings.len(), 1);
@@ -260,8 +311,8 @@ mod tests {
     #[test]
     fn test_transition_to_small() {
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
-        bindings.insert("$y".to_string(), MettaValue::Long(43));
+        bindings.insert("$x", MettaValue::Long(42));
+        bindings.insert("$y", MettaValue::Long(43));
 
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings.get("$x"), Some(&MettaValue::Long(42)));
@@ -273,9 +324,10 @@ mod tests {
 
     #[test]
     fn test_small_bindings() {
+        let alloc = global_allocator();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         for i in 0..5 {
-            bindings.insert(format!("$v{}", i), MettaValue::Long(i as i64));
+            bindings.insert(alloc.alloc_str(&format!("$v{}", i)), MettaValue::Long(i as i64));
         }
 
         assert_eq!(bindings.len(), 5);
@@ -290,9 +342,9 @@ mod tests {
     #[test]
     fn test_iterator() {
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(1));
-        bindings.insert("$y".to_string(), MettaValue::Long(2));
-        bindings.insert("$z".to_string(), MettaValue::Long(3));
+        bindings.insert("$x", MettaValue::Long(1));
+        bindings.insert("$y", MettaValue::Long(2));
+        bindings.insert("$z", MettaValue::Long(3));
 
         let collected: Vec<_> = bindings.iter().collect();
         assert_eq!(collected.len(), 3);
@@ -320,7 +372,7 @@ mod tests {
     #[test]
     fn test_single_iterator() {
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
+        bindings.insert("$x", MettaValue::Long(42));
 
         let collected: Vec<_> = bindings.iter().collect();
         assert_eq!(collected.len(), 1);
@@ -331,10 +383,10 @@ mod tests {
     #[test]
     fn test_merge_success() {
         let mut bindings1: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings1.insert("$x".to_string(), MettaValue::Long(1));
+        bindings1.insert("$x", MettaValue::Long(1));
 
         let mut bindings2: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings2.insert("$y".to_string(), MettaValue::Long(2));
+        bindings2.insert("$y", MettaValue::Long(2));
 
         assert!(bindings1.merge(&bindings2));
         assert_eq!(bindings1.len(), 2);
@@ -345,10 +397,10 @@ mod tests {
     #[test]
     fn test_merge_conflict() {
         let mut bindings1: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings1.insert("$x".to_string(), MettaValue::Long(1));
+        bindings1.insert("$x", MettaValue::Long(1));
 
         let mut bindings2: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings2.insert("$x".to_string(), MettaValue::Long(2)); // Different value!
+        bindings2.insert("$x", MettaValue::Long(2)); // Different value!
 
         assert!(!bindings1.merge(&bindings2)); // Conflict!
     }
@@ -356,10 +408,10 @@ mod tests {
     #[test]
     fn test_merge_same_value() {
         let mut bindings1: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings1.insert("$x".to_string(), MettaValue::Long(1));
+        bindings1.insert("$x", MettaValue::Long(1));
 
         let mut bindings2: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings2.insert("$x".to_string(), MettaValue::Long(1)); // Same value
+        bindings2.insert("$x", MettaValue::Long(1)); // Same value
 
         assert!(bindings1.merge(&bindings2)); // No conflict
         assert_eq!(bindings1.len(), 1); // Still just one binding
@@ -368,12 +420,12 @@ mod tests {
     #[test]
     fn test_equality() {
         let mut bindings1: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings1.insert("$x".to_string(), MettaValue::Long(1));
-        bindings1.insert("$y".to_string(), MettaValue::Long(2));
+        bindings1.insert("$x", MettaValue::Long(1));
+        bindings1.insert("$y", MettaValue::Long(2));
 
         let mut bindings2: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings2.insert("$y".to_string(), MettaValue::Long(2));
-        bindings2.insert("$x".to_string(), MettaValue::Long(1));
+        bindings2.insert("$y", MettaValue::Long(2));
+        bindings2.insert("$x", MettaValue::Long(1));
 
         assert_eq!(bindings1, bindings2);
     }

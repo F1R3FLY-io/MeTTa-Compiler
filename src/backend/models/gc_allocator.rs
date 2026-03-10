@@ -33,6 +33,7 @@
 use std::alloc::Layout;
 use std::any::Any;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -120,6 +121,121 @@ const GC_GROWTH_FACTOR: f64 = 2.0;
 
 /// Null sentinel for Treiber stack (no free slots).
 const TREIBER_NULL: u128 = 0;
+
+// ============================================================================
+// Hash-Consing Table for Ground S-Expressions (Phase 5)
+// ============================================================================
+//
+// Thread-local deduplication table for ground (variable-free) S-expressions.
+// When `sexpr()` or `sexpr_from_slice()` is called with all-ground children,
+// we compute a content hash from the children's tagged pointer values and
+// look up in this table. On hit, we return the existing MettaValue — zero
+// allocation. This provides:
+//
+// 1. O(1) PartialEq via pointer equality for structurally identical expressions
+// 2. Elimination of redundant slab allocation for repeated ground sub-expressions
+// 3. Improved hash cache hit rates (same pointer → same cached hash)
+//
+// The table is cleared at GC safepoints alongside VALUE_HASH_CACHE.
+
+/// Golden ratio for hash-consing content hash (Boost hash_combine).
+const CONS_GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+
+thread_local! {
+    /// Hash-consing table: content hash of children → existing MettaValue.
+    ///
+    /// Key: u64 content hash computed from children's `tagged` pointer values.
+    /// Value: the previously-allocated MettaValue with identical structure.
+    ///
+    /// Only ground S-expressions (FLAG_HAS_VARIABLES == 0 for all children)
+    /// are eligible for consing. Variable-containing expressions are always
+    /// freshly allocated to avoid aliasing issues during unification.
+    ///
+    /// Cleared at GC safepoints via `clear_hash_cons_table()` to prevent
+    /// stale entries from referencing freed slab slots.
+    ///
+    /// Uses FxBuildHasher since keys are already well-distributed content hashes.
+    static HASH_CONS_TABLE: Cell<Option<Box<HashMap<u64, MettaValue, crate::backend::hash_utils::FxBuildHasher>>>> =
+        const { Cell::new(None) };
+}
+
+/// Compute a content hash for an S-expression's children using their tagged pointer values.
+/// Uses Boost-style hash_combine (non-commutative, non-self-cancelling).
+#[inline]
+fn hash_cons_key(items: &[MettaValue]) -> u64 {
+    let mut combined: u64 = items.len() as u64;
+    for item in items {
+        let ptr_hash = item.tagged as u64;
+        combined ^= ptr_hash
+            .wrapping_add(CONS_GOLDEN_RATIO)
+            .wrapping_add(combined << 6)
+            .wrapping_add(combined >> 2);
+    }
+    combined
+}
+
+/// Look up a ground S-expression in the hash-consing table.
+/// Returns `Some(existing)` if found with matching children, `None` otherwise.
+#[inline]
+fn hash_cons_lookup(key: u64, items: &[MettaValue]) -> Option<MettaValue> {
+    HASH_CONS_TABLE.with(|cell| {
+        // SAFETY: We take the Option out, inspect it, and put it back.
+        // No re-entrancy possible within this scope.
+        let maybe_map = cell.take();
+        let result = if let Some(ref map) = maybe_map {
+            if let Some(&existing) = map.get(&key) {
+                // Verify the children match exactly (handle hash collisions)
+                if let MettaValueInner::SExpr(existing_items) = existing.inner_ref() {
+                    if existing_items.len() == items.len()
+                        && existing_items
+                            .iter()
+                            .zip(items.iter())
+                            .all(|(a, b)| a.tagged == b.tagged)
+                    {
+                        Some(existing)
+                    } else {
+                        None // Hash collision
+                    }
+                } else {
+                    None // Corrupted entry
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        cell.set(maybe_map);
+        result
+    })
+}
+
+/// Insert a ground S-expression into the hash-consing table.
+#[inline]
+fn hash_cons_insert(key: u64, value: MettaValue) {
+    HASH_CONS_TABLE.with(|cell| {
+        let mut maybe_map = cell.take();
+        let map = maybe_map.get_or_insert_with(|| {
+            Box::new(HashMap::with_capacity_and_hasher(256, crate::backend::hash_utils::FxBuildHasher))
+        });
+        // Cap table size to prevent unbounded growth
+        if map.len() < 8192 {
+            map.insert(key, value);
+        }
+        cell.set(maybe_map);
+    })
+}
+
+/// Clear the hash-consing table. Must be called at GC safepoints.
+pub fn clear_hash_cons_table() {
+    HASH_CONS_TABLE.with(|cell| {
+        let maybe_map = cell.take();
+        if let Some(mut map) = maybe_map {
+            map.clear();
+            cell.set(Some(map)); // Reuse allocation
+        }
+    })
+}
 
 // ============================================================================
 // MmapPage — OS-Backed Page Allocation
@@ -4906,10 +5022,22 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
             return self.unit();
         }
         let has_vars = items.iter().any(|i| i.has_variables_fast());
-        let slice = self.alloc.alloc_slice_from_iter(items);
-        let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
-        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
-        MettaValue::from_inner_tagged(inner, flags)
+        if !has_vars {
+            // Hash-consing: deduplicate ground S-expressions
+            let key = hash_cons_key(&items);
+            if let Some(existing) = hash_cons_lookup(key, &items) {
+                return existing;
+            }
+            let slice = self.alloc.alloc_slice_from_iter(items);
+            let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
+            let result = MettaValue::from_inner(inner); // flags = 0 (no variables)
+            hash_cons_insert(key, result);
+            result
+        } else {
+            let slice = self.alloc.alloc_slice_from_iter(items);
+            let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
+            MettaValue::from_inner_tagged(inner, super::metta_value::FLAG_HAS_VARIABLES as u8)
+        }
     }
 
     #[inline]
@@ -4918,10 +5046,22 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
             return self.unit();
         }
         let has_vars = items.iter().any(|i| i.has_variables_fast());
-        let slice = self.alloc.alloc_slice_copy(items);
-        let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
-        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
-        MettaValue::from_inner_tagged(inner, flags)
+        if !has_vars {
+            // Hash-consing: deduplicate ground S-expressions
+            let key = hash_cons_key(items);
+            if let Some(existing) = hash_cons_lookup(key, items) {
+                return existing;
+            }
+            let slice = self.alloc.alloc_slice_copy(items);
+            let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
+            let result = MettaValue::from_inner(inner); // flags = 0 (no variables)
+            hash_cons_insert(key, result);
+            result
+        } else {
+            let slice = self.alloc.alloc_slice_copy(items);
+            let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
+            MettaValue::from_inner_tagged(inner, super::metta_value::FLAG_HAS_VARIABLES as u8)
+        }
     }
 
     #[inline]

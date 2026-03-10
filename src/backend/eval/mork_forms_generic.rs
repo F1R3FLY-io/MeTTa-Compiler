@@ -294,7 +294,7 @@ where
                             break;
                         }
                     } else {
-                        merged.insert(name.clone(), value.clone());
+                        merged.insert(name, value.clone());
                     }
                 }
 
@@ -350,7 +350,7 @@ where
             if let Some(first_match) = matches.first() {
                 if let Some(new_bindings) = pattern_match_generic(&instantiated_goal, &first_match.value) {
                     for (name, value) in new_bindings.iter() {
-                        current_bindings.insert(name.clone(), value.clone());
+                        current_bindings.insert(name, value.clone());
                     }
                 }
             }

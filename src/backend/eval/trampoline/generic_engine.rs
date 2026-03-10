@@ -216,7 +216,7 @@ where
             let mut bindings = GenericBindings::new();
             // NO CONVERSION - store value directly in its native type
             // This is O(1) clone (Arc increment for MettaValue, pointer copy for MettaValue)
-            bindings.insert(pattern_name.to_string(), value.clone());
+            bindings.insert(pattern_name, value.clone());
             return Some(bindings);
         }
 
@@ -656,7 +656,7 @@ mod tests {
     fn test_apply_bindings_generic() {
         let factory = GcFactory::default();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
+        bindings.insert("$x", MettaValue::Long(42));
 
         let template = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
@@ -758,7 +758,7 @@ mod tests {
         // Standalone "&" should NOT be substituted as a variable
         let factory = GcFactory::default();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings.insert("&".to_string(), MettaValue::Long(42));
+        bindings.insert("&", MettaValue::Long(42));
 
         let template = MettaValue::Atom("&".to_string());
         let result = apply_bindings_generic(&template, &bindings, &factory);
@@ -771,7 +771,7 @@ mod tests {
         // Type variants should NOT have bindings applied to their contents
         let factory = GcFactory::default();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
+        bindings.insert("$x", MettaValue::Long(42));
 
         // Type wrapping a variable - should not substitute
         let template = MettaValue::Type(MettaValue::Atom("$x".to_string()));

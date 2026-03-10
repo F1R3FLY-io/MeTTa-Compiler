@@ -247,7 +247,7 @@ impl MorkBridge {
                 // Convert GenericBindings<MettaValue> → Bindings (SmartBindings)
                 let mut bindings = Bindings::new();
                 for (name, value) in r.bindings.iter() {
-                    bindings.insert(name.to_string(), value.clone());
+                    bindings.insert(name, value.clone());
                 }
                 // lhs = rhs_template (for CompiledRule.lhs debugging field)
                 // rhs = rhs_template (for get_or_compile_rule caching — original var names → stable hash)

@@ -63,6 +63,7 @@ fn check_gc_epoch() -> bool {
             crate::backend::environment::rule_management::clear_mork_bytes_cache();
             crate::backend::mork_convert::clear_ground_fragment_cache();
             crate::backend::models::metta_value::clear_value_hash_cache();
+            crate::backend::models::gc_allocator::clear_hash_cons_table();
             true
         } else {
             false

@@ -186,7 +186,7 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         MettaValueInner::Atom(s)
             if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && *s != "&" =>
         {
-            match bindings.iter().find(|(name, _)| name.as_str() == *s) {
+            match bindings.iter().find(|(name, _)| name == s) {
                 Some((_name, val)) => return Cow::Owned(val.clone()),
                 None => return Cow::Borrowed(value),
             }
@@ -259,7 +259,7 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
                         if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\''))
                             && *s != "&" =>
                     {
-                        match bindings.iter().find(|(name, _)| name.as_str() == *s) {
+                        match bindings.iter().find(|(name, _)| name == s) {
                             Some((_name, bound_val)) => {
                                 result_stack.push((bound_val.clone(), true));
                             }
@@ -390,9 +390,9 @@ mod tests {
         )
     }
 
-    fn single_binding(name: &str, val: MettaValue) -> Bindings {
+    fn single_binding(name: &'static str, val: MettaValue) -> Bindings {
         let mut b = Bindings::new();
-        b.insert(name.to_string(), val);
+        b.insert(name, val);
         b
     }
 

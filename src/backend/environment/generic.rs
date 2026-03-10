@@ -896,7 +896,10 @@ where
                 for entry in other.shared.rule_index.read().get_all_rules() {
                     let head = entry.lhs.get_head_symbol().map(|s| s.to_string());
                     let arity = entry.lhs.get_arity();
-                    merged.add_rule(head.as_deref(), arity, entry.clone());
+                    let alloc = crate::backend::models::gc_allocator::global_allocator();
+                    let first_arg_head = super::rule_management::get_first_arg_head(&entry.lhs)
+                        .map(|s| alloc.alloc_str(s));
+                    merged.add_rule(head.as_deref(), arity, first_arg_head, entry.clone());
                 }
                 Arc::new(RwLock::new(merged))
             },
@@ -1289,7 +1292,10 @@ where
                     for entry in other_env.shared.rule_index.read().get_all_rules() {
                         let head = entry.lhs.get_head_symbol().map(|s| s.to_string());
                         let arity = entry.lhs.get_arity();
-                        merged.add_rule(head.as_deref(), arity, entry.clone());
+                        let alloc = crate::backend::models::gc_allocator::global_allocator();
+                        let first_arg_head = super::rule_management::get_first_arg_head(&entry.lhs)
+                            .map(|s| alloc.alloc_str(s));
+                        merged.add_rule(head.as_deref(), arity, first_arg_head, entry.clone());
                     }
                 }
                 Arc::new(RwLock::new(merged))

@@ -364,7 +364,7 @@ pub(crate) unsafe fn collect_bindings_from_ctx(ctx: *mut JitContext) -> Bindings
 ///
 /// This is a helper to recover variable names from their hashes.
 /// It searches through the current rules' bindings to find matching names.
-unsafe fn find_binding_name_by_hash(ctx: *mut JitContext, name_hash: u64) -> Option<String> {
+unsafe fn find_binding_name_by_hash(ctx: *mut JitContext, name_hash: u64) -> Option<&'static str> {
     let ctx_ref = ctx.as_ref()?;
 
     if ctx_ref.current_rules.is_null() {
@@ -378,7 +378,7 @@ unsafe fn find_binding_name_by_hash(ctx: *mut JitContext, name_hash: u64) -> Opt
         // Use SmartBindings::iter() to get an iterator
         for (name, _value) in rule.bindings.iter() {
             if hash_string(name) as u32 == name_hash as u32 {
-                return Some(name.clone());
+                return Some(name);
             }
         }
     }

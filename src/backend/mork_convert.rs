@@ -973,7 +973,9 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
         let expr: Expr = expr_env.subsexpr();
         match MettaEnvironment::mork_expr_to_metta_value(&expr, space) {
             Ok(value) => {
-                bindings.insert(format!("${}", var_name), value);
+                let interned_name: &'static str = crate::backend::models::gc_allocator::global_allocator()
+                    .alloc_str(&format!("${}", var_name));
+                bindings.insert(interned_name, value);
             }
             Err(e) => {
                 debug!(

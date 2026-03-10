@@ -1581,7 +1581,7 @@ impl MettaValueTrait for MettaValue {
     }
 
     #[inline]
-    fn as_atom(&self) -> Option<&str> {
+    fn as_atom(&self) -> Option<&'static str> {
         match self.inner_ref() {
             MettaValueInner::Atom(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_atom(),

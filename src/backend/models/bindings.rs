@@ -42,10 +42,10 @@ pub enum SmartBindings {
     /// No bindings (zero-cost)
     Empty,
     /// Single binding (inline, no allocation)
-    Single((String, MettaValue)),
+    Single((&'static str, MettaValue)),
     /// 2-8 bindings (stack-allocated via SmallVec)
     /// >8 bindings (SmallVec spills to heap automatically)
-    Small(SmallVec<[(String, MettaValue); 8]>),
+    Small(SmallVec<[(&'static str, MettaValue); 8]>),
 }
 
 impl SmartBindings {
@@ -61,13 +61,13 @@ impl SmartBindings {
         match self {
             SmartBindings::Empty => None,
             SmartBindings::Single((n, v)) => {
-                if n == name {
+                if *n == name {
                     Some(v)
                 } else {
                     None
                 }
             }
-            SmartBindings::Small(vec) => vec.iter().find(|(n, _)| n == name).map(|(_, v)| v),
+            SmartBindings::Small(vec) => vec.iter().find(|(n, _)| *n == name).map(|(_, v)| v),
         }
     }
 
@@ -78,7 +78,7 @@ impl SmartBindings {
     /// - Single → Small (with 2 elements)
     /// - Small → Small (push)
     #[inline]
-    pub fn insert(&mut self, name: String, value: MettaValue) {
+    pub fn insert(&mut self, name: &'static str, value: MettaValue) {
         match self {
             SmartBindings::Empty => {
                 *self = SmartBindings::Single((name, value));
@@ -134,7 +134,7 @@ pub struct SmartBindingsIter<'a> {
 }
 
 impl<'a> Iterator for SmartBindingsIter<'a> {
-    type Item = (&'a String, &'a MettaValue);
+    type Item = (&'static str, &'a MettaValue);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.bindings {
@@ -142,7 +142,7 @@ impl<'a> Iterator for SmartBindingsIter<'a> {
             SmartBindings::Single((n, v)) => {
                 if self.index == 0 {
                     self.index += 1;
-                    Some((n, v))
+                    Some((*n, v))
                 } else {
                     None
                 }
@@ -151,7 +151,7 @@ impl<'a> Iterator for SmartBindingsIter<'a> {
                 if self.index < vec.len() {
                     let result = &vec[self.index];
                     self.index += 1;
-                    Some((&result.0, &result.1))
+                    Some((result.0, &result.1))
                 } else {
                     None
                 }
@@ -163,6 +163,7 @@ impl<'a> Iterator for SmartBindingsIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::models::gc_allocator::global_allocator;
 
     #[test]
     fn test_empty_bindings() {
@@ -175,7 +176,7 @@ mod tests {
     #[test]
     fn test_single_binding() {
         let mut bindings = SmartBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
+        bindings.insert("$x", MettaValue::Long(42));
 
         assert!(!bindings.is_empty());
         assert_eq!(bindings.len(), 1);
@@ -189,8 +190,8 @@ mod tests {
     #[test]
     fn test_transition_to_small() {
         let mut bindings = SmartBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
-        bindings.insert("$y".to_string(), MettaValue::Long(43));
+        bindings.insert("$x", MettaValue::Long(42));
+        bindings.insert("$y", MettaValue::Long(43));
 
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings.get("$x"), Some(&MettaValue::Long(42)));
@@ -202,9 +203,10 @@ mod tests {
 
     #[test]
     fn test_small_bindings() {
+        let alloc = global_allocator();
         let mut bindings = SmartBindings::new();
         for i in 0..5 {
-            bindings.insert(format!("$v{}", i), MettaValue::Long(i as i64));
+            bindings.insert(alloc.alloc_str(&format!("$v{}", i)), MettaValue::Long(i as i64));
         }
 
         assert_eq!(bindings.len(), 5);
@@ -219,9 +221,9 @@ mod tests {
     #[test]
     fn test_iterator() {
         let mut bindings = SmartBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(1));
-        bindings.insert("$y".to_string(), MettaValue::Long(2));
-        bindings.insert("$z".to_string(), MettaValue::Long(3));
+        bindings.insert("$x", MettaValue::Long(1));
+        bindings.insert("$y", MettaValue::Long(2));
+        bindings.insert("$z", MettaValue::Long(3));
 
         let collected: Vec<_> = bindings.iter().collect();
         assert_eq!(collected.len(), 3);
@@ -249,7 +251,7 @@ mod tests {
     #[test]
     fn test_single_iterator() {
         let mut bindings = SmartBindings::new();
-        bindings.insert("$x".to_string(), MettaValue::Long(42));
+        bindings.insert("$x", MettaValue::Long(42));
 
         let collected: Vec<_> = bindings.iter().collect();
         assert_eq!(collected.len(), 1);

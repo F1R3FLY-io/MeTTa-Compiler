@@ -61,6 +61,27 @@ pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         /// are pruned from the match set before evaluation.
         expected_type: Option<V>,
     },
+    /// Evaluate a template with deferred bindings (lazy binding).
+    ///
+    /// Instead of calling `apply_bindings_generic` upfront to materialize
+    /// a fully-substituted expression tree, this carries `(template, bindings)`
+    /// and resolves variables lazily:
+    /// - Variables: look up in bindings, push result
+    /// - Ground (no variables): push as Eval directly
+    /// - Special forms (let, if, chain): resolve only immediate args, forward
+    ///   remaining bindings to child evaluations via binding composition
+    /// - Other S-expressions: fall back to `apply_bindings_generic` + Eval
+    ///
+    /// This avoids O(tree_depth) recursive allocation for nested `let*` chains,
+    /// where each level would otherwise materialize the entire remaining body.
+    EvalWithBindings {
+        template: V,
+        bindings: GenericBindings<V>,
+        env: E,
+        depth: usize,
+        is_tail_call: bool,
+        expected_type: Option<V>,
+    },
     /// Resume the continuation at stack top with a result
     Resume {
         result: GenericEvalResult<V, E>,
@@ -139,6 +160,11 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         pending_values: Option<Vec<V>>,
         pattern: V,
         body: V,
+        /// Outer bindings from an `EvalWithBindings` dispatch. When `Some`,
+        /// these are composed with pattern-match bindings and the body is
+        /// evaluated via `EvalWithBindings` instead of `apply_bindings_generic`.
+        /// This enables O(N) instead of O(N^2) work for nested `let*` chains.
+        outer_bindings: Option<GenericBindings<V>>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -688,6 +714,13 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericWorkItem<V, E> {
                     out.push(et.clone());
                 }
             }
+            Self::EvalWithBindings { template, bindings, expected_type, .. } => {
+                out.push(template.clone());
+                collect_bindings_values(bindings, out);
+                if let Some(et) = expected_type {
+                    out.push(et.clone());
+                }
+            }
             Self::Resume { result: (values, _), .. } => {
                 out.extend(values.iter().cloned());
             }
@@ -771,12 +804,15 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 }
             }
 
-            Self::ProcessLet { pending_values, pattern, body, results, .. } => {
+            Self::ProcessLet { pending_values, pattern, body, outer_bindings, results, .. } => {
                 if let Some(pending) = pending_values {
                     out.extend(pending.iter().cloned());
                 }
                 out.push(pattern.clone());
                 out.push(body.clone());
+                if let Some(ref ob) = outer_bindings {
+                    collect_bindings_values(ob, out);
+                }
                 out.extend(results.iter().cloned());
             }
 
@@ -1139,6 +1175,7 @@ mod tests {
             pending_values: Some(vec![f.atom("a"), f.atom("b")].into()),
             pattern: f.atom("$x"),
             body: f.atom("body"),
+            outer_bindings: None,
             results: vec![f.long(1)],
             env: env(),
             depth: 0,

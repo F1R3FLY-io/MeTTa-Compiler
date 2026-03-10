@@ -77,7 +77,7 @@ pub(crate) fn pattern_match_impl(
                     && bindings.is_empty()
                     && work_stack.is_empty() =>
             {
-                bindings.insert(p.to_string(), val);
+                bindings.insert(p, val);
                 true
             }
 
@@ -88,10 +88,10 @@ pub(crate) fn pattern_match_impl(
                     && p != "&" =>
             {
                 // Check if variable is already bound (linear search for SmartBindings)
-                if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
+                if let Some((_, existing)) = bindings.iter().find(|(name, _)| *name == p) {
                     existing == &val
                 } else {
-                    bindings.insert(p.to_string(), val);
+                    bindings.insert(p, val);
                     true
                 }
             }

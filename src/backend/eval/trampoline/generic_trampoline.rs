@@ -25,6 +25,7 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
 use super::context::{ContextEnv, EvalContext};
@@ -191,7 +192,7 @@ fn release_budget(n: u32) {
 #[inline]
 fn dispatch_rule_matches<C: EvalContext>(
     mut matches: VecDeque<(C::Value, crate::backend::models::GenericBindings<C::Value>)>,
-    base_results: Vec<C::Value>,
+    base_results: SmallVec<[C::Value; 2]>,
     env: ContextEnv<C>,
     depth: usize,
     ctx: &C,
@@ -239,12 +240,12 @@ where
         // that would immediately return themselves from eval_step_generic.
         if is_memoized_normal_form(&instantiated_rhs) {
             work_stack.push(GenericWorkItem::Resume {
-                result: (vec![instantiated_rhs], env),
+                result: (smallvec![instantiated_rhs], env),
             });
         } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
             memoize_normal_form(&instantiated_rhs);
             work_stack.push(GenericWorkItem::Resume {
-                result: (vec![instantiated_rhs], env),
+                result: (smallvec![instantiated_rhs], env),
             });
         } else {
             work_stack.push(GenericWorkItem::Eval {
@@ -422,12 +423,12 @@ where
         // that would immediately return themselves from eval_step_generic.
         if is_memoized_normal_form(&instantiated_rhs) {
             work_stack.push(GenericWorkItem::Resume {
-                result: (vec![instantiated_rhs], env),
+                result: (smallvec![instantiated_rhs], env),
             });
         } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
             memoize_normal_form(&instantiated_rhs);
             work_stack.push(GenericWorkItem::Resume {
-                result: (vec![instantiated_rhs], env),
+                result: (smallvec![instantiated_rhs], env),
             });
         } else {
             work_stack.push(GenericWorkItem::Eval {
@@ -1015,7 +1016,7 @@ where
                 let is_sexpr = value.as_sexpr().is_some();
                 if is_sexpr && is_memoized_normal_form(&value) {
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![value], env),
+                        result: (smallvec![value], env),
                     });
                     continue;
                 }
@@ -1035,7 +1036,7 @@ where
                         let generic_results: Vec<C::Value> =
                             unsafe { std::mem::transmute(cached_results) };
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (generic_results, env),
+                            result: (SmallVec::from_vec(generic_results), env),
                         });
                         continue;
                     }
@@ -1163,7 +1164,7 @@ where
                     GenericEvalStep::EvalSExpr { items, env, depth } => {
                         if items.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![ctx.factory().sexpr(vec![])], env),
+                                result: (smallvec![ctx.factory().sexpr(vec![])], env),
                             });
                         } else {
                             let mut items_deque: VecDeque<C::Value> = items.into_iter().collect();
@@ -1301,7 +1302,7 @@ where
                                             }
                                             let unreduced = ctx.factory().sexpr(expr_parts);
                                             work_stack.push(GenericWorkItem::Resume {
-                                                result: (vec![unreduced], env),
+                                                result: (smallvec![unreduced], env),
                                             });
                                         }
                                         _ => {
@@ -1312,7 +1313,7 @@ where
                                                 ExecError::NoReduce => unreachable!(),
                                             };
                                             work_stack.push(GenericWorkItem::Resume {
-                                                result: (vec![error_value], env),
+                                                result: (smallvec![error_value], env),
                                             });
                                         }
                                     }
@@ -1328,7 +1329,7 @@ where
                                 ctx.factory().atom("OperationNotFoundError"),
                             );
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![error_value], env),
+                                result: (smallvec![error_value], env),
                             });
                         }
                     }
@@ -1417,7 +1418,7 @@ where
 
                         if matches.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], env),
+                                result: (SmallVec::new(), env),
                             });
                         } else {
                             // Strip rhs_type from 3-tuples → 2-tuples for unified dispatch
@@ -1471,7 +1472,7 @@ where
                     GenericEvalStep::StartMapAtom { elements, var_name, template, env, depth } => {
                         if elements.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![ctx.factory().sexpr(vec![])], env),
+                                result: (smallvec![ctx.factory().sexpr(vec![])], env),
                             });
                         } else {
                             let mut remaining: VecDeque<_> = elements.into_iter().collect();
@@ -1505,7 +1506,7 @@ where
                     GenericEvalStep::StartFilterAtom { elements, var_name, predicate, env, depth } => {
                         if elements.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![ctx.factory().sexpr(vec![])], env),
+                                result: (smallvec![ctx.factory().sexpr(vec![])], env),
                             });
                         } else {
                             let mut remaining: VecDeque<_> = elements.into_iter().collect();
@@ -1541,7 +1542,7 @@ where
                     GenericEvalStep::StartFoldlAtom { elements, init, acc_var_name, item_var_name, operation, env, depth } => {
                         if elements.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![init], env),
+                                result: (smallvec![init], env),
                             });
                         } else {
                             let mut remaining: VecDeque<_> = elements.into_iter().collect();
@@ -1579,7 +1580,7 @@ where
                         if elements.len() <= 1 {
                             // 0 or 1 elements — already sorted
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![ctx.factory().sexpr(elements)], env),
+                                result: (smallvec![ctx.factory().sexpr(elements)], env),
                             });
                         } else {
                             // Start insertion sort: first element is trivially sorted,
@@ -1624,7 +1625,7 @@ where
                         if elements.is_empty() {
                             // Empty tuple — return Unit
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![ctx.factory().unit()], env),
+                                result: (smallvec![ctx.factory().unit()], env),
                             });
                         } else {
                             let mut elem_iter = elements.into_iter();
@@ -1709,13 +1710,13 @@ where
                             }
                             GenericSwitchResult::Error(err) => {
                                 work_stack.push(GenericWorkItem::Resume {
-                                    result: (vec![err], env),
+                                    result: (smallvec![err], env),
                                 });
                             }
                             GenericSwitchResult::NoMatch => {
                                 // No case matched - prune branch (MeTTa HE returns Empty)
                                 work_stack.push(GenericWorkItem::Resume {
-                                    result: (vec![], env),
+                                    result: (SmallVec::new(), env),
                                 });
                             }
                         }
@@ -1825,7 +1826,7 @@ where
                     GenericEvalStep::StartConjunction { goals, env, depth } => {
                         if goals.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![ctx.factory().unit()], env),
+                                result: (smallvec![ctx.factory().unit()], env),
                             });
                         } else if goals.len() == 1 {
                             work_stack.push(GenericWorkItem::Eval {
@@ -1911,7 +1912,7 @@ where
                     GenericEvalStep::StartAmb { alternatives, env, depth } => {
                         if alternatives.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], env),
+                                result: (SmallVec::new(), env),
                             });
                         } else {
                             // ── Parallel path: when inside a collapse barrier, evaluate
@@ -1971,7 +1972,7 @@ where
                                 };
 
                                 work_stack.push(GenericWorkItem::Resume {
-                                    result: (generic_results, env),
+                                    result: (SmallVec::from_vec(generic_results), env),
                                 });
                             } else {
                                 // ── Sequential path (original) ──
@@ -2383,7 +2384,7 @@ where
     }
 
     // Return final result
-    final_result.unwrap_or_else(|| (vec![], env))
+    final_result.unwrap_or_else(|| (SmallVec::new(), env))
 }
 
 /// Process a continuation with generic value types.
@@ -2444,7 +2445,7 @@ fn process_continuation_generic<C: EvalContext>(
                         });
 
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![], env),
+                            result: (SmallVec::new(), env),
                         });
                     }
                     GenericProcessedSExpr::RedispatchSExpr { items, env, depth: redispatch_depth } => {
@@ -2601,12 +2602,12 @@ fn process_continuation_generic<C: EvalContext>(
                 // that would immediately return themselves from eval_step_generic.
                 if is_memoized_normal_form(&instantiated_rhs) {
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![instantiated_rhs], env),
+                        result: (smallvec![instantiated_rhs], env),
                     });
                 } else if is_normal_form_bounded(&instantiated_rhs, &env, 2) {
                     memoize_normal_form(&instantiated_rhs);
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![instantiated_rhs], env),
+                        result: (smallvec![instantiated_rhs], env),
                     });
                 } else {
                     work_stack.push(GenericWorkItem::Eval {
@@ -2674,7 +2675,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 }
                                 let unreduced = ctx.factory().sexpr(expr_parts);
                                 work_stack.push(GenericWorkItem::Resume {
-                                    result: (vec![unreduced], result_env),
+                                    result: (smallvec![unreduced], result_env),
                                 });
                             }
                             _ => {
@@ -2685,7 +2686,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     ExecError::NoReduce => unreachable!(),
                                 };
                                 work_stack.push(GenericWorkItem::Resume {
-                                    result: (vec![error_value], result_env),
+                                    result: (smallvec![error_value], result_env),
                                 });
                             }
                         }
@@ -2699,7 +2700,7 @@ fn process_continuation_generic<C: EvalContext>(
                     ctx.factory().atom("OperationNotFoundError"),
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![error_value], result_env),
+                    result: (smallvec![error_value], result_env),
                 });
             }
         }
@@ -2759,7 +2760,7 @@ fn process_continuation_generic<C: EvalContext>(
                     });
 
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![], result_env),
+                        result: (SmallVec::new(), result_env),
                     });
                 } else {
                     // Rules matched — strip rhs_type and dispatch via unified gate.
@@ -3083,7 +3084,7 @@ fn process_continuation_generic<C: EvalContext>(
                     // Empty result from any arg → no combinations possible
                     // (Cartesian product of anything × empty = empty)
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![], result_env),
+                        result: (SmallVec::new(), result_env),
                     });
                 } else {
                     // Build all Cartesian product combinations as sexpr values.
@@ -3159,7 +3160,7 @@ fn process_continuation_generic<C: EvalContext>(
                             } else {
                                 // Step 4: No rules matched — return as data constructor
                                 work_stack.push(GenericWorkItem::Resume {
-                                    result: (vec![sexpr], result_env),
+                                    result: (smallvec![sexpr], result_env),
                                 });
                             }
                         } else {
@@ -3249,7 +3250,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // Check for error propagation
                 if first_result.is_error() {
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![first_result], result_env),
+                        result: (smallvec![first_result], result_env),
                     });
                     return;
                 }
@@ -3260,7 +3261,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // All elements processed - return result list
                 let result_list = ctx.factory().sexpr(collected_results);
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_list], result_env),
+                    result: (smallvec![result_list], result_env),
                 });
             } else {
                 // More elements to process
@@ -3308,7 +3309,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // Check for error propagation
                 if first_result.is_error() {
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![first_result], result_env),
+                        result: (smallvec![first_result], result_env),
                     });
                     return;
                 }
@@ -3330,7 +3331,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // All elements processed - return filtered list
                 let result_list = ctx.factory().sexpr(filtered_results);
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_list], result_env),
+                    result: (smallvec![result_list], result_env),
                 });
             } else {
                 // More elements to process
@@ -3380,7 +3381,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // Check for error propagation
                 if first_result.is_error() {
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![first_result], result_env),
+                        result: (smallvec![first_result], result_env),
                     });
                     return;
                 }
@@ -3390,7 +3391,7 @@ fn process_continuation_generic<C: EvalContext>(
             if remaining_elements.is_empty() {
                 // All elements processed - return final accumulator
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![accumulator], result_env),
+                    result: (smallvec![accumulator], result_env),
                 });
             } else {
                 // More elements to process
@@ -3487,7 +3488,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // Sorting complete
                 let result_tuple = ctx.factory().sexpr(sorted);
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_tuple], result_env),
+                    result: (smallvec![result_tuple], result_env),
                 });
             } else {
                 let next_current = unsorted.remove(0);
@@ -3549,7 +3550,7 @@ fn process_continuation_generic<C: EvalContext>(
             if remaining.is_empty() {
                 // Done — return best
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![new_best], result_env),
+                    result: (smallvec![new_best], result_env),
                 });
             } else {
                 // Evaluate next element's rank
@@ -3610,7 +3611,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // Check for error in condition
                 if first.is_error() {
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![first.clone()], env_after_cond),
+                        result: (smallvec![first.clone()], env_after_cond),
                     });
                     return;
                 }
@@ -3691,7 +3692,7 @@ fn process_continuation_generic<C: EvalContext>(
                         else_branch,
                     ]);
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![unreduced], env_after_cond),
+                        result: (smallvec![unreduced], env_after_cond),
                     });
                 }
             } else {
@@ -3699,7 +3700,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // This is branch annihilation: an empty condition means the if-expression
                 // contributes nothing to the nondeterministic result set.
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![], env_after_cond),
+                    result: (SmallVec::new(), env_after_cond),
                 });
             }
         }
@@ -3752,13 +3753,13 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                     GenericSwitchResult::Error(err) => {
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![err], atom_env),
+                            result: (smallvec![err], atom_env),
                         });
                     }
                     GenericSwitchResult::NoMatch => {
                         // No case matched - prune branch (MeTTa HE returns Empty)
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![], atom_env),
+                            result: (SmallVec::new(), atom_env),
                         });
                     }
                 }
@@ -3874,7 +3875,7 @@ fn process_continuation_generic<C: EvalContext>(
                         });
 
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![], env),
+                            result: (SmallVec::new(), env),
                         });
                     }
                     GenericSwitchResult::NoMatch => {
@@ -3888,7 +3889,7 @@ fn process_continuation_generic<C: EvalContext>(
                         });
 
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![], env),
+                            result: (SmallVec::new(), env),
                         });
                     }
                 }
@@ -3950,12 +3951,12 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                         GenericSwitchResult::Error(err) => {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![err], eval_env),
+                                result: (smallvec![err], eval_env),
                             });
                         }
                         GenericSwitchResult::NoMatch => {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], eval_env),
+                                result: (SmallVec::new(), eval_env),
                             });
                         }
                     }
@@ -4022,7 +4023,7 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                         GenericSwitchResult::Error(err) => {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![err], eval_env),
+                                result: (smallvec![err], eval_env),
                             });
                         }
                         GenericSwitchResult::NoMatch => {
@@ -4046,7 +4047,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                             // No case matched — prune branch (MeTTa HE returns Empty)
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], eval_env),
+                                result: (SmallVec::new(), eval_env),
                             });
                         }
                     }
@@ -4062,7 +4063,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if eval_results.is_empty() {
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![], result_env),
+                    result: (SmallVec::new(), result_env),
                 });
             } else if eval_results.len() == 1 {
                 // Single result - evaluate it (TCO)
@@ -4112,7 +4113,7 @@ fn process_continuation_generic<C: EvalContext>(
             // Check for errors first - pass through without wrapping
             if let Some(err) = arg_results.iter().find(|r| r.is_error()) {
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err.clone()], arg_env),
+                    result: (smallvec![err.clone()], arg_env),
                 });
             } else {
                 // Wrap results in return structure: (return value)
@@ -4161,7 +4162,7 @@ fn process_continuation_generic<C: EvalContext>(
             if expr_results.is_empty() {
                 // Empty result — produce zero results (branch annihilation, HE-compatible)
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![], result_env),
+                    result: (SmallVec::new(), result_env),
                 });
             } else if expr_results.len() == 1 {
                 // Single result - substitute and evaluate body - NO conversion needed
@@ -4267,7 +4268,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if eval_results.is_empty() {
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![ctx.factory().unit()], current_env),
+                    result: (smallvec![ctx.factory().unit()], current_env),
                 });
             } else {
                 // Helper: check if a value is a (return ...) expression
@@ -4304,7 +4305,7 @@ fn process_continuation_generic<C: EvalContext>(
                 } else if continue_exprs.is_empty() {
                     // Nothing to continue
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![ctx.factory().unit()], current_env),
+                        result: (smallvec![ctx.factory().unit()], current_env),
                     });
                 } else if iteration_count >= MAX_ITERATIONS {
                     // Hit iteration limit
@@ -4349,7 +4350,7 @@ fn process_continuation_generic<C: EvalContext>(
             let result_value = ctx.factory().bool(is_error);
 
             work_stack.push(GenericWorkItem::Resume {
-                result: (vec![result_value], result_env),
+                result: (smallvec![result_value], result_env),
             });
         }
 
@@ -4391,7 +4392,7 @@ fn process_continuation_generic<C: EvalContext>(
             // Check for error or empty result
             if goal_results.is_empty() {
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![], result_env),
+                    result: (SmallVec::new(), result_env),
                 });
                 return;
             }
@@ -4399,7 +4400,7 @@ fn process_continuation_generic<C: EvalContext>(
             if goal_results.iter().any(|v| v.is_error()) {
                 let error = goal_results.into_iter().find(|v| v.is_error()).unwrap();
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![error], result_env),
+                    result: (smallvec![error], result_env),
                 });
                 return;
             }
@@ -4425,7 +4426,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // All goals evaluated - return last result
                 let final_result = accumulated_results.pop().unwrap_or_else(|| ctx.factory().unit());
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![final_result], result_env),
+                    result: (smallvec![final_result], result_env),
                 });
             }
         }
@@ -4473,7 +4474,7 @@ fn process_continuation_generic<C: EvalContext>(
                         };
                         let result_value = ctx.factory().bool(exists);
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![result_value], result_env),
+                            result: (smallvec![result_value], result_env),
                         });
                     } else {
                         // Full space matching with body evaluation
@@ -4721,7 +4722,7 @@ fn process_continuation_generic<C: EvalContext>(
                         } else {
                             // No bodies at all - send empty to iterator
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], result_env),
+                                result: (SmallVec::new(), result_env),
                             });
                         }
                     } else {
@@ -4771,7 +4772,7 @@ fn process_continuation_generic<C: EvalContext>(
                         } else {
                             // No bodies at all - send empty to iterator
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], result_env),
+                                result: (SmallVec::new(), result_env),
                             });
                         }
                     }
@@ -4849,7 +4850,7 @@ fn process_continuation_generic<C: EvalContext>(
                             })
                         };
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![ctx.factory().bool(exists)], env_after),
+                            result: (smallvec![ctx.factory().bool(exists)], env_after),
                         });
                     } else {
                         // Full match: get matches from appropriate source
@@ -4907,7 +4908,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
                         } else {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], env_after),
+                                result: (SmallVec::new(), env_after),
                             });
                         }
                     }
@@ -5061,7 +5062,7 @@ fn process_continuation_generic<C: EvalContext>(
             if expr_results.is_empty() {
                 let result_list = ctx.factory().sexpr(vec![]);
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_list], result_env),
+                    result: (smallvec![result_list], result_env),
                 });
                 return;
             }
@@ -5126,7 +5127,7 @@ fn process_continuation_generic<C: EvalContext>(
                 }
 
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_list], result_env),
+                    result: (smallvec![result_list], result_env),
                 });
             } else {
                 // ── Sequential path: evaluate one-at-a-time ──
@@ -5162,7 +5163,7 @@ fn process_continuation_generic<C: EvalContext>(
             if expr_results.is_empty() {
                 let result_list = ctx.factory().sexpr(vec![]);
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_list], result_env),
+                    result: (smallvec![result_list], result_env),
                 });
                 return;
             }
@@ -5218,7 +5219,7 @@ fn process_continuation_generic<C: EvalContext>(
                 }
 
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_list], result_env),
+                    result: (smallvec![result_list], result_env),
                 });
             } else {
                 // ── Sequential path ──
@@ -5295,7 +5296,7 @@ fn process_continuation_generic<C: EvalContext>(
                 }
 
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![result_list], result_env),
+                    result: (smallvec![result_list], result_env),
                 });
             }
         }
@@ -5341,19 +5342,19 @@ fn process_continuation_generic<C: EvalContext>(
                 Some(v) if v.as_bool() == Some(true) => {
                     // Guard passes - return Unit
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![ctx.factory().unit()], result_env),
+                        result: (smallvec![ctx.factory().unit()], result_env),
                     });
                 }
                 Some(v) if v.as_bool() == Some(false) => {
                     // Guard fails - return empty (nondeterministic failure)
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![], result_env),
+                        result: (SmallVec::new(), result_env),
                     });
                 }
                 Some(v) if v.is_error() => {
                     // Error propagates
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![v.clone()], result_env),
+                        result: (smallvec![v.clone()], result_env),
                     });
                 }
                 Some(v) => {
@@ -5366,13 +5367,13 @@ fn process_continuation_generic<C: EvalContext>(
                         v.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], result_env),
+                        result: (smallvec![err], result_env),
                     });
                 }
                 None => {
                     // Empty results - guard fails
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![], result_env),
+                        result: (SmallVec::new(), result_env),
                     });
                 }
             }
@@ -5391,7 +5392,7 @@ fn process_continuation_generic<C: EvalContext>(
                     space_ref,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], result_env),
+                    result: (smallvec![err], result_env),
                 });
             } else {
                 let first = &space_results[0];
@@ -5401,7 +5402,7 @@ fn process_continuation_generic<C: EvalContext>(
                     if atoms.is_empty() {
                         // Empty space returns empty results
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![], result_env),
+                            result: (SmallVec::new(), result_env),
                         });
                     } else {
                         // Return all atoms as separate results (superposition)
@@ -5415,7 +5416,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], result_env),
+                        result: (smallvec![err], result_env),
                     });
                 }
             }
@@ -5436,7 +5437,7 @@ fn process_continuation_generic<C: EvalContext>(
                     space_arg,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &space_results[0];
@@ -5507,7 +5508,7 @@ fn process_continuation_generic<C: EvalContext>(
                         }
 
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (generic_results, env_after),
+                            result: (SmallVec::from_vec(generic_results), env_after),
                         });
                     } else {
                         // Owned space - match against atoms in SpaceHandle via unified match_pattern_generic
@@ -5534,7 +5535,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                         if instantiated_templates.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![], env_after),
+                                result: (SmallVec::new(), env_after),
                             });
                         } else if instantiated_templates.len() == 1 {
                             work_stack.push(GenericWorkItem::Eval {
@@ -5577,7 +5578,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -5630,7 +5631,7 @@ fn process_continuation_generic<C: EvalContext>(
                     space_ref,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &space_results[0];
@@ -5654,7 +5655,7 @@ fn process_continuation_generic<C: EvalContext>(
                     }
 
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![ctx.factory().unit()], env_after),
+                        result: (smallvec![ctx.factory().unit()], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -5665,7 +5666,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -5690,14 +5691,14 @@ fn process_continuation_generic<C: EvalContext>(
         //         );
         //         work_stack.push(GenericWorkItem::Resume {
         //             cont_id: parent_cont,
-        //             result: (vec![err], env_after),
+        //             result: (smallvec![err], env_after),
         //         });
         //     } else {
         //         // GENERIC: Use add_atom_generic to avoid heap conversion
         //         space_handle.add_atom_generic(&atom_results[0]);
         //         work_stack.push(GenericWorkItem::Resume {
         //             cont_id: parent_cont,
-        //             result: (vec![ctx.factory().unit()], env_after),
+        //             result: (smallvec![ctx.factory().unit()], env_after),
         //         });
         //     }
         // }
@@ -5716,7 +5717,7 @@ fn process_continuation_generic<C: EvalContext>(
                     space_ref,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &space_results[0];
@@ -5738,7 +5739,7 @@ fn process_continuation_generic<C: EvalContext>(
                     }
 
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![ctx.factory().unit()], env_after),
+                        result: (smallvec![ctx.factory().unit()], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -5749,7 +5750,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -5774,7 +5775,7 @@ fn process_continuation_generic<C: EvalContext>(
         //         );
         //         work_stack.push(GenericWorkItem::Resume {
         //             cont_id: parent_cont,
-        //             result: (vec![err], env_after),
+        //             result: (smallvec![err], env_after),
         //         });
         //     } else {
         //         // Remove the atom from the space
@@ -5783,7 +5784,7 @@ fn process_continuation_generic<C: EvalContext>(
         //         space_handle.remove_atom_generic(&atom_results[0]);
         //         work_stack.push(GenericWorkItem::Resume {
         //             cont_id: parent_cont,
-        //             result: (vec![ctx.factory().unit()], env_after),
+        //             result: (smallvec![ctx.factory().unit()], env_after),
         //         });
         //     }
         // }
@@ -5801,14 +5802,14 @@ fn process_continuation_generic<C: EvalContext>(
                     initial_value,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 // Use create_state directly - values are already V
                 let state_id = env_after.create_state(&init_results[0]);
                 let state_value = ctx.factory().state(state_id);
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![state_value], env_after),
+                    result: (smallvec![state_value], env_after),
                 });
             }
         }
@@ -5826,7 +5827,7 @@ fn process_continuation_generic<C: EvalContext>(
                     state_ref,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &state_results[0];
@@ -5834,7 +5835,7 @@ fn process_continuation_generic<C: EvalContext>(
                     // Use get_state directly - returns V
                     if let Some(generic_value) = env_after.get_state(state_id) {
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![generic_value], env_after),
+                            result: (smallvec![generic_value], env_after),
                         });
                     } else {
                         let err = ctx.factory().error(
@@ -5842,7 +5843,7 @@ fn process_continuation_generic<C: EvalContext>(
                             first.clone(),
                         );
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![err], env_after),
+                            result: (smallvec![err], env_after),
                         });
                     }
                 } else {
@@ -5854,7 +5855,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -5874,7 +5875,7 @@ fn process_continuation_generic<C: EvalContext>(
                     state_ref,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &state_results[0];
@@ -5902,7 +5903,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -5922,7 +5923,7 @@ fn process_continuation_generic<C: EvalContext>(
                     new_value,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 // Get the state ID from state_value
@@ -5931,7 +5932,7 @@ fn process_continuation_generic<C: EvalContext>(
                     env_after.change_state(state_id, &value_results[0]);
                     let result_state = ctx.factory().state(state_id);
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![result_state], env_after),
+                        result: (smallvec![result_state], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -5939,7 +5940,7 @@ fn process_continuation_generic<C: EvalContext>(
                         state_value,
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -5954,12 +5955,12 @@ fn process_continuation_generic<C: EvalContext>(
 
             if atom_results.is_empty() {
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![ctx.factory().string("")], env_after),
+                    result: (smallvec![ctx.factory().string("")], env_after),
                 });
             } else {
                 let repr = atom_results[0].friendly_repr();
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![ctx.factory().string(&repr)], env_after),
+                    result: (smallvec![ctx.factory().string(&repr)], env_after),
                 });
             }
         }
@@ -5978,7 +5979,7 @@ fn process_continuation_generic<C: EvalContext>(
                     format_arg,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &format_results[0];
@@ -6006,7 +6007,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -6026,7 +6027,7 @@ fn process_continuation_generic<C: EvalContext>(
                     args_arg,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 // Get args as a list - use native generic values directly
@@ -6045,7 +6046,7 @@ fn process_continuation_generic<C: EvalContext>(
                 }
 
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![ctx.factory().string(&result_str)], env_after),
+                    result: (smallvec![ctx.factory().string(&result_str)], env_after),
                 });
             }
         }
@@ -6063,7 +6064,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
 
             work_stack.push(GenericWorkItem::Resume {
-                result: (vec![ctx.factory().unit()], env_after),
+                result: (smallvec![ctx.factory().unit()], env_after),
             });
         }
 
@@ -6120,7 +6121,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if atom_results.is_empty() {
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![ctx.factory().atom("Undefined")], env_after),
+                    result: (smallvec![ctx.factory().atom("Undefined")], env_after),
                 });
             } else {
                 let first = &atom_results[0];
@@ -6148,7 +6149,7 @@ fn process_continuation_generic<C: EvalContext>(
                 };
 
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![ctx.factory().atom(metatype)], env_after),
+                    result: (smallvec![ctx.factory().atom(metatype)], env_after),
                 });
             }
         }
@@ -6166,12 +6167,12 @@ fn process_continuation_generic<C: EvalContext>(
                     ctx.factory().atom(&token),
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 env_after.register_token(&token, atom_results[0].clone());
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![ctx.factory().unit()], env_after),
+                    result: (smallvec![ctx.factory().unit()], env_after),
                 });
             }
         }
@@ -6416,7 +6417,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -6438,7 +6439,7 @@ fn process_continuation_generic<C: EvalContext>(
                     memo_ref,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &memo_results[0];
@@ -6475,7 +6476,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }
@@ -6516,7 +6517,7 @@ fn process_continuation_generic<C: EvalContext>(
                     name_arg,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &name_results[0];
@@ -6548,7 +6549,7 @@ fn process_continuation_generic<C: EvalContext>(
                     let memo_handle = crate::backend::models::MemoHandle::new(name);
                     let memo_value = ctx.factory().memo(memo_handle);
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![memo_value], env_after),
+                        result: (smallvec![memo_value], env_after),
                     });
                 }
             }
@@ -6568,14 +6569,14 @@ fn process_continuation_generic<C: EvalContext>(
                     size_arg,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let size = size_results[0].as_long().unwrap_or(1000) as usize;
                 let memo_handle = crate::backend::models::MemoHandle::with_max_size(name, size);
                 let memo_value = ctx.factory().memo(memo_handle);
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![memo_value], env_after),
+                    result: (smallvec![memo_value], env_after),
                 });
             }
         }
@@ -6595,7 +6596,7 @@ fn process_continuation_generic<C: EvalContext>(
                     memo_ref,
                 );
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (vec![err], env_after),
+                    result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &memo_results[0];
@@ -6603,7 +6604,7 @@ fn process_continuation_generic<C: EvalContext>(
                     if is_clear {
                         memo_handle.clear();
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (vec![ctx.factory().unit()], env_after),
+                            result: (smallvec![ctx.factory().unit()], env_after),
                         });
                     } else {
                         #[cfg(feature = "track-stats")]
@@ -6618,7 +6619,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 ctx.factory().long(stats.2 as i64),
                             ]);
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![stats_sexpr], env_after),
+                                result: (smallvec![stats_sexpr], env_after),
                             });
                         }
                         #[cfg(not(feature = "track-stats"))]
@@ -6629,7 +6630,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 detail,
                             );
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (vec![err], env_after),
+                                result: (smallvec![err], env_after),
                             });
                         }
                     }
@@ -6644,7 +6645,7 @@ fn process_continuation_generic<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(GenericWorkItem::Resume {
-                        result: (vec![err], env_after),
+                        result: (smallvec![err], env_after),
                     });
                 }
             }

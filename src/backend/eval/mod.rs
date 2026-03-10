@@ -63,10 +63,14 @@ pub use step::{
 // Arena-based Evaluation with Bytecode/JIT Tiering
 // =============================================================================
 
+use smallvec::SmallVec;
+
 use crate::backend::models::MettaValue;
 
 /// Type alias for arena evaluation result.
-pub type EvalResult = (Vec<MettaValue>, MettaEnvironment);
+/// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap
+/// allocation for the common single-result case.
+pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 
 /// Evaluate an MettaValue with bytecode/JIT tiering.
 ///
@@ -219,7 +223,7 @@ fn eval_inner_with_trace(
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage2);
                         clear_thread_trace_collector();
-                        return (results, new_env);
+                        return (SmallVec::from_vec(results), new_env);
                     }
                     Err(_) => {}
                 }
@@ -246,7 +250,7 @@ fn eval_inner_with_trace(
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage1);
                         clear_thread_trace_collector();
-                        return (results, new_env);
+                        return (SmallVec::from_vec(results), new_env);
                     }
                     Err(_) => {}
                 }
@@ -276,7 +280,7 @@ fn eval_inner_with_trace(
                             global_tiered_cache()
                                 .record_tier_execution(ExecutionTier::Bytecode);
                             clear_thread_trace_collector();
-                            return (results, new_env);
+                            return (SmallVec::from_vec(results), new_env);
                         }
                     }
                     Err(_) => {}
@@ -307,7 +311,7 @@ fn eval_inner_with_trace(
                     global_tiered_cache()
                         .record_tier_execution(ExecutionTier::Bytecode);
                     clear_thread_trace_collector();
-                    return (results, new_env);
+                    return (SmallVec::from_vec(results), new_env);
                 }
             }
             Err(_) => {}
@@ -365,7 +369,7 @@ fn eval_inner(
                         #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage2);
-                        return (results, new_env);
+                        return (SmallVec::from_vec(results), new_env);
                     }
                     Err(_) => {
                         // JIT execution failed, fall through
@@ -382,7 +386,7 @@ fn eval_inner(
                         #[cfg(feature = "track-stats")]
                         global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage1);
-                        return (results, new_env);
+                        return (SmallVec::from_vec(results), new_env);
                     }
                     Err(_) => {
                         // JIT execution failed, fall through
@@ -403,7 +407,7 @@ fn eval_inner(
                             #[cfg(feature = "track-stats")]
                             global_tiered_cache()
                                 .record_tier_execution(ExecutionTier::Bytecode);
-                            return (results, new_env);
+                            return (SmallVec::from_vec(results), new_env);
                         }
                     }
                     Err(_) => {
@@ -424,7 +428,7 @@ fn eval_inner(
                     #[cfg(feature = "track-stats")]
                     global_tiered_cache()
                         .record_tier_execution(ExecutionTier::Bytecode);
-                    return (results, new_env);
+                    return (SmallVec::from_vec(results), new_env);
                 }
             }
             Err(_) => {

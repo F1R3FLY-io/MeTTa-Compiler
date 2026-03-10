@@ -4,7 +4,7 @@
 //! that work with any value type implementing `MettaValueTrait`. This enables
 //! zero-conversion evaluation for both heap and arena allocation modes.
 
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 use std::collections::VecDeque;
 
 use crate::backend::environment::GenericEnvironment;
@@ -28,14 +28,14 @@ use super::super::helpers::needs_special_form_redispatch;
 /// Uses GenericEnvironment<V, F> as the environment type.
 pub enum GenericProcessedSExpr<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static, F: MettaValueFactory<V> + Clone = crate::backend::models::GcFactory> {
     /// Evaluation complete - return results
-    Done((Vec<V>, GenericEnvironment<V, F>)),
+    Done((SmallVec<[V; 2]>, GenericEnvironment<V, F>)),
 
     /// Rule matches found - need to evaluate RHS
     EvalRuleMatches {
         matches: VecDeque<(V, GenericBindings<V>)>,
         env: GenericEnvironment<V, F>,
         depth: usize,
-        base_results: Vec<V>,
+        base_results: SmallVec<[V; 2]>,
     },
 
     /// Multiple combinations - need lazy processing
@@ -168,7 +168,7 @@ pub fn cartesian_product_lazy_generic<V: MettaValueTrait + Clone>(
 /// This is the zero-conversion version of `process_collected_sexpr` that works
 /// with any value type implementing `MettaValueTrait`.
 pub fn process_collected_sexpr_generic<V, F>(
-    collected: Vec<(Vec<V>, GenericEnvironment<V, F>)>,
+    collected: Vec<(SmallVec<[V; 2]>, GenericEnvironment<V, F>)>,
     original_env: GenericEnvironment<V, F>,
     depth: usize,
     factory: &F,
@@ -181,13 +181,17 @@ where
     for (results, new_env) in &collected {
         if let Some(first) = results.first() {
             if first.is_error() {
-                return GenericProcessedSExpr::Done((vec![first.clone()], new_env.clone()));
+                return GenericProcessedSExpr::Done((smallvec![first.clone()], new_env.clone()));
             }
         }
     }
 
-    // Split results and environments
-    let (eval_results, envs): (Vec<_>, Vec<_>) = collected.into_iter().unzip();
+    // Split results and environments: convert SmallVec→Vec for Cartesian product
+    // (Cartesian product works with Vec<Vec<V>> internally for multi-result cases)
+    let (eval_results, envs): (Vec<Vec<V>>, Vec<_>) = collected
+        .into_iter()
+        .map(|(sv, env)| (sv.into_vec(), env))
+        .unzip();
 
     // Union all environments using optimized batch method
     // This avoids N allocations in the common case where nothing was modified
@@ -197,7 +201,7 @@ where
     match cartesian_product_lazy_generic(eval_results) {
         GenericCartesianProductResult::Empty => {
             // No combinations possible (empty result list)
-            GenericProcessedSExpr::Done((vec![], unified_env))
+            GenericProcessedSExpr::Done((SmallVec::new(), unified_env))
         }
         GenericCartesianProductResult::Single(evaled_items) => {
             // FAST PATH: Single combination (deterministic evaluation)
@@ -239,7 +243,7 @@ where
                 if let Some(work) = execute_generic_grounded_op(op, &mut state, factory) {
                     match work {
                         GenericGroundedWork::Done(results) => {
-                            let values: Vec<V> = results.into_iter().map(|(v, _)| v).collect();
+                            let values: SmallVec<[V; 2]> = results.into_iter().map(|(v, _)| v).collect();
                             return GenericProcessedSExpr::Done((values, unified_env));
                         }
                         GenericGroundedWork::EvalArg { .. } => {
@@ -248,7 +252,7 @@ where
                         }
                         GenericGroundedWork::Error(e) => {
                             let err = factory.error(&format!("{:?}", e), factory.atom("GroundedError"));
-                            return GenericProcessedSExpr::Done((vec![err], unified_env));
+                            return GenericProcessedSExpr::Done((smallvec![err], unified_env));
                         }
                     }
                 }
@@ -278,13 +282,13 @@ where
                 .collect(),
             env: unified_env,
             depth,
-            base_results: vec![],
+            base_results: SmallVec::new(),
         };
     }
 
     // No rules matched - add to space at top level and return as data constructor
     let result = handle_no_rule_match_generic(evaled_items, factory, &mut unified_env, depth);
-    GenericProcessedSExpr::Done((vec![result], unified_env))
+    GenericProcessedSExpr::Done((smallvec![result], unified_env))
 }
 
 /// Handle no rule match (generic version).

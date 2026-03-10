@@ -17,8 +17,9 @@
 //! - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
 //! - `E: Clone` - The environment type (Environment or GenericEnvironment<V>)
 
-use std::collections::VecDeque;
 use std::fmt::Debug;
+
+use smallvec::SmallVec;
 
 use crate::backend::environment::MettaEnvironment;
 use crate::backend::grounded::GenericGroundedState;
@@ -33,7 +34,9 @@ use super::super::processing::GenericCartesianProductIter;
 ///
 /// Parameterized over value type V and environment type E.
 /// Default E = Environment for backward compatibility.
-pub type GenericEvalResult<V, E = MettaEnvironment> = (Vec<V>, E);
+/// Uses SmallVec<[V; 2]> to inline up to 2 elements, avoiding heap allocation
+/// for the common single-result case (93%+ of evaluations produce 1 result).
+pub type GenericEvalResult<V, E = MettaEnvironment> = (SmallVec<[V; 2]>, E);
 
 /// Generic work item representing pending evaluation work.
 ///
@@ -87,7 +90,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Collecting S-expression sub-results before processing
     CollectSExpr {
-        remaining: VecDeque<V>,
+        remaining: Vec<V>,
         collected: Vec<GenericEvalResult<V, E>>,
         original_env: E,
         depth: usize,
@@ -95,7 +98,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing rule match results with generic bindings.
     ProcessRuleMatches {
-        remaining_matches: VecDeque<(V, GenericBindings<V>)>,
+        remaining_matches: Vec<(V, GenericBindings<V>)>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -126,14 +129,14 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     ProcessCombinations {
         combinations: GenericCartesianProductIter<V>,
         results: Vec<V>,
-        pending_rule_matches: VecDeque<(V, GenericBindings<V>)>,
+        pending_rule_matches: Vec<(V, GenericBindings<V>)>,
         env: E,
         depth: usize,
     },
 
     /// Processing let binding
     ProcessLet {
-        pending_values: Option<VecDeque<V>>,
+        pending_values: Option<Vec<V>>,
         pattern: V,
         body: V,
         results: Vec<V>,
@@ -158,7 +161,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Collecting results from applicative evaluation of Cartesian product
     /// combinations produced by nondeterministic grounded arg evaluation.
     CollectApplicativeResults {
-        remaining: VecDeque<V>,
+        remaining: Vec<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -166,7 +169,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing map-atom iteration
     ProcessMapAtom {
-        remaining_elements: VecDeque<V>,
+        remaining_elements: Vec<V>,
         var_name: String,
         template: V,
         collected_results: Vec<V>,
@@ -177,7 +180,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Processing filter-atom iteration
     ProcessFilterAtom {
         current_element: Option<V>,
-        remaining_elements: VecDeque<V>,
+        remaining_elements: Vec<V>,
         var_name: String,
         predicate: V,
         filtered_results: Vec<V>,
@@ -187,7 +190,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing foldl-atom iteration
     ProcessFoldlAtom {
-        remaining_elements: VecDeque<V>,
+        remaining_elements: Vec<V>,
         acc_var_name: String,
         item_var_name: String,
         operation: V,
@@ -232,7 +235,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing chain body evaluations
     ProcessChainBody {
-        remaining_values: VecDeque<V>,
+        remaining_values: Vec<V>,
         var: V,
         body: V,
         results: Vec<V>,
@@ -262,7 +265,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing conjunction
     ProcessConjunction {
-        remaining_goals: VecDeque<V>,
+        remaining_goals: Vec<V>,
         accumulated_results: Vec<V>,
         env: E,
         depth: usize,
@@ -279,7 +282,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing unify pattern1 iteration
     ProcessUnifyPattern1Iter {
-        remaining_pattern1_results: VecDeque<V>,
+        remaining_pattern1_results: Vec<V>,
         pattern2: V,
         success_body: V,
         failure_body: V,
@@ -300,7 +303,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing unify bodies
     ProcessUnifyBodies {
-        remaining_bodies: VecDeque<V>,
+        remaining_bodies: Vec<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -324,7 +327,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// (the full recursive interpreter) inside `collapse`.
     ProcessCollapseEvalResults {
         /// Remaining unevaluated results to evaluate
-        remaining_raw: VecDeque<V>,
+        remaining_raw: Vec<V>,
         /// Fully evaluated results collected so far
         evaluated: Vec<V>,
         /// Whether this is for collapse-bind (vs plain collapse)
@@ -337,7 +340,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing amb
     ProcessAmb {
-        remaining_alts: VecDeque<V>,
+        remaining_alts: Vec<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -409,7 +412,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing match templates
     ProcessMatchTemplates {
-        remaining_templates: VecDeque<V>,
+        remaining_templates: Vec<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -619,7 +622,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing case multi-results
     ProcessCaseMultiResults {
-        remaining_atoms: VecDeque<V>,
+        remaining_atoms: Vec<V>,
         cases: V,
         collected: Vec<V>,
         env: E,
@@ -633,7 +636,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// interpreter on the scrutinee, ensuring rule applications are completed.
     ProcessCaseEvalScrutineeResults {
         /// Remaining unevaluated scrutinee results to evaluate
-        remaining_raw: VecDeque<V>,
+        remaining_raw: Vec<V>,
         /// Fully evaluated scrutinee results collected so far
         evaluated: Vec<V>,
         /// Case patterns to match against
@@ -1042,6 +1045,7 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::smallvec;
     use crate::backend::environment::MettaEnvironment;
     use crate::backend::models::{MettaValue, MettaValueFactory, global_factory};
 
@@ -1076,7 +1080,7 @@ mod tests {
     fn test_work_item_resume_collects_results() {
         let f = factory();
         let item: TestWorkItem = GenericWorkItem::Resume {
-            result: (vec![f.long(1), f.long(2), f.long(3)], env()),
+            result: (smallvec![f.long(1), f.long(2), f.long(3)], env()),
         };
         let mut roots = Vec::new();
         item.collect_values(&mut roots);
@@ -1100,8 +1104,8 @@ mod tests {
         let cont: TestContinuation = GenericContinuation::CollectSExpr {
             remaining: vec![f.long(10), f.long(20)].into(),
             collected: vec![
-                (vec![f.long(30)], env()),
-                (vec![f.long(40), f.long(50)], env()),
+                (smallvec![f.long(30)], env()),
+                (smallvec![f.long(40), f.long(50)], env()),
             ],
             original_env: env(),
             depth: 0,

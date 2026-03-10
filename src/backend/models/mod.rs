@@ -41,7 +41,11 @@ pub use metta_value_trait::{MettaValueTrait, MettaValueFactory};
 pub use space_handle::{GenericMultiplicityMatch, SpaceHandle};
 pub use work_pool::init_thread_pools;
 
+use smallvec::SmallVec;
+
 use crate::backend::environment::MettaEnvironment;
 
 /// Result of evaluation: (result, new_environment)
-pub type EvalResult = (Vec<MettaValue>, MettaEnvironment);
+/// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap
+/// allocation for the common single-result case.
+pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);

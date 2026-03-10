@@ -842,7 +842,7 @@ where
         ]);
 
         // Convert to De Bruijn bytes and insert into PathMap + RuleIndex
-        let rule_prefix_len = self.rule_prefix.len();
+        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
         let result = with_mork_query_bytes(
             &rule_sexpr,
             &self.shared_mapping,
@@ -862,22 +862,13 @@ where
                     return; // Shouldn't happen for valid rules
                 }
 
-                // Validate that rule_prefix matches the start of debruijn_bytes.
-                // This catches interning inconsistencies between with_mork_bytes (used for
-                // prefix computation) and with_mork_query_bytes (used for rule encoding).
+                // Verify structural invariant: rules start with Arity(3) byte
                 #[cfg(debug_assertions)]
                 {
-                    let prefix = &self.rule_prefix;
-                    let actual_prefix = &debruijn_bytes[..prefix.len().min(debruijn_bytes.len())];
                     assert_eq!(
-                        actual_prefix, &prefix[..],
-                        "rule_prefix mismatch: debruijn_bytes prefix doesn't match pre-computed rule_prefix.\n\
-                         Expected: {:02x?}\n\
-                         Actual:   {:02x?}\n\
-                         Full debruijn_bytes (first 32): {:02x?}",
-                        prefix,
-                        actual_prefix,
-                        &debruijn_bytes[..debruijn_bytes.len().min(32)]
+                        debruijn_bytes[0], 0x03,
+                        "Rule debruijn_bytes does not start with Arity(3): first byte is 0x{:02x}",
+                        debruijn_bytes[0]
                     );
                 }
 
@@ -1369,13 +1360,14 @@ where
         }
 
         let space = self.create_space();
-        let rule_prefix_len = self.rule_prefix.len();
+        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
+        let rule_prefix = self.compute_rule_prefix();
         let mut rules: Vec<(V, V, u64)> = Vec::new();
 
         // 1. Head+arity-specific prefix navigation (most selective)
         if !head.is_empty() {
             if let Some(head_prefix) = build_head_arity_prefix::<V, F>(
-                &self.rule_prefix,
+                &rule_prefix,
                 head,
                 arity,
                 &self.factory,
@@ -1393,14 +1385,14 @@ where
             // No head info — collect all rules under the rule prefix
             self.collect_rules_from_prefix(
                 &space,
-                &self.rule_prefix,
+                &rule_prefix,
                 rule_prefix_len,
                 &mut rules,
             );
         }
 
         // 2. Collect wildcard rules (LHS is atom/variable, not S-expression)
-        self.collect_wildcard_rules(&space, &self.rule_prefix, rule_prefix_len, head, arity, &mut rules);
+        self.collect_wildcard_rules(&space, &rule_prefix, rule_prefix_len, head, arity, &mut rules);
 
         rules
     }
@@ -1688,7 +1680,7 @@ impl MettaEnvironment {
         self.shared.rule_index.write().clear();
 
         let space = self.create_space();
-        let rule_prefix_len = self.rule_prefix.len();
+        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
 
         for (path_bytes, multiplicity_val) in space.btm.iter() {
             let expr = Expr {

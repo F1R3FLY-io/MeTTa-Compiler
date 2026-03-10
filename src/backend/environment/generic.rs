@@ -276,6 +276,18 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     pub(crate) inferred_fn_types: DashMap<String, Vec<V>>,
 }
 
+/// Byte length of the MORK-serialized rule prefix: `[Arity(3)] + [SymbolSize(8)] + [8 symbol ID bytes]`.
+///
+/// This is structurally constant for all environments — MORK always encodes symbols as 8-byte IDs
+/// with a 1-byte size tag, and rules always have arity 3 for `(= lhs rhs)`.
+///
+/// Previously stored as a precomputed `Arc<[u8]>` field on `GenericEnvironment`, but the actual
+/// byte content could become stale when thread-local MORK symbol caches were invalidated across
+/// different `SharedMapping` epochs on the same thread. Since only the *length* is needed for
+/// splitting De Bruijn bytes into LHS/RHS ranges, a compile-time constant eliminates the
+/// stale-prefix problem entirely.
+pub(crate) const RULE_PREFIX_LEN: usize = 10;
+
 /// Generic environment parameterized over value type and factory.
 ///
 /// This is the main entry point for zero-conversion evaluation. Use type aliases
@@ -317,12 +329,6 @@ where
     /// Current module path for relative path resolution.
     /// Arc-wrapped for O(1) clone — module path is semantically immutable after construction.
     pub(crate) current_module_path: Option<Arc<PathBuf>>,
-
-    /// Cached MORK byte prefix for rules: [Arity(3)] + "=" symbol bytes.
-    /// Computed once at construction. Constant for the lifetime of the environment.
-    /// Used by `get_matching_rules_for_expr()` for trie prefix navigation.
-    /// Arc-wrapped for O(1) clone — prefix is semantically immutable after construction.
-    pub(crate) rule_prefix: Arc<[u8]>,
 
     /// Monotonic epoch for MORK symbol cache invalidation.
     ///
@@ -410,24 +416,6 @@ where
         // same epoch for the same SharedMapping, preventing cache mismatches.
         let mork_cache_epoch = shared.atom_space.mork_cache_epoch;
 
-        // Compute the MORK byte prefix for rules: [Arity(3)] + "=" symbol bytes.
-        // This is constant for the lifetime of the environment (determined by shared_mapping).
-        let rule_prefix = {
-            let eq_atom = factory.atom("=");
-            crate::backend::mork_convert::with_mork_bytes(
-                &eq_atom,
-                &shared_mapping,
-                mork_cache_epoch,
-                |eq_bytes| {
-                    let mut prefix = Vec::with_capacity(1 + eq_bytes.len());
-                    prefix.push(0x03); // Arity(3) — compile-time constant for (= lhs rhs)
-                    prefix.extend_from_slice(eq_bytes);
-                    prefix
-                },
-            )
-            .unwrap_or_else(|_| vec![0x03]) // Fallback: just arity byte (should never happen)
-        };
-
         GenericEnvironment {
             shared,
             factory,
@@ -435,7 +423,6 @@ where
             owns_data: true,
             modified: AtomicBool::new(false),
             current_module_path: None,
-            rule_prefix: rule_prefix.into(), // Vec<u8> → Arc<[u8]>
             mork_cache_epoch,
         }
     }
@@ -450,6 +437,28 @@ where
     #[inline]
     pub fn mork_cache_epoch(&self) -> u64 {
         self.mork_cache_epoch
+    }
+
+    /// Compute the MORK byte prefix for rules: `[Arity(3)] + "=" symbol bytes`.
+    ///
+    /// This is computed on-the-fly from the current `SharedMapping` state rather than
+    /// cached, because the MORK symbol ID for "=" can differ across thread-local cache
+    /// invalidation boundaries. Used only by fallback trie-navigation paths
+    /// (`get_matching_rules_for_expr`, `collect_wildcard_rules`), not the hot path.
+    pub(crate) fn compute_rule_prefix(&self) -> Vec<u8> {
+        let eq_atom = self.factory.atom("=");
+        crate::backend::mork_convert::with_mork_bytes(
+            &eq_atom,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |eq_bytes| {
+                let mut prefix = Vec::with_capacity(1 + eq_bytes.len());
+                prefix.push(0x03); // Arity(3) for (= lhs rhs)
+                prefix.extend_from_slice(eq_bytes);
+                prefix
+            },
+        )
+        .unwrap_or_else(|_| vec![0x03])
     }
 
     /// Mark this environment as modified.
@@ -620,7 +629,7 @@ where
             owns_data: true,
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
-            rule_prefix: self.rule_prefix.clone(),
+
             mork_cache_epoch: self.mork_cache_epoch,
         }
     }
@@ -653,7 +662,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-                rule_prefix: self.rule_prefix.clone(),
+    
                 mork_cache_epoch: self.mork_cache_epoch,
             };
         }
@@ -670,7 +679,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-                rule_prefix: self.rule_prefix.clone(),
+    
                 mork_cache_epoch: self.mork_cache_epoch,
             };
         }
@@ -684,7 +693,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-                rule_prefix: self.rule_prefix.clone(),
+    
                 mork_cache_epoch: self.mork_cache_epoch,
             };
         }
@@ -698,7 +707,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: other.current_module_path.clone(),
-                rule_prefix: self.rule_prefix.clone(),
+    
                 mork_cache_epoch: other.mork_cache_epoch,
             };
         }
@@ -927,7 +936,7 @@ where
             owns_data: true,
             modified: AtomicBool::new(true),
             current_module_path: other.current_module_path.clone().or_else(|| self.current_module_path.clone()),
-            rule_prefix: self.rule_prefix.clone(),
+
             mork_cache_epoch: self.mork_cache_epoch,
         }
     }
@@ -1033,7 +1042,7 @@ where
             owns_data: false,
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
-            rule_prefix: self.rule_prefix.clone(),
+
             mork_cache_epoch: self.mork_cache_epoch,
         }
     }
@@ -1323,7 +1332,7 @@ where
             owns_data: true,
             modified: AtomicBool::new(true),
             current_module_path: last_env.current_module_path.clone().or_else(|| self.current_module_path.clone()),
-            rule_prefix: self.rule_prefix.clone(),
+
             mork_cache_epoch: self.mork_cache_epoch,
         }
     }
@@ -1404,7 +1413,7 @@ where
             owns_data: false, // CoW: clones do not own data initially
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
-            rule_prefix: self.rule_prefix.clone(),
+
             mork_cache_epoch: self.mork_cache_epoch,
         }
     }

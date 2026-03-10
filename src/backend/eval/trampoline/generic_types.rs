@@ -90,7 +90,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Collecting S-expression sub-results before processing
     CollectSExpr {
-        remaining: Vec<V>,
+        remaining: std::vec::IntoIter<V>,
         collected: Vec<GenericEvalResult<V, E>>,
         original_env: E,
         depth: usize,
@@ -98,7 +98,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing rule match results with generic bindings.
     ProcessRuleMatches {
-        remaining_matches: Vec<(V, GenericBindings<V>)>,
+        remaining_matches: std::vec::IntoIter<(V, GenericBindings<V>)>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -161,7 +161,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Collecting results from applicative evaluation of Cartesian product
     /// combinations produced by nondeterministic grounded arg evaluation.
     CollectApplicativeResults {
-        remaining: Vec<V>,
+        remaining: std::vec::IntoIter<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -169,7 +169,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing map-atom iteration
     ProcessMapAtom {
-        remaining_elements: Vec<V>,
+        remaining_elements: std::vec::IntoIter<V>,
         var_name: String,
         template: V,
         collected_results: Vec<V>,
@@ -180,7 +180,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Processing filter-atom iteration
     ProcessFilterAtom {
         current_element: Option<V>,
-        remaining_elements: Vec<V>,
+        remaining_elements: std::vec::IntoIter<V>,
         var_name: String,
         predicate: V,
         filtered_results: Vec<V>,
@@ -190,7 +190,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing foldl-atom iteration
     ProcessFoldlAtom {
-        remaining_elements: Vec<V>,
+        remaining_elements: std::vec::IntoIter<V>,
         acc_var_name: String,
         item_var_name: String,
         operation: V,
@@ -235,7 +235,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing chain body evaluations
     ProcessChainBody {
-        remaining_values: Vec<V>,
+        remaining_values: std::vec::IntoIter<V>,
         var: V,
         body: V,
         results: Vec<V>,
@@ -265,7 +265,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing conjunction
     ProcessConjunction {
-        remaining_goals: Vec<V>,
+        remaining_goals: std::vec::IntoIter<V>,
         accumulated_results: Vec<V>,
         env: E,
         depth: usize,
@@ -282,7 +282,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing unify pattern1 iteration
     ProcessUnifyPattern1Iter {
-        remaining_pattern1_results: Vec<V>,
+        remaining_pattern1_results: std::vec::IntoIter<V>,
         pattern2: V,
         success_body: V,
         failure_body: V,
@@ -303,7 +303,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing unify bodies
     ProcessUnifyBodies {
-        remaining_bodies: Vec<V>,
+        remaining_bodies: std::vec::IntoIter<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -327,7 +327,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// (the full recursive interpreter) inside `collapse`.
     ProcessCollapseEvalResults {
         /// Remaining unevaluated results to evaluate
-        remaining_raw: Vec<V>,
+        remaining_raw: std::vec::IntoIter<V>,
         /// Fully evaluated results collected so far
         evaluated: Vec<V>,
         /// Whether this is for collapse-bind (vs plain collapse)
@@ -340,7 +340,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing amb
     ProcessAmb {
-        remaining_alts: Vec<V>,
+        remaining_alts: std::vec::IntoIter<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -412,7 +412,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing match templates
     ProcessMatchTemplates {
-        remaining_templates: Vec<V>,
+        remaining_templates: std::vec::IntoIter<V>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -607,7 +607,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         /// Rank of best element
         best_rank: Option<f64>,
         /// Elements still to evaluate
-        remaining: Vec<V>,
+        remaining: std::vec::IntoIter<V>,
         /// Element whose rank we're currently evaluating
         current: V,
         /// Variable name for rank function binding
@@ -622,7 +622,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
 
     /// Processing case multi-results
     ProcessCaseMultiResults {
-        remaining_atoms: Vec<V>,
+        remaining_atoms: std::vec::IntoIter<V>,
         cases: V,
         collected: Vec<V>,
         env: E,
@@ -636,7 +636,7 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// interpreter on the scrutinee, ensuring rule applications are completed.
     ProcessCaseEvalScrutineeResults {
         /// Remaining unevaluated scrutinee results to evaluate
-        remaining_raw: Vec<V>,
+        remaining_raw: std::vec::IntoIter<V>,
         /// Fully evaluated scrutinee results collected so far
         evaluated: Vec<V>,
         /// Case patterns to match against
@@ -744,14 +744,14 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             Self::Done => {}
 
             Self::CollectSExpr { remaining, collected, .. } => {
-                out.extend(remaining.iter().cloned());
+                out.extend(remaining.as_slice().iter().cloned());
                 for (vals, _env) in collected {
                     out.extend(vals.iter().cloned());
                 }
             }
 
             Self::ProcessRuleMatches { remaining_matches, results, .. } => {
-                for (rhs, bindings) in remaining_matches {
+                for (rhs, bindings) in remaining_matches.as_slice() {
                     out.push(rhs.clone());
                     collect_bindings_values(bindings, out);
                 }
@@ -788,12 +788,12 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             }
 
             Self::CollectApplicativeResults { remaining, results, .. } => {
-                out.extend(remaining.iter().cloned());
+                out.extend(remaining.as_slice().iter().cloned());
                 out.extend(results.iter().cloned());
             }
 
             Self::ProcessMapAtom { remaining_elements, template, collected_results, .. } => {
-                out.extend(remaining_elements.iter().cloned());
+                out.extend(remaining_elements.as_slice().iter().cloned());
                 out.push(template.clone());
                 out.extend(collected_results.iter().cloned());
             }
@@ -802,13 +802,13 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 if let Some(elem) = current_element {
                     out.push(elem.clone());
                 }
-                out.extend(remaining_elements.iter().cloned());
+                out.extend(remaining_elements.as_slice().iter().cloned());
                 out.push(predicate.clone());
                 out.extend(filtered_results.iter().cloned());
             }
 
             Self::ProcessFoldlAtom { remaining_elements, operation, .. } => {
-                out.extend(remaining_elements.iter().cloned());
+                out.extend(remaining_elements.as_slice().iter().cloned());
                 out.push(operation.clone());
             }
 
@@ -830,7 +830,7 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             }
 
             Self::ProcessChainBody { remaining_values, var, body, results, .. } => {
-                out.extend(remaining_values.iter().cloned());
+                out.extend(remaining_values.as_slice().iter().cloned());
                 out.push(var.clone());
                 out.push(body.clone());
                 out.extend(results.iter().cloned());
@@ -844,7 +844,7 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             }
 
             Self::ProcessConjunction { remaining_goals, accumulated_results, .. } => {
-                out.extend(remaining_goals.iter().cloned());
+                out.extend(remaining_goals.as_slice().iter().cloned());
                 out.extend(accumulated_results.iter().cloned());
             }
 
@@ -857,7 +857,7 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             Self::ProcessUnifyPattern1Iter {
                 remaining_pattern1_results, pattern2, success_body, failure_body, all_results, ..
             } => {
-                out.extend(remaining_pattern1_results.iter().cloned());
+                out.extend(remaining_pattern1_results.as_slice().iter().cloned());
                 out.push(pattern2.clone());
                 out.push(success_body.clone());
                 out.push(failure_body.clone());
@@ -872,7 +872,7 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             }
 
             Self::ProcessUnifyBodies { remaining_bodies, results, .. } => {
-                out.extend(remaining_bodies.iter().cloned());
+                out.extend(remaining_bodies.as_slice().iter().cloned());
                 out.extend(results.iter().cloned());
             }
 
@@ -880,12 +880,12 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             Self::ProcessCollapseBind { .. } => {}
 
             Self::ProcessCollapseEvalResults { remaining_raw, evaluated, .. } => {
-                out.extend(remaining_raw.iter().cloned());
+                out.extend(remaining_raw.as_slice().iter().cloned());
                 out.extend(evaluated.iter().cloned());
             }
 
             Self::ProcessAmb { remaining_alts, results, .. } => {
-                out.extend(remaining_alts.iter().cloned());
+                out.extend(remaining_alts.as_slice().iter().cloned());
                 out.extend(results.iter().cloned());
             }
 
@@ -926,7 +926,7 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
             }
 
             Self::ProcessMatchTemplates { remaining_templates, results, .. } => {
-                out.extend(remaining_templates.iter().cloned());
+                out.extend(remaining_templates.as_slice().iter().cloned());
                 out.extend(results.iter().cloned());
             }
 
@@ -1014,19 +1014,19 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 if let Some(b) = best {
                     out.push(b.clone());
                 }
-                out.extend(remaining.iter().cloned());
+                out.extend(remaining.as_slice().iter().cloned());
                 out.push(current.clone());
                 out.push(rank_fn.clone());
             }
 
             Self::ProcessCaseMultiResults { remaining_atoms, cases, collected, .. } => {
-                out.extend(remaining_atoms.iter().cloned());
+                out.extend(remaining_atoms.as_slice().iter().cloned());
                 out.push(cases.clone());
                 out.extend(collected.iter().cloned());
             }
 
             Self::ProcessCaseEvalScrutineeResults { remaining_raw, evaluated, cases, .. } => {
-                out.extend(remaining_raw.iter().cloned());
+                out.extend(remaining_raw.as_slice().iter().cloned());
                 out.extend(evaluated.iter().cloned());
                 out.push(cases.clone());
             }
@@ -1102,7 +1102,7 @@ mod tests {
     fn test_continuation_collect_sexpr_collects_all() {
         let f = factory();
         let cont: TestContinuation = GenericContinuation::CollectSExpr {
-            remaining: vec![f.long(10), f.long(20)].into(),
+            remaining: vec![f.long(10), f.long(20)].into_iter(),
             collected: vec![
                 (smallvec![f.long(30)], env()),
                 (smallvec![f.long(40), f.long(50)], env()),
@@ -1180,7 +1180,7 @@ mod tests {
     fn test_continuation_collapse_eval_results() {
         let f = factory();
         let cont: TestContinuation = GenericContinuation::ProcessCollapseEvalResults {
-            remaining_raw: vec![f.long(1), f.long(2)].into(),
+            remaining_raw: vec![f.long(1), f.long(2)].into_iter(),
             evaluated: vec![f.long(3)],
             is_bind: false,
             env: env(),
@@ -1196,7 +1196,7 @@ mod tests {
     fn test_continuation_unify_pattern1_iter_collects_all() {
         let f = factory();
         let cont: TestContinuation = GenericContinuation::ProcessUnifyPattern1Iter {
-            remaining_pattern1_results: vec![f.long(1)].into(),
+            remaining_pattern1_results: vec![f.long(1)].into_iter(),
             pattern2: f.atom("p2"),
             success_body: f.atom("ok"),
             failure_body: f.atom("fail"),

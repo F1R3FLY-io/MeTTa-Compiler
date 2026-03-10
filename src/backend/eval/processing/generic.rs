@@ -5,7 +5,6 @@
 //! zero-conversion evaluation for both heap and arena allocation modes.
 
 use smallvec::{SmallVec, smallvec};
-use std::collections::VecDeque;
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::grounded::{execute_generic_grounded_op, has_generic_grounded_op, GenericGroundedState, GenericGroundedWork};
@@ -32,7 +31,7 @@ pub enum GenericProcessedSExpr<V: MettaValueTrait + Clone + Send + Sync + Unpin 
 
     /// Rule matches found - need to evaluate RHS
     EvalRuleMatches {
-        matches: VecDeque<(V, GenericBindings<V>)>,
+        matches: Vec<(V, GenericBindings<V>)>,
         env: GenericEnvironment<V, F>,
         depth: usize,
         base_results: SmallVec<[V; 2]>,

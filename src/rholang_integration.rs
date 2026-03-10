@@ -516,7 +516,7 @@ async fn evaluate_batch_parallel_arena(
                 // Store result in pre-allocated slot (no contention — each task writes its own slot)
                 {
                     let mut guard = results.lock().expect("results mutex poisoned");
-                    guard[slot] = Some((idx, eval_results, should_output));
+                    guard[slot] = Some((idx, eval_results.into_vec(), should_output));
                 }
 
                 // Decrement barrier; if last task, notify waiter

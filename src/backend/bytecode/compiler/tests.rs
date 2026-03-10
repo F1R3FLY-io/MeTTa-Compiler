@@ -743,7 +743,10 @@ fn test_compile_let() {
     let disasm = chunk.disassemble();
     assert!(disasm.contains("push_long_small 10"));
     assert!(disasm.contains("store_local"));
-    assert!(disasm.contains("load_local"));
+    // The optimizer folds `store_local X; load_local X` into `dup; store_local X`,
+    // so we accept either `load_local` or `dup` as evidence of variable access.
+    assert!(disasm.contains("load_local") || disasm.contains("dup"),
+        "Expected load_local or dup (optimizer folded) in:\n{}", disasm);
     assert!(disasm.contains("add"));
 }
 
@@ -1547,9 +1550,11 @@ fn test_compile_shadowing_variables() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    // Should have multiple store_local and load_local
+    // Should have store_local and either load_local or dup (optimizer folds
+    // `store_local X; load_local X` into `dup; store_local X`)
     assert!(disasm.contains("store_local"), "Should store locals: {}", disasm);
-    assert!(disasm.contains("load_local"), "Should load locals: {}", disasm);
+    assert!(disasm.contains("load_local") || disasm.contains("dup"),
+        "Should load locals (or dup via optimizer): {}", disasm);
 }
 
 #[test]

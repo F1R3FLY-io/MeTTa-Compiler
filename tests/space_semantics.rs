@@ -38,7 +38,7 @@ fn eval_metta_last(source: &str) -> Vec<MettaValue> {
     for &expr in &src {
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
-        last_results = results;
+        last_results = results.into_vec();
     }
     last_results
 }

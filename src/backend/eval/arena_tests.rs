@@ -508,14 +508,26 @@ mod tests {
         &["zero", "positive"]
     );
 
-    eval_test!(
-        nondet_rule,
-        "(= (choice) a)
-         (= (choice) b)
-         (= (choice) c)
-         !(collapse (choice))",
-        &["(a b c)"]
-    );
+    // Nondeterministic rules: collapse gathers all results into a list.
+    // Order within collapse is implementation-defined (parallel vs sequential
+    // evaluation may reorder), so we check the set of elements.
+    #[test]
+    fn nondet_rule() {
+        let results = run_eval(
+            "(= (choice) a)
+             (= (choice) b)
+             (= (choice) c)
+             !(collapse (choice))",
+        );
+        assert_eq!(results.len(), 1, "Expected exactly one collapse result");
+        // Parse the S-expression result and check elements as a set
+        let result = &results[0];
+        assert!(result.starts_with('(') && result.ends_with(')'), "Expected S-expression: {}", result);
+        let inner = &result[1..result.len() - 1];
+        let mut elements: Vec<&str> = inner.split_whitespace().collect();
+        elements.sort();
+        assert_eq!(elements, vec!["a", "b", "c"], "Collapse result should contain a, b, c in any order");
+    }
 
     // =========================================================================
     // PLN Regression: Overlapping nested patterns (specificity filter removal)
@@ -1007,7 +1019,7 @@ mod tests {
         &["(wrapped hello)"]
     );
 
-    eval_test!(
+    eval_test_unordered!(
         test_meta_type_prevents_bloom_filter_preeval,
         // Verify that when a typed function has Expression-typed args,
         // the bloom filter does NOT pre-evaluate those args even if the
@@ -1016,6 +1028,7 @@ mod tests {
         // system marking the arg as Expression, `(f)` is passed unevaluated.
         // The rule body `(head $e)` captures `$e = (f)` and wraps it.
         // Then the tuple path evaluates `(f)` inside `(head (f))` → {1,2,3}.
+        // Order is nondeterministic (parallel eval may reorder).
         r#"
             (= (f) 1)
             (= (f) 2)

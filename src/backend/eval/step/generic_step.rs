@@ -10,6 +10,7 @@
 //! - `MettaValueFactory` (via `EvalContext`) for value construction
 //! - `GenericEnvironment<V, F>` directly for environment operations
 
+use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
@@ -90,7 +91,7 @@ where
 {
     // Errors propagate immediately
     if value.is_error() {
-        return GenericEvalStep::Done((vec![value], env));
+        return GenericEvalStep::Done((smallvec![value], env));
     }
 
     // Ground types evaluate to themselves
@@ -99,7 +100,7 @@ where
         | MettaValueInner::String(_) | MettaValueInner::Space(_) | MettaValueInner::State(_)
         | MettaValueInner::Unit | MettaValueInner::Memo(_))
     {
-        return GenericEvalStep::Done((vec![value], env));
+        return GenericEvalStep::Done((smallvec![value], env));
     }
 
     // Atoms: check special tokens first, then tokenizer, then evaluate to themselves
@@ -107,22 +108,22 @@ where
         // Special handling for &self - evaluates to the current module's space
         if name == "&self" {
             let space_handle = env.self_space();
-            return GenericEvalStep::Done((vec![ctx.factory().space(space_handle)], env));
+            return GenericEvalStep::Done((smallvec![ctx.factory().space(space_handle)], env));
         }
 
         // Use generic lookup to avoid heap conversion
         if let Some(bound_value) = env.lookup_token_generic(name, ctx.factory()) {
             // Token was registered via bind! - return the bound value
-            return GenericEvalStep::Done((vec![bound_value], env));
+            return GenericEvalStep::Done((smallvec![bound_value], env));
         }
 
         // No binding - atom evaluates to itself
-        return GenericEvalStep::Done((vec![value], env));
+        return GenericEvalStep::Done((smallvec![value], env));
     }
 
     // Empty sentinel - gets filtered out at result collection
     if value.is_empty() {
-        return GenericEvalStep::Done((vec![], env));
+        return GenericEvalStep::Done((smallvec![], env));
     }
 
     // S-expressions need special handling
@@ -139,18 +140,18 @@ where
 
     // Type values - return as is
     if value.is_type() {
-        return GenericEvalStep::Done((vec![value], env));
+        return GenericEvalStep::Done((smallvec![value], env));
     }
 
     // Quoted values are self-evaluating — they preserve the quote wrapper.
     // This matches HE behavior: !(quote X) → (quote X).
     // Unwrapping happens only in the (eval ...) and (unquote ...) special forms.
     if value.is_quoted() {
-        return GenericEvalStep::Done((vec![value], env));
+        return GenericEvalStep::Done((smallvec![value], env));
     }
 
     // Fallback - return value unchanged
-    GenericEvalStep::Done((vec![value], env))
+    GenericEvalStep::Done((smallvec![value], env))
 }
 
 /// Generic conjunction step evaluation.

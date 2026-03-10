@@ -6139,20 +6139,24 @@ mod tests {
     #[test]
     fn test_safepoint_drop_reacquire_cycle() {
         let _guard = EvalGuard::enter();
-        let before = active_evaluator_count();
-        assert!(before >= 1, "should have at least our own guard");
+
+        // Use thread-local EVAL_GUARD_DEPTH for assertions instead of the global
+        // ACTIVE_EVALUATORS atomic, which is subject to concurrent modification
+        // by other parallel tests and causes flaky failures.
+        let depth_before = EVAL_GUARD_DEPTH.with(|d| d.get());
+        assert!(depth_before >= 1, "should have at least our own guard");
 
         // Drop for safepoint
         drop_eval_guard_for_safepoint();
-        let during = active_evaluator_count();
-        // Use relative check: other parallel tests may concurrently change
-        // ACTIVE_EVALUATORS, so we can only assert our decrement was observed.
-        assert!(during < before, "drop_eval_guard should decrement ACTIVE_EVALUATORS");
+        let depth_during = EVAL_GUARD_DEPTH.with(|d| d.get());
+        assert_eq!(depth_during, depth_before - 1,
+            "drop_eval_guard should decrement EVAL_GUARD_DEPTH");
 
         // Re-acquire
         reacquire_eval_guard_after_safepoint();
-        let after = active_evaluator_count();
-        assert!(after > during, "reacquire should increment ACTIVE_EVALUATORS");
+        let depth_after = EVAL_GUARD_DEPTH.with(|d| d.get());
+        assert_eq!(depth_after, depth_before,
+            "reacquire should restore EVAL_GUARD_DEPTH");
 
         // _guard drops here. Since drop_eval_guard_for_safepoint() +
         // reacquire_eval_guard_after_safepoint() is a balanced pair (restores both

@@ -39,8 +39,14 @@
 //! ```
 
 mod dce;
+mod dfa_tables;
+mod equiv_classes;
 mod helpers;
+mod minimize;
+mod nfa;
+mod pattern_defs;
 mod peephole;
+mod subset;
 mod types;
 
 #[cfg(test)]

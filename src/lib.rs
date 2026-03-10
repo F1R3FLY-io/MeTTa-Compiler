@@ -126,6 +126,7 @@ pub use backend::eval_with_trace;
 
 #[cfg(test)]
 mod tests {
+    use smallvec::SmallVec;
     use crate::backend::compile::compile;
     use crate::backend::eval::eval;
     use crate::backend::eval::trampoline::new_env;
@@ -1646,7 +1647,7 @@ mod tests {
 
         let state = compile(input).expect("compile failed");
         let mut env = new_env();
-        let mut last_result = Vec::new();
+        let mut last_result = SmallVec::new();
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for (i, expr) in source_exprs.iter().copied().enumerate() {
@@ -1715,7 +1716,7 @@ mod tests {
 
         let state = compile(input).expect("compile failed");
         let mut env = new_env();
-        let mut last_result = Vec::new();
+        let mut last_result = SmallVec::new();
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for (i, expr) in source_exprs.iter().copied().enumerate() {

@@ -13,6 +13,10 @@
 //! | Operation | Evaluates | Comparison |
 //! |-----------|-----------|------------|
 //! | `=alpha` | Neither arg | Alpha-equivalence |
+//!
+//! Uses SmallVec for result vectors to avoid heap allocation in common cases.
+
+// SmallVec for GenericEvalResult compatibility
 //! | `assertEqual` | Both args | Structural equality multiset |
 //! | `assertAlphaEqual` | Both args | Alpha-equiv multiset |
 //! | `assertEqualToResult` | First arg only | Structural multiset vs literal |
@@ -22,6 +26,8 @@
 //! ## Reference
 //!
 //! See: `hyperon-experimental/lib/src/metta/runner/stdlib/debug.rs`
+
+use smallvec::{SmallVec, smallvec};
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
@@ -84,11 +90,11 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let result = atoms_are_alpha_equivalent(&items[1], &items[2]);
-    GenericEvalStep::Done((vec![ctx.factory().bool(result)], env))
+    GenericEvalStep::Done((smallvec![ctx.factory().bool(result)], env))
 }
 
 // ============================================================================
@@ -112,7 +118,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     // Push frame protecting items across nested trampoline calls.
@@ -127,7 +133,7 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
                 &format!(
@@ -136,7 +142,7 @@ where
                 ),
                 ctx.factory().sexpr(items),
             );
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }
@@ -158,7 +164,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     // Push frame protecting items across nested trampoline calls.
@@ -172,7 +178,7 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
                 &format!(
@@ -181,7 +187,7 @@ where
                 ),
                 ctx.factory().sexpr(items),
             );
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }
@@ -207,7 +213,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let _frame_guard = unsafe {
@@ -220,11 +226,11 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
             let err = ctx.factory().error(&msg, ctx.factory().sexpr(items));
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }
@@ -246,7 +252,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let _frame_guard = unsafe {
@@ -259,11 +265,11 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
             let err = ctx.factory().error(&msg, ctx.factory().sexpr(items));
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }
@@ -289,7 +295,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let _frame_guard = unsafe {
@@ -306,13 +312,13 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
                 &format!("assertEqualToResult failed: {}", diff),
                 ctx.factory().sexpr(items),
             );
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }
@@ -334,7 +340,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let _frame_guard = unsafe {
@@ -351,13 +357,13 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
                 &format!("assertAlphaEqualToResult failed: {}", diff),
                 ctx.factory().sexpr(items),
             );
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }
@@ -383,7 +389,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let _frame_guard = unsafe {
@@ -400,11 +406,11 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
             let err = ctx.factory().error(&msg, ctx.factory().sexpr(items));
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }
@@ -426,7 +432,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let _frame_guard = unsafe {
@@ -443,11 +449,11 @@ where
     drop(_frame_guard);
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
-        None => GenericEvalStep::Done((vec![ctx.factory().unit()], env)),
+        None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
             let err = ctx.factory().error(&msg, ctx.factory().sexpr(items));
-            GenericEvalStep::Done((vec![err], env))
+            GenericEvalStep::Done((smallvec![err], env))
         }
     }
 }

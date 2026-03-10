@@ -26,6 +26,8 @@
 
 use std::collections::HashMap;
 
+use smallvec::{SmallVec, smallvec};
+
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
@@ -92,7 +94,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let list_items = match extract_list(&items[1]) {
@@ -102,7 +104,7 @@ where
                 "unique-atom: argument must be a list",
                 items[1].clone(),
             );
-            return GenericEvalStep::Done((vec![err], env));
+            return GenericEvalStep::Done((smallvec![err], env));
         }
     };
 
@@ -116,7 +118,7 @@ where
     }
 
     let result = ctx.factory().sexpr(seen);
-    GenericEvalStep::Done((vec![result], env))
+    GenericEvalStep::Done((smallvec![result], env))
 }
 
 /// `(union-atom $left $right)` — Multiset union (concatenation).
@@ -138,7 +140,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let left = match extract_list(&items[1]) {
@@ -148,7 +150,7 @@ where
                 "union-atom: left argument must be a list",
                 items[1].clone(),
             );
-            return GenericEvalStep::Done((vec![err], env));
+            return GenericEvalStep::Done((smallvec![err], env));
         }
     };
 
@@ -159,7 +161,7 @@ where
                 "union-atom: right argument must be a list",
                 items[2].clone(),
             );
-            return GenericEvalStep::Done((vec![err], env));
+            return GenericEvalStep::Done((smallvec![err], env));
         }
     };
 
@@ -168,7 +170,7 @@ where
     combined.extend_from_slice(right);
 
     let result = ctx.factory().sexpr(combined);
-    GenericEvalStep::Done((vec![result], env))
+    GenericEvalStep::Done((smallvec![result], env))
 }
 
 /// `(intersection-atom $left $right)` — Multiset intersection.
@@ -192,7 +194,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let left = match extract_list(&items[1]) {
@@ -202,7 +204,7 @@ where
                 "intersection-atom: left argument must be a list",
                 items[1].clone(),
             );
-            return GenericEvalStep::Done((vec![err], env));
+            return GenericEvalStep::Done((smallvec![err], env));
         }
     };
 
@@ -213,7 +215,7 @@ where
                 "intersection-atom: right argument must be a list",
                 items[2].clone(),
             );
-            return GenericEvalStep::Done((vec![err], env));
+            return GenericEvalStep::Done((smallvec![err], env));
         }
     };
 
@@ -252,7 +254,7 @@ where
     }
 
     let res = ctx.factory().sexpr(result);
-    GenericEvalStep::Done((vec![res], env))
+    GenericEvalStep::Done((smallvec![res], env))
 }
 
 /// `(subtraction-atom $left $right)` — Multiset subtraction.
@@ -276,7 +278,7 @@ where
             ),
             ctx.factory().sexpr(items),
         );
-        return GenericEvalStep::Done((vec![err], env));
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     let left = match extract_list(&items[1]) {
@@ -286,7 +288,7 @@ where
                 "subtraction-atom: left argument must be a list",
                 items[1].clone(),
             );
-            return GenericEvalStep::Done((vec![err], env));
+            return GenericEvalStep::Done((smallvec![err], env));
         }
     };
 
@@ -297,7 +299,7 @@ where
                 "subtraction-atom: right argument must be a list",
                 items[2].clone(),
             );
-            return GenericEvalStep::Done((vec![err], env));
+            return GenericEvalStep::Done((smallvec![err], env));
         }
     };
 
@@ -338,7 +340,7 @@ where
     }
 
     let res = ctx.factory().sexpr(result);
-    GenericEvalStep::Done((vec![res], env))
+    GenericEvalStep::Done((smallvec![res], env))
 }
 
 #[cfg(test)]

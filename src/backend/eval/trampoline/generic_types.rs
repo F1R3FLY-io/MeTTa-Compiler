@@ -700,6 +700,38 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         /// Evaluation depth
         depth: usize,
     },
+
+    /// Processing `let*` sequential bindings as a tight loop.
+    ///
+    /// Instead of desugaring `(let* ((p1 v1) (p2 v2) ...) body)` to nested
+    /// `let` forms (which creates N S-expr allocations + 3N trampoline iterations),
+    /// this continuation evaluates value expressions one at a time, accumulating
+    /// bindings. When all bindings are resolved, the body is evaluated with the
+    /// composed bindings via `EvalWithBindings`.
+    ///
+    /// **Savings**: For N bindings, reduces from 3N+2 trampoline iterations to
+    /// N+2 iterations (eval each value + body), and eliminates N nested `let`
+    /// S-expr allocations.
+    ///
+    /// **Nondeterminism**: If a value expression produces zero results, the
+    /// entire `let*` produces zero results (pattern match fails). If it produces
+    /// multiple results, we branch (materialize and use ProcessLet fallback).
+    ProcessLetStar {
+        /// The pattern for the CURRENT binding whose value is being evaluated.
+        current_pattern: V,
+        /// Remaining (pattern, value_expr) pairs to process after the current one.
+        remaining_pairs: Vec<(V, V)>,
+        /// The body template — kept raw until all bindings are resolved.
+        body: V,
+        /// Accumulated bindings from resolved pattern matches + outer context.
+        accumulated_bindings: GenericBindings<V>,
+        /// Environment for evaluation.
+        env: E,
+        /// Evaluation depth.
+        depth: usize,
+        /// Whether this is a tail call.
+        is_tail_call: bool,
+    },
 }
 
 // ============================================================================
@@ -1103,6 +1135,16 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
 
             Self::MemoizeResult { .. } => {
                 // No V values to collect — only stores a u64 hash key.
+            }
+
+            Self::ProcessLetStar { current_pattern, remaining_pairs, body, accumulated_bindings, .. } => {
+                out.push(current_pattern.clone());
+                for (pattern, value_expr) in remaining_pairs {
+                    out.push(pattern.clone());
+                    out.push(value_expr.clone());
+                }
+                out.push(body.clone());
+                collect_bindings_values(accumulated_bindings, out);
             }
         }
     }

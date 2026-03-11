@@ -1670,6 +1670,22 @@ where
             // Check if ALL candidates have structural matchers
             let all_structural = candidates.iter().all(|e| e.structural_matcher.is_some());
 
+            // Phase E: Populate operator inline cache with metadata about this
+            // (head, arity) — the caller can use this to skip hash_value()
+            // computation on subsequent calls.
+            if !head.is_empty() {
+                let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
+                crate::backend::eval::trampoline::dispatch_hints::operator_cache_put(
+                    head,
+                    arity,
+                    crate::backend::eval::trampoline::dispatch_hints::OperatorCacheEntry {
+                        rule_epoch: current_epoch,
+                        all_structural,
+                        candidate_count: candidates.len(),
+                    },
+                );
+            }
+
             if all_structural {
                 // Fast path: all candidates have structural matchers — bypass MORK entirely
                 let mut results: Vec<RuleMatchResult<V>> = Vec::new();

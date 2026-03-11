@@ -1074,6 +1074,403 @@ pub fn decode_large_exprs_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String
     Ok(atoms.iter().map(metta_value_to_par).collect())
 }
 
+/// Check whether a PathMap has the structural shape of a serialized MettaState
+/// without attempting full deserialization. Returns true if the structure matches
+/// the expected layout: {| (("source", ...), ("environment", ...), ("output", ...)) |}
+pub fn has_metta_state_structure(pathmap: &EPathMap) -> bool {
+    // Must have exactly 1 element
+    if pathmap.ps.len() != 1 {
+        return false;
+    }
+
+    // The element must be an ETuple with exactly 3 fields
+    let state_tuple_par = &pathmap.ps[0];
+    let state_tuple = match state_tuple_par.exprs.first() {
+        Some(Expr { expr_instance: Some(ExprInstance::ETupleBody(tuple)) }) => tuple,
+        _ => return false,
+    };
+
+    if state_tuple.ps.len() != 3 {
+        return false;
+    }
+
+    // Each field must be an ETuple with >= 2 elements, tagged with the expected names
+    let expected_tags = ["source", "environment", "output"];
+    for (field_par, expected_tag) in state_tuple.ps.iter().zip(expected_tags.iter()) {
+        match field_par.exprs.first() {
+            Some(Expr { expr_instance: Some(ExprInstance::ETupleBody(field_tuple)) }) => {
+                if field_tuple.ps.len() < 2 {
+                    return false;
+                }
+                // Check tag
+                match field_tuple.ps[0].exprs.first() {
+                    Some(Expr { expr_instance: Some(ExprInstance::GString(tag)) }) => {
+                        if tag != expected_tag {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+
+    true
+}
+
+/// Lenient version of `par_to_environment` that handles missing multiplicity bytes.
+/// When multiplicity bytes are missing or unreasonably large (> 2^32), defaults to
+/// Multiplicity::new(1). This allows deserialization of MettaState structures that
+/// were reconstructed without the opaque MTTS binary encoding.
+pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String> {
+    // The par should be an ETuple with 2 named field tuples: [space, large_exprs]
+    if let Some(expr) = par.exprs.first() {
+        if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
+            if tuple.ps.len() != 2 {
+                return Err(format!(
+                    "Expected 2 elements in environment tuple, got {}",
+                    tuple.ps.len()
+                ));
+            }
+
+            // Helper to extract value from (tag, value) tuple
+            let extract_tuple_value = |tuple_par: &Par| -> Result<Par, String> {
+                if let Some(expr) = tuple_par.exprs.first() {
+                    if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
+                        if tuple.ps.len() >= 2 {
+                            return Ok(tuple.ps[1].clone());
+                        }
+                    }
+                }
+                Err("Expected tuple with at least 2 elements".to_string())
+            };
+
+            // Extract space (element 0)
+            let space_par = extract_tuple_value(&tuple.ps[0])?;
+            let space_dump_bytes: Vec<u8> = if let Some(expr) = space_par.exprs.first() {
+                if let Some(ExprInstance::GByteArray(bytes)) = &expr.expr_instance {
+                    bytes.clone()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            let mut env = MettaEnvironment::default();
+
+            // Rebuild Space from raw path bytes with LENIENT multiplicity handling
+            {
+                let mut space = env.create_space();
+                if !space_dump_bytes.is_empty() && space_dump_bytes.len() >= 12 {
+                    let mut offset = 0;
+
+                    // Check and skip magic number if present
+                    if space_dump_bytes.len() >= 4
+                        && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC
+                    {
+                        offset += 4;
+                    }
+
+                    // Read symbol table length
+                    if offset + 8 > space_dump_bytes.len() {
+                        // Not enough data for sym_table_len — return empty env
+                        env.update_pathmap(space);
+                        env.rebuild_bloom_filter_from_space();
+                        return Ok(env);
+                    }
+                    let sym_len = u64::from_be_bytes([
+                        space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                        space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                        space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
+                        space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                    ]) as usize;
+                    offset += 8;
+
+                    // Restore symbol table if present
+                    if sym_len > 0 && offset + sym_len <= space_dump_bytes.len() {
+                        let symbol_table_bytes = &space_dump_bytes[offset..offset + sym_len];
+                        offset += sym_len;
+
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos();
+                        let temp_path = std::env::temp_dir().join(format!(
+                            "metta_symbols_restore_{}_{}.bin",
+                            std::process::id(),
+                            timestamp
+                        ));
+                        if let Ok(mut file) = fs::File::create(&temp_path) {
+                            if file.write_all(symbol_table_bytes).is_ok() {
+                                drop(file);
+                                let _ = space.restore_symbols(&temp_path);
+                                let _ = fs::remove_file(&temp_path);
+                            }
+                        }
+                    } else if sym_len > 0 {
+                        offset = space_dump_bytes.len(); // skip past invalid sym table
+                    }
+
+                    // Read path count
+                    if offset + 8 <= space_dump_bytes.len() {
+                        let path_count = u64::from_be_bytes([
+                            space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                            space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                            space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
+                            space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                        ]);
+                        offset += 8;
+
+                        let mut total_atoms_added: usize = 0;
+                        for _ in 0..path_count {
+                            if offset + 4 > space_dump_bytes.len() {
+                                break;
+                            }
+
+                            let len = u32::from_be_bytes([
+                                space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                                space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                            ]) as usize;
+                            offset += 4;
+
+                            if offset + len > space_dump_bytes.len() {
+                                break;
+                            }
+
+                            let path_bytes = &space_dump_bytes[offset..offset + len];
+                            offset += len;
+
+                            // LENIENT multiplicity handling
+                            let multiplicity = if offset + 8 <= space_dump_bytes.len() {
+                                let mult = u64::from_be_bytes([
+                                    space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                                    space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                                    space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
+                                    space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                                ]);
+                                if mult > (1u64 << 32) {
+                                    // Unreasonably large — these bytes are likely the next
+                                    // path's length prefix, not a multiplicity. Don't advance.
+                                    1u64
+                                } else {
+                                    offset += 8;
+                                    mult
+                                }
+                            } else {
+                                // Not enough bytes for multiplicity — default to 1
+                                1u64
+                            };
+
+                            space.btm.insert(path_bytes, Multiplicity::new(multiplicity));
+                            total_atoms_added += multiplicity as usize;
+                        }
+                        env.shared
+                            .atom_space
+                            .total_atoms
+                            .fetch_add(total_atoms_added, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                env.update_pathmap(space);
+                env.rebuild_bloom_filter_from_space();
+            }
+
+            // Extract and restore wide expressions (element 1) with LENIENT multiplicity handling
+            {
+                let large_exprs_par = extract_tuple_value(&tuple.ps[1])?;
+                if let Some(expr) = large_exprs_par.exprs.first() {
+                    if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
+                        if large_bytes.len() >= 12 {
+                            let mut offset = 0;
+
+                            if large_bytes.len() >= 4
+                                && &large_bytes[0..4] == METTA_LARGE_EXPRS_MAGIC
+                            {
+                                offset += 4;
+                            }
+
+                            if offset + 8 <= large_bytes.len() {
+                                let count = u64::from_be_bytes([
+                                    large_bytes[offset], large_bytes[offset + 1],
+                                    large_bytes[offset + 2], large_bytes[offset + 3],
+                                    large_bytes[offset + 4], large_bytes[offset + 5],
+                                    large_bytes[offset + 6], large_bytes[offset + 7],
+                                ]);
+                                offset += 8;
+
+                                for _ in 0..count {
+                                    if offset + 4 > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    let len = u32::from_be_bytes([
+                                        large_bytes[offset], large_bytes[offset + 1],
+                                        large_bytes[offset + 2], large_bytes[offset + 3],
+                                    ]) as usize;
+                                    offset += 4;
+
+                                    if offset + len > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    let wide_bytes = &large_bytes[offset..offset + len];
+                                    offset += len;
+
+                                    // LENIENT multiplicity handling
+                                    let multiplicity = if offset + 8 <= large_bytes.len() {
+                                        let mult = u64::from_be_bytes([
+                                            large_bytes[offset], large_bytes[offset + 1],
+                                            large_bytes[offset + 2], large_bytes[offset + 3],
+                                            large_bytes[offset + 4], large_bytes[offset + 5],
+                                            large_bytes[offset + 6], large_bytes[offset + 7],
+                                        ]);
+                                        if mult > (1u64 << 32) {
+                                            1u64
+                                        } else {
+                                            offset += 8;
+                                            mult
+                                        }
+                                    } else {
+                                        1u64
+                                    };
+
+                                    {
+                                        use crate::backend::environment::multiplicity as mult_mod;
+                                        let mut wbtm = env.shared.atom_space.wide_btm.write();
+                                        mult_mod::set_multiplicity(&mut wbtm, wide_bytes, multiplicity);
+                                    }
+                                    env.shared
+                                        .atom_space
+                                        .total_atoms
+                                        .fetch_add(multiplicity as usize, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            env.rebuild_bloom_filter();
+            Ok(env)
+        } else {
+            Err("Expected ETuple for environment".to_string())
+        }
+    } else {
+        Err("Environment Par has no expressions".to_string())
+    }
+}
+
+/// Lenient version of `pathmap_par_to_metta_state` that attempts strict deserialization
+/// first, then falls back to lenient environment handling for MettaState structures
+/// with missing/malformed multiplicity bytes.
+pub fn pathmap_par_to_metta_state_lenient(par: &Par) -> Result<MettaState, String> {
+    // Try strict deserialization first
+    match pathmap_par_to_metta_state(par) {
+        Ok(state) => return Ok(state),
+        Err(strict_err) => {
+            // Check if the Par has MettaState structure
+            if let Some(expr) = par.exprs.first() {
+                if let Some(ExprInstance::EPathmapBody(pathmap)) = &expr.expr_instance {
+                    if !has_metta_state_structure(pathmap) {
+                        return Err(strict_err);
+                    }
+                } else {
+                    return Err(strict_err);
+                }
+            } else {
+                return Err(strict_err);
+            }
+        }
+    }
+
+    // Structure is valid — attempt lenient deserialization
+    let pathmap = match par.exprs.first() {
+        Some(Expr { expr_instance: Some(ExprInstance::EPathmapBody(pm)) }) => pm,
+        _ => return Err("Par does not contain EPathMap".to_string()),
+    };
+
+    let state_tuple_par = &pathmap.ps[0];
+    let state_tuple = match state_tuple_par.exprs.first() {
+        Some(Expr { expr_instance: Some(ExprInstance::ETupleBody(tuple)) }) => tuple,
+        _ => return Err("Expected ETupleBody in PathMap".to_string()),
+    };
+
+    // Helper to extract value from (tag, value) tuple
+    let extract_tuple_value = |tuple_par: &Par| -> Result<Par, String> {
+        if let Some(expr) = tuple_par.exprs.first() {
+            if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
+                if tuple.ps.len() >= 2 {
+                    return Ok(tuple.ps[1].clone());
+                }
+            }
+        }
+        Err("Expected tuple with at least 2 elements".to_string())
+    };
+
+    // Extract source (field 0)
+    let pending_par = extract_tuple_value(&state_tuple.ps[0])?;
+    let source = if let Some(expr) = pending_par.exprs.first() {
+        if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
+            let exprs: Result<Vec<MettaValue>, String> =
+                list.ps.iter().map(par_to_metta_value).collect();
+            exprs?
+        } else {
+            return Err("Expected EListBody for source".to_string());
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Extract environment (field 1) — with lenient fallback
+    let env_par = extract_tuple_value(&state_tuple.ps[1])?;
+    let environment = match par_to_environment(&env_par) {
+        Ok(env) => env,
+        Err(_) => match par_to_environment_lenient(&env_par) {
+            Ok(env) => env,
+            Err(_) => MettaEnvironment::default(),
+        },
+    };
+
+    // Extract output (field 2)
+    let outputs_par = extract_tuple_value(&state_tuple.ps[2])?;
+    let output = if let Some(expr) = outputs_par.exprs.first() {
+        if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
+            let outputs: Result<Vec<MettaValue>, String> =
+                list.ps.iter().map(par_to_metta_value).collect();
+            outputs?
+        } else {
+            return Err("Expected EListBody for output".to_string());
+        }
+    } else {
+        Vec::new()
+    };
+
+    Ok(MettaState::from_parts(source, environment, output))
+}
+
+/// Create an error Expr as an EListBody containing [error_code, message].
+/// This is NOT an EPathmapBody, so it won't match `{| ..._ |}` in Rholang patterns,
+/// enabling type-discriminated error handling via pattern matching.
+pub fn metta_run_error_expr(error_code: &str, message: &str) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![
+                create_string_par(error_code.to_string()),
+                create_string_par(message.to_string()),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    }
+}
+
+/// Create an error Par wrapping `metta_run_error_expr` in a Par.
+pub fn metta_run_error_par(error_code: &str, message: &str) -> Par {
+    Par::default().with_exprs(vec![metta_run_error_expr(error_code, message)])
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -2238,5 +2635,138 @@ mod tests {
         assert_eq!(original_multiplicities.len(), final_multiplicities.len());
 
         println!("✓ Multiplicities stable across 3 round-trip cycles!");
+    }
+
+    #[test]
+    fn test_has_metta_state_structure_valid() {
+        // Create a proper MettaState and convert to PathMap
+        let state = MettaState::from_parts(
+            vec![MettaValue::Atom("test".to_string())],
+            MettaEnvironment::default(),
+            vec![MettaValue::Long(42)],
+        );
+        let par = metta_state_to_pathmap_par(&state);
+
+        if let Some(Expr { expr_instance: Some(ExprInstance::EPathmapBody(pathmap)) }) = par.exprs.first() {
+            assert!(has_metta_state_structure(pathmap), "Valid MettaState PathMap should pass structure check");
+        } else {
+            panic!("Expected EPathmapBody");
+        }
+    }
+
+    #[test]
+    fn test_has_metta_state_structure_invalid() {
+        // Create {| true |} — a PathMap with a boolean, not MettaState structure
+        let pathmap = EPathMap {
+            ps: vec![Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GBool(true)),
+            }])],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        };
+        assert!(!has_metta_state_structure(&pathmap), "{{| true |}} should not match MeTTa State structure");
+    }
+
+    #[test]
+    fn test_has_metta_state_structure_wrong_tags() {
+        // ETuple with 3 fields but wrong tag names
+        let wrong_tag_tuple = ETuple {
+            ps: vec![
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![
+                            create_string_par("wrong_tag".to_string()),
+                            Par::default(),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![
+                            create_string_par("environment".to_string()),
+                            Par::default(),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![
+                            create_string_par("output".to_string()),
+                            Par::default(),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+        };
+        let pathmap = EPathMap {
+            ps: vec![Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(wrong_tag_tuple)),
+            }])],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        };
+        assert!(!has_metta_state_structure(&pathmap), "Wrong tags should not match");
+    }
+
+    #[test]
+    fn test_metta_run_error_expr_is_elist() {
+        let error = metta_run_error_expr("test_code", "test message");
+        match &error.expr_instance {
+            Some(ExprInstance::EListBody(list)) => {
+                assert_eq!(list.ps.len(), 2);
+                // Check error code
+                if let Some(ExprInstance::GString(code)) = list.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                    assert_eq!(code, "test_code");
+                } else {
+                    panic!("Expected GString error code");
+                }
+                // Check message
+                if let Some(ExprInstance::GString(msg)) = list.ps[1].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                    assert_eq!(msg, "test message");
+                } else {
+                    panic!("Expected GString message");
+                }
+            }
+            Some(ExprInstance::EPathmapBody(_)) => panic!("Error should NOT be EPathmapBody"),
+            other => panic!("Expected EListBody, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_metta_run_error_par_wraps_correctly() {
+        let par = metta_run_error_par("err_code", "err msg");
+        assert_eq!(par.exprs.len(), 1);
+        assert!(matches!(
+            par.exprs[0].expr_instance,
+            Some(ExprInstance::EListBody(_))
+        ));
+    }
+
+    #[test]
+    fn test_lenient_deserialization_empty_env() {
+        // Create a MettaState with empty environment, serialize, then deserialize leniently
+        let state = MettaState::from_parts(
+            vec![MettaValue::Atom("hello".to_string())],
+            MettaEnvironment::default(),
+            vec![MettaValue::Long(1)],
+        );
+        let par = metta_state_to_pathmap_par(&state);
+
+        // Lenient should succeed (strict should also succeed for this case)
+        let result = pathmap_par_to_metta_state_lenient(&par);
+        assert!(result.is_ok(), "Lenient deserialization of valid state should succeed: {:?}", result.err());
+        let deserialized = result.expect("already checked");
+        assert_eq!(deserialized.source().len(), 1);
+        assert_eq!(deserialized.output().len(), 1);
     }
 }

@@ -63,7 +63,7 @@ pub use generic_types::{
 // Re-export generic engine functions (zero-conversion evaluation)
 pub use generic_engine::{
     apply_bindings_generic, pattern_match_generic,
-    try_match_all_rules_generic,
+    try_match_all_rules_generic, try_deterministic_chain,
 };
 // NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
 

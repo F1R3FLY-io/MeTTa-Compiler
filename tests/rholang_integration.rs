@@ -1423,6 +1423,144 @@ fn test_example_robot_planning() {
         },
     );
 
+    // ========================================================================
+    // Validations 17-27: New demos (v2.0)
+    // ========================================================================
+
+    // Validation 17: Demo 1 - Dynamic inventory (objects from atom space)
+    report.add_result(
+        "Demo 1 new: dynamic inventory contains objects",
+        if (stdout.contains("Inventory") || stdout.contains("inventory") || stdout.contains("Objects") || stdout.contains("objects"))
+            && stdout.contains("box1")
+            && stdout.contains("ball1")
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected inventory with box1 and ball1")
+        },
+    );
+
+    // Validation 18: Demo 2 - Topology query (connections from atom space)
+    report.add_result(
+        "Demo 2 new: topology query with room connections",
+        if (stdout.contains("Topology") || stdout.contains("topology") || stdout.contains("connections") || stdout.contains("Connections"))
+            && stdout.contains("room_a")
+            && stdout.contains("room_b")
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected topology with room connections")
+        },
+    );
+
+    // Validation 19: Demo 9 - Rest decomposition
+    report.add_result(
+        "Demo 9: rest decomposition with output extraction",
+        if (stdout.contains("Decomposition") || stdout.contains("decomposition"))
+            && (stdout.contains("rest") || stdout.contains("Rest") || stdout.contains("Remaining"))
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected rest decomposition demo markers")
+        },
+    );
+
+    // Validation 20: Demo 10 - State forking (independent branches)
+    report.add_result(
+        "Demo 10: state forking with independent branches",
+        if stdout.contains("Branch A") && stdout.contains("Branch B")
+            && (stdout.contains("independent") || stdout.contains("forked"))
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected Branch A, Branch B, and independence marker")
+        },
+    );
+
+    // Validation 21: Demo 11 - Error detection via decomposition
+    report.add_result(
+        "Demo 11: error detection via PathMap decomposition",
+        if (stdout.contains("Detection") || stdout.contains("detection"))
+            && (stdout.contains("detected") || stdout.contains("phantom") || stdout.contains("decomposition"))
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected error detection markers")
+        },
+    );
+
+    // Validation 22: Demo 12 - Invalid .run() receiver
+    report.add_result(
+        "Demo 12: invalid .run() receiver produces error",
+        if (stdout.contains("invalid") || stdout.contains("Invalid"))
+            && (stdout.contains("receiver") || stdout.contains("Receiver"))
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected invalid receiver error markers")
+        },
+    );
+
+    // Validation 23: Demo 13 - Error recovery
+    report.add_result(
+        "Demo 13: error recovery with valid state after error",
+        if stdout.contains("Recovery") || stdout.contains("recovery") || stdout.contains("isolated")
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected error recovery markers")
+        },
+    );
+
+    // Validation 24: Demo 14 - Runtime rule addition
+    report.add_result(
+        "Demo 14: runtime rule addition with greet/hello",
+        if stdout.contains("greet") && stdout.contains("hello")
+            && (stdout.contains("runtime") || stdout.contains("Runtime"))
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected greet/hello/runtime markers")
+        },
+    );
+
+    // Validation 25: Demo 15 - World modification with before/after
+    report.add_result(
+        "Demo 15: world modification with before/after verification",
+        if stdout.contains("Before") && stdout.contains("After")
+            && stdout.contains("room_a") && stdout.contains("room_d")
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected Before/After world modification markers")
+        },
+    );
+
+    // Validation 26: Demo 16 - 3-layer PathMap decomposition
+    report.add_result(
+        "Demo 16: 3-layer PathMap decomposition with atom space",
+        if (stdout.contains("Layer") || stdout.contains("layer"))
+            && (stdout.contains("3-layer") || stdout.contains("decomposition"))
+            && (stdout.contains("atom") || stdout.contains("Atom"))
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected 3-layer decomposition and atom space markers")
+        },
+    );
+
+    // Validation 27: Demo 17 - Multi-object mission
+    report.add_result(
+        "Demo 17: multi-object mission with ball1 and key1",
+        if stdout.contains("ball1") && stdout.contains("key1")
+            && (stdout.contains("Mission") || stdout.contains("mission"))
+        {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected ball1, key1, and mission markers")
+        },
+    );
+
     // Assert all validations passed and print report
     assert!(report.all_passed(), "\n{}", report.format());
 }
@@ -1655,4 +1793,105 @@ async fn test_async_runner() {
     println!("Async runner executed {} tests", results.len());
     let passed = results.iter().filter(|r| r.success).count();
     println!("  {} passed, {} failed", passed, results.len() - passed);
+}
+
+// ============================================================================
+// Run Error Handling Tests
+// ============================================================================
+
+#[test]
+fn test_run_error_handling() {
+    let (success, stdout, stderr) = run_rho_test("test_run_error_handling.rho");
+    let exit_code = if success { 0 } else { 1 };
+
+    use common::{TestReport, ValidationResult};
+
+    let mut report = TestReport::new("test_run_error_handling");
+    report.executed = true;
+    report.exit_code = Some(exit_code);
+
+    // Validation 1: Test suite completion
+    let completion_check =
+        Expectation::contains("test completion", "Run Error Handling Test Suite Complete");
+    let completion_result = validate(&stdout, &stderr, exit_code, &completion_check);
+    report.add_result(
+        "Test suite completion message present",
+        if completion_result.is_pass() {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Test suite completion message not found")
+        },
+    );
+
+    // Validation 2: Test 1 — .run() success returns PathMap
+    report.add_result(
+        ".run() success returns PathMap",
+        if stdout.contains("PASS: Result is PathMap") {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected 'PASS: Result is PathMap' in output")
+        },
+    );
+
+    // Validation 3: Test 1 — PathMap with output [3] from !(+ 1 2)
+    let pathmaps = parse_pathmap(&stdout);
+    let has_sum_3 = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64]));
+    report.add_result(
+        ".run() success: PathMap contains output [3]",
+        if has_sum_3 {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected output [3] from .run() success not found")
+        },
+    );
+
+    // Validation 4: Test 2 — .run() with invalid receiver returns error list
+    report.add_result(
+        ".run() with invalid receiver returns error list",
+        if stdout.contains("PASS: Got error list") {
+            ValidationResult::pass()
+        } else if stdout.contains("invalid_accumulated_state") || stdout.contains("Error code:") {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected error list for invalid receiver")
+        },
+    );
+
+    // Validation 5: Test 2 error code is "invalid_accumulated_state"
+    report.add_result(
+        "Error code is 'invalid_accumulated_state'",
+        if stdout.contains("invalid_accumulated_state") {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected error code 'invalid_accumulated_state'")
+        },
+    );
+
+    // Validation 6: Test 3 — .run() chaining with double(7) produces [14]
+    let has_double_14 = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[14i64]));
+    report.add_result(
+        ".run() chaining: double(7) produces [14]",
+        if has_double_14 {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Expected output [14] from chained .run() not found")
+        },
+    );
+
+    // Validation 7: No unexpected panics or crashes
+    report.add_result(
+        "No panics in output",
+        if !stderr.contains("panic") && !stdout.contains("panic") {
+            ValidationResult::pass()
+        } else {
+            ValidationResult::fail("Output contains panic messages")
+        },
+    );
+
+    // Assert all validations passed and print report
+    assert!(report.all_passed(), "\n{}", report.format());
 }

@@ -30,7 +30,8 @@ use tracing::trace;
 use super::context::{ContextEnv, EvalContext};
 use super::generic_engine::{
     apply_bindings_generic, eval_switch_generic, is_boolean_check_pattern, pattern_match_generic,
-    try_match_all_rules_generic, GenericSwitchResult,
+    try_match_all_rules_generic, try_deferred_deterministic_chain, DeferredChainResult,
+    GenericSwitchResult,
 };
 use super::generic_types::{GenericContinuation, GenericEvalResult, GenericWorkItem};
 use super::super::list_ops::substitute_variable_generic;
@@ -69,6 +70,7 @@ use super::dispatch_hints::{
     should_memoize, eval_memo_get, eval_memo_put,
     collect_eval_memo_roots, collect_match_result_roots,
 };
+use super::generic_engine::try_deterministic_chain;
 
 // =============================================================================
 // Parallel Nondeterministic Branching
@@ -258,13 +260,29 @@ where
                     result: (smallvec![rhs], env),
                 });
             } else {
-                work_stack.push(GenericWorkItem::Eval {
-                    value: rhs,
-                    env,
-                    depth: depth + 1,
-                    is_tail_call: false,
-                    expected_type: None,
-                });
+                // Phase F: Tight deterministic chain — if the ground RHS is itself
+                // a deterministic operator, chain through without pushing to the
+                // work stack. This eliminates trampoline pop/dispatch/push overhead
+                // for chains of deterministic user-defined functions.
+                if let Some(chained) = try_deterministic_chain(&rhs, &env, ctx.factory()) {
+                    // The chain resolved one or more steps. The result still needs
+                    // evaluation (may be a special form, nondeterministic, etc.)
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: chained,
+                        env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                    });
+                } else {
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: rhs,
+                        env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                    });
+                }
             }
         }
         return;
@@ -1061,9 +1079,53 @@ where
                     continue;
                 }
 
+                // ── Stretch Goal 3: Function Specialization Fast Path ──
+                //
+                // For S-expressions whose head is a known deterministic
+                // user-defined operator (operator cache: all_structural &&
+                // candidate_count == 1), skip the full eval pipeline:
+                // - hash_value computation (~700ns, 6.6% CPU)
+                // - eval_memo_get LRU lookup (~400ns, 1.6% CPU)
+                // - eval_step_generic type checks
+                // - eval_sexpr_step's 70+ special form dispatch
+                // - try_match_all_rules_generic's caching layers
+                //
+                // Goes directly to structural matching + binding application.
+                // The operator cache is populated on first access via
+                // match_rules_native. Subsequent accesses hit the cache
+                // (thread-local LRU, ~40ns lookup).
+                //
+                // Positioned BEFORE the memo hash computation to avoid
+                // the expensive hash_value() call for deterministic operators
+                // that rarely benefit from expression-level memoization
+                // (varied arguments → near-zero cache hit rate).
+                if is_sexpr {
+                    if let Some(chain_result) = try_deterministic_chain(&value, &env, ctx.factory()) {
+                        if is_memoized_normal_form(&chain_result) {
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (smallvec![chain_result], env),
+                            });
+                        } else if is_normal_form_bounded(&chain_result, &env, 2) {
+                            memoize_normal_form(&chain_result);
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (smallvec![chain_result], env),
+                            });
+                        } else {
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: chain_result, env,
+                                depth: depth + 1, is_tail_call, expected_type,
+                            });
+                        }
+                        continue;
+                    }
+                }
+
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
+                // Expressions that hit the deterministic fast path above skip this
+                // because their varied arguments make cache hits rare (~0% hit rate),
+                // and the hash_value() cost (~700ns) exceeds structural match (~100ns).
                 let memo_hash = if is_sexpr
                     && std::any::TypeId::of::<C::Value>()
                         == std::any::TypeId::of::<crate::backend::models::MettaValue>()
@@ -2537,13 +2599,13 @@ where
                         continue;
                     }
 
-                    // ── Phase C: `let*` with deferred body ──
+                    // ── Stretch Goal 2: `let*` tight loop via ProcessLetStar ──
                     //
                     // For `(let* ((p1 v1) (p2 v2) ...) body)` with pending bindings B:
-                    // Instead of materializing the entire let* tree, desugar directly
-                    // to nested `let` forms carrying B as outer_bindings. Each nested
-                    // `let` goes through the existing deferred path above, avoiding the
-                    // double materialization (materialize let* → desugar → materialize nested lets).
+                    // Instead of desugaring to N nested `let` S-exprs (N allocations +
+                    // 3N trampoline iterations), use ProcessLetStar continuation to
+                    // evaluate value expressions sequentially and accumulate bindings.
+                    // Reduces to N+2 iterations and 0 nested `let` allocations.
                     if resolved_head_atom == Some("let*") && items.len() == 3 {
                         let bindings_expr = apply_bindings_generic(&items[1], &bindings, ctx.factory());
                         if let Some(binding_pairs) = bindings_expr.as_sexpr() {
@@ -2560,33 +2622,51 @@ where
                                 continue;
                             }
 
-                            // Desugar to nested let, keeping the body raw:
-                            // (let* ((a 1) (b 2)) body) → (let a 1 (let b 2 body))
-                            let mut result_body = items[2].clone(); // RAW body
-
-                            // Build nested let structure from inside out (reverse order)
-                            for binding in binding_pairs.iter().rev() {
+                            // Extract (pattern, value_expr) pairs
+                            let mut pairs: Vec<(C::Value, C::Value)> = Vec::with_capacity(binding_pairs.len());
+                            for binding in binding_pairs.iter() {
                                 if let Some(pair) = binding.as_sexpr() {
                                     if pair.len() == 2 {
-                                        result_body = ctx.factory().sexpr(vec![
-                                            ctx.factory().atom("let"),
-                                            pair[0].clone(),
-                                            pair[1].clone(),
-                                            result_body,
-                                        ]);
+                                        pairs.push((pair[0].clone(), pair[1].clone()));
                                     }
                                 }
                             }
 
-                            // The outermost nested let will be handled by the `let`
-                            // deferral path in the next EvalWithBindings iteration.
-                            work_stack.push(GenericWorkItem::EvalWithBindings {
-                                template: result_body,
-                                bindings,
-                                env,
+                            if pairs.is_empty() {
+                                // No valid pairs — evaluate body
+                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                    template: items[2].clone(),
+                                    bindings,
+                                    env,
+                                    depth,
+                                    is_tail_call,
+                                    expected_type,
+                                });
+                                continue;
+                            }
+
+                            // Pop first pair, materialize its value_expr with current bindings
+                            let (first_pattern, first_value_expr) = pairs.remove(0);
+                            let materialized_value = apply_bindings_generic(
+                                &first_value_expr, &bindings, ctx.factory(),
+                            );
+
+                            continuations.push(GenericContinuation::ProcessLetStar {
+                                current_pattern: first_pattern,
+                                remaining_pairs: pairs,
+                                body: items[2].clone(), // RAW body
+                                accumulated_bindings: bindings,
+                                env: env.clone(),
                                 depth,
                                 is_tail_call,
-                                expected_type,
+                            });
+
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: materialized_value,
+                                env,
+                                depth: depth + 1,
+                                is_tail_call: false,
+                                expected_type: None,
                             });
                             continue;
                         }
@@ -2645,6 +2725,38 @@ where
                             is_tail_call: false,
                             expected_type: None,
                         });
+                        continue;
+                    }
+
+                    // ── Stretch Goal 1: Binding-aware deterministic chain ──
+                    //
+                    // For user-defined deterministic functions, try to chain
+                    // through multiple rule applications without returning to
+                    // the full trampoline dispatch loop. This saves 2-3 trampoline
+                    // iterations per chain step and defers apply_bindings allocation
+                    // when the RHS has variables (compose bindings instead).
+                    if let Some(chain_result) = try_deferred_deterministic_chain(
+                        &template, &bindings, &env, ctx.factory(),
+                    ) {
+                        match chain_result {
+                            DeferredChainResult::Deferred { template: new_template, bindings: new_bindings } => {
+                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                    template: new_template,
+                                    bindings: new_bindings,
+                                    env, depth, is_tail_call, expected_type,
+                                });
+                            }
+                            DeferredChainResult::Concrete(value) => {
+                                work_stack.push(GenericWorkItem::Eval {
+                                    value, env, depth, is_tail_call, expected_type,
+                                });
+                            }
+                            DeferredChainResult::Done(value) => {
+                                work_stack.push(GenericWorkItem::Resume {
+                                    result: (smallvec![value], env),
+                                });
+                            }
+                        }
                         continue;
                     }
 
@@ -7221,6 +7333,144 @@ fn process_continuation_generic<C: EvalContext>(
             work_stack.push(GenericWorkItem::Resume {
                 result: (result_values, result_env),
             });
+        }
+
+        // ── Stretch Goal 2: ProcessLetStar tight loop ──
+        //
+        // Sequential binding evaluation for `let*` without desugaring to
+        // nested `let` forms. Each resumption pattern-matches the result
+        // against the current pair's pattern, accumulates bindings, and
+        // evaluates the next pair's value expression.
+        //
+        // Flow: EvalWithBindings detects `let*`, pops first (pattern, value_expr),
+        // pushes ProcessLetStar(current_pattern, remaining_pairs, body, bindings),
+        // pushes Eval(materialized_value_expr). On Resume:
+        // 1. Pattern-match result against current_pattern
+        // 2. Compose new bindings with accumulated_bindings
+        // 3. If more pairs: materialize next value_expr, push ProcessLetStar, push Eval
+        // 4. If no more pairs: push EvalWithBindings(body, final_bindings)
+        GenericContinuation::ProcessLetStar {
+            current_pattern,
+            mut remaining_pairs,
+            body,
+            mut accumulated_bindings,
+            env: _,
+            depth,
+            is_tail_call,
+        } => {
+            let (result_values, result_env) = result;
+
+            // Deterministic fast path: single result → pattern match + accumulate
+            if result_values.len() == 1 {
+                let value = &result_values[0];
+
+                if let Some(pm_bindings) = pattern_match_generic(&current_pattern, value) {
+                    // Compose pattern-match bindings into accumulated
+                    accumulated_bindings = accumulated_bindings.compose(&pm_bindings);
+
+                    if remaining_pairs.is_empty() {
+                        // All bindings resolved — evaluate body with composed bindings
+                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                            template: body,
+                            bindings: accumulated_bindings,
+                            env: result_env,
+                            depth,
+                            is_tail_call,
+                            expected_type: None,
+                        });
+                    } else {
+                        // More pairs to process — pop next pair
+                        let (next_pattern, next_value_expr) = remaining_pairs.remove(0);
+                        let materialized_value = apply_bindings_generic(
+                            &next_value_expr, &accumulated_bindings, ctx.factory(),
+                        );
+
+                        continuations.push(GenericContinuation::ProcessLetStar {
+                            current_pattern: next_pattern,
+                            remaining_pairs,
+                            body,
+                            accumulated_bindings,
+                            env: result_env.clone(),
+                            depth,
+                            is_tail_call,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: materialized_value,
+                            env: result_env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                    }
+                } else {
+                    // Pattern match failed — let* produces empty (MeTTa HE semantics)
+                    work_stack.push(GenericWorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                }
+            } else if result_values.is_empty() {
+                // Zero results — let* produces empty
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (SmallVec::new(), result_env),
+                });
+            } else {
+                // Multiple results — nondeterministic value expression.
+                // Fall back to standard `let` machinery for each result.
+                // Build nested let form for remaining pairs + body, then
+                // use ProcessAmb to handle each result.
+                let mut let_body = body;
+                for (pat, val_expr) in remaining_pairs.into_iter().rev() {
+                    let_body = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("let"),
+                        pat,
+                        val_expr,
+                        let_body,
+                    ]);
+                }
+
+                // For each result value, pattern-match and evaluate the rest
+                let mut bound_bodies: Vec<C::Value> = Vec::new();
+                for value in result_values.iter() {
+                    if let Some(pm_bindings) = pattern_match_generic(&current_pattern, value) {
+                        let composed = accumulated_bindings.compose(&pm_bindings);
+                        let materialized = apply_bindings_generic(&let_body, &composed, ctx.factory());
+                        bound_bodies.push(materialized);
+                    }
+                }
+
+                if bound_bodies.is_empty() {
+                    work_stack.push(GenericWorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                } else if bound_bodies.len() == 1 {
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: bound_bodies.into_iter().next().expect("len == 1"),
+                        env: result_env,
+                        depth,
+                        is_tail_call,
+                        expected_type: None,
+                    });
+                } else {
+                    let mut bodies_iter = bound_bodies.into_iter();
+                    let first = bodies_iter.next().expect("bodies non-empty");
+
+                    continuations.push(GenericContinuation::ProcessAmb {
+                        remaining_alts: bodies_iter,
+                        results: Vec::new(),
+                        env: result_env.clone(),
+                        depth,
+                    });
+
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: first,
+                        env: result_env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                    });
+                }
+            }
         }
     }
 }

@@ -16,7 +16,7 @@ use tracing::trace;
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
-use super::generic_sexpr::eval_sexpr_step_generic;
+use super::generic_sexpr::{eval_sexpr_step_generic, eval_sexpr_step_with_original};
 use super::generic_types::GenericEvalStep;
 
 /// Perform a single step of generic evaluation.
@@ -129,7 +129,7 @@ where
     // S-expressions need special handling
     if let Some(items) = value.as_sexpr() {
         let items_vec: Vec<C::Value> = items.iter().cloned().collect();
-        return eval_sexpr_step_generic(items_vec, env, depth, ctx);
+        return eval_sexpr_step_with_original(items_vec, value, env, depth, ctx);
     }
 
     // For conjunctions, evaluate goals left-to-right with binding threading

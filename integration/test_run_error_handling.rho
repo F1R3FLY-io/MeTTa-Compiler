@@ -1,0 +1,247 @@
+// =====================================================================
+// MeTTa .run() Error Handling Tests
+// =====================================================================
+// Tests type-discriminated return values from .run()
+// Success → PathMap (matches {| ..._ |})
+// Failure → EList [error_code, message] (does NOT match PathMap pattern)
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runTest,
+    testComplete,
+    waitForTests,
+    ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 3 tests before printing summary
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 3) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Test Suite: .run() Error Handling
+  // ===================================================================
+
+  stdoutAck!("=== MeTTa Run Error Handling Test Suite ===\n\n", *ack) |
+
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3")
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 1: .run() success returns PathMap
+  // -------------------------------------------------------------------
+  for (ret, @"1" <- runTest) {
+    stdoutAck!("Test 1: .run() success returns PathMap\n", *ack) |
+    for (_ <- ack) {
+      new compiledState, result in {
+        mettaCompile!(*compiledState, "!(+ 1 2)") |
+        for (@pm <- compiledState) {
+          result!({||}.run(pm)) |
+          for (@rslt <- result) {
+            match rslt {
+              {| ..._ |} => {
+                stdoutAck!("  PASS: Result is PathMap\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  Result: ", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!(rslt, *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("\n\n", *ack) |
+                      for (_ <- ack) {
+                        ret!() | testComplete!("1")
+                      }
+                    }
+                  }
+                }
+              }
+              other => {
+                stdoutAck!("  UNEXPECTED: Result is not PathMap: ", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!(other, *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("\n\n", *ack) |
+                    for (_ <- ack) {
+                      ret!() | testComplete!("1")
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 2: .run() with invalid receiver returns error list
+  // {| true |} is not a valid MettaState, should get error list
+  // -------------------------------------------------------------------
+  for (ret, @"2" <- runTest) {
+    stdoutAck!("Test 2: .run() with invalid receiver {| true |} returns error list\n", *ack) |
+    for (_ <- ack) {
+      new compiledState, result in {
+        mettaCompile!(*compiledState, "!(+ 1 2)") |
+        for (@pm <- compiledState) {
+          result!({| true |}.run(pm)) |
+          for (@rslt <- result) {
+            match rslt {
+              {| ..._ |} => {
+                stdoutAck!("  UNEXPECTED: Got PathMap for invalid receiver\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("2")
+                }
+              }
+              [code, msg] => {
+                stdoutAck!("  PASS: Got error list\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  Error code: ", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!(code, *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("\n  Message: ", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!(msg, *ack) |
+                        for (_ <- ack) {
+                          stdoutAck!("\n\n", *ack) |
+                          for (_ <- ack) {
+                            ret!() | testComplete!("2")
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              other => {
+                stdoutAck!("  OTHER: ", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!(other, *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("\n\n", *ack) |
+                    for (_ <- ack) {
+                      ret!() | testComplete!("2")
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 3: .run() chaining - compile, run, then run again
+  // Tests that .run() success path still works for sequential evaluation
+  // -------------------------------------------------------------------
+  for (ret, @"3" <- runTest) {
+    stdoutAck!("Test 3: .run() chaining - sequential evaluation\n", *ack) |
+    for (_ <- ack) {
+      new c1, c2, r1, r2 in {
+        // Step 1: Compile and run a rule definition
+        mettaCompile!(*c1, "(= (double $x) (* $x 2))") |
+        for (@compiled1 <- c1) {
+          r1!({||}.run(compiled1)) |
+          for (@state1 <- r1) {
+            stdoutAck!("  Step 1: Defined double rule\n", *ack) |
+            for (_ <- ack) {
+              // Step 2: Compile evaluation and run against accumulated state
+              mettaCompile!(*c2, "!(double 7)") |
+              for (@compiled2 <- c2) {
+                r2!(state1.run(compiled2)) |
+                for (@state2 <- r2) {
+                  match state2 {
+                    {| ..._ |} => {
+                      stdoutAck!("  Step 2: PASS - Evaluated double(7)\n", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("  Result: ", *ack) |
+                        for (_ <- ack) {
+                          stdoutAck!(state2, *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!("\n  Expected: output [14]\n\n", *ack) |
+                            for (_ <- ack) {
+                              ret!() | testComplete!("3")
+                            }
+                          }
+                        }
+                      }
+                    }
+                    [code, msg] => {
+                      stdoutAck!("  Step 2: UNEXPECTED error: ", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!(code, *ack) |
+                        for (_ <- ack) {
+                          stdoutAck!(" - ", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!(msg, *ack) |
+                            for (_ <- ack) {
+                              stdoutAck!("\n\n", *ack) |
+                              for (_ <- ack) {
+                                ret!() | testComplete!("3")
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                    other => {
+                      stdoutAck!("  Step 2: OTHER: ", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!(other, *ack) |
+                        for (_ <- ack) {
+                          stdoutAck!("\n\n", *ack) |
+                          for (_ <- ack) {
+                            ret!() | testComplete!("3")
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== Run Error Handling Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("All 3 tests completed:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  - .run() success returns PathMap\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  - .run() invalid receiver returns error list\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  - .run() chaining works\n", *ack)
+            }
+          }
+        }
+      }
+    }
+  }
+}

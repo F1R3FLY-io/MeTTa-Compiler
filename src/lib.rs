@@ -109,8 +109,10 @@ pub use rholang_integration::{state_to_json, eval_metta_session, eval_metta_sess
 
 pub use pathmap_par_integration::{
     decode_large_exprs_bytes_to_pars,
-    decode_space_bytes_to_pars, metta_error_to_par, metta_state_to_pathmap_par,
+    decode_space_bytes_to_pars, has_metta_state_structure, metta_error_to_par,
+    metta_run_error_expr, metta_run_error_par, metta_state_to_pathmap_par,
     metta_value_to_par, par_to_metta_value, pathmap_par_to_metta_state,
+    pathmap_par_to_metta_state_lenient,
 };
 
 pub use config::{configure_eval, get_eval_config, EvalConfig};

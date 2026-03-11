@@ -71,10 +71,47 @@ pub fn eval_sexpr_step_generic<C: EvalContext>(
 where
     C::Value: Clone,
 {
+    eval_sexpr_step_generic_inner(items, None, env, depth, ctx)
+}
+
+/// Like `eval_sexpr_step_generic`, but accepts a pre-built S-expr value to avoid
+/// redundant allocation. When the caller already has the expression (e.g., from
+/// EvalWithBindings materialization), passing it here skips the `factory.sexpr(items.clone())`
+/// allocation at the rule-matching catch-all arm.
+pub fn eval_sexpr_step_with_original<C: EvalContext>(
+    items: Vec<C::Value>,
+    original_sexpr: C::Value,
+    env: ContextEnv<C>,
+    depth: usize,
+    ctx: &C,
+) -> GenericEvalStep<C::Value, ContextEnv<C>>
+where
+    C::Value: Clone,
+{
+    eval_sexpr_step_generic_inner(items, Some(original_sexpr), env, depth, ctx)
+}
+
+/// Inner implementation accepting an optional pre-built S-expr to avoid redundant
+/// allocation when the caller already has the expression (e.g., from EvalWithBindings
+/// materialization). When `original_sexpr` is `Some`, it's used directly for rule
+/// matching instead of re-wrapping items via `factory.sexpr(items.clone())`.
+fn eval_sexpr_step_generic_inner<C: EvalContext>(
+    items: Vec<C::Value>,
+    original_sexpr: Option<C::Value>,
+    env: ContextEnv<C>,
+    depth: usize,
+    ctx: &C,
+) -> GenericEvalStep<C::Value, ContextEnv<C>>
+where
+    C::Value: Clone,
+{
     trace!(target: "mettatron::backend::eval::eval_sexpr_step_generic", ?items, depth);
 
     // Preprocess to combine `& self` into `&self` for HE-compatible space references
+    let orig_len = items.len();
     let items = preprocess_space_refs_generic(items, ctx);
+    // If preprocessing changed items, the original_sexpr is no longer valid
+    let original_sexpr = if items.len() != orig_len { None } else { original_sexpr };
 
     if items.is_empty() {
         // HE-compatible: empty SExpr () evaluates to itself, not Nil
@@ -1941,7 +1978,8 @@ where
 
     // Step 3: Rule matching with unevaluated arguments (lazy evaluation).
     // Only reached when Step 2 found no args to pre-evaluate.
-    let resolved_sexpr = ctx.factory().sexpr(items.clone());
+    // Use original_sexpr if available (avoids redundant factory.sexpr allocation).
+    let resolved_sexpr = original_sexpr.unwrap_or_else(|| ctx.factory().sexpr(items.clone()));
     let all_matches = crate::backend::eval::trampoline::try_match_all_rules_generic(&resolved_sexpr, &env, *ctx.factory());
 
     if !all_matches.is_empty() {

@@ -59,6 +59,7 @@ fn check_gc_epoch() -> bool {
             // Invalidate all pointer-keyed caches on this thread.
             EVAL_MEMO.with(|memo_cell| memo_cell.borrow_mut().clear());
             MATCH_RESULT_CACHE.with(|cache_cell| cache_cell.borrow_mut().clear());
+            clear_operator_cache();
             invalidate_normal_form_memo();
             crate::backend::environment::rule_management::clear_mork_bytes_cache();
             crate::backend::mork_convert::clear_ground_fragment_cache();
@@ -297,7 +298,9 @@ thread_local! {
 #[inline]
 pub fn should_memoize<V: MettaValueTrait>(value: &V) -> bool {
     if let Some(items) = value.as_sexpr() {
-        if items.len() < 2 {
+        // Allow zero-arity function calls (items.len() == 1, e.g. `(kbstatic)`)
+        // to be memoized. Only reject truly empty S-expressions (len == 0 → Unit).
+        if items.is_empty() {
             return false;
         }
         // Expressions containing variables produce context-dependent results
@@ -483,6 +486,88 @@ pub fn clear_match_result_cache() {
 }
 
 // ============================================================================
+// Phase E: Operator Inline Cache — Thread-Local Rule Metadata Cache
+// ============================================================================
+//
+// Caches per-operator metadata to skip hash computation and bloom filter
+// lookups when all rule candidates have structural matchers. Keyed by
+// (head_symbol, arity), validated by rule epoch. When `all_structural` is
+// true, `try_match_all_rules_generic` can skip `hash_value()` (7.48% CPU)
+// and the match result cache entirely — going straight to structural matching.
+
+/// Cached metadata about an operator's rule candidates.
+#[derive(Clone, Debug)]
+pub struct OperatorCacheEntry {
+    /// Rule epoch at cache insertion time — used for staleness check.
+    pub rule_epoch: u64,
+    /// Whether ALL candidates for this (head, arity) have structural matchers.
+    pub all_structural: bool,
+    /// Number of rule candidates for this (head, arity).
+    pub candidate_count: usize,
+}
+
+thread_local! {
+    /// Thread-local operator metadata cache.
+    ///
+    /// Key: combined u64 from (interned head symbol pointer, arity).
+    /// Using interned string pointer as key component avoids hashing
+    /// the string on every lookup. Since MeTTa atoms are interned via
+    /// the slab allocator, the same symbol always has the same `&'static str` pointer.
+    ///
+    /// 512 entries × ~40 bytes = ~20 KB per thread. LRU eviction bounds memory.
+    static OPERATOR_CACHE: RefCell<LruCache<u64, OperatorCacheEntry, IdentityU64BuildHasher>> =
+        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(512).expect("non-zero"), IdentityU64BuildHasher));
+}
+
+/// Combine head pointer and arity into a single u64 key.
+/// Uses Fibonacci mixing on the pointer to spread aligned addresses,
+/// then XORs with arity to differentiate same-head different-arity ops.
+#[inline(always)]
+fn op_cache_key(head: &str, arity: usize) -> u64 {
+    let ptr = head.as_ptr() as u64;
+    // Fibonacci hash mixing for the pointer (spread aligned addresses)
+    let mixed = ptr.wrapping_mul(0x517cc1b727220a95);
+    mixed ^ (arity as u64)
+}
+
+/// Look up cached operator metadata.
+///
+/// Returns `Some(entry)` if a valid entry exists for this (head, arity)
+/// at the current rule epoch. Returns `None` on cache miss or stale entry.
+#[inline]
+pub fn operator_cache_get(head: &str, arity: usize) -> Option<OperatorCacheEntry> {
+    let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
+    let key = op_cache_key(head, arity);
+    OPERATOR_CACHE.with(|cache_cell| {
+        let mut cache = cache_cell.borrow_mut();
+        if let Some(entry) = cache.get(&key) {
+            if entry.rule_epoch == current_epoch {
+                return Some(entry.clone());
+            }
+        }
+        None
+    })
+}
+
+/// Store operator metadata in the cache.
+#[inline]
+pub fn operator_cache_put(head: &str, arity: usize, entry: OperatorCacheEntry) {
+    let key = op_cache_key(head, arity);
+    OPERATOR_CACHE.with(|cache_cell| {
+        cache_cell.borrow_mut().put(key, entry);
+    });
+}
+
+/// Clear the operator cache.
+///
+/// Called on GC epoch change (pointer-keyed entries may be stale).
+pub fn clear_operator_cache() {
+    OPERATOR_CACHE.with(|cache_cell| {
+        cache_cell.borrow_mut().clear();
+    });
+}
+
+// ============================================================================
 // Phase 6 (revised): Normal-Form Short-Circuit in dispatch_rule_matches
 // ============================================================================
 //
@@ -505,7 +590,7 @@ use phf::phf_set;
 /// Maintained in sync with `eval_sexpr_step_generic` match arms,
 /// `GROUNDED_OPS`, `SPECIAL_FORMS_REDISPATCH`, and `EAGER_SPECIAL_FORMS`
 /// via the `reducible_heads_covers_all_known_sets` test below.
-static REDUCIBLE_HEADS: phf::Set<&'static str> = phf_set! {
+pub(crate) static REDUCIBLE_HEADS: phf::Set<&'static str> = phf_set! {
     // === Special forms (eval_sexpr_step_generic match arms) ===
     "=", "!", "quote", "unquote",
     "if", "if-reducible", "if-equal",

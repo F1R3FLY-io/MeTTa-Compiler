@@ -38,18 +38,70 @@ use self::serialize_tags::*;
 /// Golden ratio constant for combining child hashes in SExpr.
 const HASH_GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
 
+/// Two-tier hash cache: L1 direct-mapped array + L2 HashMap.
+///
+/// L1: 1024-entry array indexed by `(ptr >> 4) & 0x3FF`. Each entry is a
+/// `(slab_ptr, hash)` pair. On hit (ptr match), returns in ~2ns (array index +
+/// compare). On miss, falls through to L2.
+///
+/// L2: HashMap with Fibonacci pointer hashing. Handles L1 collisions.
+/// O(1) amortized lookup.
+///
+/// Both tiers store the same data — L1 is a subset (last writer wins on collision).
+/// This avoids HashMap overhead for ~90%+ of lookups while preserving correctness
+/// for the remaining collisions.
+struct TieredHashCache {
+    l1: Vec<(usize, u64)>,
+    l2: HashMap<usize, u64, PtrBuildHasher>,
+}
+
+const HASH_L1_SIZE: usize = 1024;
+const HASH_L1_MASK: usize = HASH_L1_SIZE - 1;
+
+impl TieredHashCache {
+    fn new() -> Self {
+        Self {
+            l1: vec![(0usize, 0u64); HASH_L1_SIZE],
+            l2: HashMap::with_hasher(PtrBuildHasher),
+        }
+    }
+
+    #[inline(always)]
+    fn get(&self, key: usize) -> Option<u64> {
+        let idx = (key >> 4) & HASH_L1_MASK;
+        // Safety: idx is always < HASH_L1_SIZE due to mask
+        let (k, v) = unsafe { *self.l1.get_unchecked(idx) };
+        if k == key { return Some(v); }
+        self.l2.get(&key).copied()
+    }
+
+    #[inline(always)]
+    fn insert(&mut self, key: usize, hash: u64) {
+        let idx = (key >> 4) & HASH_L1_MASK;
+        // Safety: idx is always < HASH_L1_SIZE due to mask
+        unsafe { *self.l1.get_unchecked_mut(idx) = (key, hash); }
+        self.l2.insert(key, hash);
+    }
+
+    fn clear(&mut self) {
+        for slot in self.l1.iter_mut() {
+            *slot = (0, 0);
+        }
+        self.l2.clear();
+    }
+}
+
 thread_local! {
-    /// Cache mapping `MettaValueInner` slab pointer → precomputed u64 content hash.
+    /// Tiered hash cache: L1 direct-mapped (1024 entries, 16 KB) + L2 HashMap.
     ///
     /// Slab pointers are stable (never moved) until GC frees them. This cache
     /// eliminates O(tree_size) recursive hashing for deeply nested S-expressions
     /// (PLN Robot has depth 252). After the first hash, subsequent lookups are O(1).
     ///
-    /// Uses `PtrBuildHasher` (Fibonacci hashing) since keys are slab pointers.
     /// Invalidated at GC safepoints via `clear_value_hash_cache()` to prevent
     /// ABA issues when freed slots are reused.
-    static VALUE_HASH_CACHE: RefCell<HashMap<usize, u64, PtrBuildHasher>> =
-        RefCell::new(HashMap::with_hasher(PtrBuildHasher));
+    static VALUE_HASH_CACHE: RefCell<TieredHashCache> =
+        RefCell::new(TieredHashCache::new());
 }
 
 /// Clear the thread-local hash value cache.
@@ -65,7 +117,7 @@ pub fn clear_value_hash_cache() {
 /// For `SExpr`, children hashes are fetched from the cache (if available) and combined
 /// with golden-ratio mixing, avoiding full Xxh3 tree traversal. This turns O(tree_size)
 /// per call into O(arity) for cached children, and O(1) for fully-cached values.
-fn hash_value_cached_inner(value: &MettaValue, cache: &mut HashMap<usize, u64, PtrBuildHasher>) -> u64 {
+fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u64 {
     // Golden ratio constants for primitive fast paths
     const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
     const LONG_SEED: u64 = 0x517cc1b727220a95;
@@ -113,9 +165,9 @@ fn hash_value_cached_inner(value: &MettaValue, cache: &mut HashMap<usize, u64, P
         _ => {}
     }
 
-    // Cache lookup by slab pointer
+    // Cache lookup by slab pointer (L1 direct-mapped → L2 HashMap)
     let key = value.inner_ptr() as usize;
-    if let Some(&h) = cache.get(&key) {
+    if let Some(h) = cache.get(key) {
         return h;
     }
 

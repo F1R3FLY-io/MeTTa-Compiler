@@ -4,6 +4,16 @@
 // Tests type-discriminated return values from .run()
 // Success → PathMap (matches {| ..._ |})
 // Failure → EList [error_code, message] (does NOT match PathMap pattern)
+//
+// Error paths in reduce.rs .run() method:
+//   1. invalid_accumulated_state — accumulated PathMap can't be deserialized
+//      (tested by Test 2: {| true |}.run(validCompiled))
+//   2. invalid_compiled_state — compiled PathMap can't be deserialized
+//      (tested by Test 4: {||}.run({| "not a state" |}))
+//   3. evaluation_failed — MeTTa runtime error from run_state_async()
+//      (not testable from Rholang: requires internal MeTTa runtime failure)
+//   4. extraction_failed — metta_state_to_pathmap_par() produces non-PathMap
+//      (not testable from Rholang: defensive code for unreachable case)
 // =====================================================================
 
 new stdoutAck(`rho:io:stdoutAck`),
@@ -14,11 +24,11 @@ new stdoutAck(`rho:io:stdoutAck`),
     ack in {
 
   // ===================================================================
-  // Test Completion Counter - Waits for all 3 tests before printing summary
+  // Test Completion Counter - Waits for all 5 tests before printing summary
   // ===================================================================
 
   contract waitForTests(@count, summaryCh) = {
-    if (count == 3) {
+    if (count == 5) {
       summaryCh!(Nil)
     } else {
       for (_ <- testComplete) {
@@ -35,10 +45,12 @@ new stdoutAck(`rho:io:stdoutAck`),
 
   // Trigger all tests
   for (_ <- ack) {
-    new ret1, ret2, ret3 in {
+    new ret1, ret2, ret3, ret4, ret5 in {
       runTest!(*ret1, "1") |
       runTest!(*ret2, "2") |
-      runTest!(*ret3, "3")
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4") |
+      runTest!(*ret5, "5")
     }
   } |
 
@@ -90,6 +102,7 @@ new stdoutAck(`rho:io:stdoutAck`),
 
   // -------------------------------------------------------------------
   // Test 2: .run() with invalid receiver returns error list
+  // Error path: invalid_accumulated_state
   // {| true |} is not a valid MettaState, should get error list
   // -------------------------------------------------------------------
   for (ret, @"2" <- runTest) {
@@ -223,6 +236,123 @@ new stdoutAck(`rho:io:stdoutAck`),
     }
   } |
 
+  // -------------------------------------------------------------------
+  // Test 4: .run() with invalid compiled state returns error list
+  // Error path: invalid_compiled_state
+  // {||}.run({| "not a state" |}) — valid empty receiver, invalid compiled arg
+  // The compiled argument {| "not a state" |} cannot be deserialized by
+  // pathmap_par_to_metta_state() (strict), triggering invalid_compiled_state
+  // -------------------------------------------------------------------
+  for (ret, @"4" <- runTest) {
+    stdoutAck!("Test 4: .run() with invalid compiled state returns error list\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        result!({||}.run({| "not a state" |})) |
+        for (@rslt <- result) {
+          match rslt {
+            {| ..._ |} => {
+              stdoutAck!("  UNEXPECTED: Got PathMap for invalid compiled state\n\n", *ack) |
+              for (_ <- ack) {
+                ret!() | testComplete!("4")
+              }
+            }
+            [code, msg] => {
+              stdoutAck!("  PASS: Got error list for invalid compiled state\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  Error code: ", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!(code, *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("\n  Message: ", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!(msg, *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("\n\n", *ack) |
+                        for (_ <- ack) {
+                          ret!() | testComplete!("4")
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            other => {
+              stdoutAck!("  OTHER: ", *ack) |
+              for (_ <- ack) {
+                stdoutAck!(other, *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("\n\n", *ack) |
+                  for (_ <- ack) {
+                    ret!() | testComplete!("4")
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 5: .run() with both invalid receiver AND invalid compiled state
+  // Error path: invalid_accumulated_state (triggered first)
+  // {| 42 |}.run({| "bad" |}) — both are invalid, but accumulated is
+  // checked first, so we expect invalid_accumulated_state
+  // -------------------------------------------------------------------
+  for (ret, @"5" <- runTest) {
+    stdoutAck!("Test 5: .run() with both args invalid returns accumulated error first\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        result!({| 42 |}.run({| "bad" |})) |
+        for (@rslt <- result) {
+          match rslt {
+            {| ..._ |} => {
+              stdoutAck!("  UNEXPECTED: Got PathMap for doubly-invalid .run()\n\n", *ack) |
+              for (_ <- ack) {
+                ret!() | testComplete!("5")
+              }
+            }
+            [code, msg] => {
+              stdoutAck!("  PASS: Got error list for doubly-invalid .run()\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  Error code: ", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!(code, *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("\n  Message: ", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!(msg, *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("\n\n", *ack) |
+                        for (_ <- ack) {
+                          ret!() | testComplete!("5")
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            other => {
+              stdoutAck!("  OTHER: ", *ack) |
+              for (_ <- ack) {
+                stdoutAck!(other, *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("\n\n", *ack) |
+                  for (_ <- ack) {
+                    ret!() | testComplete!("5")
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
   // Start the test completion counter
   new summaryCh in {
     waitForTests!(0, *summaryCh) |
@@ -231,13 +361,19 @@ new stdoutAck(`rho:io:stdoutAck`),
     for (_ <- summaryCh) {
       stdoutAck!("\n=== Run Error Handling Test Suite Complete ===\n", *ack) |
       for (_ <- ack) {
-        stdoutAck!("All 3 tests completed:\n", *ack) |
+        stdoutAck!("All 5 tests completed:\n", *ack) |
         for (_ <- ack) {
           stdoutAck!("  - .run() success returns PathMap\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  - .run() invalid receiver returns error list\n", *ack) |
+            stdoutAck!("  - .run() invalid receiver returns error list (invalid_accumulated_state)\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  - .run() chaining works\n", *ack)
+              stdoutAck!("  - .run() chaining works\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  - .run() invalid compiled state returns error list (invalid_compiled_state)\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  - .run() both args invalid returns accumulated error first\n", *ack)
+                }
+              }
             }
           }
         }

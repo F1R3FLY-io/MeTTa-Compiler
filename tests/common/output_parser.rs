@@ -309,7 +309,7 @@ fn tuple_value(input: &str) -> IResult<&str, String> {
             }
 
             match current_char {
-                '(' => depth += 1,
+                '(' if brace_depth == 0 => depth += 1,
                 ')' if brace_depth == 0 => depth -= 1,
                 _ => {}
             }

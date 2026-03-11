@@ -1079,53 +1079,9 @@ where
                     continue;
                 }
 
-                // ── Stretch Goal 3: Function Specialization Fast Path ──
-                //
-                // For S-expressions whose head is a known deterministic
-                // user-defined operator (operator cache: all_structural &&
-                // candidate_count == 1), skip the full eval pipeline:
-                // - hash_value computation (~700ns, 6.6% CPU)
-                // - eval_memo_get LRU lookup (~400ns, 1.6% CPU)
-                // - eval_step_generic type checks
-                // - eval_sexpr_step's 70+ special form dispatch
-                // - try_match_all_rules_generic's caching layers
-                //
-                // Goes directly to structural matching + binding application.
-                // The operator cache is populated on first access via
-                // match_rules_native. Subsequent accesses hit the cache
-                // (thread-local LRU, ~40ns lookup).
-                //
-                // Positioned BEFORE the memo hash computation to avoid
-                // the expensive hash_value() call for deterministic operators
-                // that rarely benefit from expression-level memoization
-                // (varied arguments → near-zero cache hit rate).
-                if is_sexpr {
-                    if let Some(chain_result) = try_deterministic_chain(&value, &env, ctx.factory()) {
-                        if is_memoized_normal_form(&chain_result) {
-                            work_stack.push(GenericWorkItem::Resume {
-                                result: (smallvec![chain_result], env),
-                            });
-                        } else if is_normal_form_bounded(&chain_result, &env, 2) {
-                            memoize_normal_form(&chain_result);
-                            work_stack.push(GenericWorkItem::Resume {
-                                result: (smallvec![chain_result], env),
-                            });
-                        } else {
-                            work_stack.push(GenericWorkItem::Eval {
-                                value: chain_result, env,
-                                depth: depth + 1, is_tail_call, expected_type,
-                            });
-                        }
-                        continue;
-                    }
-                }
-
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
-                // Expressions that hit the deterministic fast path above skip this
-                // because their varied arguments make cache hits rare (~0% hit rate),
-                // and the hash_value() cost (~700ns) exceeds structural match (~100ns).
                 let memo_hash = if is_sexpr
                     && std::any::TypeId::of::<C::Value>()
                         == std::any::TypeId::of::<crate::backend::models::MettaValue>()

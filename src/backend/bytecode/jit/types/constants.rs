@@ -30,7 +30,8 @@ pub const TAG_LONG: u64 = QNAN | (0 << 48); // 0x7FF8_0000_0000_0000
 /// Tag for boolean values (payload: 0 = false, 1 = true)
 pub const TAG_BOOL: u64 = QNAN | (1 << 48); // 0x7FF9_0000_0000_0000
 
-/// Tag slot 2 is reserved (formerly TAG_UNIT, now unused after Nil/Unit merge)
+/// Tag for empty (zero-result) value
+pub const TAG_EMPTY: u64 = QNAN | (2 << 48); // 0x7FFA_0000_0000_0000
 
 /// Tag for unit value ()
 pub const TAG_UNIT: u64 = QNAN | (3 << 48); // 0x7FFB_0000_0000_0000

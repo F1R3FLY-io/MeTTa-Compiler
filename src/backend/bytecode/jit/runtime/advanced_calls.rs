@@ -5,7 +5,7 @@
 //! - call_external - Call an external function by name index
 //! - call_cached - Call a function with memoization
 
-use super::helpers::metta_to_jit;
+use super::helpers::{metta_to_jit, value_to_jit_generic};
 use crate::backend::bytecode::external_registry::{ExternalContext, ExternalRegistry};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
@@ -177,13 +177,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
             if results.is_empty() {
                 JitValue::unit().to_bits()
             } else {
-                match JitValue::try_from_metta(&results[0]) {
-                    Some(jv) => jv.to_bits(),
-                    None => {
-                        // Can't NaN-box the result - use inner pointer
-                        JitValue::from_inner_ptr(results[0].inner_ptr()).to_bits()
-                    }
-                }
+                value_to_jit_generic(&results[0]).to_bits()
             }
         }
         Err(e) => {
@@ -193,7 +187,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
                 format!("external-call-failed: {}", e),
                 MettaValue::Atom(func_name.to_string()),
             );
-            JitValue::from_inner_ptr(error.inner_ptr()).to_bits()
+            value_to_jit_generic(&error).to_bits()
         }
     }
 }
@@ -272,12 +266,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
         // Check cache for existing result
         if let Some(cached_result) = cache.get(&func_head, &args) {
             // Cache hit - return cached result
-            match JitValue::try_from_metta(&cached_result) {
-                Some(jv) => return jv.to_bits(),
-                None => {
-                    return JitValue::from_inner_ptr(cached_result.inner_ptr()).to_bits();
-                }
-            }
+            return value_to_jit_generic(&cached_result).to_bits();
         }
     }
 
@@ -297,7 +286,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
         if matches.is_empty() {
             // No matching rules - return the call expression as irreducible
             let expr = MettaValue::SExpr(call_expr_parts);
-            return JitValue::from_inner_ptr(expr.inner_ptr()).to_bits();
+            return value_to_jit_generic(&expr).to_bits();
         }
 
         // Execute the first matching rule
@@ -322,17 +311,12 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
                 }
 
                 // Return the result
-                match JitValue::try_from_metta(&result) {
-                    Some(jv) => return jv.to_bits(),
-                    None => {
-                        return JitValue::from_inner_ptr(result.inner_ptr()).to_bits();
-                    }
-                }
+                return value_to_jit_generic(&result).to_bits();
             }
             Err(_) => {
                 // VM execution failed - return expression as irreducible
                 let expr = MettaValue::SExpr(call_expr_parts);
-                return JitValue::from_inner_ptr(expr.inner_ptr()).to_bits();
+                return value_to_jit_generic(&expr).to_bits();
             }
         }
     }
@@ -341,5 +325,5 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     let mut expr_parts = vec![MettaValue::Atom(func_head)];
     expr_parts.extend(args);
     let expr = MettaValue::SExpr(expr_parts);
-    JitValue::from_inner_ptr(expr.inner_ptr()).to_bits()
+    value_to_jit_generic(&expr).to_bits()
 }

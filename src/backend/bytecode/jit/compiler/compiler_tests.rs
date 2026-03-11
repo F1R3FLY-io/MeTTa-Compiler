@@ -3192,11 +3192,12 @@ fn test_jit_execute_push_empty() {
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
-    // PushEmpty returns a heap pointer (TAG_PTR) to an empty S-expression
+    // Empty S-expression is semantically Unit in MeTTa (SExpr([]) → Unit via view()).
+    // With NaN-boxing inline types, value_to_jit_generic converts it to TAG_UNIT.
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
-        result.is_heap(),
-        "Expected Arena result for empty S-expr, got: {:?}",
+        result.is_unit(),
+        "Expected Unit result for empty S-expr, got: {:?}",
         result
     );
 }

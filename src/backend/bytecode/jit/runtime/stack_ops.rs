@@ -6,8 +6,9 @@
 //! - load_constant - Constant pool access with bounds checking
 //! - debug_print, debug_stack - Debugging utilities
 
+use super::helpers::value_to_jit_generic;
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_PTR, TAG_UNIT,
+    JitBailoutReason, JitContext, JitValue, TAG_UNIT,
 };
 use tracing::trace;
 
@@ -109,14 +110,7 @@ pub unsafe extern "C" fn jit_runtime_load_constant(ctx: *const JitContext, index
         let constant = &*ctx.constants.add(idx);
 
         // Try to NaN-box the constant
-        match JitValue::try_from_metta(constant) {
-            Some(jv) => jv.to_bits(),
-            None => {
-                // Can't NaN-box - return pointer to slab-allocated inner data
-                let ptr = constant.inner_ptr();
-                TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
-            }
-        }
+        value_to_jit_generic(constant).to_bits()
     } else {
         TAG_UNIT
     }

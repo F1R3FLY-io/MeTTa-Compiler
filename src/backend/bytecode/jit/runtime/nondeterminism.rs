@@ -6,10 +6,11 @@
 //! - Native dispatcher functions for Stage 2 JIT
 //! - Dispatcher loop for nondeterministic execution
 
+use super::helpers::value_to_jit_generic;
 use crate::backend::bytecode::jit::types::{
     JitAlternative, JitAlternativeTag, JitBailoutReason, JitContext, JitValue,
     JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
-    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_PTR, TAG_UNIT,
+    MAX_STACK_SAVE_VALUES, TAG_UNIT,
 };
 use crate::backend::models::{MettaValue, ValueView};
 
@@ -238,14 +239,8 @@ pub unsafe extern "C" fn jit_runtime_fork(
     }
 
     let first_value = &*ctx_ref.constants.add(first_index);
-    // Convert to JitValue, using inner pointer for non-NaN-boxable values
-    let first_jit = match JitValue::try_from_metta(first_value) {
-        Some(jv) => jv,
-        None => {
-            // Can't NaN-box - use inner pointer (GC-managed)
-            JitValue::from_inner_ptr(first_value.inner_ptr())
-        }
-    };
+    // Convert to JitValue via value_to_jit_generic (handles inline NaN-boxed values safely)
+    let first_jit = value_to_jit_generic(first_value);
 
     // Always signal bailout for Fork so VM can manage choice points
     // The VM will handle creating choice points for remaining alternatives
@@ -347,16 +342,14 @@ pub unsafe extern "C" fn jit_runtime_collect(
         // Clear results
         ctx_ref.results_count = 0;
 
-        // Return as SExpr via inner pointer (GC-managed)
+        // Return as SExpr via value_to_jit_generic (handles inline NaN-boxed values safely)
         let expr = MettaValue::SExpr(items);
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // No results - return empty SExpr
     let empty = MettaValue::SExpr(Vec::new());
-    let ptr = empty.inner_ptr();
-    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
+    value_to_jit_generic(&empty).to_bits()
 }
 
 // =============================================================================
@@ -482,13 +475,7 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
     }
 
     let first_value = &*ctx_ref.constants.add(first_index);
-    let first_jit = match JitValue::try_from_metta(first_value) {
-        Some(jv) => jv,
-        None => {
-            // Can't NaN-box - use inner pointer (GC-managed)
-            JitValue::from_inner_ptr(first_value.inner_ptr())
-        }
-    };
+    let first_jit = value_to_jit_generic(first_value);
 
     // If more than one alternative, create choice point
     if count > 1 && ctx_ref.choice_point_count < ctx_ref.choice_point_cap {
@@ -533,13 +520,7 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
             let idx = *indices_ptr.add(i + 1) as usize;
             if idx < ctx_ref.constants_len {
                 let val = &*ctx_ref.constants.add(idx);
-                let jv = match JitValue::try_from_metta(val) {
-                    Some(j) => j,
-                    None => {
-                        // Can't NaN-box - use inner pointer (GC-managed)
-                        JitValue::from_inner_ptr(val.inner_ptr())
-                    }
-                };
+                let jv = value_to_jit_generic(val);
                 cp.alternatives_inline[i] = JitAlternative::value(jv);
             }
         }
@@ -742,16 +723,14 @@ pub unsafe extern "C" fn jit_runtime_collect_native(ctx: *mut JitContext) -> u64
         ctx_ref.in_nondet_mode = false;
         ctx_ref.fork_depth = 0;
 
-        // Return as SExpr via inner pointer (GC-managed)
+        // Return as SExpr via value_to_jit_generic (handles inline NaN-boxed values safely)
         let expr = MettaValue::SExpr(items);
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // No results - return empty SExpr
     let empty = MettaValue::SExpr(Vec::new());
-    let ptr = empty.inner_ptr();
-    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
+    value_to_jit_generic(&empty).to_bits()
 }
 
 /// Stage 2: Check if there are more alternatives to try

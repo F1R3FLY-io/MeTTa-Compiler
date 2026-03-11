@@ -114,6 +114,9 @@ where
     if val.is_unit() {
         return JitValue::unit();
     }
+    if val.is_empty() {
+        return JitValue::empty();
+    }
 
     // Complex types: store a pointer to the slab-allocated MettaValueInner.
     // MettaValue.inner_ref() is &'static MettaValueInner, so inner_ptr() gives
@@ -143,12 +146,13 @@ where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
 {
-    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
+    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_EMPTY, TAG_UNIT};
 
     match jit_val.tag() {
         TAG_LONG => factory.long(jit_val.as_long()),
         TAG_BOOL => factory.bool(jit_val.as_bool()),
         TAG_UNIT => factory.unit(),
+        TAG_EMPTY => factory.empty(),
         TAG_PTR => {
             let ptr = (jit_val.to_bits() & PAYLOAD_MASK) as *const MettaValueInner;
             debug_assert!(

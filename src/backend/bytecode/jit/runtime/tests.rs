@@ -1600,9 +1600,10 @@ mod tests {
         let result = unsafe { jit_runtime_push_empty() };
         let _jv = JitValue::from_raw(result);
 
-        // Should be a heap-allocated empty S-expression
+        // Empty S-expression is semantically Unit in MeTTa (SExpr([]) → Unit via view()).
+        // With NaN-boxing inline types, value_to_jit_generic converts it to TAG_UNIT.
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_PTR);
+        assert_eq!(tag, TAG_UNIT);
     }
 
     // Note: Tests using JitValue::from_inner_ptr for S-expression operations
@@ -4615,9 +4616,10 @@ mod tests {
         // Collect with no results
         let result = unsafe { jit_runtime_collect(&mut ctx, 0, 0) };
 
-        // Should return empty S-expression (heap pointer)
+        // Empty S-expression is semantically Unit in MeTTa (SExpr([]) → Unit via view()).
+        // With NaN-boxing inline types, value_to_jit_generic converts it to TAG_UNIT.
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_PTR, "Should return heap-allocated SExpr");
+        assert_eq!(tag, TAG_UNIT, "Empty collect should return TAG_UNIT");
     }
 
     #[test]

@@ -8,11 +8,11 @@
 //!
 //! Also includes the grounded function fast path optimization.
 
+use super::helpers::value_to_jit_generic;
 use super::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
     JitAlternative, JitBailoutReason, JitContext, JitValue, TypeClassification,
-    TypeSignatureRegistry, MAX_ALTERNATIVES_INLINE, PAYLOAD_MASK,
-    TAG_PTR, TAG_UNIT,
+    TypeSignatureRegistry, MAX_ALTERNATIVES_INLINE, TAG_UNIT,
 };
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
@@ -281,8 +281,7 @@ pub unsafe extern "C" fn jit_runtime_call(
                 &format!("All types for '{}' are errors", head),
                 call_expr,
             );
-            let ptr = err.inner_ptr();
-            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+            return value_to_jit_generic(&err).to_bits();
         }
     }
 
@@ -336,8 +335,7 @@ pub unsafe extern "C" fn jit_runtime_call(
 
     // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
     if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // Try native rule dispatch if bridge is available
@@ -350,8 +348,7 @@ pub unsafe extern "C" fn jit_runtime_call(
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
             // This is a major optimization: no bailout needed!
-            let ptr = expr.inner_ptr();
-            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+            return value_to_jit_generic(&expr).to_bits();
         }
 
         // Phase 2: Native rule execution for single-match rules
@@ -384,8 +381,7 @@ pub unsafe extern "C" fn jit_runtime_call(
                     ctx_ref.bailout = true;
                     ctx_ref.bailout_ip = ip as usize;
                     ctx_ref.bailout_reason = JitBailoutReason::Call;
-                    let ptr = expr.inner_ptr();
-                    return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+                    return value_to_jit_generic(&expr).to_bits();
                 }
             }
         }
@@ -448,8 +444,7 @@ pub unsafe extern "C" fn jit_runtime_call(
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::Call;
 
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // No bridge - signal bailout for VM to handle
@@ -457,9 +452,8 @@ pub unsafe extern "C" fn jit_runtime_call(
     ctx_ref.bailout_ip = ip as usize;
     ctx_ref.bailout_reason = JitBailoutReason::Call;
 
-    // Return the expression as a slab-allocated inner pointer
-    let ptr = expr.inner_ptr();
-    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
+    // Return the expression via value_to_jit_generic (handles inline NaN-boxed values safely)
+    value_to_jit_generic(&expr).to_bits()
 }
 
 /// Dispatch a tail call expression with native rule lookup.
@@ -561,8 +555,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
 
     // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
     if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // Try native rule dispatch if bridge is available
@@ -575,8 +568,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
             // This is a major optimization: no bailout needed!
-            let ptr = expr.inner_ptr();
-            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+            return value_to_jit_generic(&expr).to_bits();
         }
 
         // Rules matched - bailout for VM to execute rule bodies with TCO
@@ -584,8 +576,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::TailCall;
 
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // No bridge - signal bailout for VM to handle (with TCO hint)
@@ -593,9 +584,8 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
     ctx_ref.bailout_ip = ip as usize;
     ctx_ref.bailout_reason = JitBailoutReason::TailCall;
 
-    // Return the expression as a slab-allocated inner pointer
-    let ptr = expr.inner_ptr();
-    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
+    // Return the expression via value_to_jit_generic (handles inline NaN-boxed values safely)
+    value_to_jit_generic(&expr).to_bits()
 }
 
 // =============================================================================
@@ -649,8 +639,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
                 items.push(JitValue::from_raw(arg_raw).to_metta());
             }
             let expr = MettaValue::SExpr(items);
-            let ptr = expr.inner_ptr();
-            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+            return value_to_jit_generic(&expr).to_bits();
         }
     }
 
@@ -680,8 +669,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
 
     // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
     if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // Try native rule dispatch if bridge is available
@@ -693,8 +681,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
-            let ptr = expr.inner_ptr();
-            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+            return value_to_jit_generic(&expr).to_bits();
         }
 
         // Rules matched - bailout for VM to execute rule bodies
@@ -702,8 +689,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::Call;
 
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // No bridge - signal bailout for VM to handle
@@ -711,9 +697,8 @@ pub unsafe extern "C" fn jit_runtime_call_n(
     ctx_ref.bailout_ip = ip as usize;
     ctx_ref.bailout_reason = JitBailoutReason::Call;
 
-    // Return the expression as a slab-allocated inner pointer
-    let ptr = expr.inner_ptr();
-    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
+    // Return the expression via value_to_jit_generic (handles inline NaN-boxed values safely)
+    value_to_jit_generic(&expr).to_bits()
 }
 
 /// Runtime function for TailCallN opcode
@@ -762,8 +747,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
                 items.push(JitValue::from_raw(arg_raw).to_metta());
             }
             let expr = MettaValue::SExpr(items);
-            let ptr = expr.inner_ptr();
-            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+            return value_to_jit_generic(&expr).to_bits();
         }
     }
 
@@ -793,8 +777,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
 
     // Phase 9.5: Normal-form memoization — skip dispatch for known-irreducible S-exprs
     if crate::backend::eval::trampoline::is_memoized_normal_form(&expr) {
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // Try native rule dispatch if bridge is available
@@ -806,8 +789,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
-            let ptr = expr.inner_ptr();
-            return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+            return value_to_jit_generic(&expr).to_bits();
         }
 
         // Rules matched - bailout for VM to execute rule bodies with TCO
@@ -815,8 +797,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::TailCall;
 
-        let ptr = expr.inner_ptr();
-        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
+        return value_to_jit_generic(&expr).to_bits();
     }
 
     // No bridge - signal bailout for VM to handle (with TCO hint)
@@ -824,7 +805,6 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
     ctx_ref.bailout_ip = ip as usize;
     ctx_ref.bailout_reason = JitBailoutReason::TailCall;
 
-    // Return the expression as a slab-allocated inner pointer
-    let ptr = expr.inner_ptr();
-    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
+    // Return the expression via value_to_jit_generic (handles inline NaN-boxed values safely)
+    value_to_jit_generic(&expr).to_bits()
 }

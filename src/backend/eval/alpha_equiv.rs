@@ -43,7 +43,9 @@ use crate::backend::models::MettaValueTrait;
 /// ```
 pub fn atoms_are_alpha_equivalent<V: MettaValueTrait>(left: &V, right: &V) -> bool {
     // Fast path: pointer equality for slab-allocated values (same allocation = same value)
-    if left.inner_ptr() == right.inner_ptr() {
+    // Skip for inline NaN-boxed values where inner_ptr() returns null.
+    let lp = left.inner_ptr();
+    if !lp.is_null() && lp == right.inner_ptr() {
         return true;
     }
     // Full bidirectional mapping check

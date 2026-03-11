@@ -4,8 +4,9 @@
 //! - return_multi - Return multiple values for nondeterminism
 //! - collect_n - Collect up to N nondeterministic results
 
+use super::helpers::value_to_jit_generic;
 use crate::backend::bytecode::jit::types::{
-    JitContext, JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_PTR,
+    JitContext, JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD,
 };
 use crate::backend::models::MettaValue;
 
@@ -75,9 +76,9 @@ pub unsafe extern "C" fn jit_runtime_collect_n(
     let count = (max_count as usize).min(ctx.results_count);
 
     if count == 0 {
-        // Return empty S-expression (inner_ptr is GC-managed, no Box needed)
+        // Return empty S-expression via value_to_jit_generic (handles inline NaN-boxed values safely)
         let empty_sexpr = MettaValue::SExpr(vec![]);
-        return TAG_PTR | (empty_sexpr.inner_ptr() as u64 & PAYLOAD_MASK);
+        return value_to_jit_generic(&empty_sexpr).to_bits();
     }
 
     // Collect results into MettaValue vec
@@ -91,7 +92,7 @@ pub unsafe extern "C" fn jit_runtime_collect_n(
     // Clear collected results
     ctx.results_count = ctx.results_count.saturating_sub(count);
 
-    // Return as S-expression (inner_ptr is GC-managed, no Box needed)
+    // Return as S-expression via value_to_jit_generic (handles inline NaN-boxed values safely)
     let sexpr = MettaValue::SExpr(results);
-    TAG_PTR | (sexpr.inner_ptr() as u64 & PAYLOAD_MASK)
+    value_to_jit_generic(&sexpr).to_bits()
 }

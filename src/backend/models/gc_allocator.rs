@@ -3405,10 +3405,11 @@ fn trace_safepoint_live_set() -> Option<PtrHashSet> {
     let mut live_set = PtrHashSet::with_capacity_and_hasher(safepoint_roots.len() * 2, PtrBuildHasher);
     let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(safepoint_roots.len());
 
-    // Seed worklist with safepoint root inner pointers
+    // Seed worklist with safepoint root inner pointers.
+    // Skip inline NaN-boxed values (null inner_ptr) — they have no slab allocation.
     for root in &safepoint_roots {
         let ptr = root.inner_ptr();
-        if live_set.insert(ptr as *const u8) {
+        if !ptr.is_null() && live_set.insert(ptr as *const u8) {
             worklist.push(ptr);
         }
     }
@@ -3422,7 +3423,7 @@ fn trace_safepoint_live_set() -> Option<PtrHashSet> {
             MettaValueInner::SExpr(children) => {
                 for child in children.iter() {
                     let child_ptr = child.inner_ptr();
-                    if live_set.insert(child_ptr as *const u8) {
+                    if !child_ptr.is_null() && live_set.insert(child_ptr as *const u8) {
                         worklist.push(child_ptr);
                     }
                 }
@@ -3430,20 +3431,20 @@ fn trace_safepoint_live_set() -> Option<PtrHashSet> {
             MettaValueInner::Conjunction(goals) => {
                 for goal in goals.iter() {
                     let goal_ptr = goal.inner_ptr();
-                    if live_set.insert(goal_ptr as *const u8) {
+                    if !goal_ptr.is_null() && live_set.insert(goal_ptr as *const u8) {
                         worklist.push(goal_ptr);
                     }
                 }
             }
             MettaValueInner::Error(_, details) => {
                 let details_ptr = details.inner_ptr();
-                if live_set.insert(details_ptr as *const u8) {
+                if !details_ptr.is_null() && live_set.insert(details_ptr as *const u8) {
                     worklist.push(details_ptr);
                 }
             }
             MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                 let inner_ptr = inner.inner_ptr();
-                if live_set.insert(inner_ptr as *const u8) {
+                if !inner_ptr.is_null() && live_set.insert(inner_ptr as *const u8) {
                     worklist.push(inner_ptr);
                 }
             }
@@ -3452,14 +3453,14 @@ fn trace_safepoint_live_set() -> Option<PtrHashSet> {
                 handle.collect_gc_values(&mut space_values);
                 for val in &space_values {
                     let val_ptr = val.inner_ptr();
-                    if live_set.insert(val_ptr as *const u8) {
+                    if !val_ptr.is_null() && live_set.insert(val_ptr as *const u8) {
                         worklist.push(val_ptr);
                     }
                 }
             }
             MettaValueInner::Spanned(v, _) => {
                 let inner_ptr = v.inner_ptr();
-                if live_set.insert(inner_ptr as *const u8) {
+                if !inner_ptr.is_null() && live_set.insert(inner_ptr as *const u8) {
                     worklist.push(inner_ptr);
                 }
             }
@@ -4460,10 +4461,11 @@ impl SlabAllocator {
         let mut surviving = PtrHashSet::with_capacity_and_hasher(roots.len() * 4, PtrBuildHasher);
         let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
 
-        // Seed worklist with root inner pointers
+        // Seed worklist with root inner pointers.
+        // Skip inline NaN-boxed values (null inner_ptr) — they have no slab allocation.
         for root in &roots {
             let ptr = root.inner_ptr();
-            if surviving.insert(ptr as *const u8) {
+            if !ptr.is_null() && surviving.insert(ptr as *const u8) {
                 worklist.push(ptr);
             }
         }
@@ -4474,7 +4476,7 @@ impl SlabAllocator {
                 MettaValueInner::SExpr(children) => {
                     for child in children.iter() {
                         let child_ptr = child.inner_ptr();
-                        if surviving.insert(child_ptr as *const u8) {
+                        if !child_ptr.is_null() && surviving.insert(child_ptr as *const u8) {
                             worklist.push(child_ptr);
                         }
                     }
@@ -4482,20 +4484,20 @@ impl SlabAllocator {
                 MettaValueInner::Conjunction(goals) => {
                     for goal in goals.iter() {
                         let goal_ptr = goal.inner_ptr();
-                        if surviving.insert(goal_ptr as *const u8) {
+                        if !goal_ptr.is_null() && surviving.insert(goal_ptr as *const u8) {
                             worklist.push(goal_ptr);
                         }
                     }
                 }
                 MettaValueInner::Error(_, details) => {
                     let details_ptr = details.inner_ptr();
-                    if surviving.insert(details_ptr as *const u8) {
+                    if !details_ptr.is_null() && surviving.insert(details_ptr as *const u8) {
                         worklist.push(details_ptr);
                     }
                 }
                 MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                     let inner_ptr = inner.inner_ptr();
-                    if surviving.insert(inner_ptr as *const u8) {
+                    if !inner_ptr.is_null() && surviving.insert(inner_ptr as *const u8) {
                         worklist.push(inner_ptr);
                     }
                 }
@@ -4504,14 +4506,14 @@ impl SlabAllocator {
                     handle.collect_gc_values(&mut space_values);
                     for val in &space_values {
                         let val_ptr = val.inner_ptr();
-                        if surviving.insert(val_ptr as *const u8) {
+                        if !val_ptr.is_null() && surviving.insert(val_ptr as *const u8) {
                             worklist.push(val_ptr);
                         }
                     }
                 }
                 MettaValueInner::Spanned(v, _) => {
                     let inner_ptr = v.inner_ptr();
-                    if surviving.insert(inner_ptr as *const u8) {
+                    if !inner_ptr.is_null() && surviving.insert(inner_ptr as *const u8) {
                         worklist.push(inner_ptr);
                     }
                 }
@@ -4625,9 +4627,12 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
     let slot_size = snapshot.slot_size;
     let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
 
+    // Seed worklist with root inner pointers.
+    // Skip inline NaN-boxed values (null inner_ptr) — they have no slab allocation.
     let root_ptrs: Vec<*const MettaValueInner> = snapshot.roots
         .iter()
         .map(|root| root.inner_ptr())
+        .filter(|ptr| !ptr.is_null())
         .collect();
 
     for ptr in root_ptrs {
@@ -4641,7 +4646,7 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
             MettaValueInner::SExpr(children) => {
                 for child in children.iter() {
                     let child_ptr = child.inner_ptr();
-                    if snapshot_mark_value(snapshot, child_ptr as *const u8, slot_size) {
+                    if !child_ptr.is_null() && snapshot_mark_value(snapshot, child_ptr as *const u8, slot_size) {
                         worklist.push(child_ptr);
                     }
                 }
@@ -4649,20 +4654,20 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
             MettaValueInner::Conjunction(goals) => {
                 for goal in goals.iter() {
                     let goal_ptr = goal.inner_ptr();
-                    if snapshot_mark_value(snapshot, goal_ptr as *const u8, slot_size) {
+                    if !goal_ptr.is_null() && snapshot_mark_value(snapshot, goal_ptr as *const u8, slot_size) {
                         worklist.push(goal_ptr);
                     }
                 }
             }
             MettaValueInner::Error(_, details) => {
                 let details_ptr = details.inner_ptr();
-                if snapshot_mark_value(snapshot, details_ptr as *const u8, slot_size) {
+                if !details_ptr.is_null() && snapshot_mark_value(snapshot, details_ptr as *const u8, slot_size) {
                     worklist.push(details_ptr);
                 }
             }
             MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                 let inner_ptr = inner.inner_ptr();
-                if snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
+                if !inner_ptr.is_null() && snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
                     worklist.push(inner_ptr);
                 }
             }
@@ -4674,14 +4679,14 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
                 handle.collect_gc_values(&mut space_values);
                 for val in &space_values {
                     let val_ptr = val.inner_ptr();
-                    if snapshot_mark_value(snapshot, val_ptr as *const u8, slot_size) {
+                    if !val_ptr.is_null() && snapshot_mark_value(snapshot, val_ptr as *const u8, slot_size) {
                         worklist.push(val_ptr);
                     }
                 }
             }
             MettaValueInner::Spanned(v, _) => {
                 let inner_ptr = v.inner_ptr();
-                if snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
+                if !inner_ptr.is_null() && snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
                     worklist.push(inner_ptr);
                 }
             }
@@ -4787,9 +4792,10 @@ pub fn mark_from_roots(
 ) {
     let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
 
+    // Skip inline NaN-boxed values (null inner_ptr) — they have no slab allocation.
     for root in roots {
         let ptr = root.inner_ptr();
-        if alloc.mark_value(ptr as *const u8) {
+        if !ptr.is_null() && alloc.mark_value(ptr as *const u8) {
             worklist.push(ptr);
         }
     }
@@ -4799,7 +4805,7 @@ pub fn mark_from_roots(
             MettaValueInner::SExpr(children) => {
                 for child in children.iter() {
                     let child_ptr = child.inner_ptr();
-                    if alloc.mark_value(child_ptr as *const u8) {
+                    if !child_ptr.is_null() && alloc.mark_value(child_ptr as *const u8) {
                         worklist.push(child_ptr);
                     }
                 }
@@ -4807,20 +4813,20 @@ pub fn mark_from_roots(
             MettaValueInner::Conjunction(goals) => {
                 for goal in goals.iter() {
                     let goal_ptr = goal.inner_ptr();
-                    if alloc.mark_value(goal_ptr as *const u8) {
+                    if !goal_ptr.is_null() && alloc.mark_value(goal_ptr as *const u8) {
                         worklist.push(goal_ptr);
                     }
                 }
             }
             MettaValueInner::Error(_, details) => {
                 let details_ptr = details.inner_ptr();
-                if alloc.mark_value(details_ptr as *const u8) {
+                if !details_ptr.is_null() && alloc.mark_value(details_ptr as *const u8) {
                     worklist.push(details_ptr);
                 }
             }
             MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                 let inner_ptr = inner.inner_ptr();
-                if alloc.mark_value(inner_ptr as *const u8) {
+                if !inner_ptr.is_null() && alloc.mark_value(inner_ptr as *const u8) {
                     worklist.push(inner_ptr);
                 }
             }
@@ -4829,14 +4835,14 @@ pub fn mark_from_roots(
                 handle.collect_gc_values(&mut space_values);
                 for val in &space_values {
                     let val_ptr = val.inner_ptr();
-                    if alloc.mark_value(val_ptr as *const u8) {
+                    if !val_ptr.is_null() && alloc.mark_value(val_ptr as *const u8) {
                         worklist.push(val_ptr);
                     }
                 }
             }
             MettaValueInner::Spanned(v, _) => {
                 let inner_ptr = v.inner_ptr();
-                if alloc.mark_value(inner_ptr as *const u8) {
+                if !inner_ptr.is_null() && alloc.mark_value(inner_ptr as *const u8) {
                     worklist.push(inner_ptr);
                 }
             }
@@ -4997,11 +5003,16 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
 
     #[inline]
     fn bool(&self, b: bool) -> MettaValue {
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Bool(b)))
+        MettaValue::inline_bool(b)
     }
 
     #[inline]
     fn long(&self, n: i64) -> MettaValue {
+        // Inline for values that fit in 48-bit signed range
+        if let Some(v) = MettaValue::try_inline_long(n) {
+            return v;
+        }
+        // Fallback: slab-allocate for values outside i48 range
         MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Long(n)))
     }
 
@@ -5100,7 +5111,7 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
 
     #[inline]
     fn unit(&self) -> MettaValue {
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Unit))
+        MettaValue::inline_unit()
     }
 
     #[inline]
@@ -5126,7 +5137,7 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
 
     #[inline]
     fn empty(&self) -> MettaValue {
-        MettaValue::from_inner(self.alloc.alloc_value(MettaValueInner::Empty))
+        MettaValue::inline_empty()
     }
 
     /// Zero-cost identity conversion: V = MettaValue, so no serialization needed.
@@ -5725,9 +5736,9 @@ mod tests {
     fn test_mark_multiple_values() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let v1 = factory.long(1);
-        let v2 = factory.long(2);
-        let v3 = factory.long(3);
+        let v1 = factory.atom("a");
+        let v2 = factory.atom("b");
+        let v3 = factory.atom("c");
         alloc.mark_value(v1.inner_ptr() as *const u8);
         alloc.mark_value(v3.inner_ptr() as *const u8);
         assert!(alloc.is_value_marked(v1.inner_ptr() as *const u8));
@@ -5739,12 +5750,12 @@ mod tests {
     fn test_watermark_snapshot() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let _v1 = factory.long(1);
-        let _v2 = factory.long(2);
+        let _v1 = factory.atom("w1");
+        let _v2 = factory.atom("w2");
         let wm = alloc.watermark();
         assert!(wm.value_page_count >= 1);
         assert!(wm.last_page_bump_count >= 2);
-        let _v3 = factory.long(3);
+        let _v3 = factory.atom("w3");
         let wm2 = alloc.watermark();
         assert!(wm2.last_page_bump_count > wm.last_page_bump_count
             || wm2.value_page_count > wm.value_page_count);
@@ -5754,13 +5765,13 @@ mod tests {
     fn test_mark_from_roots_simple() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let v1 = factory.long(1);
-        let v2 = factory.long(2);
-        let _v3 = factory.long(3);
+        let v1 = factory.atom("r1");
+        let v2 = factory.atom("r2");
+        let v3 = factory.atom("r3");
         mark_from_roots(vec![v1, v2].into_iter(), &alloc);
         assert!(alloc.is_value_marked(v1.inner_ptr() as *const u8));
         assert!(alloc.is_value_marked(v2.inner_ptr() as *const u8));
-        assert!(!alloc.is_value_marked(_v3.inner_ptr() as *const u8));
+        assert!(!alloc.is_value_marked(v3.inner_ptr() as *const u8));
     }
 
     #[test]
@@ -5768,8 +5779,8 @@ mod tests {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
         let atom_plus = factory.atom("+");
-        let num1 = factory.long(1);
-        let num2 = factory.long(2);
+        let num1 = factory.atom("one");
+        let num2 = factory.atom("two");
         let expr = factory.sexpr(vec![atom_plus, num1, num2]);
         mark_from_roots(std::iter::once(expr), &alloc);
         assert!(alloc.is_value_marked(expr.inner_ptr() as *const u8));
@@ -5804,9 +5815,9 @@ mod tests {
     fn test_sweep_collects_dead() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let alive = factory.long(1);
-        let _dead1 = factory.long(2);
-        let _dead2 = factory.long(3);
+        let alive = factory.atom("alive");
+        let _dead1 = factory.atom("dead1");
+        let _dead2 = factory.atom("dead2");
         let wm = alloc.watermark();
         mark_from_roots(std::iter::once(alive), &alloc);
         let dead_set = sweep(&alloc, &wm);
@@ -5820,9 +5831,9 @@ mod tests {
     fn test_sweep_respects_watermark() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let v1 = factory.long(1);
+        let v1 = factory.atom("before");
         let wm = alloc.watermark();
-        let _v2 = factory.long(2);
+        let _v2 = factory.atom("after");
         let dead_set = sweep(&alloc, &wm);
         // v1 should be dead (unmarked), v2 is after watermark
         assert_eq!(dead_set.dead_values.len(), 1);
@@ -5835,7 +5846,7 @@ mod tests {
     fn test_sweep_collects_dead_data() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let alive = factory.long(42);
+        let alive = factory.atom("alive");
         let _dead_atom = factory.atom("dead-string");
         let wm = alloc.watermark();
         mark_from_roots(std::iter::once(alive), &alloc);
@@ -5849,14 +5860,14 @@ mod tests {
     fn test_process_dead_set_returns_to_free_list() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let alive = factory.long(1);
-        let dead = factory.long(2);
+        let alive = factory.atom("alive");
+        let dead = factory.atom("dead");
         let dead_ptr = dead.inner_ptr() as *mut u8;
         let wm = alloc.watermark();
         mark_from_roots(std::iter::once(alive), &alloc);
         let dead_set = sweep(&alloc, &wm);
         alloc.process_dead_set(&dead_set);
-        let new_inner = alloc.alloc_value(MettaValueInner::Long(99));
+        let new_inner = alloc.alloc_value(MettaValueInner::Atom("reused"));
         let new_ptr = new_inner as *const MettaValueInner as *mut u8;
         assert_eq!(new_ptr, dead_ptr, "freed slot should be reused");
         alloc.clear_marks();
@@ -5867,9 +5878,9 @@ mod tests {
     fn test_full_gc_cycle() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let root1 = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
+        let root1 = factory.sexpr(vec![factory.atom("+"), factory.atom("one"), factory.atom("two")]);
         let root2 = factory.atom("keep-me");
-        let _garbage1 = factory.long(999);
+        let _garbage1 = factory.atom("garbage1");
         let _garbage2 = factory.atom("throw-away");
         let _garbage3 = factory.sexpr(vec![factory.atom("dead"), factory.atom("expr")]);
         let wm = alloc.watermark();
@@ -5923,8 +5934,8 @@ mod tests {
         init_global_allocator();
         let alloc = global_allocator();
         let factory = global_factory();
-        let v = factory.long(42);
-        assert_eq!(v.as_long(), Some(42));
+        let v = factory.atom("test_init");
+        assert_eq!(v.as_atom(), Some("test_init"));
         assert!(alloc.contains_value(v.inner_ptr() as *const u8));
     }
 
@@ -5949,7 +5960,7 @@ mod tests {
         // Without a SessionGuard, allocations should get context_id=0 (persistent)
         assert_eq!(current_context_id(), 0);
         let factory = global_factory();
-        let v = factory.long(42);
+        let v = factory.atom("persistent_test");
         let alloc = global_allocator();
         let pages = alloc.values.pages.read();
         let slot_size = alloc.values.slot_size;
@@ -5971,7 +5982,7 @@ mod tests {
 
         // Allocate a value inside the session
         let factory = global_factory();
-        let v = factory.long(123);
+        let v = factory.atom("session_test");
         let alloc = global_allocator();
         let pages = alloc.values.pages.read();
         let slot_size = alloc.values.slot_size;
@@ -6033,10 +6044,10 @@ mod tests {
         let ctx_id = guard.context_id();
         let factory = global_factory();
 
-        // Allocate several values of different types
-        let v1 = factory.long(1);
+        // Allocate several values of different slab-allocated types
+        let v1 = factory.atom("v1_atom");
         let v2 = factory.atom("test");
-        let v3 = factory.bool(true);
+        let v3 = factory.string("v3_str");
         let v4 = factory.sexpr(vec![v1, v2]);
 
         let alloc = global_allocator();
@@ -6096,8 +6107,8 @@ mod tests {
         // Allocate values in a session
         let guard = SessionGuard::enter();
         let ctx_id = guard.context_id();
-        let _v1 = factory.long(10001);
-        let _v2 = factory.long(10002);
+        let _v1 = factory.atom("session-val1");
+        let _v2 = factory.atom("session-val2");
         let _v3 = factory.atom("session-garbage");
 
         // Manually release synchronously (testing the core release logic)
@@ -6105,8 +6116,8 @@ mod tests {
         alloc.release_session(ctx_id);
 
         // After release, allocator should still be functional
-        let v = factory.long(42);
-        assert_eq!(v.as_long(), Some(42));
+        let v = factory.atom("post_release");
+        assert_eq!(v.as_atom(), Some("post_release"));
 
         // Prevent double release from guard drop
         mem::forget(guard);
@@ -6118,20 +6129,20 @@ mod tests {
         let alloc = global_allocator();
 
         // Allocate persistent values (no session guard)
-        let persistent = factory.long(99999);
+        let persistent = factory.atom("persistent_value");
         let persistent_ptr = persistent.inner_ptr() as *const u8;
 
         // Start a session and allocate garbage
         let guard = SessionGuard::enter();
         let ctx_id = guard.context_id();
-        let _garbage = factory.long(88888);
+        let _garbage = factory.atom("garbage_value");
         THREAD_CONTEXT_ID.with(|c| c.set(0));
 
         // Release session
         alloc.release_session(ctx_id);
 
         // Persistent value should still be accessible
-        assert_eq!(persistent.as_long(), Some(99999));
+        assert_eq!(persistent.as_atom(), Some("persistent_value"));
         assert!(alloc.contains_value(persistent_ptr),
             "persistent value should still exist after session release");
 
@@ -6145,8 +6156,8 @@ mod tests {
         alloc.release_session(0);
         // Allocator should still work after no-op release
         let factory = global_factory();
-        let v = factory.long(42);
-        assert_eq!(v.as_long(), Some(42));
+        let v = factory.atom("noop_test");
+        assert_eq!(v.as_atom(), Some("noop_test"));
     }
 
     #[test]

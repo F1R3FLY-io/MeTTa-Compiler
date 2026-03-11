@@ -675,9 +675,9 @@ mod tests {
         let factory = GcFactory::new(alloc);
         let pool = AdaptiveGcPool::new();
 
-        // Allocate values
-        let alive = factory.long(42);
-        let _dead = factory.long(999);
+        // Allocate values (slab-allocated types for NaN-boxing compatibility)
+        let alive = factory.atom("alive");
+        let _dead = factory.atom("dead");
 
         // Build snapshot and submit
         let snapshot = alloc.build_snapshot(vec![alive]);
@@ -702,9 +702,11 @@ mod tests {
         let factory = GcFactory::new(alloc);
         let pool = AdaptiveGcPool::new();
 
+        let names_alive = ["a0", "a1", "a2", "a3", "a4"];
+        let names_dead = ["d0", "d1", "d2", "d3", "d4"];
         for i in 0..5 {
-            let alive = factory.long(i);
-            let _dead = factory.long(i + 100);
+            let alive = factory.atom(names_alive[i]);
+            let _dead = factory.atom(names_dead[i]);
 
             let snapshot = alloc.build_snapshot(vec![alive]);
             pool.submit_high(GcWorkItem::Collect(snapshot));
@@ -733,11 +735,11 @@ mod tests {
         let factory = GcFactory::new(alloc);
         let pool = AdaptiveGcPool::new();
 
-        // Create a complex live structure
+        // Create a complex live structure (slab-allocated types for NaN-boxing compatibility)
         let root = factory.sexpr(vec![
             factory.atom("+"),
-            factory.long(1),
-            factory.sexpr(vec![factory.atom("*"), factory.long(2), factory.long(3)]),
+            factory.atom("one"),
+            factory.sexpr(vec![factory.atom("*"), factory.atom("two"), factory.atom("three")]),
         ]);
 
         let snapshot = alloc.build_snapshot(vec![root]);
@@ -751,7 +753,7 @@ mod tests {
         let items = root.as_sexpr().expect("root is sexpr");
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].as_atom(), Some("+"));
-        assert_eq!(items[1].as_long(), Some(1));
+        assert_eq!(items[1].as_atom(), Some("one"));
         let inner = items[2].as_sexpr().expect("inner is sexpr");
         assert_eq!(inner[0].as_atom(), Some("*"));
 

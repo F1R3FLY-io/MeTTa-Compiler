@@ -7,7 +7,7 @@
 //! - get_arity - Get the number of elements
 //! - get_element - Get element at a specific index
 
-use super::helpers::metta_to_jit;
+use super::helpers::{metta_to_jit, value_to_jit_generic};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_UNIT};
 use crate::backend::models::{MettaValue, ValueView};
 
@@ -27,8 +27,7 @@ use crate::backend::models::{MettaValue, ValueView};
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_push_empty() -> u64 {
     let empty = MettaValue::SExpr(Vec::new());
-    let ptr = empty.inner_ptr();
-    JitValue::from_inner_ptr(ptr).to_bits()
+    value_to_jit_generic(&empty).to_bits()
 }
 
 /// Runtime function for GetHead opcode
@@ -67,14 +66,7 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
             } else {
                 // Return the head element
                 let head = &items[0];
-                match JitValue::try_from_metta(head) {
-                    Some(jv) => jv.to_bits(),
-                    None => {
-                        // Store inner pointer directly (slab-managed lifetime)
-                        let ptr = head.inner_ptr();
-                        JitValue::from_inner_ptr(ptr).to_bits()
-                    }
-                }
+                value_to_jit_generic(head).to_bits()
             }
         }
         // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
@@ -109,17 +101,13 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
 
     // Check if it's a heap pointer
     if !jit_val.is_heap() {
-        // Return empty SExpr for non-heap values
-        let empty = MettaValue::SExpr(Vec::new());
-        let ptr = empty.inner_ptr();
-        return JitValue::from_inner_ptr(ptr).to_bits();
+        // Return unit for non-heap values (SExpr(vec![]) → unit via factory)
+        return JitValue::unit().to_bits();
     }
 
     let inner_ptr = jit_val.as_inner_ptr();
     if inner_ptr.is_null() {
-        let empty = MettaValue::SExpr(Vec::new());
-        let ptr = empty.inner_ptr();
-        return JitValue::from_inner_ptr(ptr).to_bits();
+        return JitValue::unit().to_bits();
     }
 
     let metta_val = MettaValue::from_inner(&*inner_ptr);
@@ -132,20 +120,16 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
                 Vec::new()
             };
             let expr = MettaValue::SExpr(tail);
-            let ptr = expr.inner_ptr();
-            JitValue::from_inner_ptr(ptr).to_bits()
+            value_to_jit_generic(&expr).to_bits()
         }
         // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
         ValueView::Quoted(inner) => {
             let tail = MettaValue::SExpr(vec![inner]);
-            let ptr = tail.inner_ptr();
-            JitValue::from_inner_ptr(ptr).to_bits()
+            value_to_jit_generic(&tail).to_bits()
         }
         _ => {
-            // Return empty SExpr for non-SExpr values
-            let empty = MettaValue::SExpr(Vec::new());
-            let ptr = empty.inner_ptr();
-            JitValue::from_inner_ptr(ptr).to_bits()
+            // Return unit for non-SExpr values (SExpr(vec![]) → unit via factory)
+            JitValue::unit().to_bits()
         }
     }
 }
@@ -232,15 +216,7 @@ pub unsafe extern "C" fn jit_runtime_get_element(
             if idx >= items.len() {
                 TAG_UNIT
             } else {
-                let elem = &items[idx];
-                match JitValue::try_from_metta(elem) {
-                    Some(jv) => jv.to_bits(),
-                    None => {
-                        // Store inner pointer directly (slab-managed lifetime)
-                        let ptr = elem.inner_ptr();
-                        JitValue::from_inner_ptr(ptr).to_bits()
-                    }
-                }
+                value_to_jit_generic(&items[idx]).to_bits()
             }
         }
         ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit

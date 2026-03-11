@@ -1024,6 +1024,45 @@ impl TieredCache {
         }
     }
 
+    /// Pre-seed the tiered cache for an expression at rule insertion time (Phase 4a).
+    ///
+    /// Seeds the execution counter to just below the bytecode threshold so the
+    /// very first real evaluation triggers immediate bytecode compilation. This
+    /// eliminates the warmup period for rule RHS templates.
+    ///
+    /// Takes a content hash rather than the expression itself to work with the
+    /// generic `V: MettaValueTrait` types in rule management (the concrete
+    /// `MettaValue` is only available at evaluation time). The compilability
+    /// check and actual compilation happen in `maybe_trigger_bytecode` when
+    /// `record_execution` fires on the first real evaluation.
+    pub fn preseed_for_immediate_compile(&self, expr_hash: u64) {
+        // Create or get state for this hash
+        let state = {
+            if let Some(entry) = self.entries.get(&expr_hash) {
+                Arc::clone(entry.value())
+            } else {
+                let new_state = Arc::new(ExprCompilationState::new(expr_hash));
+                self.entries
+                    .entry(expr_hash)
+                    .or_insert_with(|| {
+                        #[cfg(feature = "track-stats")]
+                        self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
+                        Arc::clone(&new_state)
+                    });
+                self.entries
+                    .get(&expr_hash)
+                    .map(|e| Arc::clone(e.value()))
+                    .unwrap_or(new_state)
+            }
+        };
+
+        // Set count to threshold - 1 so next record_execution triggers compilation.
+        // CAS loop to avoid overwriting a higher count (e.g., if expression was
+        // already evaluated and promoted).
+        let target = self.bytecode_threshold.saturating_sub(1);
+        let _ = state.execution_count.fetch_max(target, Ordering::Relaxed);
+    }
+
     /// Maybe trigger JIT Stage 1 compilation
     pub(crate) fn maybe_trigger_jit1(&self, state: &Arc<ExprCompilationState>, count: u32) {
         // Check if we've reached the threshold

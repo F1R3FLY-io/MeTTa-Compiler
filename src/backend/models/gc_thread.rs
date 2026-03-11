@@ -232,9 +232,9 @@ mod tests {
         let factory = GcFactory::new(alloc);
         let mut gc = GcThread::spawn();
 
-        // Allocate values
-        let alive = factory.long(42);
-        let _dead = factory.long(999);
+        // Allocate values (slab-allocated types for NaN-boxing compatibility)
+        let alive = factory.atom("alive");
+        let _dead = factory.atom("dead");
 
         // Build snapshot and request GC
         let snapshot = alloc.build_snapshot(vec![alive]);
@@ -257,9 +257,11 @@ mod tests {
         let factory = GcFactory::new(alloc);
         let mut gc = GcThread::spawn();
 
+        let names_alive = ["a0", "a1", "a2", "a3", "a4"];
+        let names_dead = ["d0", "d1", "d2", "d3", "d4"];
         for i in 0..5 {
-            let alive = factory.long(i);
-            let _dead = factory.long(i + 100);
+            let alive = factory.atom(names_alive[i]);
+            let _dead = factory.atom(names_dead[i]);
 
             let snapshot = alloc.build_snapshot(vec![alive]);
             gc.request_gc(snapshot);
@@ -282,7 +284,7 @@ mod tests {
         assert!(matches!(gc.try_recv_response(), TryRecvGcResponse::Empty));
 
         // Send a request
-        let alive = factory.long(1);
+        let alive = factory.atom("alive");
         let snapshot = alloc.build_snapshot(vec![alive]);
         gc.request_gc(snapshot);
 
@@ -302,11 +304,11 @@ mod tests {
         let factory = GcFactory::new(alloc);
         let mut gc = GcThread::spawn();
 
-        // Create a complex live structure
+        // Create a complex live structure (slab-allocated types for NaN-boxing compatibility)
         let root = factory.sexpr(vec![
             factory.atom("+"),
-            factory.long(1),
-            factory.sexpr(vec![factory.atom("*"), factory.long(2), factory.long(3)]),
+            factory.atom("one"),
+            factory.sexpr(vec![factory.atom("*"), factory.atom("two"), factory.atom("three")]),
         ]);
 
         let snapshot = alloc.build_snapshot(vec![root]);
@@ -320,7 +322,7 @@ mod tests {
         let items = root.as_sexpr().expect("root is sexpr");
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].as_atom(), Some("+"));
-        assert_eq!(items[1].as_long(), Some(1));
+        assert_eq!(items[1].as_atom(), Some("one"));
         let inner = items[2].as_sexpr().expect("inner is sexpr");
         assert_eq!(inner[0].as_atom(), Some("*"));
 
@@ -344,7 +346,8 @@ mod tests {
         let mut gc = GcThread::spawn();
 
         // Allocate a value, free it, then re-allocate from free list
-        let v1 = factory.long(1);
+        // (use slab-allocated types for NaN-boxing compatibility)
+        let v1 = factory.atom("first");
         let v1_ptr = v1.inner_ptr() as *mut u8;
 
         // Free v1 to put it on the free list
@@ -356,7 +359,7 @@ mod tests {
         let snapshot_epoch = snapshot.snapshot_epoch;
 
         // Now re-allocate from free list — this increments epoch
-        let v2 = factory.long(2);
+        let v2 = factory.atom("second");
         let v2_ptr = v2.inner_ptr() as *mut u8;
         assert_eq!(v1_ptr, v2_ptr, "should reuse the freed slot");
 
@@ -372,7 +375,7 @@ mod tests {
         alloc.process_gc_response(&response);
 
         // v2 should still be valid (not freed by GC)
-        assert_eq!(v2.as_long(), Some(2), "re-allocated value should survive GC");
+        assert_eq!(v2.as_atom(), Some("second"), "re-allocated value should survive GC");
 
         gc.shutdown();
     }

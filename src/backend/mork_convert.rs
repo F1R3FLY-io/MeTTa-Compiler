@@ -281,8 +281,10 @@ pub fn with_mork_bytes<V: MettaValueTrait, R>(
         let expr = Expr { ptr: buffer.as_mut_ptr() };
         let mut ez = ExprZipper::new(expr);
         let mut pdp = ParDataParser::new(sm);
-        // Dispatch through MettaValueInner for efficient single-match (jump table)
-        let inner = unsafe { &*value.inner_ptr() };
+        // Dispatch through MettaValueInner for efficient single-match (jump table).
+        // Use inner_raw() which safely handles inline NaN-boxed values (returns
+        // static singletons for Bool/Long/Unit/Empty instead of null pointer).
+        let inner = value.inner_raw();
         write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache)?;
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
@@ -317,7 +319,7 @@ pub fn with_mork_query_bytes<V: MettaValueTrait, R>(
         let expr = Expr { ptr: buffer.as_mut_ptr() };
         let mut ez = ExprZipper::new(expr);
         let mut pdp = ParDataParser::new(sm);
-        let inner = unsafe { &*value.inner_ptr() };
+        let inner = value.inner_raw();
         write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache)?;
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
@@ -471,8 +473,10 @@ fn write_metta_value_inner(
             for item in *items {
                 // Ground fragment cache: skip recursive serialization for ground sub-expressions.
                 // O(1) tagged pointer flag check + HashMap lookup.
-                if !item.has_variables_fast() {
-                    let key = item.inner_ptr() as usize;
+                // Skip cache for inline NaN-boxed values (null inner_ptr) — they're trivially cheap.
+                let key_ptr = item.inner_ptr();
+                if !key_ptr.is_null() && !item.has_variables_fast() {
+                    let key = key_ptr as usize;
                     if let Some(frag) = ground_cache.get(&key) {
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
@@ -543,8 +547,9 @@ fn write_metta_value_inner(
 
             for goal in *goals {
                 // Ground fragment cache for conjunction children
-                if !goal.has_variables_fast() {
-                    let key = goal.inner_ptr() as usize;
+                let goal_key_ptr = goal.inner_ptr();
+                if !goal_key_ptr.is_null() && !goal.has_variables_fast() {
+                    let key = goal_key_ptr as usize;
                     if let Some(frag) = ground_cache.get(&key) {
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
@@ -733,8 +738,9 @@ fn write_metta_value_debruijn_inner(
             ez.loc += 1;
             for item in *items {
                 // Ground fragment cache for De Bruijn encoding (ground = no variables = same bytes)
-                if !item.has_variables_fast() {
-                    let key = item.inner_ptr() as usize;
+                let item_key_ptr = item.inner_ptr();
+                if !item_key_ptr.is_null() && !item.has_variables_fast() {
+                    let key = item_key_ptr as usize;
                     if let Some(frag) = ground_cache.get(&key) {
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
@@ -800,8 +806,9 @@ fn write_metta_value_debruijn_inner(
             ez.loc += 1;
             write_symbol(b",", pdp, ez, symbol_cache)?;
             for goal in *goals {
-                if !goal.has_variables_fast() {
-                    let key = goal.inner_ptr() as usize;
+                let goal_key_ptr = goal.inner_ptr();
+                if !goal_key_ptr.is_null() && !goal.has_variables_fast() {
+                    let key = goal_key_ptr as usize;
                     if let Some(frag) = ground_cache.get(&key) {
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {

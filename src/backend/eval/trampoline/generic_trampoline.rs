@@ -334,6 +334,15 @@ where
             }
         }
 
+        // Phase 4c: Nondeterministic fork → pre-seed tiered cache for each branch.
+        // Fork branches are "hot by definition" — pre-seeding eliminates warmup delay.
+        {
+            let cache = crate::backend::bytecode::tiered_cache::global_tiered_cache();
+            for branch in &branches {
+                cache.preseed_for_immediate_compile(branch.hash_value());
+            }
+        }
+
         let results = parallel_branch_eval(branches, metta_env, budget, current_depth);
 
         // SAFETY: MettaValue and C::Value are the same type (TypeId checked).

@@ -39,6 +39,7 @@ pub use constants::{
     // NaN-boxing tags
     TAG_ATOM,
     TAG_BOOL,
+    TAG_EMPTY,
     TAG_ERROR,
     TAG_PTR,
     TAG_LONG,

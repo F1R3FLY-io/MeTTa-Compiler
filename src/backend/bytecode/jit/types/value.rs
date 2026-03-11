@@ -6,8 +6,8 @@
 use std::fmt;
 
 use super::constants::{
-    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_PTR, TAG_LONG,
-    TAG_MASK, TAG_UNIT, TAG_VAR,
+    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_EMPTY, TAG_ERROR, TAG_PTR,
+    TAG_LONG, TAG_MASK, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, MettaValueInner, ValueView};
 
@@ -65,6 +65,12 @@ impl JitValue {
     #[inline(always)]
     pub const fn unit() -> Self {
         JitValue(TAG_UNIT)
+    }
+
+    /// Create empty (zero-result) value
+    #[inline(always)]
+    pub const fn empty() -> Self {
+        JitValue(TAG_EMPTY)
     }
 
     /// Create a TAG_PTR value from a pointer to slab-allocated MettaValueInner.
@@ -138,6 +144,7 @@ impl JitValue {
         // Valid tags are TAG_LONG through TAG_VAR (0x7FF8_xxxx through 0x7FFF_xxxx)
         tag == TAG_LONG
             || tag == TAG_BOOL
+            || tag == TAG_EMPTY
             || tag == TAG_UNIT
             || tag == TAG_PTR
             || tag == TAG_ERROR
@@ -295,6 +302,7 @@ impl JitValue {
             }
             ValueView::Bool(b) => Some(JitValue::from_bool(b)),
             ValueView::Unit => Some(JitValue::unit()),
+            ValueView::Empty => Some(JitValue::empty()),
             // Other types need heap allocation
             _ => None,
         }
@@ -317,6 +325,7 @@ impl JitValue {
             TAG_LONG => MettaValue::Long(self.as_long()),
             TAG_BOOL => MettaValue::Bool(self.as_bool()),
             TAG_UNIT => MettaValue::Unit(),
+            TAG_EMPTY => MettaValue::Empty(),
             TAG_PTR => {
                 let ptr = self.as_inner_ptr();
                 debug_assert!(
@@ -403,6 +412,7 @@ impl fmt::Debug for JitValue {
         match self.tag() {
             TAG_LONG => write!(f, "JitValue::Long({})", self.as_long()),
             TAG_BOOL => write!(f, "JitValue::Bool({})", self.as_bool()),
+            TAG_EMPTY => write!(f, "JitValue::Empty"),
             TAG_UNIT => write!(f, "JitValue::Unit"),
             TAG_PTR => write!(f, "JitValue::Ptr({:p})", self.as_inner_ptr()),
             TAG_ERROR => write!(f, "JitValue::Error({:p})", self.as_error_ptr()),

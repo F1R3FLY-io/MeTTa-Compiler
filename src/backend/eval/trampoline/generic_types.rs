@@ -228,6 +228,10 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     ProcessIfCondition {
         then_branch: V,
         else_branch: V,
+        /// Deferred outer bindings from EvalWithBindings (Phase C).
+        /// When present, the taken branch is evaluated via EvalWithBindings
+        /// instead of Eval, avoiding materialization of the untaken branch.
+        outer_bindings: Option<GenericBindings<V>>,
         env: E,
         depth: usize,
     },
@@ -235,6 +239,10 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Processing case atom
     ProcessCaseAtom {
         cases: V,
+        /// Deferred outer bindings from EvalWithBindings (Phase C).
+        /// When present, case templates are evaluated via EvalWithBindings
+        /// instead of Eval, deferring binding application to the matched arm.
+        outer_bindings: Option<GenericBindings<V>>,
         env: E,
         depth: usize,
     },
@@ -255,6 +263,10 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     ProcessChainExpr {
         var: V,
         body: V,
+        /// Deferred outer bindings from EvalWithBindings (Phase C).
+        /// When present, chain body is evaluated via EvalWithBindings after
+        /// composing the chain variable binding with outer_bindings.
+        outer_bindings: Option<GenericBindings<V>>,
         env: E,
         depth: usize,
     },
@@ -264,6 +276,8 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         remaining_values: std::vec::IntoIter<V>,
         var: V,
         body: V,
+        /// Deferred outer bindings from EvalWithBindings (Phase C).
+        outer_bindings: Option<GenericBindings<V>>,
         results: Vec<V>,
         env: E,
         depth: usize,
@@ -848,27 +862,47 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 out.push(operation.clone());
             }
 
-            Self::ProcessIfCondition { then_branch, else_branch, .. } => {
+            Self::ProcessIfCondition { then_branch, else_branch, outer_bindings, .. } => {
                 out.push(then_branch.clone());
                 out.push(else_branch.clone());
+                if let Some(ref ob) = outer_bindings {
+                    for (_, v) in ob.iter() {
+                        out.push(v.clone());
+                    }
+                }
             }
 
-            Self::ProcessCaseAtom { cases, .. } => {
+            Self::ProcessCaseAtom { cases, outer_bindings, .. } => {
                 out.push(cases.clone());
+                if let Some(ref ob) = outer_bindings {
+                    for (_, v) in ob.iter() {
+                        out.push(v.clone());
+                    }
+                }
             }
 
             Self::ProcessEvalEval { .. } => {}
             Self::ProcessReturn { .. } => {}
 
-            Self::ProcessChainExpr { var, body, .. } => {
+            Self::ProcessChainExpr { var, body, outer_bindings, .. } => {
                 out.push(var.clone());
                 out.push(body.clone());
+                if let Some(ref ob) = outer_bindings {
+                    for (_, v) in ob.iter() {
+                        out.push(v.clone());
+                    }
+                }
             }
 
-            Self::ProcessChainBody { remaining_values, var, body, results, .. } => {
+            Self::ProcessChainBody { remaining_values, var, body, outer_bindings, results, .. } => {
                 out.extend(remaining_values.as_slice().iter().cloned());
                 out.push(var.clone());
                 out.push(body.clone());
+                if let Some(ref ob) = outer_bindings {
+                    for (_, v) in ob.iter() {
+                        out.push(v.clone());
+                    }
+                }
                 out.extend(results.iter().cloned());
             }
 
@@ -1158,6 +1192,7 @@ mod tests {
         let cont: TestContinuation = GenericContinuation::ProcessIfCondition {
             then_branch: f.long(100),
             else_branch: f.long(200),
+            outer_bindings: None,
             env: env(),
             depth: 0,
         };

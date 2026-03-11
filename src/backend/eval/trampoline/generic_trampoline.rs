@@ -1709,6 +1709,7 @@ where
                         continuations.push(GenericContinuation::ProcessIfCondition {
                             then_branch,
                             else_branch,
+                            outer_bindings: None,
                             env: env.clone(),
                             depth,
                         });
@@ -1727,6 +1728,7 @@ where
                     GenericEvalStep::EvalCaseAtom { atom, cases, env, depth } => {
                         continuations.push(GenericContinuation::ProcessCaseAtom {
                             cases,
+                            outer_bindings: None,
                             env: env.clone(),
                             depth,
                         });
@@ -1805,6 +1807,7 @@ where
                         continuations.push(GenericContinuation::ProcessChainExpr {
                             var,
                             body,
+                            outer_bindings: None,
                             env: env.clone(),
                             depth,
                         });
@@ -2498,6 +2501,145 @@ where
 
                         work_stack.push(GenericWorkItem::Eval {
                             value: value_expr,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                        continue;
+                    }
+
+                    // ── Phase C: `if` with deferred branches ──
+                    //
+                    // For `(if cond then else)` with pending bindings B:
+                    // 1. Materialize only `cond` with B (needed for condition evaluation)
+                    // 2. Keep `then` and `else` RAW + store B as outer_bindings on ProcessIfCondition
+                    // 3. When condition resolves to True/False, evaluate only the taken branch
+                    //    via EvalWithBindings{branch, B} — the untaken branch is never materialized.
+                    if resolved_head_atom == Some("if") && items.len() == 4 {
+                        let condition = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+
+                        continuations.push(GenericContinuation::ProcessIfCondition {
+                            then_branch: items[2].clone(), // RAW — not materialized
+                            else_branch: items[3].clone(), // RAW — not materialized
+                            outer_bindings: Some(bindings),
+                            env: env.clone(),
+                            depth,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: condition,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: Some(ctx.factory().atom("Bool")),
+                        });
+                        continue;
+                    }
+
+                    // ── Phase C: `let*` with deferred body ──
+                    //
+                    // For `(let* ((p1 v1) (p2 v2) ...) body)` with pending bindings B:
+                    // Instead of materializing the entire let* tree, desugar directly
+                    // to nested `let` forms carrying B as outer_bindings. Each nested
+                    // `let` goes through the existing deferred path above, avoiding the
+                    // double materialization (materialize let* → desugar → materialize nested lets).
+                    if resolved_head_atom == Some("let*") && items.len() == 3 {
+                        let bindings_expr = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+                        if let Some(binding_pairs) = bindings_expr.as_sexpr() {
+                            if binding_pairs.is_empty() || bindings_expr.is_unit() {
+                                // No bindings — evaluate body with outer bindings
+                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                    template: items[2].clone(),
+                                    bindings,
+                                    env,
+                                    depth,
+                                    is_tail_call,
+                                    expected_type,
+                                });
+                                continue;
+                            }
+
+                            // Desugar to nested let, keeping the body raw:
+                            // (let* ((a 1) (b 2)) body) → (let a 1 (let b 2 body))
+                            let mut result_body = items[2].clone(); // RAW body
+
+                            // Build nested let structure from inside out (reverse order)
+                            for binding in binding_pairs.iter().rev() {
+                                if let Some(pair) = binding.as_sexpr() {
+                                    if pair.len() == 2 {
+                                        result_body = ctx.factory().sexpr(vec![
+                                            ctx.factory().atom("let"),
+                                            pair[0].clone(),
+                                            pair[1].clone(),
+                                            result_body,
+                                        ]);
+                                    }
+                                }
+                            }
+
+                            // The outermost nested let will be handled by the `let`
+                            // deferral path in the next EvalWithBindings iteration.
+                            work_stack.push(GenericWorkItem::EvalWithBindings {
+                                template: result_body,
+                                bindings,
+                                env,
+                                depth,
+                                is_tail_call,
+                                expected_type,
+                            });
+                            continue;
+                        }
+                        // Fall through to full materialization if bindings_expr is not S-expr
+                    }
+
+                    // ── Phase C: `chain` with deferred body ──
+                    //
+                    // For `(chain expr $var body)` with pending bindings B:
+                    // 1. Materialize only `expr` with B (needed for evaluation)
+                    // 2. Keep `body` RAW + store B as outer_bindings on ProcessChainExpr
+                    // 3. When expr resolves, compose {$var → result} into B and evaluate
+                    //    body via EvalWithBindings{body, B ∪ {$var → result}}.
+                    if resolved_head_atom == Some("chain") && items.len() == 4 {
+                        let expr = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+
+                        continuations.push(GenericContinuation::ProcessChainExpr {
+                            var: items[2].clone(),  // $var — doesn't need materialization
+                            body: items[3].clone(), // RAW body — not materialized
+                            outer_bindings: Some(bindings),
+                            env: env.clone(),
+                            depth,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: expr,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                        continue;
+                    }
+
+                    // ── Phase C: `case` with deferred bodies ──
+                    //
+                    // For `(case atom cases)` with pending bindings B:
+                    // 1. Materialize only `atom` with B (needed for scrutinee evaluation)
+                    // 2. Store `cases` + B as outer_bindings on ProcessCaseAtom
+                    // 3. When the matched case template is selected, cases are materialized
+                    //    with B (patterns may reference outer variables).
+                    if resolved_head_atom == Some("case") && items.len() == 3 {
+                        let atom = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+
+                        continuations.push(GenericContinuation::ProcessCaseAtom {
+                            cases: items[2].clone(), // RAW — deferred materialization
+                            outer_bindings: Some(bindings),
+                            env: env.clone(),
+                            depth,
+                        });
+
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: atom,
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
@@ -3843,6 +3985,7 @@ fn process_continuation_generic<C: EvalContext>(
         GenericContinuation::ProcessIfCondition {
             then_branch,
             else_branch,
+            outer_bindings,
             env: _,
             depth,
         } => {
@@ -3918,15 +4061,48 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                         else_branch
                     };
-                    work_stack.push(GenericWorkItem::Eval {
-                        value: branch,
-                        env: env_after_cond,
-                        depth,
-                        is_tail_call: true,
-                        expected_type: None,
-                    });
+                    // Phase C: If outer_bindings present, defer materialization
+                    // of the taken branch via EvalWithBindings.
+                    if let Some(ob) = outer_bindings {
+                        if branch.has_variables_fast() {
+                            work_stack.push(GenericWorkItem::EvalWithBindings {
+                                template: branch,
+                                bindings: ob,
+                                env: env_after_cond,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                            });
+                        } else {
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: branch,
+                                env: env_after_cond,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                            });
+                        }
+                    } else {
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: branch,
+                            env: env_after_cond,
+                            depth,
+                            is_tail_call: true,
+                            expected_type: None,
+                        });
+                    }
                 } else {
                     // Non-boolean (including Unit) → return unreduced (if cond then else)
+                    // Phase C: Materialize branches if outer_bindings present
+                    // (needed for the unreduced (if cond then else) output).
+                    let (mat_then, mat_else) = if let Some(ref ob) = outer_bindings {
+                        (
+                            apply_bindings_generic(&then_branch, ob, ctx.factory()),
+                            apply_bindings_generic(&else_branch, ob, ctx.factory()),
+                        )
+                    } else {
+                        (then_branch, else_branch)
+                    };
                     // Trace: non-boolean phase
                     #[cfg(feature = "eval-trace")]
                     {
@@ -3947,8 +4123,8 @@ fn process_continuation_generic<C: EvalContext>(
                     let unreduced = ctx.factory().sexpr(vec![
                         ctx.factory().atom("if"),
                         first.clone(),
-                        then_branch,
-                        else_branch,
+                        mat_then,
+                        mat_else,
                     ]);
                     work_stack.push(GenericWorkItem::Resume {
                         result: (smallvec![unreduced], env_after_cond),
@@ -3966,9 +4142,17 @@ fn process_continuation_generic<C: EvalContext>(
 
         GenericContinuation::ProcessCaseAtom {
             cases,
+            outer_bindings,
             env: _,
             depth,
         } => {
+            // Phase C: If outer_bindings present, materialize cases (patterns +
+            // templates may reference outer-scope variables).
+            let cases = if let Some(ref ob) = outer_bindings {
+                apply_bindings_generic(&cases, ob, ctx.factory())
+            } else {
+                cases
+            };
             let (atom_results, atom_env) = result;
 
             // Trace: scrutinee-result phase
@@ -4398,6 +4582,7 @@ fn process_continuation_generic<C: EvalContext>(
         GenericContinuation::ProcessChainExpr {
             var,
             body,
+            outer_bindings,
             env: _,
             depth,
         } => {
@@ -4428,22 +4613,45 @@ fn process_continuation_generic<C: EvalContext>(
                     result: (SmallVec::new(), result_env),
                 });
             } else if expr_results.len() == 1 {
-                // Single result - substitute and evaluate body - NO conversion needed
+                // Single result - substitute and evaluate body
                 let var_name = var.as_atom().unwrap_or("");
-                let instantiated = substitute_variable_generic(
-                    &body,
-                    var_name,
-                    &expr_results[0],
-                    ctx.factory(),
-                );
-
-                work_stack.push(GenericWorkItem::Eval {
-                    value: instantiated,
-                    env: result_env,
-                    depth,
-                    is_tail_call: true,
-                    expected_type: None,
-                });
+                // Phase C: Compose chain variable binding with outer_bindings
+                // and defer materialization via EvalWithBindings.
+                if let Some(mut ob) = outer_bindings {
+                    ob.insert(var_name, expr_results[0].clone());
+                    if body.has_variables_fast() {
+                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                            template: body,
+                            bindings: ob,
+                            env: result_env,
+                            depth,
+                            is_tail_call: true,
+                            expected_type: None,
+                        });
+                    } else {
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: body,
+                            env: result_env,
+                            depth,
+                            is_tail_call: true,
+                            expected_type: None,
+                        });
+                    }
+                } else {
+                    let instantiated = substitute_variable_generic(
+                        &body,
+                        var_name,
+                        &expr_results[0],
+                        ctx.factory(),
+                    );
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: instantiated,
+                        env: result_env,
+                        depth,
+                        is_tail_call: true,
+                        expected_type: None,
+                    });
+                }
             } else {
                 // Multiple results - chain evaluates each
                 let mut remaining_values = expr_results.into_vec().into_iter();
@@ -4454,27 +4662,49 @@ fn process_continuation_generic<C: EvalContext>(
                     remaining_values,
                     var: var.clone(),
                     body: body.clone(),
+                    outer_bindings: outer_bindings.clone(),
                     results: Vec::with_capacity(chain_capacity),
                     env: result_env.clone(),
                     depth,
                 });
 
-                // Substitute variable generically - NO conversion needed
+                // Phase C: Compose chain variable binding with outer_bindings
                 let var_name = var.as_atom().unwrap_or("");
-                let instantiated = substitute_variable_generic(
-                    &body,
-                    var_name,
-                    &first,
-                    ctx.factory(),
-                );
-
-                work_stack.push(GenericWorkItem::Eval {
-                    value: instantiated,
-                    env: result_env,
-                    depth,
-                    is_tail_call: false,
-                    expected_type: None,
-                });
+                if let Some(mut ob) = outer_bindings {
+                    ob.insert(var_name, first);
+                    if body.has_variables_fast() {
+                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                            template: body,
+                            bindings: ob,
+                            env: result_env,
+                            depth,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                    } else {
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: body,
+                            env: result_env,
+                            depth,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                    }
+                } else {
+                    let instantiated = substitute_variable_generic(
+                        &body,
+                        var_name,
+                        &first,
+                        ctx.factory(),
+                    );
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: instantiated,
+                        env: result_env,
+                        depth,
+                        is_tail_call: false,
+                        expected_type: None,
+                    });
+                }
             }
         }
 
@@ -4482,6 +4712,7 @@ fn process_continuation_generic<C: EvalContext>(
             mut remaining_values,
             var,
             body,
+            outer_bindings,
             mut results,
             env,
             depth,
@@ -4494,27 +4725,49 @@ fn process_continuation_generic<C: EvalContext>(
                     remaining_values,
                     var: var.clone(),
                     body: body.clone(),
+                    outer_bindings: outer_bindings.clone(),
                     results,
                     env: env.clone(),
                     depth,
                 });
 
-                // Substitute variable generically - NO conversion needed
+                // Phase C: Compose chain variable binding with outer_bindings
                 let var_name = var.as_atom().unwrap_or("");
-                let instantiated = substitute_variable_generic(
-                    &body,
-                    var_name,
-                    &next_value,
-                    ctx.factory(),
-                );
-
-                work_stack.push(GenericWorkItem::Eval {
-                    value: instantiated,
-                    env,
-                    depth,
-                    is_tail_call: false,
-                    expected_type: None,
-                });
+                if let Some(mut ob) = outer_bindings {
+                    ob.insert(var_name, next_value);
+                    if body.has_variables_fast() {
+                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                            template: body,
+                            bindings: ob,
+                            env,
+                            depth,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                    } else {
+                        work_stack.push(GenericWorkItem::Eval {
+                            value: body,
+                            env,
+                            depth,
+                            is_tail_call: false,
+                            expected_type: None,
+                        });
+                    }
+                } else {
+                    let instantiated = substitute_variable_generic(
+                        &body,
+                        var_name,
+                        &next_value,
+                        ctx.factory(),
+                    );
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: instantiated,
+                        env,
+                        depth,
+                        is_tail_call: false,
+                        expected_type: None,
+                    });
+                }
             } else {
                 work_stack.push(GenericWorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),

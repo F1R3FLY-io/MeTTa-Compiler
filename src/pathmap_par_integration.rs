@@ -335,92 +335,99 @@ pub fn environment_to_par(env: &MettaEnvironment) -> Par {
         expr_instance: Some(ExprInstance::GByteArray(large_exprs_bytes)),
     }]);
 
-    // Build ETuple with named fields: (("space", ...), ("large_exprs", ...))
+    // Build EList with named field lists: [["space", ...], ["large_exprs", ...]]
     // Multiplicities are now encoded inline with each path in MTTS/MTTL byte arrays
-    let space_tuple = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+    let space_list = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![create_string_par("space".to_string()), space_epathmap],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]);
 
-    let large_exprs_tuple = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+    let large_exprs_list = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![
                 create_string_par("large_exprs".to_string()),
                 large_exprs_par,
             ],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]);
 
-    // Return ETuple with 2 named field tuples: [space, large_exprs]
+    // Return EList with 2 named field lists: [space, large_exprs]
     Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-            ps: vec![space_tuple, large_exprs_tuple],
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![space_list, large_exprs_list],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }])
 }
 
 /// Convert MettaState to a Rholang Par containing an EPathMap
 ///
-/// The EPathMap will contain a single ETuple with three named field tuples:
-/// - ("source", <list of exprs>)
-/// - ("environment", <env data>)
-/// - ("output", <list of output>)
+/// The EPathMap will contain a single EList with three named field lists:
+/// - ["source", <list of exprs>]
+/// - ["environment", <env data>]
+/// - ["output", <list of output>]
 pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
     trace!(target: "mettatron::rholang_integration::metta_state_to_pathmap_par", ?state);
     let mut field_tuples = Vec::new();
 
-    // Field 0: ("source", <list of exprs>)
+    // Field 0: ["source", <list of exprs>]
     let pending_tag = create_string_par("source".to_string());
     let pending_list = metta_values_to_list_par(&state.source());
     field_tuples.push(Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![pending_tag, pending_list],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]));
 
-    // Field 1: ("environment", <env data>)
+    // Field 1: ["environment", <env data>]
     let env_tag = create_string_par("environment".to_string());
     let env_data = environment_to_par(&state.environment);
     field_tuples.push(Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![env_tag, env_data],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]));
 
-    // Field 2: ("output", <list of output>)
+    // Field 2: ["output", <list of output>]
     let outputs_tag = create_string_par("output".to_string());
     let outputs_list = metta_values_to_list_par(&state.output());
     field_tuples.push(Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![outputs_tag, outputs_list],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]));
 
-    // Wrap all three field tuples in a single ETuple
-    let state_tuple = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+    // Wrap all three field lists in a single EList
+    let state_list = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: field_tuples,
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]);
 
-    // Create EPathMap with this single ETuple as its only element
+    // Create EPathMap with this single EList as its only element
     let epathmap = EPathMap {
-        ps: vec![state_tuple],
+        ps: vec![state_list],
         locally_free: Vec::new(),
         connective_used: false,
         remainder: None,
@@ -550,16 +557,16 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 
 /// Convert a Rholang Par back to Environment
 /// Deserializes the Space's PathMap with inline multiplicities from byte arrays
-/// Expects an ETuple with named fields:
-///   (("space", GByteArray), ("large_exprs", GByteArray))
+/// Expects an EList with named fields:
+///   [["space", GByteArray], ["large_exprs", GByteArray]]
 /// Multiplicities are encoded inline with each path in MTTS/MTTL byte arrays
 /// Note: Type assertions are stored within the space, not separately
 pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
     trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
 
-    // The par should be an ETuple with 2 named field tuples: [space, large_exprs]
+    // The par should be an EList with 2 named field lists: [space, large_exprs]
     if let Some(expr) = par.exprs.first() {
-        if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
+        if let Some(ExprInstance::EListBody(tuple)) = &expr.expr_instance {
             if tuple.ps.len() != 2 {
                 debug!(
                     target: "mettatron::rholang_integration::par_to_environment",
@@ -571,20 +578,20 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                 ));
             }
 
-            // Helper to extract value from (tag, value) tuple
-            let extract_tuple_value = |tuple_par: &Par| -> Result<Par, String> {
-                if let Some(expr) = tuple_par.exprs.first() {
-                    if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-                        if tuple.ps.len() >= 2 {
-                            return Ok(tuple.ps[1].clone());
+            // Helper to extract value from [tag, value] list
+            let extract_list_value = |list_par: &Par| -> Result<Par, String> {
+                if let Some(expr) = list_par.exprs.first() {
+                    if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
+                        if list.ps.len() >= 2 {
+                            return Ok(list.ps[1].clone());
                         }
                     }
                 }
-                Err("Expected tuple with at least 2 elements".to_string())
+                Err("Expected list with at least 2 elements".to_string())
             };
 
             // Extract space (element 0) - should be a single GByteArray (MORK dump format)
-            let space_par = extract_tuple_value(&tuple.ps[0])?;
+            let space_par = extract_list_value(&tuple.ps[0])?;
             let space_dump_bytes: Vec<u8> = if let Some(expr) = space_par.exprs.first() {
                 if let Some(ExprInstance::GByteArray(bytes)) = &expr.expr_instance {
                     bytes.clone()
@@ -740,7 +747,7 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
             // These are expressions with arity >= 64 that exceed MORK's 63-arity limit
             // Stored as Wide MORK storage bytes (tag-byte + LEB128) with inline multiplicities
             {
-                let large_exprs_par = extract_tuple_value(&tuple.ps[1])?;
+                let large_exprs_par = extract_list_value(&tuple.ps[1])?;
                 if let Some(expr) = large_exprs_par.exprs.first() {
                     if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
                         // Read format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes][multiplicity1: 8 bytes]...
@@ -828,9 +835,9 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
         } else {
             debug!(
                 target: "mettatron::rholang_integration::par_to_environment",
-                "expected ETuple for environment"
+                "expected EList for environment"
             );
-            Err("Expected ETuple for environment".to_string())
+            Err("Expected EList for environment".to_string())
         }
     } else {
         debug!(
@@ -860,36 +867,36 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                 ));
             }
 
-            // Extract the ETuple from the PathMap
-            let state_tuple_par = &pathmap.ps[0];
-            if let Some(expr) = state_tuple_par.exprs.first() {
-                if let Some(ExprInstance::ETupleBody(state_tuple)) = &expr.expr_instance {
-                    // The tuple should have 3 named field tuples
-                    if state_tuple.ps.len() != 3 {
+            // Extract the EList from the PathMap
+            let state_list_par = &pathmap.ps[0];
+            if let Some(expr) = state_list_par.exprs.first() {
+                if let Some(ExprInstance::EListBody(state_list)) = &expr.expr_instance {
+                    // The list should have 3 named field lists
+                    if state_list.ps.len() != 3 {
                         debug!(
                             target: "mettatron::rholang_integration::pathmap_par_to_metta_state",
-                            expected = 3, got = state_tuple.ps.len(), "invalid state tuple size"
+                            expected = 3, got = state_list.ps.len(), "invalid state list size"
                         );
                         return Err(format!(
-                            "Expected 3 named fields in state tuple, got {}",
-                            state_tuple.ps.len()
+                            "Expected 3 named fields in state list, got {}",
+                            state_list.ps.len()
                         ));
                     }
 
-                    // Helper to extract value from (tag, value) tuple
-                    let extract_tuple_value = |tuple_par: &Par| -> Result<Par, String> {
-                        if let Some(expr) = tuple_par.exprs.first() {
-                            if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-                                if tuple.ps.len() >= 2 {
-                                    return Ok(tuple.ps[1].clone());
+                    // Helper to extract value from [tag, value] list
+                    let extract_list_value = |list_par: &Par| -> Result<Par, String> {
+                        if let Some(expr) = list_par.exprs.first() {
+                            if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
+                                if list.ps.len() >= 2 {
+                                    return Ok(list.ps[1].clone());
                                 }
                             }
                         }
-                        Err("Expected tuple with at least 2 elements".to_string())
+                        Err("Expected list with at least 2 elements".to_string())
                     };
 
                     // Extract source
-                    let pending_par = extract_tuple_value(&state_tuple.ps[0])?;
+                    let pending_par = extract_list_value(&state_list.ps[0])?;
                     let source = if let Some(expr) = pending_par.exprs.first() {
                         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
                             let exprs: Result<Vec<MettaValue>, String> =
@@ -903,11 +910,11 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                     };
 
                     // Extract environment
-                    let env_par = extract_tuple_value(&state_tuple.ps[1])?;
+                    let env_par = extract_list_value(&state_list.ps[1])?;
                     let environment = par_to_environment(&env_par)?;
 
                     // Extract output
-                    let outputs_par = extract_tuple_value(&state_tuple.ps[2])?;
+                    let outputs_par = extract_list_value(&state_list.ps[2])?;
                     let output = if let Some(expr) = outputs_par.exprs.first() {
                         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
                             let outputs: Result<Vec<MettaValue>, String> =
@@ -926,8 +933,8 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                     let state = MettaState::from_parts(source, environment, output);
                     Ok(state)
                 } else {
-                    debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "expected ETupleBody in PathMap");
-                    Err("Expected ETupleBody in PathMap".to_string())
+                    debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "expected EListBody in PathMap");
+                    Err("Expected EListBody in PathMap".to_string())
                 }
             } else {
                 debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "PathMap element has no expressions");
@@ -975,35 +982,38 @@ pub fn decode_space_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String> {
         expr_instance: Some(ExprInstance::GByteArray(empty_large)),
     }]);
 
-    let env_tuple_par = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+    let env_list_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![
-                // ("space", space_bytes)
+                // ["space", space_bytes]
                 Par::default().with_exprs(vec![Expr {
-                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![create_string_par("space".to_string()), space_par],
                         locally_free: Vec::new(),
                         connective_used: false,
+                        remainder: None,
                     })),
                 }]),
-                // ("large_exprs", empty_large_bytes)
+                // ["large_exprs", empty_large_bytes]
                 Par::default().with_exprs(vec![Expr {
-                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![
                             create_string_par("large_exprs".to_string()),
                             large_par,
                         ],
                         locally_free: Vec::new(),
                         connective_used: false,
+                        remainder: None,
                     })),
                 }]),
             ],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]);
 
-    let env = par_to_environment(&env_tuple_par)?;
+    let env = par_to_environment(&env_list_par)?;
     let atoms = env.get_all_atoms();
     Ok(atoms.iter().map(metta_value_to_par).collect())
 }
@@ -1040,35 +1050,38 @@ pub fn decode_large_exprs_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String
         expr_instance: Some(ExprInstance::GByteArray(empty_space)),
     }]);
 
-    let env_tuple_par = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+    let env_list_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![
-                // ("space", empty_space_bytes)
+                // ["space", empty_space_bytes]
                 Par::default().with_exprs(vec![Expr {
-                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![create_string_par("space".to_string()), space_par],
                         locally_free: Vec::new(),
                         connective_used: false,
+                        remainder: None,
                     })),
                 }]),
-                // ("large_exprs", large_expr_bytes)
+                // ["large_exprs", large_expr_bytes]
                 Par::default().with_exprs(vec![Expr {
-                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![
                             create_string_par("large_exprs".to_string()),
                             large_par,
                         ],
                         locally_free: Vec::new(),
                         connective_used: false,
+                        remainder: None,
                     })),
                 }]),
             ],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         })),
     }]);
 
-    let env = par_to_environment(&env_tuple_par)?;
+    let env = par_to_environment(&env_list_par)?;
     // Only return the wide expressions (not the empty regular space)
     let atoms = env.get_all_atoms();
     Ok(atoms.iter().map(metta_value_to_par).collect())
@@ -1076,34 +1089,34 @@ pub fn decode_large_exprs_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String
 
 /// Check whether a PathMap has the structural shape of a serialized MettaState
 /// without attempting full deserialization. Returns true if the structure matches
-/// the expected layout: {| (("source", ...), ("environment", ...), ("output", ...)) |}
+/// the expected layout: {| [["source", ...], ["environment", ...], ["output", ...]] |}
 pub fn has_metta_state_structure(pathmap: &EPathMap) -> bool {
     // Must have exactly 1 element
     if pathmap.ps.len() != 1 {
         return false;
     }
 
-    // The element must be an ETuple with exactly 3 fields
-    let state_tuple_par = &pathmap.ps[0];
-    let state_tuple = match state_tuple_par.exprs.first() {
-        Some(Expr { expr_instance: Some(ExprInstance::ETupleBody(tuple)) }) => tuple,
+    // The element must be an EList with exactly 3 fields
+    let state_list_par = &pathmap.ps[0];
+    let state_list = match state_list_par.exprs.first() {
+        Some(Expr { expr_instance: Some(ExprInstance::EListBody(list)) }) => list,
         _ => return false,
     };
 
-    if state_tuple.ps.len() != 3 {
+    if state_list.ps.len() != 3 {
         return false;
     }
 
-    // Each field must be an ETuple with >= 2 elements, tagged with the expected names
+    // Each field must be an EList with >= 2 elements, tagged with the expected names
     let expected_tags = ["source", "environment", "output"];
-    for (field_par, expected_tag) in state_tuple.ps.iter().zip(expected_tags.iter()) {
+    for (field_par, expected_tag) in state_list.ps.iter().zip(expected_tags.iter()) {
         match field_par.exprs.first() {
-            Some(Expr { expr_instance: Some(ExprInstance::ETupleBody(field_tuple)) }) => {
-                if field_tuple.ps.len() < 2 {
+            Some(Expr { expr_instance: Some(ExprInstance::EListBody(field_list)) }) => {
+                if field_list.ps.len() < 2 {
                     return false;
                 }
                 // Check tag
-                match field_tuple.ps[0].exprs.first() {
+                match field_list.ps[0].exprs.first() {
                     Some(Expr { expr_instance: Some(ExprInstance::GString(tag)) }) => {
                         if tag != expected_tag {
                             return false;
@@ -1124,30 +1137,30 @@ pub fn has_metta_state_structure(pathmap: &EPathMap) -> bool {
 /// Multiplicity::new(1). This allows deserialization of MettaState structures that
 /// were reconstructed without the opaque MTTS binary encoding.
 pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String> {
-    // The par should be an ETuple with 2 named field tuples: [space, large_exprs]
+    // The par should be an EList with 2 named field lists: [space, large_exprs]
     if let Some(expr) = par.exprs.first() {
-        if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
+        if let Some(ExprInstance::EListBody(tuple)) = &expr.expr_instance {
             if tuple.ps.len() != 2 {
                 return Err(format!(
-                    "Expected 2 elements in environment tuple, got {}",
+                    "Expected 2 elements in environment list, got {}",
                     tuple.ps.len()
                 ));
             }
 
-            // Helper to extract value from (tag, value) tuple
-            let extract_tuple_value = |tuple_par: &Par| -> Result<Par, String> {
-                if let Some(expr) = tuple_par.exprs.first() {
-                    if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-                        if tuple.ps.len() >= 2 {
-                            return Ok(tuple.ps[1].clone());
+            // Helper to extract value from [tag, value] list
+            let extract_list_value = |list_par: &Par| -> Result<Par, String> {
+                if let Some(expr) = list_par.exprs.first() {
+                    if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
+                        if list.ps.len() >= 2 {
+                            return Ok(list.ps[1].clone());
                         }
                     }
                 }
-                Err("Expected tuple with at least 2 elements".to_string())
+                Err("Expected list with at least 2 elements".to_string())
             };
 
             // Extract space (element 0)
-            let space_par = extract_tuple_value(&tuple.ps[0])?;
+            let space_par = extract_list_value(&tuple.ps[0])?;
             let space_dump_bytes: Vec<u8> = if let Some(expr) = space_par.exprs.first() {
                 if let Some(ExprInstance::GByteArray(bytes)) = &expr.expr_instance {
                     bytes.clone()
@@ -1278,7 +1291,7 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
 
             // Extract and restore wide expressions (element 1) with LENIENT multiplicity handling
             {
-                let large_exprs_par = extract_tuple_value(&tuple.ps[1])?;
+                let large_exprs_par = extract_list_value(&tuple.ps[1])?;
                 if let Some(expr) = large_exprs_par.exprs.first() {
                     if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
                         if large_bytes.len() >= 12 {
@@ -1354,7 +1367,7 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
             env.rebuild_bloom_filter();
             Ok(env)
         } else {
-            Err("Expected ETuple for environment".to_string())
+            Err("Expected EList for environment".to_string())
         }
     } else {
         Err("Environment Par has no expressions".to_string())
@@ -1390,26 +1403,26 @@ pub fn pathmap_par_to_metta_state_lenient(par: &Par) -> Result<MettaState, Strin
         _ => return Err("Par does not contain EPathMap".to_string()),
     };
 
-    let state_tuple_par = &pathmap.ps[0];
-    let state_tuple = match state_tuple_par.exprs.first() {
-        Some(Expr { expr_instance: Some(ExprInstance::ETupleBody(tuple)) }) => tuple,
-        _ => return Err("Expected ETupleBody in PathMap".to_string()),
+    let state_list_par = &pathmap.ps[0];
+    let state_list = match state_list_par.exprs.first() {
+        Some(Expr { expr_instance: Some(ExprInstance::EListBody(list)) }) => list,
+        _ => return Err("Expected EListBody in PathMap".to_string()),
     };
 
-    // Helper to extract value from (tag, value) tuple
-    let extract_tuple_value = |tuple_par: &Par| -> Result<Par, String> {
-        if let Some(expr) = tuple_par.exprs.first() {
-            if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-                if tuple.ps.len() >= 2 {
-                    return Ok(tuple.ps[1].clone());
+    // Helper to extract value from [tag, value] list
+    let extract_list_value = |list_par: &Par| -> Result<Par, String> {
+        if let Some(expr) = list_par.exprs.first() {
+            if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
+                if list.ps.len() >= 2 {
+                    return Ok(list.ps[1].clone());
                 }
             }
         }
-        Err("Expected tuple with at least 2 elements".to_string())
+        Err("Expected list with at least 2 elements".to_string())
     };
 
     // Extract source (field 0)
-    let pending_par = extract_tuple_value(&state_tuple.ps[0])?;
+    let pending_par = extract_list_value(&state_list.ps[0])?;
     let source = if let Some(expr) = pending_par.exprs.first() {
         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
             let exprs: Result<Vec<MettaValue>, String> =
@@ -1423,7 +1436,7 @@ pub fn pathmap_par_to_metta_state_lenient(par: &Par) -> Result<MettaState, Strin
     };
 
     // Extract environment (field 1) — with lenient fallback
-    let env_par = extract_tuple_value(&state_tuple.ps[1])?;
+    let env_par = extract_list_value(&state_list.ps[1])?;
     let environment = match par_to_environment(&env_par) {
         Ok(env) => env,
         Err(_) => match par_to_environment_lenient(&env_par) {
@@ -1433,7 +1446,7 @@ pub fn pathmap_par_to_metta_state_lenient(par: &Par) -> Result<MettaState, Strin
     };
 
     // Extract output (field 2)
-    let outputs_par = extract_tuple_value(&state_tuple.ps[2])?;
+    let outputs_par = extract_list_value(&state_list.ps[2])?;
     let output = if let Some(expr) = outputs_par.exprs.first() {
         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
             let outputs: Result<Vec<MettaValue>, String> =
@@ -1503,23 +1516,23 @@ mod tests {
         let par = environment_to_par(&env);
         println!("Serialized to Par");
 
-        // Check that the serialized Par is an ETuple with 2 named field tuples: [space, large_exprs]
+        // Check that the serialized Par is an EList with 2 named field lists: [space, large_exprs]
         assert_eq!(par.exprs.len(), 1);
-        if let Some(ExprInstance::ETupleBody(env_tuple)) = par.exprs[0].expr_instance.as_ref() {
+        if let Some(ExprInstance::EListBody(env_list)) = par.exprs[0].expr_instance.as_ref() {
             assert_eq!(
-                env_tuple.ps.len(), 2,
-                "Expected ETuple with 2 fields, got {}",
-                env_tuple.ps.len()
+                env_list.ps.len(), 2,
+                "Expected EList with 2 fields, got {}",
+                env_list.ps.len()
             );
 
-            // Check field 0: ("space", <GByteArray>)
-            if let Some(ExprInstance::ETupleBody(tuple)) = env_tuple.ps[0]
+            // Check field 0: ["space", <GByteArray>]
+            if let Some(ExprInstance::EListBody(list)) = env_list.ps[0]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
             {
                 // Verify tag
-                if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                if let Some(ExprInstance::GString(tag)) = list.ps[0]
                     .exprs
                     .first()
                     .and_then(|e| e.expr_instance.as_ref())
@@ -1527,7 +1540,7 @@ mod tests {
                     assert_eq!(tag, "space");
                 }
                 // Verify space dump is a GByteArray and not empty
-                if let Some(ExprInstance::GByteArray(dump_bytes)) = tuple.ps[1]
+                if let Some(ExprInstance::GByteArray(dump_bytes)) = list.ps[1]
                     .exprs
                     .first()
                     .and_then(|e| e.expr_instance.as_ref())
@@ -1538,16 +1551,16 @@ mod tests {
                     panic!("Expected GByteArray for space dump");
                 }
             } else {
-                panic!("Expected ETupleBody for field 0");
+                panic!("Expected EListBody for field 0");
             }
 
-            // Check field 1: ("large_exprs", <GByteArray>)
-            if let Some(ExprInstance::ETupleBody(tuple)) = env_tuple.ps[1]
+            // Check field 1: ["large_exprs", <GByteArray>]
+            if let Some(ExprInstance::EListBody(list)) = env_list.ps[1]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
             {
-                if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                if let Some(ExprInstance::GString(tag)) = list.ps[0]
                     .exprs
                     .first()
                     .and_then(|e| e.expr_instance.as_ref())
@@ -1555,7 +1568,7 @@ mod tests {
                     assert_eq!(tag, "large_exprs");
                 }
                 // Verify it's a GByteArray
-                if let Some(ExprInstance::GByteArray(large_bytes)) = tuple.ps[1]
+                if let Some(ExprInstance::GByteArray(large_bytes)) = list.ps[1]
                     .exprs
                     .first()
                     .and_then(|e| e.expr_instance.as_ref())
@@ -1574,7 +1587,7 @@ mod tests {
                 }
             }
         } else {
-            panic!("Expected ETupleBody");
+            panic!("Expected EListBody");
         }
 
         // Deserialize
@@ -1715,22 +1728,22 @@ mod tests {
 
         // Should be an EPathMap
         if let Some(ExprInstance::EPathmapBody(pathmap)) = &par.exprs[0].expr_instance {
-            // Should have 1 element (the state ETuple)
+            // Should have 1 element (the state EList)
             assert_eq!(pathmap.ps.len(), 1);
 
-            // The element should be an ETuple with 3 named field tuples
-            if let Some(ExprInstance::ETupleBody(state_tuple)) = pathmap.ps[0]
+            // The element should be an EList with 3 named field lists
+            if let Some(ExprInstance::EListBody(state_list)) = pathmap.ps[0]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
             {
                 assert_eq!(
-                    state_tuple.ps.len(),
+                    state_list.ps.len(),
                     3,
-                    "Expected ETuple with 3 named fields (source, environment, output)"
+                    "Expected EList with 3 named fields (source, environment, output)"
                 );
             } else {
-                panic!("Expected ETupleBody for state");
+                panic!("Expected EListBody for state");
             }
         } else {
             panic!("Expected EPathmapBody");
@@ -1744,28 +1757,28 @@ mod tests {
         // Should return a PathMap (consistent type)
         assert_eq!(par.exprs.len(), 1);
         if let Some(ExprInstance::EPathmapBody(pathmap)) = &par.exprs[0].expr_instance {
-            // Should have 1 element (the state ETuple)
+            // Should have 1 element (the state EList)
             assert_eq!(pathmap.ps.len(), 1);
 
-            // Extract the state tuple
-            if let Some(ExprInstance::ETupleBody(state_tuple)) = pathmap.ps[0]
+            // Extract the state list
+            if let Some(ExprInstance::EListBody(state_list)) = pathmap.ps[0]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
             {
                 assert_eq!(
-                    state_tuple.ps.len(),
+                    state_list.ps.len(),
                     3,
-                    "Expected ETuple with 3 named fields (source, environment, output)"
+                    "Expected EList with 3 named fields (source, environment, output)"
                 );
 
                 // Check that output contains the error
-                // Field 2 should be ("output", [error_value])
-                if let Some(expr) = state_tuple.ps[2].exprs.first() {
-                    if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-                        assert_eq!(tuple.ps.len(), 2, "Expected (tag, value) tuple");
+                // Field 2 should be ["output", [error_value]]
+                if let Some(expr) = state_list.ps[2].exprs.first() {
+                    if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
+                        assert_eq!(list.ps.len(), 2, "Expected [tag, value] list");
                         // First element should be "output" tag
-                        if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                        if let Some(ExprInstance::GString(tag)) = list.ps[0]
                             .exprs
                             .first()
                             .and_then(|e| e.expr_instance.as_ref())
@@ -1775,13 +1788,13 @@ mod tests {
                             panic!("Expected GString tag");
                         }
                     } else {
-                        panic!("Expected ETupleBody for output element");
+                        panic!("Expected EListBody for output element");
                     }
                 } else {
-                    panic!("Expected expr in state_tuple.ps[2]");
+                    panic!("Expected expr in state_list.ps[2]");
                 }
             } else {
-                panic!("Expected ETupleBody for state");
+                panic!("Expected EListBody for state");
             }
         } else {
             panic!("Expected EPathmapBody");
@@ -2382,13 +2395,14 @@ mod tests {
     }
 
     #[test]
-    fn test_par_to_environment_wrong_tuple_size() {
-        // Create a Par with wrong tuple size (1 instead of 2)
+    fn test_par_to_environment_wrong_list_size() {
+        // Create a Par with wrong list size (1 instead of 2)
         let par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            expr_instance: Some(ExprInstance::EListBody(EList {
                 ps: vec![create_string_par("only_one".to_string())],
                 locally_free: Vec::new(),
                 connective_used: false,
+                remainder: None,
             })),
         }]);
 
@@ -2398,15 +2412,15 @@ mod tests {
     }
 
     #[test]
-    fn test_par_to_environment_not_etuple() {
-        // Create a Par that's not an ETuple
+    fn test_par_to_environment_not_elist() {
+        // Create a Par that's not an EList
         let par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GString("not a tuple".to_string())),
+            expr_instance: Some(ExprInstance::GString("not a list".to_string())),
         }]);
 
         let result = par_to_environment(&par);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected ETuple"));
+        assert!(result.unwrap_err().contains("Expected EList"));
     }
 
     #[test]
@@ -2670,46 +2684,50 @@ mod tests {
 
     #[test]
     fn test_has_metta_state_structure_wrong_tags() {
-        // ETuple with 3 fields but wrong tag names
-        let wrong_tag_tuple = ETuple {
+        // EList with 3 fields but wrong tag names
+        let wrong_tag_list = EList {
             ps: vec![
                 Par::default().with_exprs(vec![Expr {
-                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![
                             create_string_par("wrong_tag".to_string()),
                             Par::default(),
                         ],
                         locally_free: Vec::new(),
                         connective_used: false,
+                        remainder: None,
                     })),
                 }]),
                 Par::default().with_exprs(vec![Expr {
-                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![
                             create_string_par("environment".to_string()),
                             Par::default(),
                         ],
                         locally_free: Vec::new(),
                         connective_used: false,
+                        remainder: None,
                     })),
                 }]),
                 Par::default().with_exprs(vec![Expr {
-                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![
                             create_string_par("output".to_string()),
                             Par::default(),
                         ],
                         locally_free: Vec::new(),
                         connective_used: false,
+                        remainder: None,
                     })),
                 }]),
             ],
             locally_free: Vec::new(),
             connective_used: false,
+            remainder: None,
         };
         let pathmap = EPathMap {
             ps: vec![Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(wrong_tag_tuple)),
+                expr_instance: Some(ExprInstance::EListBody(wrong_tag_list)),
             }])],
             locally_free: Vec::new(),
             connective_used: false,

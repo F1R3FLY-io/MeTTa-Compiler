@@ -583,6 +583,52 @@ impl MatchPath {
         }
         Some(current)
     }
+
+    /// Navigate from root to the node at this path, resolving variables through
+    /// `bindings` at each step.  Returns an owned value because variable resolution
+    /// may return a value from the binding map rather than the expression tree.
+    ///
+    /// At each intermediate step, if the current node is a bound variable, it is
+    /// replaced with its binding before descending into children.  The final leaf
+    /// is also resolved.  Unbound variables are returned as-is (same as
+    /// `apply_bindings_generic` behaviour — single-level, no transitivity).
+    #[inline]
+    fn navigate_resolving<V>(
+        &self,
+        root: &V,
+        bindings: &GenericBindings<V>,
+    ) -> Option<V>
+    where
+        V: MettaValueTrait + Clone,
+    {
+        // Resolve a single node: if it is a bound variable, return the binding.
+        #[inline(always)]
+        fn resolve_one<V: MettaValueTrait + Clone>(
+            val: &V,
+            bindings: &GenericBindings<V>,
+        ) -> V {
+            if let Some(name) = val.as_atom() {
+                if (name.starts_with('$')
+                    || (name.starts_with('&') && name != "&" && name != "&self" && name != "&kb" && name != "&stack")
+                    || name.starts_with('\''))
+                    && name.len() > 1
+                {
+                    if let Some(bound) = bindings.get(name) {
+                        return bound.clone();
+                    }
+                }
+            }
+            val.clone()
+        }
+
+        let mut current: V = resolve_one(root, bindings);
+        for i in 0..self.len {
+            let items = current.as_sexpr()?;
+            let child = items.get(self.indices[i as usize] as usize)?;
+            current = resolve_one(child, bindings);
+        }
+        Some(current)
+    }
 }
 
 /// A structural check on the expression tree (no variable dependencies).
@@ -878,6 +924,98 @@ impl StructuralMatcher {
                     let val = path.navigate(expr)?;
                     let bound = bound_values[*bind_index as usize];
                     if val != bound {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        Some(bindings)
+    }
+
+    /// Match a **template** expression whose variables are not yet substituted,
+    /// resolving them on-the-fly through `outer_bindings`.
+    ///
+    /// This is the WAM-inspired "binding-aware" matching path: instead of first
+    /// materializing `apply_bindings(template, outer_bindings)` and then calling
+    /// `try_match`, we resolve variables lazily during navigation.  This avoids
+    /// the O(tree) allocation that `apply_bindings_generic` would perform.
+    ///
+    /// Semantically equivalent to:
+    /// ```text
+    ///   let materialized = apply_bindings(template, outer_bindings);
+    ///   self.try_match(&materialized)
+    /// ```
+    /// but without allocating the materialized expression.
+    #[inline]
+    pub fn try_match_with_bindings<V>(
+        &self,
+        template: &V,
+        outer_bindings: &GenericBindings<V>,
+    ) -> Option<GenericBindings<V>>
+    where
+        V: MettaValueTrait + Clone + PartialEq,
+    {
+        // Phase 1: Structural checks with variable resolution
+        for check in &self.checks {
+            match check {
+                StructuralCheck::Arity { path, expected } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    let items = val.as_sexpr()?;
+                    if items.len() != *expected as usize {
+                        return None;
+                    }
+                }
+                StructuralCheck::Atom { path, expected } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    let atom = val.as_atom()?;
+                    if atom != *expected {
+                        return None;
+                    }
+                }
+                StructuralCheck::Long { path, expected } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    if val.as_long()? != *expected {
+                        return None;
+                    }
+                }
+                StructuralCheck::Bool { path, expected } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    if val.as_bool()? != *expected {
+                        return None;
+                    }
+                }
+                StructuralCheck::Float { path, expected_bits } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    if val.as_float()?.to_bits() != *expected_bits {
+                        return None;
+                    }
+                }
+                StructuralCheck::Str { path, expected } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    let s = val.as_string()?;
+                    if s != *expected {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Variable bindings with resolution
+        let mut bindings = GenericBindings::new();
+        let mut bound_values: SmallVec<[V; 8]> = SmallVec::new();
+
+        for op in &self.var_ops {
+            match op {
+                VarOp::Bind { path, name } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    bound_values.push(val.clone());
+                    bindings.insert(*name, val);
+                }
+                VarOp::EqualCheck { path, bind_index } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    let bound = &bound_values[*bind_index as usize];
+                    if val != *bound {
                         return None;
                     }
                 }

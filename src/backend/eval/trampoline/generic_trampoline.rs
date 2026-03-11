@@ -70,7 +70,8 @@ use super::dispatch_hints::{
     should_memoize, eval_memo_get, eval_memo_put,
     collect_eval_memo_roots, collect_match_result_roots,
 };
-use super::generic_engine::try_deterministic_chain;
+use super::generic_engine::{try_deterministic_chain, try_match_rules_with_bindings};
+use super::dispatch_hints::REDUCIBLE_HEADS;
 
 // =============================================================================
 // Parallel Nondeterministic Branching
@@ -2714,6 +2715,37 @@ where
                             }
                         }
                         continue;
+                    }
+
+                    // ── SG1 Phase B: Binding-aware nondeterministic rule matching ──
+                    //
+                    // Before materializing the full expression, try matching rules
+                    // directly against the template with variable resolution through
+                    // outer bindings. This avoids O(tree) apply_bindings allocation
+                    // when structural matchers can resolve variables on-the-fly.
+                    //
+                    // Only attempted when:
+                    // - Head is known (resolved_head_atom is Some)
+                    // - Head is not a special form or grounded op
+                    // - All rule candidates have structural matchers
+                    //
+                    // Falls through to materialization if any candidate lacks a
+                    // structural matcher (MORK matching needs concrete expressions).
+                    if let Some(head_name) = resolved_head_atom {
+                        if !REDUCIBLE_HEADS.contains(head_name) {
+                            let arity = items.len() - 1;
+                            if let Some(matches) = try_match_rules_with_bindings(
+                                &template, &bindings, head_name, arity, &env, ctx.factory(),
+                            ) {
+                                if !matches.is_empty() {
+                                    dispatch_rule_matches(matches, SmallVec::new(), env, depth, ctx, &mut work_stack, &mut continuations);
+                                    continue;
+                                }
+                                // matches is empty → no rule matched → self-evaluating
+                                // Still need to materialize for the result
+                            }
+                            // None → not all candidates have structural matchers, fall through
+                        }
                     }
 
                     // All other S-expressions: full materialization + Eval

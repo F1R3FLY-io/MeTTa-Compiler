@@ -24,7 +24,7 @@ new stdoutAck(`rho:io:stdoutAck`),
   // ===================================================================
   contract extractOutput(@state, ret) = {
     match state {
-      {| (("source", _), ("environment", _), ("output", results)) |} => {
+      {| [["source", _], ["environment", _], ["output", results]] |} => {
         ret!(results)
       }
       _ => {
@@ -579,10 +579,10 @@ new stdoutAck(`rho:io:stdoutAck`),
           runQueryRaw!("!(get_neighbors room_a)", *r) |
           for (@rawState <- r) {
             match rawState {
-              {| (("source", src), ("environment", env), ("output", results)) |} => {
+              {| [["source", src], ["environment", env], ["output", results]] |} => {
                 // Repackage fields as multi-element PathMap for rest decomposition demo
-                match {| ("output", results), ("source", src), ("environment", env) |} {
-                  {| ("output", r) ...rest |} => {
+                match {| ["output", results], ["source", src], ["environment", env] |} {
+                  {| ["output", r] ...rest |} => {
                     stdoutAck!("  Extracted output:", *ack) |
                     for (_ <- ack) {
                     stdoutAck!(r, *ack) |
@@ -653,7 +653,7 @@ new stdoutAck(`rho:io:stdoutAck`),
           runQueryRaw!("!(safe_locate phantom_object)", *r) |
           for (@rawState <- r) {
             match rawState {
-              {| (("source", _), ("environment", _), ("output", results)) |} => {
+              {| [["source", _], ["environment", _], ["output", results]] |} => {
                 stdoutAck!("  Evaluation result detected via PathMap state decomposition:", *ack) |
                 for (_ <- ack) {
                 stdoutAck!(results, *ack) |
@@ -833,12 +833,12 @@ new stdoutAck(`rho:io:stdoutAck`),
           for (@rawState <- r) {
             // Layer 1: PathMap decomposition on MeTTa state
             match rawState {
-              {| (("source", _), ("environment", envData), ("output", _)) |} => {
+              {| [["source", _], ["environment", envData], ["output", _]] |} => {
                 stdoutAck!("  Layer 1: Extracted environment from MeTTa state", *ack) |
                 for (_ <- ack) {
-                  // Layer 2: Tuple decomposition on environment
+                  // Layer 2: List decomposition on environment
                   match envData {
-                    (("space", atoms), ("large_exprs", _)) => {
+                    [["space", atoms], ["large_exprs", _]] => {
                       stdoutAck!("  Layer 2: Extracted space bytes from environment", *ack) |
                       for (_ <- ack) {
                         // Layer 3: Match GByteArray against PathMap pattern

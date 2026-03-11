@@ -46,6 +46,7 @@ use super::generic_types::GenericEvalStep;
 /// A `GenericEvalStep` indicating either:
 /// - `Done`: Evaluation complete with results
 /// - Various other variants indicating more work is needed
+#[inline]
 pub fn eval_step_generic<C: EvalContext>(
     value: C::Value,
     env: ContextEnv<C>,
@@ -80,6 +81,7 @@ where
 }
 
 /// Inner evaluation logic — operates on span-stripped values.
+#[inline]
 fn eval_step_generic_inner<C: EvalContext>(
     value: C::Value,
     env: ContextEnv<C>,

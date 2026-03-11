@@ -485,6 +485,157 @@ where
     result_vec
 }
 
+// ============================================================================
+// SG1: Binding-Aware Rule Matching (WAM-style lazy variable resolution)
+// ============================================================================
+//
+// Instead of materializing `apply_bindings(template, outer_bindings)` and
+// then calling `try_match_all_rules_generic` on the result, this function
+// matches rules directly against the unresolved template by resolving
+// variables on-the-fly through `outer_bindings` inside the structural matcher.
+//
+// This eliminates the O(tree) allocation from `apply_bindings_generic` for
+// the common case where all rule candidates have structural matchers.
+//
+// Returns `Some(matches)` if binding-aware matching was possible (even if
+// no rules matched — empty vec means "no match, self-evaluate").
+// Returns `None` if binding-aware matching was not possible (caller must
+// fall back to materialization).
+
+/// Try to match rules against a template + bindings without materializing.
+///
+/// # Returns
+/// - `Some(matches)` — binding-aware matching succeeded.  `matches` may be empty
+///   (no rule matched → the expression is self-evaluating).
+/// - `None` — cannot use binding-aware path (e.g. some candidate lacks a
+///   structural matcher, or the head can't be resolved).  Caller should
+///   fall back to `apply_bindings_generic + Eval`.
+/// Resolve captured values in match_bindings through outer_bindings.
+///
+/// When `try_match_with_bindings` captures a sub-expression from the template
+/// that contains variables (e.g., `(+ $x 1)` where `$x` is in outer_bindings),
+/// the captured value still references those template variables. This function
+/// applies `outer_bindings` to each captured value that `has_variables_fast()`,
+/// producing concrete values for downstream evaluation.
+///
+/// Only values with variables are resolved — concrete captures (the common case)
+/// pass through with zero allocation cost.
+#[inline]
+fn resolve_match_bindings_through<V, F>(
+    match_bindings: &mut GenericBindings<V>,
+    outer_bindings: &GenericBindings<V>,
+    factory: &F,
+)
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Copy + Clone,
+{
+    match match_bindings {
+        GenericBindings::Empty => {}
+        GenericBindings::Single((_, ref mut val)) => {
+            if val.has_variables_fast() {
+                *val = apply_bindings_generic(val, outer_bindings, factory);
+            }
+        }
+        GenericBindings::Small(ref mut vec) => {
+            for (_, val) in vec.iter_mut() {
+                if val.has_variables_fast() {
+                    *val = apply_bindings_generic(val, outer_bindings, factory);
+                }
+            }
+        }
+    }
+}
+
+pub fn try_match_rules_with_bindings<V, F>(
+    template: &V,
+    outer_bindings: &GenericBindings<V>,
+    resolved_head: &str,
+    arity: usize,
+    env: &GenericEnvironment<V, F>,
+    factory: &F,
+) -> Option<Vec<(V, GenericBindings<V>)>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V> + Copy + Clone,
+{
+    use crate::backend::environment::rule_management::get_first_arg_head;
+
+    // Resolve the first argument's head through outer_bindings for second-level
+    // index narrowing.  Template: (head $x ...) where $x may bind to (Foo ...).
+    let first_arg_head: Option<&str> = if let Some(items) = template.as_sexpr() {
+        if items.len() > 1 {
+            let first_arg = &items[1];
+            if let Some(var_name) = first_arg.as_atom() {
+                if var_name.starts_with('$')
+                    || (var_name.starts_with('&') && var_name != "&" && var_name != "&self")
+                    || var_name.starts_with('\'')
+                {
+                    // Variable — resolve through bindings and extract head
+                    outer_bindings.get(var_name).and_then(|v| get_first_arg_head(v))
+                } else {
+                    // Concrete atom used as first arg — its "head" for index purposes
+                    // is itself (if it's an S-expr) or None (if it's a plain atom arg)
+                    get_first_arg_head(first_arg)
+                }
+            } else {
+                get_first_arg_head(first_arg)
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Read rule index and collect candidates
+    let rule_index = env.shared.rule_index.read();
+    let candidates: SmallVec<[&crate::backend::environment::rule_management::RuleEntry<V>; 16]> =
+        rule_index.get_candidates(resolved_head, arity, first_arg_head).collect();
+
+    if candidates.is_empty() {
+        return Some(Vec::new()); // No candidates — self-evaluating
+    }
+
+    // ALL candidates must have structural matchers for binding-aware path.
+    // If any lacks one, bail to materialization (MORK matching needs a concrete expr).
+    if !candidates.iter().all(|e| e.structural_matcher.is_some()) {
+        return None;
+    }
+
+    // Match each candidate's structural matcher against the template,
+    // resolving variables through outer_bindings on the fly.
+    let mut matches: Vec<(V, GenericBindings<V>)> = Vec::new();
+
+    for entry in &candidates {
+        let matcher = entry.structural_matcher.as_ref().expect("checked above");
+        if let Some(mut match_bindings) = matcher.try_match_with_bindings(template, outer_bindings) {
+            // Deep-resolve captured values through outer_bindings.
+            //
+            // navigate_resolving resolves variables at navigation boundaries but
+            // NOT within captured S-expression sub-trees. For example, if the
+            // template is (f (+ $x 1)) with outer_bindings {$x → 1} and pattern
+            // (f $y), the VarBind captures (+ $x 1) with $x still present.
+            // We must resolve $x → 1 within the captured value so that downstream
+            // evaluation (via EvalWithBindings) sees (+ 1 1), not (+ $x 1).
+            if !outer_bindings.is_empty() {
+                resolve_match_bindings_through(&mut match_bindings, outer_bindings, factory);
+            }
+
+            let multiplicity = entry.multiplicity.max(1);
+            if multiplicity == 1 {
+                matches.push((entry.rhs.clone(), match_bindings));
+            } else {
+                for _ in 0..multiplicity {
+                    matches.push((entry.rhs.clone(), match_bindings.clone()));
+                }
+            }
+        }
+    }
+
+    Some(matches)
+}
+
 
 // ============================================================================
 // Phase F: Tight Deterministic Eval Loop

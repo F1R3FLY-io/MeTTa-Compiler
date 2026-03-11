@@ -122,23 +122,23 @@ in {
 // Expected Output
 // =====================================================================
 // === Example 1: Simple Arithmetic ===
-// {|("source", [("+", 1, 2)]), ("environment", ...), ("output", [])|}
+// {|[["source", [("+", 1, 2)]], ["environment", ...], ["output", []]]|}
 // Note: To evaluate, use {||}.run(compiledResult)
 //
 // === Example 2: Rule Definition ===
-// {|("source", [("=", ...)]), ("environment", ...), ("output", [])|}
+// {|[["source", [("=", ...)]], ["environment", ...], ["output", []]]|}
 //
 // === Example 3: Nested Expression ===
-// {|("source", [("+", 1, ("*", 2, 3))]), ("environment", ...), ("output", [])|}
+// {|[["source", [("+", 1, ("*", 2, 3))]], ["environment", ...], ["output", []]]|}
 //
 // === Example 4: Syntax Error ===
-// {|("source", []), ("environment", ...), ("output", [("error", "Unexpected EOF", Nil)])|}
+// {|[["source", []], ["environment", ...], ["output", [("error", "Unexpected EOF", Nil)]]]|}
 //
 // === Example 5: Compiler Service ===
-// Compiled: {|("source", [("+", 1, 2)]), ...|}
-// Compiled: {|("source", [("*", 3, 4)]), ...|}
-// Compiled: {|("source", [("<", 5, 10)]), ...|}
+// Compiled: {|[["source", [("+", 1, 2)]], ...]|}
+// Compiled: {|[["source", [("*", 3, 4)]], ...]|}
+// Compiled: {|[["source", [("<", 5, 10)]], ...]|}
 //
 // === Example 6: PathMap Results ===
-// Success (PathMap): {|("source", [("+", 1, 2)]), ("environment", ...), ("output", [])|}
+// Success (PathMap): {|[["source", [("+", 1, 2)]], ["environment", ...], ["output", []]]|}
 // Note: To get evaluated results, use .run() method

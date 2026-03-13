@@ -193,8 +193,10 @@ pub use space_ops::{
 
 // Rule dispatch
 pub use rule_dispatch::{
-    jit_runtime_apply_subst, jit_runtime_commit_rule, jit_runtime_define_rule,
-    jit_runtime_dispatch_rules, jit_runtime_fail_rule, jit_runtime_lookup_rules,
+    jit_runtime_apply_subst, jit_runtime_check_head, jit_runtime_commit_rule,
+    jit_runtime_define_rule, jit_runtime_dispatch_rules,
+    jit_runtime_dispatch_rules_profiling, jit_runtime_eval_with_bindings,
+    jit_runtime_fail_rule, jit_runtime_get_arity_fast, jit_runtime_lookup_rules,
     jit_runtime_next_rule, jit_runtime_try_rule,
 };
 

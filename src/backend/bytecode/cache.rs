@@ -18,6 +18,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use parking_lot::RwLock;
+use smallvec::SmallVec;
 use xxhash_rust::xxh3::Xxh3;
 
 use lru::LruCache;
@@ -167,6 +168,57 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
             let mut hasher = Xxh3::new();
             expr.hash(&mut hasher);
             hasher.finish()
+        }
+    }
+}
+
+/// Compute a structural hash for a MettaValue that normalizes variable names.
+///
+/// Variables are hashed as De Bruijn-like indices (first-seen → 0, second → 1, etc.)
+/// instead of their actual names. This makes `(f $__fr_42_x $__fr_42_y)` and
+/// `(f $__fr_99_a $__fr_99_b)` hash identically, enabling tiered cache counters
+/// to accumulate across freshening epochs.
+///
+/// Non-variable atoms, literals, and S-expression structure are hashed normally.
+/// Variable identity IS preserved: `(f $x $x)` ≠ `(f $x $y)`.
+#[inline]
+pub fn hash_structural(expr: &MettaValue) -> u64 {
+    let mut hasher = Xxh3::new();
+    let mut var_map: SmallVec<[&str; 8]> = SmallVec::new();
+    hash_structural_inner(expr, &mut hasher, &mut var_map);
+    hasher.finish()
+}
+
+fn hash_structural_inner<'a>(
+    expr: &'a MettaValue,
+    hasher: &mut Xxh3,
+    var_map: &mut SmallVec<[&'a str; 8]>,
+) {
+    match expr.view() {
+        ValueView::Atom(name) if name.starts_with('$') => {
+            // Hash as De Bruijn index: first-seen variable → 0, second → 1, etc.
+            // This makes (f $x $y) and (f $a $b) identical,
+            // while preserving (f $x $x) ≠ (f $x $y).
+            let idx = if let Some(pos) = var_map.iter().position(|&v| v == name) {
+                pos
+            } else {
+                let pos = var_map.len();
+                var_map.push(name);
+                pos
+            };
+            hasher.update(&[0xFF]); // variable tag
+            hasher.update(&(idx as u32).to_le_bytes());
+        }
+        ValueView::SExpr(items) => {
+            hasher.update(&[0xFE]); // sexpr tag
+            hasher.update(&(items.len() as u32).to_le_bytes());
+            for item in items {
+                hash_structural_inner(item, hasher, var_map);
+            }
+        }
+        // All other variants: delegate to existing content hashing
+        _ => {
+            expr.hash(hasher);
         }
     }
 }
@@ -374,6 +426,104 @@ mod tests {
         let h_f3 = hash_metta_value(&MettaValue::Float(2.71));
         assert_eq!(h_f1, h_f2, "Float hash should be stable");
         assert_ne!(h_f1, h_f3, "Different Floats should have different hashes");
+    }
+
+    #[test]
+    fn test_structural_hash_normalizes_variables() {
+        // (f $x $y) and (f $a $b) should produce the same structural hash
+        let expr1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$y".to_string()),
+        ]);
+        let expr2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$a".to_string()),
+            MettaValue::Atom("$b".to_string()),
+        ]);
+        assert_eq!(
+            hash_structural(&expr1),
+            hash_structural(&expr2),
+            "Variable-renamed expressions should have the same structural hash"
+        );
+    }
+
+    #[test]
+    fn test_structural_hash_preserves_identity() {
+        // (f $x $x) and (f $x $y) should produce different structural hashes
+        let expr_same = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        let expr_diff = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$y".to_string()),
+        ]);
+        assert_ne!(
+            hash_structural(&expr_same),
+            hash_structural(&expr_diff),
+            "Same-variable vs different-variable should differ"
+        );
+    }
+
+    #[test]
+    fn test_structural_hash_freshened_equivalence() {
+        // (f $__fr_42_x $__fr_42_y) and (f $__fr_99_a $__fr_99_b) should be equal
+        let expr1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$__fr_42_x".to_string()),
+            MettaValue::Atom("$__fr_42_y".to_string()),
+        ]);
+        let expr2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$__fr_99_a".to_string()),
+            MettaValue::Atom("$__fr_99_b".to_string()),
+        ]);
+        assert_eq!(
+            hash_structural(&expr1),
+            hash_structural(&expr2),
+            "Freshened variable expressions should have the same structural hash"
+        );
+    }
+
+    #[test]
+    fn test_structural_hash_non_variable_atoms_differ() {
+        // (f a b) and (f c d) should differ (non-variable atoms are NOT normalized)
+        let expr1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Atom("b".to_string()),
+        ]);
+        let expr2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("c".to_string()),
+            MettaValue::Atom("d".to_string()),
+        ]);
+        assert_ne!(
+            hash_structural(&expr1),
+            hash_structural(&expr2),
+            "Non-variable atoms should NOT be normalized"
+        );
+    }
+
+    #[test]
+    fn test_structural_hash_different_heads_differ() {
+        // (f $x) and (g $x) should differ
+        let expr1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        let expr2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("g".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        assert_ne!(
+            hash_structural(&expr1),
+            hash_structural(&expr2),
+            "Different head symbols should differ"
+        );
     }
 
     #[test]

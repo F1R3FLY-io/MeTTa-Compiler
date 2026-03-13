@@ -54,6 +54,11 @@ pub enum JitBailoutReason {
     BindingFrameOverflow = 15,
     /// Higher-order operation (map, filter, fold) needs VM
     HigherOrderOp = 16,
+    /// Specialized code detected that its assumptions are invalid
+    /// (e.g., RULE_EPOCH changed since specialization)
+    Deoptimization = 17,
+    /// Guard that was eliminated based on profiling data actually fired
+    GuardViolation = 18,
 }
 
 // =============================================================================

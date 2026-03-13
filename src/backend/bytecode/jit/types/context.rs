@@ -374,6 +374,24 @@ pub struct JitContext {
     /// Built at JIT entry from environment type assertions.
     /// Null if no type signatures are available.
     pub type_registry_ptr: *const TypeSignatureRegistry,
+
+    // -------------------------------------------------------------------------
+    // Profile-guided specialization (Phase 9)
+    // -------------------------------------------------------------------------
+    /// Pointer to `Arc<parking_lot::Mutex<RuntimeTypeProfile>>` for collecting
+    /// dispatch site statistics during JIT Stage 1 execution.
+    ///
+    /// Non-null when this expression is being profiled (execution_count between
+    /// JIT1_THRESHOLD and JIT2_THRESHOLD). The profiling variant of dispatch_rules
+    /// records which rules match and how often.
+    ///
+    /// Set by HybridExecutor from `ExprCompilationState.runtime_profile`.
+    pub profile_ptr: *mut (),
+
+    /// Deoptimization guard epoch for specialized (JIT Stage 2) code.
+    /// If non-zero, checked at JIT2 entry to detect stale specializations.
+    /// When the global RULE_EPOCH differs from this value, JIT2 code must bail out.
+    pub deopt_expected_epoch: u64,
 }
 
 impl JitContext {
@@ -456,6 +474,9 @@ impl JitContext {
             arena: std::ptr::null(),
             // Type-driven applicative evaluation
             type_registry_ptr: std::ptr::null(),
+            // Profile-guided specialization (Phase 9)
+            profile_ptr: std::ptr::null_mut(),
+            deopt_expected_epoch: 0,
         }
     }
 
@@ -540,6 +561,9 @@ impl JitContext {
             arena: std::ptr::null(),
             // Type-driven applicative evaluation
             type_registry_ptr: std::ptr::null(),
+            // Profile-guided specialization (Phase 9)
+            profile_ptr: std::ptr::null_mut(),
+            deopt_expected_epoch: 0,
         }
     }
 
@@ -915,6 +939,39 @@ impl JitContext {
     }
 
     // -------------------------------------------------------------------------
+    // Profile-Guided Specialization Support (Phase 9)
+    // -------------------------------------------------------------------------
+
+    /// Set the runtime type profile pointer for dispatch site profiling.
+    ///
+    /// When non-null, the profiling variant of `dispatch_rules` records
+    /// which rules match and how often. The pointer must point to a valid
+    /// `Arc<parking_lot::Mutex<RuntimeTypeProfile>>` that will outlive
+    /// the JIT execution.
+    ///
+    /// # Safety
+    /// The pointer must be a valid `Arc::into_raw()` result.
+    #[inline]
+    pub unsafe fn set_profile(&mut self, profile_ptr: *mut ()) {
+        self.profile_ptr = profile_ptr;
+    }
+
+    /// Check if runtime profiling is active for this execution.
+    #[inline]
+    pub fn is_profiling(&self) -> bool {
+        !self.profile_ptr.is_null()
+    }
+
+    /// Set the deoptimization expected epoch for specialized (JIT2) code.
+    ///
+    /// When non-zero, the JIT2 entry guard checks that the current RULE_EPOCH
+    /// matches this value. If it doesn't, the specialized code bails out.
+    #[inline]
+    pub fn set_deopt_epoch(&mut self, epoch: u64) {
+        self.deopt_expected_epoch = epoch;
+    }
+
+    // -------------------------------------------------------------------------
     // Arena Mode Support (Phase 6 - Zero-Conversion)
     // -------------------------------------------------------------------------
 
@@ -1015,3 +1072,57 @@ impl fmt::Debug for JitContext {
             .finish()
     }
 }
+
+// =============================================================================
+// Compile-time field offsets for inline Cranelift IR generation (Phase 10.2)
+// =============================================================================
+//
+// These constants allow JIT-compiled code to directly load/store JitContext
+// fields via pointer arithmetic instead of FFI calls. This eliminates the
+// 5-15 cycle overhead per call for simple operations like BeginNondet/EndNondet
+// and Yield.
+//
+// Safety: These use std::mem::offset_of!() which is guaranteed correct for
+// #[repr(C)] structs. A compile-time assertion at the bottom verifies critical
+// offset relationships.
+
+impl JitContext {
+    /// Offset of `results` field (*mut JitValue)
+    pub const OFFSET_RESULTS: i32 = std::mem::offset_of!(JitContext, results) as i32;
+    /// Offset of `results_count` field (usize)
+    pub const OFFSET_RESULTS_COUNT: i32 = std::mem::offset_of!(JitContext, results_count) as i32;
+    /// Offset of `results_cap` field (usize)
+    pub const OFFSET_RESULTS_CAP: i32 = std::mem::offset_of!(JitContext, results_cap) as i32;
+    /// Offset of `resume_ip` field (usize)
+    pub const OFFSET_RESUME_IP: i32 = std::mem::offset_of!(JitContext, resume_ip) as i32;
+    /// Offset of `in_nondet_mode` field (bool)
+    pub const OFFSET_IN_NONDET_MODE: i32 = std::mem::offset_of!(JitContext, in_nondet_mode) as i32;
+    /// Offset of `fork_depth` field (usize)
+    pub const OFFSET_FORK_DEPTH: i32 = std::mem::offset_of!(JitContext, fork_depth) as i32;
+    /// Offset of `choice_point_count` field (usize)
+    pub const OFFSET_CHOICE_POINT_COUNT: i32 =
+        std::mem::offset_of!(JitContext, choice_point_count) as i32;
+    /// Offset of `sp` field (usize)
+    pub const OFFSET_SP: i32 = std::mem::offset_of!(JitContext, sp) as i32;
+    /// Offset of `value_stack` field (*mut JitValue)
+    pub const OFFSET_VALUE_STACK: i32 = std::mem::offset_of!(JitContext, value_stack) as i32;
+    /// Offset of `constants` field (*const MettaValue)
+    pub const OFFSET_CONSTANTS: i32 = std::mem::offset_of!(JitContext, constants) as i32;
+    /// Offset of `constants_len` field (usize)
+    pub const OFFSET_CONSTANTS_LEN: i32 = std::mem::offset_of!(JitContext, constants_len) as i32;
+    /// Offset of `bailout` field (bool)
+    pub const OFFSET_BAILOUT: i32 = std::mem::offset_of!(JitContext, bailout) as i32;
+    /// Offset of `bailout_ip` field (usize)
+    pub const OFFSET_BAILOUT_IP: i32 = std::mem::offset_of!(JitContext, bailout_ip) as i32;
+}
+
+// Compile-time assertions to verify offset consistency.
+// These catch ABI-breaking struct layout changes at compile time.
+const _: () = {
+    assert!(JitContext::OFFSET_RESULTS_COUNT > JitContext::OFFSET_RESULTS);
+    assert!(JitContext::OFFSET_RESULTS_CAP > JitContext::OFFSET_RESULTS_COUNT);
+    assert!(JitContext::OFFSET_FORK_DEPTH > JitContext::OFFSET_IN_NONDET_MODE);
+    assert!(JitContext::OFFSET_RESUME_IP > JitContext::OFFSET_RESULTS_CAP);
+    // sp must be right after value_stack (contiguous pair)
+    assert!(JitContext::OFFSET_SP == JitContext::OFFSET_VALUE_STACK + 8);
+};

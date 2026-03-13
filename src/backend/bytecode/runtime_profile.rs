@@ -113,6 +113,11 @@ pub struct RuntimeTypeProfile {
     /// in JIT Stage 2 (with deoptimization trap as safety net).
     pub guard_outcomes: SmallVec<[GuardFeedback; 4]>,
 
+    /// Per-dispatch-site detailed rule matching profiles.
+    /// Populated during JIT Stage 1 execution by the profiling variant
+    /// of `jit_runtime_dispatch_rules`.
+    pub dispatch_sites: SmallVec<[RuleDispatchSite; 4]>,
+
     /// Total number of bytecode executions when this profile was collected.
     /// Used to assess profile maturity — don't promote to JIT if profile
     /// has fewer than 50 samples at any feedback site (immature profile).
@@ -246,6 +251,98 @@ pub struct RuleMatchFeedback {
     pub match_count: u32,
 }
 
+/// Detailed rule dispatch profile for a specific call site.
+///
+/// Collected by the JIT Stage 1 runtime's DispatchRules handler.
+/// Stored per-expression in `ExprCompilationState.runtime_profile`.
+///
+/// Unlike `RuleMatchFeedback` (which is a flat frequency counter),
+/// this captures the actual rule identities and match frequencies
+/// so the specializer can inline hot rules.
+#[derive(Debug, Clone)]
+pub struct RuleDispatchSite {
+    /// Hash of the expression head + arity at this dispatch site.
+    /// Used as the join key between profile data and specialization plan.
+    pub site_hash: u64,
+
+    /// Head symbol name.
+    pub head: String,
+
+    /// Expected arity of the expression at this site.
+    pub arity: u16,
+
+    /// Per-rule hit counts, ordered by frequency (descending after sorting).
+    /// `rule_index` is the position in the RuleIndex's candidate list.
+    pub rule_hits: Vec<RuleHit>,
+
+    /// Total dispatch count at this site (sum of all rule_hits).
+    pub total_dispatches: u32,
+}
+
+impl RuleDispatchSite {
+    /// Create a new dispatch site profile.
+    pub fn new(site_hash: u64, head: String, arity: u16) -> Self {
+        Self {
+            site_hash,
+            head,
+            arity,
+            rule_hits: Vec::new(),
+            total_dispatches: 0,
+        }
+    }
+
+    /// Record a rule match at this site.
+    pub fn record_match(&mut self, rule_index: u16, lhs_hash: u64, rhs_hash: u64, rhs_has_variables: bool) {
+        self.total_dispatches += 1;
+        if let Some(hit) = self.rule_hits.iter_mut().find(|h| h.rule_index == rule_index) {
+            hit.match_count += 1;
+        } else {
+            self.rule_hits.push(RuleHit {
+                rule_index,
+                match_count: 1,
+                lhs_hash,
+                rhs_hash,
+                rhs_has_variables,
+            });
+        }
+    }
+
+    /// Sort rule hits by frequency (descending) for specialization priority.
+    pub fn sort_by_frequency(&mut self) {
+        self.rule_hits.sort_by(|a, b| b.match_count.cmp(&a.match_count));
+    }
+
+    /// Get the dominant rule (if any matches >80% of dispatches).
+    pub fn dominant_rule(&self) -> Option<&RuleHit> {
+        if self.total_dispatches == 0 {
+            return None;
+        }
+        self.rule_hits.first().filter(|h| {
+            (h.match_count as f64 / self.total_dispatches as f64) > 0.80
+        })
+    }
+}
+
+/// A single rule's match frequency at a dispatch site.
+#[derive(Debug, Clone)]
+pub struct RuleHit {
+    /// Index into the RuleIndex candidate list for this (head, arity).
+    pub rule_index: u16,
+
+    /// Number of times this rule was the matching rule.
+    pub match_count: u32,
+
+    /// Hash of the rule's LHS for identity (used to detect stale profiles
+    /// after rule index changes due to add-atom/remove-atom).
+    pub lhs_hash: u64,
+
+    /// Hash of the rule's RHS for identity (for detecting body changes).
+    pub rhs_hash: u64,
+
+    /// Whether the RHS contains variables (cached from RuleEntry).
+    pub rhs_has_variables: bool,
+}
+
 /// Guard outcome feedback for a specific guard site.
 #[derive(Debug, Clone)]
 pub struct GuardFeedback {
@@ -282,6 +379,7 @@ impl RuntimeTypeProfile {
             arg_type_feedback: SmallVec::new(),
             rule_match_hits: SmallVec::new(),
             guard_outcomes: SmallVec::new(),
+            dispatch_sites: SmallVec::new(),
             sample_count: 0,
         }
     }

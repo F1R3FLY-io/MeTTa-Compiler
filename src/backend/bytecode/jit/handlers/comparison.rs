@@ -92,12 +92,16 @@ pub fn compile_boolean_op<'a, 'b>(
     Ok(())
 }
 
-/// Emit an ordered comparison with integer fast-path and runtime float fallback.
+/// Emit an ordered comparison with integer + float fast-paths and runtime fallback.
+///
+/// Three-way branching: Long×Long uses icmp, Float×Float uses fcmp,
+/// mixed types fall back to runtime FFI.
 fn emit_comparison_with_fallback<'a, 'b>(
     ctx: &mut ComparisonHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
     runtime_func_id: FuncId,
     int_cc: IntCC,
+    float_cc: FloatCC,
 ) -> JitResult<()> {
     let b = codegen.pop()?;
     let a = codegen.pop()?;
@@ -113,6 +117,8 @@ fn emit_comparison_with_fallback<'a, 'b>(
     let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
 
     let int_path = codegen.builder.create_block();
+    let check_float = codegen.builder.create_block();
+    let float_path = codegen.builder.create_block();
     let runtime_path = codegen.builder.create_block();
     let merge_block = codegen.builder.create_block();
     codegen
@@ -122,7 +128,7 @@ fn emit_comparison_with_fallback<'a, 'b>(
     codegen
         .builder
         .ins()
-        .brif(both_long, int_path, &[], runtime_path, &[]);
+        .brif(both_long, int_path, &[], check_float, &[]);
 
     // === Integer fast-path ===
     codegen.builder.switch_to_block(int_path);
@@ -136,7 +142,32 @@ fn emit_comparison_with_fallback<'a, 'b>(
         .ins()
         .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-    // === Runtime float fallback ===
+    // === Check both float ===
+    codegen.builder.switch_to_block(check_float);
+    let qnan_base = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+    let a_qnan = codegen.builder.ins().band(a, qnan_base);
+    let b_qnan = codegen.builder.ins().band(b, qnan_base);
+    let a_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, a_qnan, qnan_base);
+    let b_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, b_qnan, qnan_base);
+    let both_float = codegen.builder.ins().band(a_is_float, b_is_float);
+    codegen
+        .builder
+        .ins()
+        .brif(both_float, float_path, &[], runtime_path, &[]);
+
+    // === Float fast-path ===
+    codegen.builder.switch_to_block(float_path);
+    let a_f64 = codegen.bitcast_to_f64(a);
+    let b_f64 = codegen.bitcast_to_f64(b);
+    let fcmp = codegen.builder.ins().fcmp(float_cc, a_f64, b_f64);
+    let fresult = codegen.builder.ins().uextend(types::I64, fcmp);
+    let fboxed = codegen.box_bool(fresult);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(fboxed)]);
+
+    // === Runtime fallback (mixed types) ===
     codegen.builder.switch_to_block(runtime_path);
     let func_ref = ctx
         .module
@@ -151,6 +182,8 @@ fn emit_comparison_with_fallback<'a, 'b>(
     // === Merge ===
     codegen.builder.switch_to_block(merge_block);
     codegen.builder.seal_block(int_path);
+    codegen.builder.seal_block(check_float);
+    codegen.builder.seal_block(float_path);
     codegen.builder.seal_block(runtime_path);
     codegen.builder.seal_block(merge_block);
 
@@ -169,22 +202,22 @@ pub fn compile_comparison_op<'a, 'b>(
     match op {
         Opcode::Lt => {
             let func_id = ctx.numeric_lt_func_id;
-            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedLessThan)
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedLessThan, FloatCC::LessThan)
         }
 
         Opcode::Le => {
             let func_id = ctx.numeric_le_func_id;
-            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedLessThanOrEqual)
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedLessThanOrEqual, FloatCC::LessThanOrEqual)
         }
 
         Opcode::Gt => {
             let func_id = ctx.numeric_gt_func_id;
-            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedGreaterThan)
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedGreaterThan, FloatCC::GreaterThan)
         }
 
         Opcode::Ge => {
             let func_id = ctx.numeric_ge_func_id;
-            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedGreaterThanOrEqual)
+            emit_comparison_with_fallback(ctx, codegen, func_id, IntCC::SignedGreaterThanOrEqual, FloatCC::GreaterThanOrEqual)
         }
 
         Opcode::Eq => {

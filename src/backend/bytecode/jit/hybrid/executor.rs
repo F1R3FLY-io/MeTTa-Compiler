@@ -70,6 +70,15 @@ pub struct HybridExecutor {
     /// Stack save pool for Fork operations (Optimization 5.2)
     /// Pre-allocated ring buffer of stack snapshots, eliminating Box::leak() allocations
     pub(super) jit_stack_save_pool: Vec<JitValue>,
+    /// Optional runtime type profile pointer for dispatch site profiling (Phase 9).
+    /// When non-null, the profiling variant of dispatch_rules records match frequencies.
+    /// Points to an `Arc<parking_lot::Mutex<RuntimeTypeProfile>>`.
+    pub(super) profile_ptr: *mut (),
+    /// Deoptimization expected epoch for JIT Stage 2 specialized code (Phase 9).
+    /// Set from the DeoptimizationGuard stored in ExprCompilationState.
+    /// When non-zero, propagated to JitContext.deopt_expected_epoch so FFI runtime
+    /// functions can detect stale specializations.
+    pub(super) deopt_epoch: u64,
 }
 
 impl HybridExecutor {
@@ -103,6 +112,8 @@ impl HybridExecutor {
             grounded_space_storage: Vec::with_capacity(3),
             template_results: Vec::with_capacity(64),
             jit_stack_save_pool: vec![JitValue::unit(); pool_capacity],
+            profile_ptr: std::ptr::null_mut(),
+            deopt_epoch: 0,
             config,
         }
     }
@@ -132,6 +143,8 @@ impl HybridExecutor {
             grounded_space_storage: Vec::with_capacity(3),
             template_results: Vec::with_capacity(64),
             jit_stack_save_pool: vec![JitValue::unit(); pool_capacity],
+            profile_ptr: std::ptr::null_mut(),
+            deopt_epoch: 0,
             config,
         }
     }
@@ -139,6 +152,27 @@ impl HybridExecutor {
     /// Set the MORK bridge for rule dispatch
     pub fn set_bridge(&mut self, bridge: Arc<MorkBridge>) {
         self.bridge = Some(bridge);
+    }
+
+    /// Set the runtime type profile pointer for dispatch site profiling (Phase 9).
+    ///
+    /// When non-null, the JIT runtime will use the profiling variant of
+    /// dispatch_rules that records which rules match and how often.
+    ///
+    /// # Safety
+    /// The pointer must be a valid `Arc::into_raw()` result pointing to
+    /// `parking_lot::Mutex<RuntimeTypeProfile>`. The caller is responsible
+    /// for calling `Arc::from_raw()` to reclaim the Arc after execution.
+    pub unsafe fn set_profile_ptr(&mut self, profile_ptr: *mut ()) {
+        self.profile_ptr = profile_ptr;
+    }
+
+    /// Set the deoptimization expected epoch for JIT Stage 2 specialized code.
+    ///
+    /// Propagated to JitContext.deopt_expected_epoch so FFI runtime functions
+    /// can detect when rules have changed since JIT2 compilation.
+    pub fn set_deopt_epoch(&mut self, epoch: u64) {
+        self.deopt_epoch = epoch;
     }
 
     /// Set the external function registry for CallExternal opcode
@@ -546,6 +580,18 @@ impl HybridExecutor {
 
         // Set current chunk pointer
         ctx.current_chunk = Arc::as_ptr(chunk) as *const ();
+
+        // Set runtime profile pointer for dispatch site profiling (Phase 9)
+        if !self.profile_ptr.is_null() {
+            unsafe {
+                ctx.set_profile(self.profile_ptr);
+            }
+        }
+
+        // Set deoptimization epoch for JIT Stage 2 specialized code (Phase 9)
+        if self.deopt_epoch != 0 {
+            ctx.set_deopt_epoch(self.deopt_epoch);
+        }
 
         // Cast and call native function
         // The JIT-compiled function returns the result as i64 (NaN-boxed JitValue)

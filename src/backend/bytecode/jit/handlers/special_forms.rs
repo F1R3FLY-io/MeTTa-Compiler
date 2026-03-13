@@ -4,7 +4,11 @@
 //!          EvalQuote, EvalUnquote, EvalEval, EvalBind, EvalNew, EvalCollapse,
 //!          EvalSuperpose, EvalMemo, EvalMemoFirst, EvalPragma, EvalFunction,
 //!          EvalLambda, EvalApply
+//!
+//! EvalIf uses branchless select. EvalMatch uses inline ground-value fast-paths
+//! (same as Match opcode). Other forms use FFI fallback.
 
+use cranelift::codegen::ir::BlockArg;
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -12,7 +16,9 @@ use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
-use crate::backend::bytecode::jit::types::JitResult;
+use crate::backend::bytecode::jit::types::{
+    JitResult, TAG_BOOL, TAG_LONG, TAG_MASK, TAG_UNIT, TAG_VAR,
+};
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for special forms handlers that need runtime function access
@@ -117,9 +123,10 @@ pub fn compile_eval_let_star<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> Ji
     Ok(())
 }
 
-/// Compile EvalMatch opcode
+/// Compile EvalMatch opcode with inline fast-paths for ground values.
 ///
-/// Native implementation: call pattern_match directly instead of wrapper.
+/// Same inline fast-paths as Match opcode: variable → true, raw equality → true,
+/// both ground → false, otherwise FFI fallback.
 /// Stack: [value, pattern] -> [bool]
 
 pub fn compile_eval_match<'a, 'b>(
@@ -130,18 +137,142 @@ pub fn compile_eval_match<'a, 'b>(
     let pattern = codegen.pop()?;
     let value = codegen.pop()?;
 
-    // Call jit_runtime_pattern_match(ctx, pattern, value, ip)
+    let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
+    let qnan_base = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+
+    // Check if pattern is tagged (not a float)
+    let p_qnan = codegen.builder.ins().band(pattern, qnan_base);
+    let p_is_tagged = codegen.builder.ins().icmp(IntCC::Equal, p_qnan, qnan_base);
+
+    let tagged_path = codegen.builder.create_block();
+    let runtime_path = codegen.builder.create_block();
+    let fast_true = codegen.builder.create_block();
+    let fast_false = codegen.builder.create_block();
+    let merge_block = codegen.builder.create_block();
+    codegen
+        .builder
+        .append_block_param(merge_block, types::I64);
+
+    codegen
+        .builder
+        .ins()
+        .brif(p_is_tagged, tagged_path, &[], runtime_path, &[]);
+
+    // === Tagged path ===
+    codegen.builder.switch_to_block(tagged_path);
+    let pattern_tag = codegen.builder.ins().band(pattern, tag_mask);
+
+    // Variable pattern → always matches
+    let tag_var_const = codegen.builder.ins().iconst(types::I64, TAG_VAR as i64);
+    let is_var = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, pattern_tag, tag_var_const);
+
+    let check_exact = codegen.builder.create_block();
+    codegen
+        .builder
+        .ins()
+        .brif(is_var, fast_true, &[], check_exact, &[]);
+
+    // Raw bit equality → match
+    codegen.builder.switch_to_block(check_exact);
+    let raw_eq = codegen.builder.ins().icmp(IntCC::Equal, pattern, value);
+
+    let check_ground = codegen.builder.create_block();
+    codegen
+        .builder
+        .ins()
+        .brif(raw_eq, fast_true, &[], check_ground, &[]);
+
+    // Both ground types → no match (raw eq already failed)
+    codegen.builder.switch_to_block(check_ground);
+    let value_tag = codegen.builder.ins().band(value, tag_mask);
+
+    let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+    let tag_bool = codegen.builder.ins().iconst(types::I64, TAG_BOOL as i64);
+    let tag_unit = codegen.builder.ins().iconst(types::I64, TAG_UNIT as i64);
+
+    let p_is_long = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, pattern_tag, tag_long);
+    let p_is_bool = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, pattern_tag, tag_bool);
+    let p_is_unit = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, pattern_tag, tag_unit);
+    let p_ground_1 = codegen.builder.ins().bor(p_is_long, p_is_bool);
+    let p_is_ground = codegen.builder.ins().bor(p_ground_1, p_is_unit);
+
+    let v_is_long = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, value_tag, tag_long);
+    let v_is_bool = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, value_tag, tag_bool);
+    let v_is_unit = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, value_tag, tag_unit);
+    let v_ground_1 = codegen.builder.ins().bor(v_is_long, v_is_bool);
+    let v_is_ground = codegen.builder.ins().bor(v_ground_1, v_is_unit);
+
+    let both_ground = codegen.builder.ins().band(p_is_ground, v_is_ground);
+    codegen
+        .builder
+        .ins()
+        .brif(both_ground, fast_false, &[], runtime_path, &[]);
+
+    // === Fast true ===
+    codegen.builder.switch_to_block(fast_true);
+    let true_val = codegen.const_bool(true);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(true_val)]);
+
+    // === Fast false ===
+    codegen.builder.switch_to_block(fast_false);
+    let false_val = codegen.const_bool(false);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(false_val)]);
+
+    // === Runtime fallback ===
+    codegen.builder.switch_to_block(runtime_path);
     let func_ref = ctx
         .module
         .declare_func_in_func(ctx.pattern_match_func_id, codegen.builder.func);
-
     let ctx_ptr = codegen.ctx_ptr();
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
     let call_inst = codegen
         .builder
         .ins()
         .call(func_ref, &[ctx_ptr, pattern, value, ip_val]);
-    let result = codegen.builder.inst_results(call_inst)[0];
+    let rt_result = codegen.builder.inst_results(call_inst)[0];
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(rt_result)]);
+
+    // === Merge ===
+    codegen.builder.switch_to_block(merge_block);
+    codegen.builder.seal_block(tagged_path);
+    codegen.builder.seal_block(check_exact);
+    codegen.builder.seal_block(check_ground);
+    codegen.builder.seal_block(fast_true);
+    codegen.builder.seal_block(fast_false);
+    codegen.builder.seal_block(runtime_path);
+    codegen.builder.seal_block(merge_block);
+
+    let result = codegen.builder.block_params(merge_block)[0];
     codegen.push(result)?;
     Ok(())
 }

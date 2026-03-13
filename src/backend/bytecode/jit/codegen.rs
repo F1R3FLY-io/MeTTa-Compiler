@@ -7,7 +7,7 @@ use cranelift::codegen::ir::FuncRef;
 use cranelift::prelude::*;
 
 use super::types::{
-    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_LONG, TAG_MASK, TAG_UNIT,
+    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_EMPTY, TAG_LONG, TAG_MASK, TAG_UNIT,
 };
 #[cfg(test)]
 use super::types::TAG_PTR;
@@ -255,6 +255,26 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
     }
 
     // =========================================================================
+    // Float Bitcast (NaN-boxing: floats are raw IEEE 754 doubles)
+    // =========================================================================
+
+    /// Bitcast an I64 NaN-boxed float value to F64 for Cranelift float ops.
+    ///
+    /// In NaN-boxing, float values are stored as raw IEEE 754 double bits.
+    /// This is a zero-cost reinterpretation (no tag stripping needed).
+    pub fn bitcast_to_f64(&mut self, val: Value) -> Value {
+        self.builder.ins().bitcast(types::F64, MemFlags::new(), val)
+    }
+
+    /// Bitcast an F64 value back to I64 for NaN-boxed storage.
+    ///
+    /// The result is the raw IEEE 754 double bits, which is the correct
+    /// NaN-boxed representation for float values.
+    pub fn bitcast_from_f64(&mut self, val: Value) -> Value {
+        self.builder.ins().bitcast(types::I64, MemFlags::new(), val)
+    }
+
+    // =========================================================================
     // Type Guards
     // =========================================================================
 
@@ -431,6 +451,220 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         self.terminated = true;
     }
 
+    // =========================================================================
+    // Path Navigation (Phase 9: Specialized Dispatch)
+    // =========================================================================
+
+    /// Navigate a path through an S-expression tree, returning the value at the leaf.
+    ///
+    /// Each step calls `jit_runtime_get_element` to extract a child by index.
+    /// If any step fails (wrong type, out of bounds), the function jumps to `fail_block`.
+    ///
+    /// # Arguments
+    /// * `root` - Cranelift SSA Value holding the root S-expression (NaN-boxed)
+    /// * `path` - Sequence of child indices to navigate (e.g., `[1, 0]` = first child of second child)
+    /// * `fail_block` - Block to jump to if navigation fails (e.g., TAG_EMPTY returned)
+    /// * `get_element_ref` - Pre-declared FuncRef for `jit_runtime_get_element`
+    ///
+    /// # Returns
+    /// Cranelift SSA Value of the leaf element, or jumps to `fail_block`.
+    pub fn navigate_path(
+        &mut self,
+        root: Value,
+        path: &[u8],
+        fail_block: Block,
+        get_element_ref: FuncRef,
+    ) -> JitResult<Value> {
+        let mut current = root;
+        for &child_idx in path {
+            // Call jit_runtime_get_element(ctx, current, child_idx, ip=0)
+            let ctx = self.ctx_ptr();
+            let idx_val = self.builder.ins().iconst(types::I64, child_idx as i64);
+            let ip_val = self.builder.ins().iconst(types::I64, 0);
+            let call_inst = self.builder.ins().call(
+                get_element_ref,
+                &[ctx, current, idx_val, ip_val],
+            );
+            current = self.builder.inst_results(call_inst)[0];
+
+            // Check for TAG_EMPTY (get_element returns TAG_EMPTY on failure)
+            let tag = self.builder.ins().band_imm(current, TAG_MASK as i64);
+            let is_empty = self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, tag, TAG_EMPTY as i64);
+            let cont_block = self.builder.create_block();
+            self.builder
+                .ins()
+                .brif(is_empty, fail_block, &[], cont_block, &[]);
+            self.builder.switch_to_block(cont_block);
+            self.builder.seal_block(cont_block);
+        }
+        Ok(current)
+    }
+
+    /// Emit an inline atom equality check for a NaN-boxed value.
+    ///
+    /// Checks if the value's tag is TAG_ATOM and its payload (interned pointer)
+    /// matches the expected atom pointer. Jumps to `fail_block` on mismatch.
+    ///
+    /// # Returns
+    /// Continues in a new block if the check passes.
+    pub fn check_atom_eq(
+        &mut self,
+        value: Value,
+        expected_atom_ptr: u64,
+        fail_block: Block,
+    ) {
+        use super::types::TAG_ATOM;
+
+        // Extract tag
+        let tag = self.builder.ins().band_imm(value, TAG_MASK as i64);
+        let is_atom = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, TAG_ATOM as i64);
+        let check_payload_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(is_atom, check_payload_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(check_payload_block);
+        self.builder.seal_block(check_payload_block);
+
+        // Extract payload (lower 48 bits) and compare with expected
+        let payload = self.builder.ins().band_imm(value, PAYLOAD_MASK as i64);
+        let expected = self
+            .builder
+            .ins()
+            .iconst(types::I64, expected_atom_ptr as i64);
+        let match_ok = self
+            .builder
+            .ins()
+            .icmp(IntCC::Equal, payload, expected);
+        let pass_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(match_ok, pass_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(pass_block);
+        self.builder.seal_block(pass_block);
+    }
+
+    /// Emit an inline long equality check for a NaN-boxed value.
+    ///
+    /// Checks TAG_LONG and the 48-bit payload matches the expected integer.
+    pub fn check_long_eq(
+        &mut self,
+        value: Value,
+        expected: i64,
+        fail_block: Block,
+    ) {
+        // Extract tag
+        let tag = self.builder.ins().band_imm(value, TAG_MASK as i64);
+        let is_long = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, TAG_LONG as i64);
+        let check_val_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(is_long, check_val_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(check_val_block);
+        self.builder.seal_block(check_val_block);
+
+        // Compare payload
+        let payload = self.builder.ins().band_imm(value, PAYLOAD_MASK as i64);
+        let expected_payload = self
+            .builder
+            .ins()
+            .iconst(types::I64, (expected as u64 & PAYLOAD_MASK) as i64);
+        let match_ok = self
+            .builder
+            .ins()
+            .icmp(IntCC::Equal, payload, expected_payload);
+        let pass_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(match_ok, pass_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(pass_block);
+        self.builder.seal_block(pass_block);
+    }
+
+    /// Emit an inline boolean equality check for a NaN-boxed value.
+    pub fn check_bool_eq(
+        &mut self,
+        value: Value,
+        expected: bool,
+        fail_block: Block,
+    ) {
+        let tag = self.builder.ins().band_imm(value, TAG_MASK as i64);
+        let is_bool = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, TAG_BOOL as i64);
+        let check_val_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(is_bool, check_val_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(check_val_block);
+        self.builder.seal_block(check_val_block);
+
+        let bit = self.builder.ins().band_imm(value, 1);
+        let expected_bit = self
+            .builder
+            .ins()
+            .iconst(types::I64, if expected { 1 } else { 0 });
+        let match_ok = self
+            .builder
+            .ins()
+            .icmp(IntCC::Equal, bit, expected_bit);
+        let pass_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(match_ok, pass_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(pass_block);
+        self.builder.seal_block(pass_block);
+    }
+
+    /// Emit an inline float bitwise equality check for a NaN-boxed value.
+    ///
+    /// Floats are stored as raw f64 bits in NaN-boxing (not tagged).
+    /// The value is a float if its upper 13 bits are NOT a QNaN pattern.
+    pub fn check_float_eq(
+        &mut self,
+        value: Value,
+        expected_bits: u64,
+        fail_block: Block,
+    ) {
+        // Float check: NOT a tagged value (upper bits < 0x7FF8)
+        let tag = self.builder.ins().band_imm(value, TAG_MASK as i64);
+        let qnan_threshold = self
+            .builder
+            .ins()
+            .iconst(types::I64, 0x7FF8_0000_0000_0000_u64 as i64);
+        let is_float = self
+            .builder
+            .ins()
+            .icmp(IntCC::UnsignedLessThan, tag, qnan_threshold);
+        let check_val_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(is_float, check_val_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(check_val_block);
+        self.builder.seal_block(check_val_block);
+
+        // Exact bitwise comparison
+        let expected = self
+            .builder
+            .ins()
+            .iconst(types::I64, expected_bits as i64);
+        let match_ok = self.builder.ins().icmp(IntCC::Equal, value, expected);
+        let pass_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(match_ok, pass_block, &[], fail_block, &[]);
+        self.builder.switch_to_block(pass_block);
+        self.builder.seal_block(pass_block);
+    }
 }
 
 // =============================================================================

@@ -28,6 +28,14 @@ pub struct RulesFuncIds {
     pub apply_subst_func_id: FuncId,
     /// Define a new rule
     pub define_rule_func_id: FuncId,
+    /// Profile-collecting variant of dispatch_rules (Phase 9)
+    pub dispatch_rules_profiling_func_id: FuncId,
+    /// Fast head symbol check for specialized dispatch (Phase 9)
+    pub check_head_func_id: FuncId,
+    /// Fast arity check for specialized dispatch (Phase 9)
+    pub get_arity_fast_func_id: FuncId,
+    /// Evaluate rule body with pre-extracted bindings (Phase 9)
+    pub eval_with_bindings_func_id: FuncId,
 }
 
 /// Trait for rules initialization - zero-cost static dispatch
@@ -72,6 +80,23 @@ impl<T> RulesInit for T {
         builder.symbol(
             "jit_runtime_define_rule",
             runtime::jit_runtime_define_rule as *const u8,
+        );
+        // Phase 9: Specialization runtime symbols
+        builder.symbol(
+            "jit_runtime_dispatch_rules_profiling",
+            runtime::jit_runtime_dispatch_rules_profiling as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_check_head",
+            runtime::jit_runtime_check_head as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_arity_fast",
+            runtime::jit_runtime_get_arity_fast as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_with_bindings",
+            runtime::jit_runtime_eval_with_bindings as *const u8,
         );
     }
 
@@ -208,6 +233,82 @@ impl<T> RulesInit for T {
                 ))
             })?;
 
+        // Phase 9: dispatch_rules_profiling: fn(ctx, expr, ip) -> count
+        // Same signature as dispatch_rules but records profile data
+        let dispatch_rules_profiling_func_id = module
+            .declare_function(
+                "jit_runtime_dispatch_rules_profiling",
+                Linkage::Import,
+                &dispatch_rules_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_dispatch_rules_profiling: {}",
+                    e
+                ))
+            })?;
+
+        // Phase 9: check_head: fn(ctx, expr, expected_name_ptr, expected_name_len) -> bool (0/1)
+        let mut check_head_sig = module.make_signature();
+        check_head_sig.params.push(AbiParam::new(types::I64)); // ctx
+        check_head_sig.params.push(AbiParam::new(types::I64)); // expr
+        check_head_sig.params.push(AbiParam::new(types::I64)); // expected_name_ptr
+        check_head_sig.params.push(AbiParam::new(types::I64)); // expected_name_len
+        check_head_sig.returns.push(AbiParam::new(types::I64)); // result (0 or 1)
+
+        let check_head_func_id = module
+            .declare_function(
+                "jit_runtime_check_head",
+                Linkage::Import,
+                &check_head_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_check_head: {}",
+                    e
+                ))
+            })?;
+
+        // Phase 9: get_arity_fast: fn(ctx, expr) -> arity (u64)
+        let mut get_arity_fast_sig = module.make_signature();
+        get_arity_fast_sig.params.push(AbiParam::new(types::I64)); // ctx
+        get_arity_fast_sig.params.push(AbiParam::new(types::I64)); // expr
+        get_arity_fast_sig.returns.push(AbiParam::new(types::I64)); // arity
+
+        let get_arity_fast_func_id = module
+            .declare_function(
+                "jit_runtime_get_arity_fast",
+                Linkage::Import,
+                &get_arity_fast_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_get_arity_fast: {}",
+                    e
+                ))
+            })?;
+
+        // Phase 9: eval_with_bindings: fn(ctx, rhs_ptr, bindings_ptr, binding_count) -> result
+        let mut eval_with_bindings_sig = module.make_signature();
+        eval_with_bindings_sig.params.push(AbiParam::new(types::I64)); // ctx
+        eval_with_bindings_sig.params.push(AbiParam::new(types::I64)); // rhs_ptr
+        eval_with_bindings_sig.params.push(AbiParam::new(types::I64)); // bindings_ptr
+        eval_with_bindings_sig.params.push(AbiParam::new(types::I64)); // binding_count
+        eval_with_bindings_sig.returns.push(AbiParam::new(types::I64)); // result
+
+        let eval_with_bindings_func_id = module
+            .declare_function(
+                "jit_runtime_eval_with_bindings",
+                Linkage::Import,
+                &eval_with_bindings_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_with_bindings: {}",
+                    e
+                ))
+            })?;
+
         Ok(RulesFuncIds {
             dispatch_rules_func_id,
             try_rule_func_id,
@@ -217,6 +318,10 @@ impl<T> RulesInit for T {
             lookup_rules_func_id,
             apply_subst_func_id,
             define_rule_func_id,
+            dispatch_rules_profiling_func_id,
+            check_head_func_id,
+            get_arity_fast_func_id,
+            eval_with_bindings_func_id,
         })
     }
 }

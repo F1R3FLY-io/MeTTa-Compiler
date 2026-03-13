@@ -94,6 +94,26 @@ pub fn clear_mork_bytes_cache() {
     MORK_BYTES_CACHE.with(|c| c.borrow_mut().clear());
 }
 
+/// Compile WAM instructions from a rule's LHS, but only when V is MettaValue.
+///
+/// Uses `TypeId` to check at runtime whether the generic V matches `MettaValue`.
+/// Since the type unification made all evaluation paths use `MettaValue`, this check
+/// always succeeds in practice. The generic code path returns `None` for any other V,
+/// falling back to structural/MORK matching.
+fn compile_wam_code_if_metta_value<V: MettaValueTrait + Clone + 'static>(
+    lhs: &V,
+) -> Option<std::sync::Arc<crate::backend::eval::wam::compiler::WamCode>> {
+    use std::any::TypeId;
+    if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
+        // SAFETY: We verified V == MettaValue via TypeId.
+        let metta_lhs: &MettaValue = unsafe { &*(lhs as *const V as *const MettaValue) };
+        crate::backend::eval::wam::compiler::compile_rule_lhs(metta_lhs)
+            .map(std::sync::Arc::new)
+    } else {
+        None
+    }
+}
+
 use super::generic::GenericEnvironment;
 use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
 // Disabled: mork_expr_to_generic_value no longer used directly — deserialization happens via
@@ -196,6 +216,10 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// `Some` for rules with structurally-matchable LHS (>95% of rules).
     /// `None` for rules too complex for structural matching — falls back to MORK.
     pub structural_matcher: Option<StructuralMatcher>,
+    /// Compiled WAM instruction sequence for this rule's LHS matching.
+    /// `Some` for rules compilable to WAM (same coverage as StructuralMatcher).
+    /// Used by `wam_dispatch_rules` for faster register-based pattern matching.
+    pub wam_code: Option<std::sync::Arc<crate::backend::eval::wam::compiler::WamCode>>,
 }
 
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
@@ -234,6 +258,10 @@ struct RuleGroup<V: MettaValueTrait + Clone> {
     /// Rules with variable/wildcard/non-S-expression first argument.
     /// Always included in query results since they match any first argument.
     variable_first_arg: Vec<RuleEntry<V>>,
+    /// Pre-compiled WAM code for ALL rules in this group (choice-point chained).
+    /// Single `execute_wam` call replaces N per-rule `wam_try_match` calls.
+    /// Compiled at add-rule time, invalidated on rule changes. MettaValue only.
+    wam_group_code: Option<std::sync::Arc<crate::backend::eval::wam::compiler::WamCode>>,
 }
 
 impl<V: MettaValueTrait + Clone> RuleGroup<V> {
@@ -241,7 +269,42 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
         RuleGroup {
             by_first_arg_head: HashMap::new(),
             variable_first_arg: Vec::new(),
+            wam_group_code: None,
         }
+    }
+
+    /// Recompile WAM group code from all entries in this group.
+    /// Compiles all rules into a single WAM code sequence with choice points.
+    /// Only compiles when V is MettaValue (verified via TypeId).
+    fn recompile_wam_group_code(&mut self)
+    where
+        V: 'static,
+    {
+        use std::any::TypeId;
+
+        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+            self.wam_group_code = None;
+            return;
+        }
+
+        // Collect all entries for compilation
+        let entries: Vec<RuleEntry<V>> = self.all_entries().cloned().collect();
+        if entries.is_empty() {
+            self.wam_group_code = None;
+            return;
+        }
+
+        // SAFETY: V == MettaValue verified by TypeId check above.
+        // RuleEntry<V> and RuleEntry<MettaValue> have identical layout.
+        let metta_entries: &[RuleEntry<MettaValue>] = unsafe {
+            std::slice::from_raw_parts(
+                entries.as_ptr() as *const RuleEntry<MettaValue>,
+                entries.len(),
+            )
+        };
+
+        self.wam_group_code =
+            crate::backend::eval::wam::compiler::compile_rule_group(metta_entries);
     }
 
     /// Get the appropriate entry list for inserting a rule with the given first-arg head.
@@ -415,7 +478,10 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         arity: usize,
         first_arg_head: Option<&'static str>,
         entry: RuleEntry<V>,
-    ) {
+    )
+    where
+        V: 'static,
+    {
         use crate::backend::models::gc_allocator::global_allocator;
 
         match head {
@@ -425,15 +491,25 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                     .entry((interned, arity))
                     .or_insert_with(RuleGroup::new);
 
-                // Check for duplicate across ALL entries in the group
+                // Check for duplicate across ALL entries in the group.
+                // Use break + flag to release the all_entries_mut() borrow
+                // before calling recompile_wam_group_code().
+                let mut found_duplicate = false;
                 for existing in group.all_entries_mut() {
                     if existing.lhs == entry.lhs && existing.rhs == entry.rhs {
                         existing.multiplicity += 1;
-                        return;
+                        found_duplicate = true;
+                        break;
                     }
                 }
 
-                group.entries_for_mut(first_arg_head).push(entry);
+                if !found_duplicate {
+                    group.entries_for_mut(first_arg_head).push(entry);
+                }
+
+                // Recompile WAM group code after any modification
+                // (new entry or multiplicity change)
+                group.recompile_wam_group_code();
             }
             None => {
                 // Check for duplicate in wildcard list
@@ -449,10 +525,15 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     }
 
     /// Remove a rule by decrementing multiplicity. Returns true if the entry was removed entirely.
-    pub fn remove_rule(&mut self, lhs: &V, rhs: &V) -> bool {
+    pub fn remove_rule(&mut self, lhs: &V, rhs: &V) -> bool
+    where
+        V: 'static,
+    {
         // Search in all groups
         for group in self.by_head_arity.values_mut() {
             if let Some(removed) = group.remove_rule(lhs, rhs) {
+                // Recompile WAM group code after removal
+                group.recompile_wam_group_code();
                 return removed;
             }
         }
@@ -505,6 +586,24 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     #[inline]
     pub fn has_wildcard_rules(&self) -> bool {
         !self.wildcard.is_empty()
+    }
+
+    /// Get pre-compiled WAM group code for the given (head, arity) group.
+    ///
+    /// Returns `Some(Arc<WamCode>)` if the group has been compiled to WAM instructions.
+    /// The WAM code chains all rules in the group with choice points for single-pass
+    /// all-solutions matching. Returns `None` if no group exists, or if WAM compilation
+    /// failed for any rule in the group.
+    pub fn get_wam_group_code(
+        &self,
+        head: &str,
+        arity: usize,
+    ) -> Option<std::sync::Arc<crate::backend::eval::wam::compiler::WamCode>> {
+        use crate::backend::models::gc_allocator::global_allocator;
+        let interned: &'static str = global_allocator().alloc_str(head);
+        self.by_head_arity
+            .get(&(interned, arity))
+            .and_then(|group| group.wam_group_code.clone())
     }
 
     /// Get the number of rules in the index.
@@ -1023,6 +1122,83 @@ impl StructuralMatcher {
         }
 
         Some(bindings)
+    }
+
+    /// Translate this matcher's checks and variable operations into
+    /// JIT-compatible representations for Cranelift IR emission.
+    ///
+    /// The returned `InlinableCheck` and `InlinableVarOp` vectors contain
+    /// the same structural information as the internal `StructuralCheck`
+    /// and `VarOp` but with paths represented as `Vec<u8>` instead of
+    /// the fixed-size `MatchPath` — suitable for cross-crate consumption
+    /// by the JIT specializer.
+    pub fn translate_for_jit(
+        &self,
+    ) -> (
+        Vec<crate::backend::bytecode::jit::compiler::specializer::InlinableCheck>,
+        Vec<crate::backend::bytecode::jit::compiler::specializer::InlinableVarOp>,
+    ) {
+        use crate::backend::bytecode::jit::compiler::specializer::{InlinableCheck, InlinableVarOp};
+
+        let checks = self
+            .checks
+            .iter()
+            .map(|check| {
+                let path_vec = |p: &MatchPath| -> Vec<u8> {
+                    p.indices[..p.len as usize].to_vec()
+                };
+                match check {
+                    StructuralCheck::Arity { path, expected } => InlinableCheck::Arity {
+                        path: path_vec(path),
+                        expected: *expected,
+                    },
+                    StructuralCheck::Atom { path, expected } => InlinableCheck::Atom {
+                        path: path_vec(path),
+                        expected,
+                    },
+                    StructuralCheck::Long { path, expected } => InlinableCheck::Long {
+                        path: path_vec(path),
+                        expected: *expected,
+                    },
+                    StructuralCheck::Bool { path, expected } => InlinableCheck::Bool {
+                        path: path_vec(path),
+                        expected: *expected,
+                    },
+                    StructuralCheck::Float { path, expected_bits } => InlinableCheck::Float {
+                        path: path_vec(path),
+                        expected_bits: *expected_bits,
+                    },
+                    StructuralCheck::Str { path, expected } => InlinableCheck::Str {
+                        path: path_vec(path),
+                        expected,
+                    },
+                }
+            })
+            .collect();
+
+        let var_ops = self
+            .var_ops
+            .iter()
+            .enumerate()
+            .map(|(idx, op)| {
+                let path_vec = |p: &MatchPath| -> Vec<u8> {
+                    p.indices[..p.len as usize].to_vec()
+                };
+                match op {
+                    VarOp::Bind { path, name } => InlinableVarOp::Bind {
+                        path: path_vec(path),
+                        name,
+                        slot_index: idx as u8,
+                    },
+                    VarOp::EqualCheck { path, bind_index } => InlinableVarOp::EqualCheck {
+                        path: path_vec(path),
+                        bind_slot: *bind_index,
+                    },
+                }
+            })
+            .collect();
+
+        (checks, var_ops)
     }
 }
 
@@ -1637,6 +1813,7 @@ where
                 let first_arg_head_interned: Option<&'static str> =
                     get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
                 let structural_matcher = StructuralMatcher::analyze(&lhs);
+                let wam_code = compile_wam_code_if_metta_value(&lhs);
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
                     rhs_has_variables: rhs.contains_variables(),
@@ -1648,6 +1825,7 @@ where
                     multiplicity: 1,
                     rhs_type: rhs_type.clone(),
                     structural_matcher,
+                    wam_code,
                 };
                 // Phase 4a: Pre-seed tiered cache so first RHS evaluation
                 // immediately triggers bytecode compilation (no warmup delay)
@@ -1693,6 +1871,7 @@ where
             let first_arg_head_interned: Option<&'static str> =
                 get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
             let structural_matcher = StructuralMatcher::analyze(&lhs);
+            let wam_code = compile_wam_code_if_metta_value(&lhs);
             let entry = RuleEntry {
                 lhs: lhs.clone(),
                 rhs_has_variables: rhs.contains_variables(),
@@ -1704,6 +1883,7 @@ where
                 multiplicity: 1,
                 rhs_type, // Phase 8.1: computed before closure, last use — no clone needed
                 structural_matcher,
+                wam_code,
             };
             // Phase 4a: Pre-seed tiered cache for wide MORK path
             crate::backend::bytecode::tiered_cache::global_tiered_cache()
@@ -1805,8 +1985,10 @@ where
                 return Vec::new();
             }
 
-            // Check if ALL candidates have structural matchers
-            let all_structural = candidates.iter().all(|e| e.structural_matcher.is_some());
+            // Check if ALL candidates have structural matchers (or WAM code)
+            let all_structural = candidates.iter().all(|e|
+                e.structural_matcher.is_some() || e.wam_code.is_some()
+            );
 
             // Phase E: Populate operator inline cache with metadata about this
             // (head, arity) — the caller can use this to skip hash_value()
@@ -1825,38 +2007,63 @@ where
             }
 
             if all_structural {
-                // Fast path: all candidates have structural matchers — bypass MORK entirely
+                // Fast path: all candidates have structural/WAM matchers — bypass MORK entirely
                 let mut results: Vec<RuleMatchResult<V>> = Vec::new();
+                let is_metta = std::any::TypeId::of::<V>() == std::any::TypeId::of::<MettaValue>();
 
                 for entry in &candidates {
-                    if let Some(ref matcher) = entry.structural_matcher {
-                        if let Some(bindings) = matcher.try_match(expr) {
-                            let instantiated_rhs = if entry.rhs_has_variables {
-                                apply_bindings(&entry.rhs, &bindings, &self.factory)
-                            } else {
-                                entry.rhs.clone()
-                            };
-                            let multiplicity = entry.multiplicity.max(1);
-                            if multiplicity == 1 {
+                    // Try WAM matching first (MettaValue only), fall back to structural
+                    let bindings = if is_metta {
+                        if let Some(ref wam_code) = entry.wam_code {
+                            // SAFETY: V == MettaValue verified by TypeId check above.
+                            let metta_expr: &MettaValue = unsafe { &*(expr as *const V as *const MettaValue) };
+                            let wam_result = crate::backend::eval::wam::engine::wam_try_match(metta_expr, wam_code);
+                            // Convert Option<GenericBindings<MettaValue>> to Option<GenericBindings<V>>
+                            // SAFETY: V == MettaValue verified by TypeId. Both types have identical
+                            // size and layout, so pointer reinterpretation is sound.
+                            wam_result.map(|b| {
+                                let b_ptr = &b as *const GenericBindings<MettaValue> as *const GenericBindings<V>;
+                                let result = unsafe { std::ptr::read(b_ptr) };
+                                std::mem::forget(b); // prevent double-free
+                                result
+                            })
+                        } else if let Some(ref matcher) = entry.structural_matcher {
+                            matcher.try_match(expr)
+                        } else {
+                            None
+                        }
+                    } else if let Some(ref matcher) = entry.structural_matcher {
+                        matcher.try_match(expr)
+                    } else {
+                        None
+                    };
+
+                    if let Some(bindings) = bindings {
+                        let instantiated_rhs = if entry.rhs_has_variables {
+                            apply_bindings(&entry.rhs, &bindings, &self.factory)
+                        } else {
+                            entry.rhs.clone()
+                        };
+                        let multiplicity = entry.multiplicity.max(1);
+                        if multiplicity == 1 {
+                            results.push(RuleMatchResult {
+                                instantiated_rhs,
+                                rhs_template: entry.rhs.clone(),
+                                bindings,
+                                multiplicity: 1,
+                                rhs_type: entry.rhs_type.clone(),
+                                rhs_has_variables: entry.rhs_has_variables,
+                            });
+                        } else {
+                            for _ in 0..multiplicity {
                                 results.push(RuleMatchResult {
-                                    instantiated_rhs,
+                                    instantiated_rhs: instantiated_rhs.clone(),
                                     rhs_template: entry.rhs.clone(),
-                                    bindings,
-                                    multiplicity: 1,
+                                    bindings: bindings.clone(),
+                                    multiplicity,
                                     rhs_type: entry.rhs_type.clone(),
                                     rhs_has_variables: entry.rhs_has_variables,
                                 });
-                            } else {
-                                for _ in 0..multiplicity {
-                                    results.push(RuleMatchResult {
-                                        instantiated_rhs: instantiated_rhs.clone(),
-                                        rhs_template: entry.rhs.clone(),
-                                        bindings: bindings.clone(),
-                                        multiplicity,
-                                        rhs_type: entry.rhs_type.clone(),
-                                        rhs_has_variables: entry.rhs_has_variables,
-                                    });
-                                }
                             }
                         }
                     }
@@ -2641,6 +2848,7 @@ impl MettaEnvironment {
                         }
 
                         let structural_matcher = StructuralMatcher::analyze(&lhs);
+                        let wam_code = compile_wam_code_if_metta_value(&lhs);
                         let entry = RuleEntry {
                             lhs: lhs.clone(),
                             rhs_has_variables: rhs.contains_variables(),
@@ -2652,6 +2860,7 @@ impl MettaEnvironment {
                             multiplicity,
                             rhs_type,
                             structural_matcher,
+                            wam_code,
                         };
 
                         // Phase 4a: Pre-seed tiered cache for bulk path

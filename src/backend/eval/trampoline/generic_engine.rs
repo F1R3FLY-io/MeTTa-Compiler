@@ -36,8 +36,6 @@ use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait
 
 use super::dispatch_hints::{match_result_get, match_result_put};
 
-// MettaValue only used in tests
-#[cfg(test)]
 use crate::backend::models::MettaValue;
 
 // ============================================================================
@@ -422,8 +420,81 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Copy + Clone,
 {
-    let is_metta = std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>();
+    let is_metta = std::any::TypeId::of::<V>() == std::any::TypeId::of::<MettaValue>();
     let expr_arity = expr.get_arity();
+
+    // ── WAM Group Dispatch Fast Path ──
+    //
+    // If the RuleIndex has pre-compiled WAM group code for (head, arity),
+    // dispatch all rules in a single WAM execution with choice points.
+    // This replaces N per-rule wam_try_match calls with one execute_wam call,
+    // eliminating per-rule WamState creation, input loading, and iterator overhead.
+    //
+    // Requires: V == MettaValue, non-empty head, and no wildcard rules
+    // (wildcard rules match any expression and would need separate handling).
+    if is_metta {
+        if let Some(head) = expr.as_sexpr().and_then(|items| items.first()).and_then(|h| h.as_atom()) {
+            // Acquire read lock briefly to extract WAM code and wildcard status
+            let (wam_code, has_wildcards) = {
+                let rule_index = env.shared.rule_index.read();
+                let wam_code = rule_index.get_wam_group_code(head, expr_arity);
+                let has_wildcards = rule_index.has_wildcard_rules();
+                (wam_code, has_wildcards)
+            };
+            // Lock released here — WAM execution is CPU-bound, no lock held
+
+            if let Some(wam_code) = wam_code {
+                if !has_wildcards {
+                    // Check match result cache first
+                    let expr_hash = expr.hash_value();
+                    if let Some(cached) = match_result_get(expr_hash, expr_arity) {
+                        return unsafe {
+                            let mut md = std::mem::ManuallyDrop::new(cached);
+                            Vec::from_raw_parts(
+                                md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
+                                md.len(),
+                                md.capacity(),
+                            )
+                        };
+                    }
+
+                    // WAM group dispatch: single execute_wam call for all rules
+                    // SAFETY: V == MettaValue verified by TypeId check above.
+                    let metta_expr: &MettaValue =
+                        unsafe { &*(expr as *const V as *const MettaValue) };
+                    let wam_results = crate::backend::eval::wam::engine::wam_dispatch_rules(
+                        *metta_expr, &wam_code,
+                    );
+
+                    // Convert 4-tuple (template, bindings, rhs_type, has_vars) to 3-tuple
+                    let metta_result_vec: Vec<(
+                        MettaValue,
+                        GenericBindings<MettaValue>,
+                        Option<MettaValue>,
+                    )> = wam_results
+                        .into_iter()
+                        .map(|(t, b, rt, _has_vars)| (t, b, rt))
+                        .collect();
+
+                    // Store in match result cache
+                    if !metta_result_vec.is_empty() {
+                        match_result_put(expr_hash, expr_arity, &metta_result_vec);
+                    }
+
+                    // Transmute Vec<(MettaValue, ...)> to Vec<(V, ...)>
+                    // SAFETY: V == MettaValue verified by TypeId. Identical layout.
+                    return unsafe {
+                        let mut md = std::mem::ManuallyDrop::new(metta_result_vec);
+                        Vec::from_raw_parts(
+                            md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
+                            md.len(),
+                            md.capacity(),
+                        )
+                    };
+                }
+            }
+        }
+    }
 
     // Phase E: For single-candidate all-structural operators, skip hash computation
     // and match_result_cache entirely. The cache rarely hits for these (different args
@@ -472,10 +543,10 @@ where
     // Store in match result cache
     if is_metta && !result_vec.is_empty() {
         // Safety: V = MettaValue verified by TypeId check above.
-        let slice: &[(crate::backend::models::MettaValue, GenericBindings<crate::backend::models::MettaValue>, Option<crate::backend::models::MettaValue>)] = unsafe {
+        let slice: &[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)] = unsafe {
             std::slice::from_raw_parts(
                 result_vec.as_ptr()
-                    as *const (crate::backend::models::MettaValue, GenericBindings<crate::backend::models::MettaValue>, Option<crate::backend::models::MettaValue>),
+                    as *const (MettaValue, GenericBindings<MettaValue>, Option<MettaValue>),
                 result_vec.len(),
             )
         };

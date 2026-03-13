@@ -296,6 +296,18 @@ impl HybridExecutor {
         let type_registry = TypeSignatureRegistry::from_env(&env);
         ctx.type_registry_ptr = &type_registry as *const TypeSignatureRegistry;
 
+        // Set runtime profile pointer for dispatch site profiling (Phase 9)
+        if !self.profile_ptr.is_null() {
+            unsafe {
+                ctx.set_profile(self.profile_ptr);
+            }
+        }
+
+        // Set deoptimization epoch for JIT Stage 2 specialized code (Phase 9)
+        if self.deopt_epoch != 0 {
+            ctx.set_deopt_epoch(self.deopt_epoch);
+        }
+
         if self.config.trace {
             trace!(target: "mettatron::jit::hybrid::arena", native_ptr = ?native_ptr, "Executing JIT code in arena mode with environment");
         }

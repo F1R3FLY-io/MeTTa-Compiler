@@ -11,6 +11,7 @@
 // Submodules
 mod analysis;
 pub mod init;
+pub mod specializer;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -473,6 +474,16 @@ impl JitCompiler {
             "jit_runtime_collect",
             runtime::jit_runtime_collect as *const u8,
         );
+
+        // Phase 9: Stack push/pop for specialized dispatch
+        builder.symbol(
+            "jit_runtime_push",
+            runtime::jit_runtime_push as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_pop",
+            runtime::jit_runtime_pop as *const u8,
+        );
     }
 
     /// Check if a bytecode chunk can be JIT compiled (Stage 1-5 + Phase A-I)
@@ -482,6 +493,16 @@ impl JitCompiler {
     #[inline]
     pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
         analysis::can_compile_stage1(chunk)
+    }
+
+    /// Check if a bytecode chunk can be JIT compiled at Stage 2 level.
+    ///
+    /// Unlike `can_compile_stage1`, this does NOT reject nondeterministic chunks.
+    /// Stage 2 compiles Fork/Yield/Collect and other nondeterminism opcodes via
+    /// native runtime FFI calls that integrate with the dispatcher loop.
+    #[inline]
+    pub fn can_compile_stage2(chunk: &BytecodeChunk) -> bool {
+        analysis::can_compile_stage2(chunk)
     }
 
     /// Check if raw bytecode can be JIT compiled (bytecode-only check).
@@ -2438,6 +2459,674 @@ impl JitCompiler {
     pub fn code_size(&self) -> usize {
         // Note: Cranelift doesn't expose this directly, would need tracking
         0
+    }
+
+    /// Compile a specialized dispatch function for hot call sites.
+    ///
+    /// Unlike `compile()` which translates bytecode opcode-by-opcode,
+    /// this generates a monolithic function that:
+    /// 1. Checks RULE_EPOCH for deoptimization (inline Cranelift IR)
+    /// 2. Pops the expression from the stack
+    /// 3. For each hot dispatch site (ordered by frequency):
+    ///    a. Checks head symbol via FFI (interned pointer equality)
+    ///    b. Checks arity via FFI
+    ///    c. For each hot rule (ordered by match frequency):
+    ///       - Emits inline pattern checks (atom, long, bool, float, arity)
+    ///       - Emits inline variable extraction via navigate_path
+    ///       - Calls FFI eval_with_bindings for complex RHS
+    ///       - For variable-free RHS, pushes the value directly
+    ///    d. Falls back to jit_runtime_dispatch_rules for cold rules
+    /// 4. Returns JIT_SIGNAL_OK or JIT_SIGNAL_BAILOUT
+    ///
+    /// # Arguments
+    /// * `chunk` - The original bytecode chunk (for constant pool and fallback)
+    /// * `plan` - The specialization plan with hot rule data and deopt epoch
+    ///
+    /// # Returns
+    /// Function pointer to the specialized native code, or error
+    pub fn compile_specialized(
+        &mut self,
+        chunk: &BytecodeChunk,
+        plan: &specializer::SpecializationPlan,
+    ) -> JitResult<*const ()> {
+        use super::types::{JIT_SIGNAL_BAILOUT, JIT_SIGNAL_OK, PAYLOAD_MASK, TAG_PTR};
+
+        if plan.specialized_dispatch_sites.is_empty() {
+            // No specialized sites — fall back to generic JIT compilation
+            return self.compile(chunk);
+        }
+
+        // Generate unique function name
+        let func_name = format!("jit_specialized_{}", self.func_counter);
+        self.func_counter += 1;
+
+        // Declare function signature: fn(*mut JitContext) -> i64
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // ctx pointer
+        sig.returns.push(AbiParam::new(types::I64)); // return signal
+
+        let func_id = self
+            .module
+            .declare_function(&func_name, Linkage::Local, &sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare specialized function: {}",
+                    e
+                ))
+            })?;
+
+        // Pre-declare stack runtime functions.
+        // jit_runtime_pop: fn(ctx: *mut JitContext) -> u64
+        // jit_runtime_push: fn(ctx: *mut JitContext, val: u64) -> i32
+        let stack_pop_sig = {
+            let mut s = self.module.make_signature();
+            s.params.push(AbiParam::new(types::I64)); // ctx
+            s.returns.push(AbiParam::new(types::I64)); // value
+            s
+        };
+        let stack_push_sig = {
+            let mut s = self.module.make_signature();
+            s.params.push(AbiParam::new(types::I64)); // ctx
+            s.params.push(AbiParam::new(types::I64)); // value
+            s.returns.push(AbiParam::new(types::I32)); // status
+            s
+        };
+        let stack_pop_func_id = self
+            .module
+            .declare_function("jit_runtime_pop", Linkage::Import, &stack_pop_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_pop: {}", e))
+            })?;
+        let stack_push_func_id = self
+            .module
+            .declare_function("jit_runtime_push", Linkage::Import, &stack_push_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_push: {}", e))
+            })?;
+
+        let mut cranelift_ctx = self.module.make_context();
+        cranelift_ctx.func.signature = sig;
+
+        // Build the specialized function body
+        {
+            let mut func_ctx = FunctionBuilderContext::new();
+            let mut builder =
+                FunctionBuilder::new(&mut cranelift_ctx.func, &mut func_ctx);
+
+            // Declare FuncRefs inside the function
+            let check_head_ref = self
+                .module
+                .declare_func_in_func(self.rules.check_head_func_id, builder.func);
+            let get_arity_ref = self
+                .module
+                .declare_func_in_func(self.rules.get_arity_fast_func_id, builder.func);
+            let dispatch_rules_ref = self
+                .module
+                .declare_func_in_func(self.rules.dispatch_rules_func_id, builder.func);
+            let eval_with_bindings_ref = self
+                .module
+                .declare_func_in_func(self.rules.eval_with_bindings_func_id, builder.func);
+            let get_element_ref = self
+                .module
+                .declare_func_in_func(self.sexpr.get_element_func_id, builder.func);
+            let stack_pop_ref = self
+                .module
+                .declare_func_in_func(stack_pop_func_id, builder.func);
+            let stack_push_ref = self
+                .module
+                .declare_func_in_func(stack_push_func_id, builder.func);
+
+            // === Create blocks ===
+            let entry_block = builder.create_block();
+            builder.append_block_params_for_function_params(entry_block);
+            let deopt_block = builder.create_block();
+            let main_body = builder.create_block();
+            let fallback_block = builder.create_block();
+            let merge_block = builder.create_block();
+            builder.append_block_param(merge_block, types::I64); // result signal
+
+            // === Entry block: deoptimization guard ===
+            builder.switch_to_block(entry_block);
+            builder.seal_block(entry_block);
+
+            let ctx_ptr = builder.block_params(entry_block)[0];
+
+            // Load RULE_EPOCH from global atomic
+            let epoch_addr = &crate::backend::environment::rule_management::RULE_EPOCH
+                as *const std::sync::atomic::AtomicU64
+                as u64;
+            let epoch_ptr_val = builder.ins().iconst(types::I64, epoch_addr as i64);
+            let current_epoch =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), epoch_ptr_val, 0);
+            let expected_epoch =
+                builder
+                    .ins()
+                    .iconst(types::I64, plan.rule_epoch as i64);
+            let epoch_ok =
+                builder
+                    .ins()
+                    .icmp(IntCC::Equal, current_epoch, expected_epoch);
+            builder
+                .ins()
+                .brif(epoch_ok, main_body, &[], deopt_block, &[]);
+
+            // === Deopt block: signal bailout ===
+            builder.switch_to_block(deopt_block);
+            builder.seal_block(deopt_block);
+            let bailout_signal =
+                builder
+                    .ins()
+                    .iconst(types::I64, JIT_SIGNAL_BAILOUT);
+            builder.ins().jump(
+                merge_block,
+                &[BlockArg::Value(bailout_signal)],
+            );
+
+            // === Main body: pop expression, dispatch ===
+            builder.switch_to_block(main_body);
+            builder.seal_block(main_body);
+
+            let pop_call = builder.ins().call(stack_pop_ref, &[ctx_ptr]);
+            let expr = builder.inst_results(pop_call)[0];
+
+            // === Iterate over specialized dispatch sites ===
+            let sites: Vec<_> = plan.specialized_dispatch_sites.iter().collect();
+
+            for (site_idx, site) in sites.iter().enumerate() {
+                let site_entry = builder.create_block();
+                let next_site = if site_idx + 1 < sites.len() {
+                    builder.create_block()
+                } else {
+                    fallback_block
+                };
+
+                if site_idx == 0 {
+                    builder.ins().jump(site_entry, &[]);
+                }
+                builder.switch_to_block(site_entry);
+                builder.seal_block(site_entry);
+
+                // Check head symbol via FFI
+                let head_bytes = site.head.as_bytes();
+                let head_ptr_val =
+                    builder
+                        .ins()
+                        .iconst(types::I64, head_bytes.as_ptr() as i64);
+                let head_len_val =
+                    builder
+                        .ins()
+                        .iconst(types::I64, head_bytes.len() as i64);
+                let head_call = builder.ins().call(
+                    check_head_ref,
+                    &[ctx_ptr, expr, head_ptr_val, head_len_val],
+                );
+                let head_match = builder.inst_results(head_call)[0];
+                let head_ok =
+                    builder
+                        .ins()
+                        .icmp_imm(IntCC::NotEqual, head_match, 0);
+                let arity_check_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(head_ok, arity_check_block, &[], next_site, &[]);
+
+                // Check arity via FFI
+                builder.switch_to_block(arity_check_block);
+                builder.seal_block(arity_check_block);
+                let arity_call =
+                    builder.ins().call(get_arity_ref, &[ctx_ptr, expr]);
+                let arity = builder.inst_results(arity_call)[0];
+                let expected_arity =
+                    builder.ins().iconst(types::I64, site.arity as i64);
+                let arity_ok =
+                    builder
+                        .ins()
+                        .icmp(IntCC::Equal, arity, expected_arity);
+                let rules_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(arity_ok, rules_block, &[], next_site, &[]);
+
+                // === Try each inline rule ===
+                builder.switch_to_block(rules_block);
+                builder.seal_block(rules_block);
+                let site_fallback = builder.create_block();
+
+                for (rule_idx, rule) in site.inline_rules.iter().enumerate() {
+                    let next_rule_block = if rule_idx + 1 < site.inline_rules.len()
+                    {
+                        builder.create_block()
+                    } else {
+                        site_fallback
+                    };
+
+                    // Use CodegenContext for inline check helpers
+                    // Note: CodegenContext borrows the builder, so we use a block
+                    // scope to ensure the borrow is released before we switch blocks.
+                    let mut bind_slots: Vec<Value> = Vec::new();
+                    let mut rule_checks_passed = true;
+                    {
+                        let mut codegen =
+                            CodegenContext::new(&mut builder, ctx_ptr);
+
+                        // === Emit inline pattern checks ===
+                        for check in &rule.checks {
+                            match check {
+                                specializer::InlinableCheck::Arity {
+                                    path,
+                                    expected,
+                                } => {
+                                    let node = codegen.navigate_path(
+                                        expr,
+                                        path,
+                                        next_rule_block,
+                                        get_element_ref,
+                                    )?;
+                                    let ctx_v = codegen.ctx_ptr();
+                                    let ac = codegen.builder.ins().call(
+                                        get_arity_ref,
+                                        &[ctx_v, node],
+                                    );
+                                    let na =
+                                        codegen.builder.inst_results(ac)[0];
+                                    let ev = codegen.builder.ins().iconst(
+                                        types::I64,
+                                        *expected as i64,
+                                    );
+                                    let ok = codegen.builder.ins().icmp(
+                                        IntCC::Equal,
+                                        na,
+                                        ev,
+                                    );
+                                    let cont =
+                                        codegen.builder.create_block();
+                                    codegen.builder.ins().brif(
+                                        ok,
+                                        cont,
+                                        &[],
+                                        next_rule_block,
+                                        &[],
+                                    );
+                                    codegen
+                                        .builder
+                                        .switch_to_block(cont);
+                                    codegen.builder.seal_block(cont);
+                                }
+                                specializer::InlinableCheck::Atom {
+                                    path,
+                                    expected,
+                                } => {
+                                    let node = codegen.navigate_path(
+                                        expr,
+                                        path,
+                                        next_rule_block,
+                                        get_element_ref,
+                                    )?;
+                                    let expected_ptr = (*expected).as_ptr()
+                                        as u64
+                                        & PAYLOAD_MASK;
+                                    codegen.check_atom_eq(
+                                        node,
+                                        expected_ptr,
+                                        next_rule_block,
+                                    );
+                                }
+                                specializer::InlinableCheck::Long {
+                                    path,
+                                    expected,
+                                } => {
+                                    let node = codegen.navigate_path(
+                                        expr,
+                                        path,
+                                        next_rule_block,
+                                        get_element_ref,
+                                    )?;
+                                    codegen.check_long_eq(
+                                        node,
+                                        *expected,
+                                        next_rule_block,
+                                    );
+                                }
+                                specializer::InlinableCheck::Bool {
+                                    path,
+                                    expected,
+                                } => {
+                                    let node = codegen.navigate_path(
+                                        expr,
+                                        path,
+                                        next_rule_block,
+                                        get_element_ref,
+                                    )?;
+                                    codegen.check_bool_eq(
+                                        node,
+                                        *expected,
+                                        next_rule_block,
+                                    );
+                                }
+                                specializer::InlinableCheck::Float {
+                                    path,
+                                    expected_bits,
+                                } => {
+                                    let node = codegen.navigate_path(
+                                        expr,
+                                        path,
+                                        next_rule_block,
+                                        get_element_ref,
+                                    )?;
+                                    codegen.check_float_eq(
+                                        node,
+                                        *expected_bits,
+                                        next_rule_block,
+                                    );
+                                }
+                                specializer::InlinableCheck::Str {
+                                    path: _,
+                                    expected: _,
+                                } => {
+                                    // String matching not yet inlined — skip to FFI
+                                    codegen
+                                        .builder
+                                        .ins()
+                                        .jump(next_rule_block, &[]);
+                                    let unreachable =
+                                        codegen.builder.create_block();
+                                    codegen
+                                        .builder
+                                        .switch_to_block(unreachable);
+                                    codegen.builder.seal_block(unreachable);
+                                    rule_checks_passed = false;
+                                }
+                            }
+                        }
+
+                        // === Extract bindings ===
+                        if rule_checks_passed {
+                            for var_op in &rule.var_bindings {
+                                match var_op {
+                                    specializer::InlinableVarOp::Bind {
+                                        path,
+                                        name,
+                                        slot_index: _,
+                                    } => {
+                                        let val = codegen.navigate_path(
+                                            expr,
+                                            path,
+                                            next_rule_block,
+                                            get_element_ref,
+                                        )?;
+                                        let name_hash =
+                                            xxhash_rust::xxh3::xxh3_64(
+                                                name.as_bytes(),
+                                            );
+                                        let hash_val =
+                                            codegen.builder.ins().iconst(
+                                                types::I64,
+                                                name_hash as i64,
+                                            );
+                                        bind_slots.push(hash_val);
+                                        bind_slots.push(val);
+                                    }
+                                    specializer::InlinableVarOp::EqualCheck {
+                                        path,
+                                        bind_slot,
+                                    } => {
+                                        let val = codegen.navigate_path(
+                                            expr,
+                                            path,
+                                            next_rule_block,
+                                            get_element_ref,
+                                        )?;
+                                        let slot_idx =
+                                            *bind_slot as usize;
+                                        if slot_idx * 2 + 1
+                                            < bind_slots.len()
+                                        {
+                                            let bound_val =
+                                                bind_slots
+                                                    [slot_idx * 2 + 1];
+                                            let eq =
+                                                codegen.builder.ins().icmp(
+                                                    IntCC::Equal,
+                                                    val,
+                                                    bound_val,
+                                                );
+                                            let cont = codegen
+                                                .builder
+                                                .create_block();
+                                            codegen.builder.ins().brif(
+                                                eq,
+                                                cont,
+                                                &[],
+                                                next_rule_block,
+                                                &[],
+                                            );
+                                            codegen
+                                                .builder
+                                                .switch_to_block(cont);
+                                            codegen
+                                                .builder
+                                                .seal_block(cont);
+                                        } else {
+                                            codegen
+                                                .builder
+                                                .ins()
+                                                .jump(
+                                                    next_rule_block,
+                                                    &[],
+                                                );
+                                            let unreachable = codegen
+                                                .builder
+                                                .create_block();
+                                            codegen
+                                                .builder
+                                                .switch_to_block(
+                                                    unreachable,
+                                                );
+                                            codegen
+                                                .builder
+                                                .seal_block(unreachable);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // === Evaluate RHS ===
+                        if rule_checks_passed {
+                            if !rule.rhs_has_variables {
+                                // No variables: push RHS directly as TAG_PTR
+                                let inner_ptr = rule.rhs.inner_ptr() as u64;
+                                let jit_val =
+                                    TAG_PTR | (inner_ptr & PAYLOAD_MASK);
+                                let result_val =
+                                    codegen.builder.ins().iconst(
+                                        types::I64,
+                                        jit_val as i64,
+                                    );
+                                let ctx_v = codegen.ctx_ptr();
+                                codegen.builder.ins().call(
+                                    stack_push_ref,
+                                    &[ctx_v, result_val],
+                                );
+                                let ok_signal =
+                                    codegen.builder.ins().iconst(
+                                        types::I64,
+                                        JIT_SIGNAL_OK,
+                                    );
+                                codegen.builder.ins().jump(
+                                    merge_block,
+                                    &[BlockArg::Value(ok_signal)],
+                                );
+                            } else if !bind_slots.is_empty() {
+                                // RHS has variables: call eval_with_bindings
+                                let num_bindings = bind_slots.len() / 2;
+                                let slot_size = (num_bindings * 16) as u32;
+                                let stack_slot = codegen
+                                    .builder
+                                    .create_sized_stack_slot(
+                                        StackSlotData::new(
+                                            StackSlotKind::ExplicitSlot,
+                                            slot_size,
+                                            0,
+                                        ),
+                                    );
+
+                                for i in 0..num_bindings {
+                                    let hash_val = bind_slots[i * 2];
+                                    let val = bind_slots[i * 2 + 1];
+                                    let offset = (i * 16) as i32;
+                                    codegen.builder.ins().stack_store(
+                                        hash_val,
+                                        stack_slot,
+                                        offset,
+                                    );
+                                    codegen.builder.ins().stack_store(
+                                        val,
+                                        stack_slot,
+                                        offset + 8,
+                                    );
+                                }
+
+                                let bindings_addr =
+                                    codegen.builder.ins().stack_addr(
+                                        types::I64,
+                                        stack_slot,
+                                        0,
+                                    );
+                                let rhs_inner =
+                                    rule.rhs.inner_ptr() as u64;
+                                let rhs_jit =
+                                    TAG_PTR | (rhs_inner & PAYLOAD_MASK);
+                                let rhs_val =
+                                    codegen.builder.ins().iconst(
+                                        types::I64,
+                                        rhs_jit as i64,
+                                    );
+                                let count_val =
+                                    codegen.builder.ins().iconst(
+                                        types::I64,
+                                        num_bindings as i64,
+                                    );
+                                let ctx_v = codegen.ctx_ptr();
+                                let eval_call =
+                                    codegen.builder.ins().call(
+                                        eval_with_bindings_ref,
+                                        &[
+                                            ctx_v,
+                                            rhs_val,
+                                            bindings_addr,
+                                            count_val,
+                                        ],
+                                    );
+                                let result = codegen
+                                    .builder
+                                    .inst_results(eval_call)[0];
+                                let ctx_v2 = codegen.ctx_ptr();
+                                codegen.builder.ins().call(
+                                    stack_push_ref,
+                                    &[ctx_v2, result],
+                                );
+                                let ok_signal =
+                                    codegen.builder.ins().iconst(
+                                        types::I64,
+                                        JIT_SIGNAL_OK,
+                                    );
+                                codegen.builder.ins().jump(
+                                    merge_block,
+                                    &[BlockArg::Value(ok_signal)],
+                                );
+                            } else {
+                                // No bindings extracted — fallback
+                                codegen
+                                    .builder
+                                    .ins()
+                                    .jump(site_fallback, &[]);
+                            }
+                        }
+                    } // CodegenContext borrow released here
+
+                    // Switch to next rule block
+                    if rule_idx + 1 < site.inline_rules.len() {
+                        builder.switch_to_block(next_rule_block);
+                        builder.seal_block(next_rule_block);
+                    }
+                }
+
+                // === Site fallback: FFI dispatch ===
+                builder.switch_to_block(site_fallback);
+                builder.seal_block(site_fallback);
+                builder
+                    .ins()
+                    .call(stack_push_ref, &[ctx_ptr, expr]);
+                let ip_val = builder.ins().iconst(types::I64, 0);
+                builder
+                    .ins()
+                    .call(dispatch_rules_ref, &[ctx_ptr, expr, ip_val]);
+                let bailout_sig =
+                    builder
+                        .ins()
+                        .iconst(types::I64, JIT_SIGNAL_BAILOUT);
+                builder.ins().jump(
+                    merge_block,
+                    &[BlockArg::Value(bailout_sig)],
+                );
+
+                // Wire up next_site block
+                if site_idx + 1 < sites.len() {
+                    builder.switch_to_block(next_site);
+                    builder.seal_block(next_site);
+                }
+            }
+
+            // === Fallback block: no specialized site matched ===
+            builder.switch_to_block(fallback_block);
+            builder.seal_block(fallback_block);
+            builder
+                .ins()
+                .call(stack_push_ref, &[ctx_ptr, expr]);
+            let ip_val = builder.ins().iconst(types::I64, 0);
+            builder
+                .ins()
+                .call(dispatch_rules_ref, &[ctx_ptr, expr, ip_val]);
+            let bailout_signal =
+                builder
+                    .ins()
+                    .iconst(types::I64, JIT_SIGNAL_BAILOUT);
+            builder.ins().jump(
+                merge_block,
+                &[BlockArg::Value(bailout_signal)],
+            );
+
+            // === Merge block: return signal ===
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            let return_signal = builder.block_params(merge_block)[0];
+            builder.ins().return_(&[return_signal]);
+
+            builder.finalize();
+        }
+
+        // Define and finalize
+        self.module
+            .define_function(func_id, &mut cranelift_ctx)
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to define specialized function: {}",
+                    e
+                ))
+            })?;
+
+        self.module.finalize_definitions().map_err(|e| {
+            JitError::CompilationError(format!(
+                "Failed to finalize specialized function: {}",
+                e
+            ))
+        })?;
+
+        let code_ptr = self.module.get_finalized_function(func_id);
+        Ok(code_ptr as *const ())
     }
 }
 

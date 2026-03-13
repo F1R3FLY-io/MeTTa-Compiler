@@ -299,6 +299,31 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
         return false;
     }
 
+    can_compile_opcodes(chunk)
+}
+
+/// Check if a bytecode chunk can be JIT compiled at Stage 2 level.
+///
+/// Unlike `can_compile_stage1`, this does NOT reject nondeterministic chunks.
+/// Stage 2 JIT compiles Fork/Yield/Collect/BeginNondet/EndNondet/Cut/Guard/
+/// Amb/Commit/Backtrack/Fail using native runtime functions that integrate with
+/// the dispatcher loop, avoiding the bailout path that Stage 1 would take.
+///
+/// All opcodes supported by Stage 1 are also supported by Stage 2, plus
+/// nondeterministic opcodes are compiled via FFI calls to native runtime
+/// functions (jit_runtime_fork_native, jit_runtime_yield_native, etc.).
+pub fn can_compile_stage2(chunk: &BytecodeChunk) -> bool {
+    // Stage 2 accepts nondeterministic chunks — handlers exist for all
+    // nondeterminism opcodes (Fork, Yield, Collect, BeginNondet, EndNondet,
+    // Cut, Guard, Amb, Commit, Backtrack, Fail) via native runtime FFI calls.
+    can_compile_opcodes(chunk)
+}
+
+/// Internal: check if all opcodes in the chunk are compilable.
+///
+/// Shared by both `can_compile_stage1` and `can_compile_stage2`.
+/// The nondeterminism flag check is the caller's responsibility.
+fn can_compile_opcodes(chunk: &BytecodeChunk) -> bool {
     let code = chunk.code();
     let mut offset = 0;
 

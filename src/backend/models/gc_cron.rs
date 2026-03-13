@@ -432,7 +432,7 @@ fn execute_counter_sync() {
                     page.exec_count_fetch_sub(slot_idx, count);
                     let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
                     cache.maybe_trigger_jit1(&state, new_count);
-                    cache.maybe_trigger_jit2(&state, new_count);
+                    cache.maybe_trigger_jit2(&state, new_count, None);
                     continue;
                 }
                 // Hash cached but entry removed? Fall through to slow path.
@@ -461,7 +461,7 @@ fn execute_counter_sync() {
             let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
             cache.maybe_trigger_bytecode(&value, &state, new_count);
             cache.maybe_trigger_jit1(&state, new_count);
-            cache.maybe_trigger_jit2(&state, new_count);
+            cache.maybe_trigger_jit2(&state, new_count, None);
         }
     }
 }

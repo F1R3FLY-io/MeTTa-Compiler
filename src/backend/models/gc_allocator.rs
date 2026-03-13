@@ -4106,7 +4106,7 @@ impl SlabAllocator {
                                 cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
                                 let new_count = state.execution_count.load(Ordering::Relaxed);
                                 cache.maybe_trigger_jit1(&state, new_count);
-                                cache.maybe_trigger_jit2(&state, new_count);
+                                cache.maybe_trigger_jit2(&state, new_count, None);
                                 continue;
                             }
                             // Hash cached but entry removed? Fall through to slow path.
@@ -4131,7 +4131,7 @@ impl SlabAllocator {
                         let new_count = state.execution_count.load(Ordering::Relaxed);
                         cache.maybe_trigger_bytecode(&value, &state, new_count);
                         cache.maybe_trigger_jit1(&state, new_count);
-                        cache.maybe_trigger_jit2(&state, new_count);
+                        cache.maybe_trigger_jit2(&state, new_count, None);
                     }
                 }
             }

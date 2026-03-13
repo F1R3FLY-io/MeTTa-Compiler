@@ -32,25 +32,29 @@ pub struct ArithmeticHandlerContext<'m> {
     pub numeric_abs_func_id: FuncId,
 }
 
-/// Emit a binary arithmetic operation with integer fast-path and runtime float fallback.
+/// Emit a binary arithmetic operation with integer + float fast-paths and runtime fallback.
 ///
-/// Cranelift IR structure:
+/// Three-way branching eliminates FFI calls for both Long×Long AND Float×Float:
+///
 /// ```text
 /// entry:
-///   a_tag = extract_tag(a)
-///   b_tag = extract_tag(b)
 ///   both_long = (a_tag == TAG_LONG) & (b_tag == TAG_LONG)
-///   brif both_long → int_path, runtime_path
+///   brif both_long → int_path, check_float
+///
+/// check_float:
+///   both_float = neither value is NaN-boxed (raw IEEE 754 doubles)
+///   brif both_float → float_path, runtime_path
 ///
 /// int_path:
-///   a_val = extract_long(a)
-///   b_val = extract_long(b)
-///   result = <int_op>(a_val, b_val)
-///   boxed = box_long(result)
-///   jump merge_block(boxed)
+///   result = <int_op>(extract_long(a), extract_long(b))
+///   jump merge_block(box_long(result))
+///
+/// float_path:
+///   result = <float_op>(bitcast_f64(a), bitcast_f64(b))
+///   jump merge_block(bitcast_i64(result))
 ///
 /// runtime_path:
-///   rt_result = call <runtime_func>(a, b)
+///   rt_result = call <runtime_func>(a, b)  // mixed types
 ///   jump merge_block(rt_result)
 ///
 /// merge_block(result):
@@ -61,6 +65,7 @@ fn emit_binary_arith_with_fallback<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     runtime_func_id: FuncId,
     int_op: impl FnOnce(&mut CodegenContext<'a, 'b>, Value, Value) -> Value,
+    float_op: impl FnOnce(&mut CodegenContext<'a, 'b>, Value, Value) -> Value,
     offset: usize,
 ) -> JitResult<()> {
     let b = codegen.pop()?;
@@ -79,6 +84,8 @@ fn emit_binary_arith_with_fallback<'a, 'b>(
 
     // Create blocks
     let int_path = codegen.builder.create_block();
+    let check_float = codegen.builder.create_block();
+    let float_path = codegen.builder.create_block();
     let runtime_path = codegen.builder.create_block();
     let merge_block = codegen.builder.create_block();
 
@@ -87,11 +94,11 @@ fn emit_binary_arith_with_fallback<'a, 'b>(
         .builder
         .append_block_param(merge_block, types::I64);
 
-    // Branch: both long → int_path, else → runtime_path
+    // Branch: both long → int_path, else → check_float
     codegen
         .builder
         .ins()
-        .brif(both_long, int_path, &[], runtime_path, &[]);
+        .brif(both_long, int_path, &[], check_float, &[]);
 
     // === Integer fast-path ===
     codegen.builder.switch_to_block(int_path);
@@ -104,7 +111,33 @@ fn emit_binary_arith_with_fallback<'a, 'b>(
         .ins()
         .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-    // === Runtime float fallback ===
+    // === Check both float ===
+    // A value is a float if it's NOT a NaN-boxed tagged value.
+    // NaN-boxed values have (val & QNAN_BASE) == QNAN_BASE where QNAN_BASE = TAG_LONG.
+    codegen.builder.switch_to_block(check_float);
+    let qnan_base = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+    let a_qnan = codegen.builder.ins().band(a, qnan_base);
+    let b_qnan = codegen.builder.ins().band(b, qnan_base);
+    let a_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, a_qnan, qnan_base);
+    let b_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, b_qnan, qnan_base);
+    let both_float = codegen.builder.ins().band(a_is_float, b_is_float);
+    codegen
+        .builder
+        .ins()
+        .brif(both_float, float_path, &[], runtime_path, &[]);
+
+    // === Float fast-path ===
+    codegen.builder.switch_to_block(float_path);
+    let a_f64 = codegen.bitcast_to_f64(a);
+    let b_f64 = codegen.bitcast_to_f64(b);
+    let float_result = float_op(codegen, a_f64, b_f64);
+    let float_as_i64 = codegen.bitcast_from_f64(float_result);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(float_as_i64)]);
+
+    // === Runtime fallback (mixed types) ===
     codegen.builder.switch_to_block(runtime_path);
     let func_ref = ctx
         .module
@@ -118,8 +151,9 @@ fn emit_binary_arith_with_fallback<'a, 'b>(
 
     // === Merge ===
     codegen.builder.switch_to_block(merge_block);
-    // Seal the blocks
     codegen.builder.seal_block(int_path);
+    codegen.builder.seal_block(check_float);
+    codegen.builder.seal_block(float_path);
     codegen.builder.seal_block(runtime_path);
     codegen.builder.seal_block(merge_block);
 
@@ -131,12 +165,13 @@ fn emit_binary_arith_with_fallback<'a, 'b>(
     Ok(())
 }
 
-/// Emit a unary arithmetic operation with integer fast-path and runtime float fallback.
+/// Emit a unary arithmetic operation with integer + float fast-paths and runtime fallback.
 fn emit_unary_arith_with_fallback<'a, 'b>(
     ctx: &mut ArithmeticHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
     runtime_func_id: FuncId,
     int_op: impl FnOnce(&mut CodegenContext<'a, 'b>, Value) -> Value,
+    float_op: impl FnOnce(&mut CodegenContext<'a, 'b>, Value) -> Value,
     _offset: usize,
 ) -> JitResult<()> {
     let a = codegen.pop()?;
@@ -148,6 +183,8 @@ fn emit_unary_arith_with_fallback<'a, 'b>(
     let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
 
     let int_path = codegen.builder.create_block();
+    let check_float = codegen.builder.create_block();
+    let float_path = codegen.builder.create_block();
     let runtime_path = codegen.builder.create_block();
     let merge_block = codegen.builder.create_block();
     codegen
@@ -157,7 +194,7 @@ fn emit_unary_arith_with_fallback<'a, 'b>(
     codegen
         .builder
         .ins()
-        .brif(a_is_long, int_path, &[], runtime_path, &[]);
+        .brif(a_is_long, int_path, &[], check_float, &[]);
 
     // === Integer fast-path ===
     codegen.builder.switch_to_block(int_path);
@@ -169,7 +206,27 @@ fn emit_unary_arith_with_fallback<'a, 'b>(
         .ins()
         .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-    // === Runtime float fallback ===
+    // === Check float ===
+    codegen.builder.switch_to_block(check_float);
+    let qnan_base = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+    let a_qnan = codegen.builder.ins().band(a, qnan_base);
+    let a_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, a_qnan, qnan_base);
+    codegen
+        .builder
+        .ins()
+        .brif(a_is_float, float_path, &[], runtime_path, &[]);
+
+    // === Float fast-path ===
+    codegen.builder.switch_to_block(float_path);
+    let a_f64 = codegen.bitcast_to_f64(a);
+    let float_result = float_op(codegen, a_f64);
+    let float_as_i64 = codegen.bitcast_from_f64(float_result);
+    codegen
+        .builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(float_as_i64)]);
+
+    // === Runtime fallback ===
     codegen.builder.switch_to_block(runtime_path);
     let func_ref = ctx
         .module
@@ -184,6 +241,8 @@ fn emit_unary_arith_with_fallback<'a, 'b>(
     // === Merge ===
     codegen.builder.switch_to_block(merge_block);
     codegen.builder.seal_block(int_path);
+    codegen.builder.seal_block(check_float);
+    codegen.builder.seal_block(float_path);
     codegen.builder.seal_block(runtime_path);
     codegen.builder.seal_block(merge_block);
 
@@ -208,6 +267,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 codegen,
                 func_id,
                 |cg, a, b| cg.builder.ins().iadd(a, b),
+                |cg, a, b| cg.builder.ins().fadd(a, b),
                 offset,
             )
         }
@@ -219,6 +279,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 codegen,
                 func_id,
                 |cg, a, b| cg.builder.ins().isub(a, b),
+                |cg, a, b| cg.builder.ins().fsub(a, b),
                 offset,
             )
         }
@@ -230,12 +291,13 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 codegen,
                 func_id,
                 |cg, a, b| cg.builder.ins().imul(a, b),
+                |cg, a, b| cg.builder.ins().fmul(a, b),
                 offset,
             )
         }
 
         Opcode::Div => {
-            // Division needs zero-check in int path, runtime handles its own
+            // Division needs zero-check in int path; float div handles 0.0 natively (→ ±Inf)
             let func_id = ctx.numeric_div_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
@@ -251,6 +313,8 @@ pub fn compile_arithmetic_op<'a, 'b>(
             let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
 
             let int_path = codegen.builder.create_block();
+            let check_float = codegen.builder.create_block();
+            let float_path = codegen.builder.create_block();
             let runtime_path = codegen.builder.create_block();
             let merge_block = codegen.builder.create_block();
             codegen
@@ -260,7 +324,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
             codegen
                 .builder
                 .ins()
-                .brif(both_long, int_path, &[], runtime_path, &[]);
+                .brif(both_long, int_path, &[], check_float, &[]);
 
             // === Integer fast-path with zero-check ===
             codegen.builder.switch_to_block(int_path);
@@ -274,7 +338,31 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 .ins()
                 .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-            // === Runtime float fallback ===
+            // === Check both float ===
+            codegen.builder.switch_to_block(check_float);
+            let qnan_base = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+            let a_qnan = codegen.builder.ins().band(a, qnan_base);
+            let b_qnan = codegen.builder.ins().band(b, qnan_base);
+            let a_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, a_qnan, qnan_base);
+            let b_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, b_qnan, qnan_base);
+            let both_float = codegen.builder.ins().band(a_is_float, b_is_float);
+            codegen
+                .builder
+                .ins()
+                .brif(both_float, float_path, &[], runtime_path, &[]);
+
+            // === Float fast-path (IEEE 754 div handles 0.0 → ±Inf natively) ===
+            codegen.builder.switch_to_block(float_path);
+            let a_f64 = codegen.bitcast_to_f64(a);
+            let b_f64 = codegen.bitcast_to_f64(b);
+            let float_result = codegen.builder.ins().fdiv(a_f64, b_f64);
+            let float_as_i64 = codegen.bitcast_from_f64(float_result);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(float_as_i64)]);
+
+            // === Runtime fallback (mixed types) ===
             codegen.builder.switch_to_block(runtime_path);
             let func_ref = ctx
                 .module
@@ -289,6 +377,8 @@ pub fn compile_arithmetic_op<'a, 'b>(
             // === Merge ===
             codegen.builder.switch_to_block(merge_block);
             codegen.builder.seal_block(int_path);
+            codegen.builder.seal_block(check_float);
+            codegen.builder.seal_block(float_path);
             codegen.builder.seal_block(runtime_path);
             codegen.builder.seal_block(merge_block);
 
@@ -298,7 +388,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
         }
 
         Opcode::Mod => {
-            // Modulo needs zero-check in int path, runtime handles its own
+            // Modulo needs zero-check in int path; float uses Cranelift frem (fmod)
             let func_id = ctx.numeric_mod_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
@@ -314,6 +404,8 @@ pub fn compile_arithmetic_op<'a, 'b>(
             let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
 
             let int_path = codegen.builder.create_block();
+            let check_float = codegen.builder.create_block();
+            let float_path = codegen.builder.create_block();
             let runtime_path = codegen.builder.create_block();
             let merge_block = codegen.builder.create_block();
             codegen
@@ -323,7 +415,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
             codegen
                 .builder
                 .ins()
-                .brif(both_long, int_path, &[], runtime_path, &[]);
+                .brif(both_long, int_path, &[], check_float, &[]);
 
             // === Integer fast-path with zero-check ===
             codegen.builder.switch_to_block(int_path);
@@ -337,7 +429,27 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 .ins()
                 .jump(merge_block, &[BlockArg::Value(boxed)]);
 
-            // === Runtime float fallback ===
+            // === Check both float ===
+            codegen.builder.switch_to_block(check_float);
+            let qnan_base = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+            let a_qnan = codegen.builder.ins().band(a, qnan_base);
+            let b_qnan = codegen.builder.ins().band(b, qnan_base);
+            let a_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, a_qnan, qnan_base);
+            let b_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, b_qnan, qnan_base);
+            let both_float = codegen.builder.ins().band(a_is_float, b_is_float);
+            codegen
+                .builder
+                .ins()
+                .brif(both_float, float_path, &[], runtime_path, &[]);
+
+            // === Float fast-path ===
+            codegen.builder.switch_to_block(float_path);
+            // Note: Cranelift doesn't have a native `frem` instruction on all targets.
+            // Use the runtime for float mod to ensure correct IEEE 754 semantics.
+            // Fall through to runtime for now — revisit if profiling shows this matters.
+            codegen.builder.ins().jump(runtime_path, &[]);
+
+            // === Runtime fallback ===
             codegen.builder.switch_to_block(runtime_path);
             let func_ref = ctx
                 .module
@@ -352,6 +464,8 @@ pub fn compile_arithmetic_op<'a, 'b>(
             // === Merge ===
             codegen.builder.switch_to_block(merge_block);
             codegen.builder.seal_block(int_path);
+            codegen.builder.seal_block(check_float);
+            codegen.builder.seal_block(float_path);
             codegen.builder.seal_block(runtime_path);
             codegen.builder.seal_block(merge_block);
 
@@ -367,6 +481,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 codegen,
                 func_id,
                 |cg, a| cg.builder.ins().ineg(a),
+                |cg, a| cg.builder.ins().fneg(a),
                 offset,
             )
         }
@@ -387,13 +502,14 @@ pub fn compile_arithmetic_op<'a, 'b>(
                     let negated = cg.builder.ins().ineg(a);
                     cg.builder.ins().select(is_neg, negated, a)
                 },
+                |cg, a| cg.builder.ins().fabs(a),
                 offset,
             )
         }
 
         Opcode::FloorDiv => {
             // FloorDiv: for integers, same as truncated division
-            // Use numeric_div runtime for float fallback
+            // For floats, use fdiv then floor
             let func_id = ctx.numeric_div_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
@@ -409,6 +525,8 @@ pub fn compile_arithmetic_op<'a, 'b>(
             let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
 
             let int_path = codegen.builder.create_block();
+            let check_float = codegen.builder.create_block();
+            let float_path = codegen.builder.create_block();
             let runtime_path = codegen.builder.create_block();
             let merge_block = codegen.builder.create_block();
             codegen
@@ -418,7 +536,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
             codegen
                 .builder
                 .ins()
-                .brif(both_long, int_path, &[], runtime_path, &[]);
+                .brif(both_long, int_path, &[], check_float, &[]);
 
             codegen.builder.switch_to_block(int_path);
             let a_val = codegen.extract_long(a);
@@ -430,6 +548,31 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 .builder
                 .ins()
                 .jump(merge_block, &[BlockArg::Value(boxed)]);
+
+            // === Check both float ===
+            codegen.builder.switch_to_block(check_float);
+            let qnan_base = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
+            let a_qnan = codegen.builder.ins().band(a, qnan_base);
+            let b_qnan = codegen.builder.ins().band(b, qnan_base);
+            let a_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, a_qnan, qnan_base);
+            let b_is_float = codegen.builder.ins().icmp(IntCC::NotEqual, b_qnan, qnan_base);
+            let both_float = codegen.builder.ins().band(a_is_float, b_is_float);
+            codegen
+                .builder
+                .ins()
+                .brif(both_float, float_path, &[], runtime_path, &[]);
+
+            // === Float fast-path: fdiv then floor ===
+            codegen.builder.switch_to_block(float_path);
+            let a_f64 = codegen.bitcast_to_f64(a);
+            let b_f64 = codegen.bitcast_to_f64(b);
+            let div_result = codegen.builder.ins().fdiv(a_f64, b_f64);
+            let floored = codegen.builder.ins().floor(div_result);
+            let float_as_i64 = codegen.bitcast_from_f64(floored);
+            codegen
+                .builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(float_as_i64)]);
 
             codegen.builder.switch_to_block(runtime_path);
             let func_ref = ctx
@@ -444,6 +587,8 @@ pub fn compile_arithmetic_op<'a, 'b>(
 
             codegen.builder.switch_to_block(merge_block);
             codegen.builder.seal_block(int_path);
+            codegen.builder.seal_block(check_float);
+            codegen.builder.seal_block(float_path);
             codegen.builder.seal_block(runtime_path);
             codegen.builder.seal_block(merge_block);
 

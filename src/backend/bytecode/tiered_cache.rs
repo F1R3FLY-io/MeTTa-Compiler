@@ -376,6 +376,13 @@ pub struct ExprCompilationState {
     /// V8 equivalent: FeedbackVector (per-function IC slot array).
     /// HotSpot equivalent: MethodData (MDO).
     pub runtime_profile: std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>,
+
+    /// Phase 9: Deoptimization guard for JIT Stage 2 specialized code.
+    ///
+    /// If present, the HybridExecutor checks the epoch before calling JIT2.
+    /// When the RULE_EPOCH has changed since compilation, the JIT2 code is
+    /// stale and must not be called — fall back to JIT1 or bytecode.
+    deopt_guard: parking_lot::Mutex<Option<super::jit::compiler::specializer::DeoptimizationGuard>>,
 }
 
 impl ExprCompilationState {
@@ -394,6 +401,7 @@ impl ExprCompilationState {
             runtime_profile: std::sync::Arc::new(parking_lot::Mutex::new(
                 super::runtime_profile::RuntimeTypeProfile::new(),
             )),
+            deopt_guard: parking_lot::Mutex::new(None),
         }
     }
 
@@ -597,6 +605,77 @@ impl ExprCompilationState {
             )
             .ok();
     }
+
+    /// Store a deoptimization guard after successful JIT Stage 2 compilation.
+    ///
+    /// The guard captures the RULE_EPOCH and chunk hash at specialization time.
+    /// Before executing JIT2 code, the HybridExecutor checks `check_deopt_guard()`
+    /// to verify the guard is still valid. If not, execution falls back to JIT1.
+    pub fn set_deopt_guard(
+        &self,
+        guard: super::jit::compiler::specializer::DeoptimizationGuard,
+    ) {
+        *self.deopt_guard.lock() = Some(guard);
+    }
+
+    /// Get the deoptimization guard's expected epoch, if any.
+    ///
+    /// Returns `Some(epoch)` if a deopt guard is set (JIT2 was specialized),
+    /// `None` if no guard is set (JIT2 was compiled generically).
+    pub fn deopt_epoch(&self) -> Option<u64> {
+        let guard = self.deopt_guard.lock();
+        guard.as_ref().map(|g| g.expected_epoch)
+    }
+
+    /// Check if the JIT Stage 2 deoptimization guard is still valid.
+    ///
+    /// Returns `true` if:
+    ///   - No deopt guard is set (JIT2 was compiled without specialization), OR
+    ///   - The guard's expected_epoch matches the current RULE_EPOCH.
+    ///
+    /// Returns `false` if the RULE_EPOCH has advanced past the guard's epoch,
+    /// meaning rules have been added/removed since JIT2 was compiled and the
+    /// specialized dispatch assumptions may be invalid.
+    #[inline]
+    pub fn check_deopt_guard(&self) -> bool {
+        let guard = self.deopt_guard.lock();
+        match guard.as_ref() {
+            None => true,
+            Some(g) => g.is_valid(),
+        }
+    }
+
+    /// Invalidate JIT Stage 2 to allow recompilation after deoptimization.
+    ///
+    /// This resets the JIT2 status from Ready back to NotStarted,
+    /// clears the deopt guard, and clears the runtime profile so fresh
+    /// profiling data can be collected for the new rule configuration.
+    ///
+    /// The next execution will fall back to JIT1 (or bytecode), collect
+    /// fresh profile data during the profiling window, and eventually
+    /// trigger a new JIT2 compilation with updated specialization.
+    pub fn invalidate_jit2(&self) {
+        // Reset JIT2 status to allow recompilation.
+        // CAS from Ready → NotStarted. If it's in another state (Compiling, Failed),
+        // we leave it alone — a concurrent compilation will discover the epoch mismatch.
+        self.jit2_status
+            .compare_exchange(
+                TierStatusKind::Ready as u8,
+                TierStatusKind::NotStarted as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .ok();
+
+        // Clear the stale deopt guard
+        *self.deopt_guard.lock() = None;
+
+        // Reset the runtime profile to collect fresh data for the new rule configuration.
+        // This ensures the next JIT2 compilation uses profile data that reflects the
+        // current rules, not the stale rules.
+        let mut profile = self.runtime_profile.lock();
+        *profile = super::runtime_profile::RuntimeTypeProfile::new();
+    }
 }
 
 impl std::fmt::Debug for ExprCompilationState {
@@ -632,6 +711,19 @@ pub enum ExecutionTier {
 pub struct TieredCache {
     /// Map from expression hash to compilation state
     pub(crate) entries: DashMap<u64, Arc<ExprCompilationState>, IdentityU64BuildHasher>,
+
+    /// Structural hash → shared counter for threshold decisions.
+    ///
+    /// Structural hashing normalizes variable names (De Bruijn indexing),
+    /// so `(f $__fr_42_x)` and `(f $__fr_99_a)` share the same counter.
+    /// This allows execution counts to accumulate across freshening epochs,
+    /// enabling tier transitions for patterns that would otherwise appear
+    /// to execute only once per freshened variant.
+    ///
+    /// The `entries` DashMap must remain keyed by exact hash because each
+    /// `ExprCompilationState` owns a compiled `BytecodeChunk` whose constant
+    /// pool stores specific variable names.
+    structural_counters: DashMap<u64, AtomicU32, IdentityU64BuildHasher>,
 
     /// Threshold for bytecode compilation
     pub bytecode_threshold: u32,
@@ -792,6 +884,7 @@ impl TieredCache {
     pub fn new() -> Self {
         Self {
             entries: DashMap::with_hasher(IdentityU64BuildHasher),
+            structural_counters: DashMap::with_hasher(IdentityU64BuildHasher),
             bytecode_threshold: BYTECODE_THRESHOLD,
             jit1_threshold: JIT1_THRESHOLD,
             jit2_threshold: JIT2_THRESHOLD,
@@ -848,6 +941,7 @@ impl TieredCache {
     pub fn with_thresholds(bytecode: u32, jit1: u32, jit2: u32) -> Self {
         Self {
             entries: DashMap::with_hasher(IdentityU64BuildHasher),
+            structural_counters: DashMap::with_hasher(IdentityU64BuildHasher),
             bytecode_threshold: bytecode,
             jit1_threshold: jit1,
             jit2_threshold: jit2,
@@ -930,23 +1024,57 @@ impl TieredCache {
     /// Returns the compilation state for dispatch decisions.
     /// Every execution is tracked and triggers bytecode compilation at threshold.
     pub fn record_execution(&self, expr: &MettaValue) -> Arc<ExprCompilationState> {
+        self.record_execution_inner(expr, None)
+    }
+
+    /// Record an execution with environment access for JIT2 specialization.
+    ///
+    /// Like `record_execution`, but provides the environment to `maybe_trigger_jit2`
+    /// so that `extract_rule_data_for_specialization()` can snapshot rule data
+    /// from the `RuleIndex` for profile-guided specialization.
+    pub fn record_execution_with_env(
+        &self,
+        expr: &MettaValue,
+        env: &MettaEnvironment,
+    ) -> Arc<ExprCompilationState> {
+        self.record_execution_inner(expr, Some(env))
+    }
+
+    fn record_execution_inner(
+        &self,
+        expr: &MettaValue,
+        env: Option<&MettaEnvironment>,
+    ) -> Arc<ExprCompilationState> {
         // Ensure tiered cache roots are registered with GC (idempotent, OnceLock-guarded)
         ensure_tiered_cache_roots_registered();
 
-        // Get or create state for this expression
+        // Get or create state for this expression (keyed by exact hash)
         let state = self.get_or_create_state(expr);
 
-        // Atomically increment execution count
-        let count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
+        // Atomically increment per-expression execution count
+        let _exact_count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+        // Increment the structural counter (normalizes variable names via De Bruijn indexing).
+        // This counter accumulates across freshening epochs so that structurally-identical
+        // patterns like (f $__fr_42_x) and (f $__fr_99_a) share the same count.
+        let structural_hash = super::cache::hash_structural(expr);
+        let structural_count = self
+            .structural_counters
+            .entry(structural_hash)
+            .or_insert_with(|| AtomicU32::new(0))
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
 
         // Update total execution stats
         #[cfg(feature = "track-stats")]
         self.total_executions.fetch_add(1, Ordering::Relaxed);
 
-        // Check for tier transitions
-        self.maybe_trigger_bytecode(expr, &state, count);
-        self.maybe_trigger_jit1(&state, count);
-        self.maybe_trigger_jit2(&state, count);
+        // Use the structural count for tier transition decisions.
+        // This ensures that frequently-evaluated patterns reach compilation
+        // thresholds even when each freshened variant appears only once.
+        self.maybe_trigger_bytecode(expr, &state, structural_count);
+        self.maybe_trigger_jit1(&state, structural_count);
+        self.maybe_trigger_jit2(&state, structural_count, env);
 
         state
     }
@@ -1221,7 +1349,12 @@ impl TieredCache {
     /// This ensures JIT1 profile data (type feedback, branch frequencies)
     /// is available before the aggressive optimizing compiler runs.
     /// (V8 equivalent: Turbofan requires Maglev to have run and collected ICs.)
-    pub(crate) fn maybe_trigger_jit2(&self, state: &Arc<ExprCompilationState>, count: u32) {
+    pub(crate) fn maybe_trigger_jit2(
+        &self,
+        state: &Arc<ExprCompilationState>,
+        count: u32,
+        env: Option<&MettaEnvironment>,
+    ) {
         // Check if we've reached the threshold
         if count < self.jit2_threshold {
             return;
@@ -1278,34 +1411,43 @@ impl TieredCache {
         // Clone state for background task
         let state_clone = Arc::clone(state);
 
-        // JIT Stage 2 compilation closure
-        let jit_compile = move || {
-            // Phase 8c: Mature profile available for aggressive JIT2 optimizations:
-            // - Guard elimination for guards that never fail
-            // - Dead branch elimination for never-taken branches
-            // - Rule inlining for high-frequency rules
-            let _profile = profile_snapshot;
+        // Phase 9: Analyze profile and build specialization plan on the calling thread
+        // (before spawning background task) so we have access to the environment.
+        let specialization_plan = {
+            use super::jit::compiler::specializer;
+            let mut plan = specializer::analyze_profile(&profile_snapshot, 50)
+                .filter(|p| p.is_worthwhile());
 
-            // Split nondeterminism check from opcode check for failure reason tracking
-            if chunk.has_nondeterminism() {
-                if is_jit_debug() {
-                    eprintln!(
-                        "[JIT2] Rejected (nondeterminism): chunk '{}' len={}",
-                        chunk.name(),
-                        chunk.len()
-                    );
+            // Phase 9 wiring: Extract rule data from the environment for hot dispatch
+            // sites identified during profiling. This populates specialized_dispatch_sites
+            // with the StructuralMatcher checks and RHS bodies needed by compile_specialized().
+            if let Some(ref mut p) = plan {
+                if let Some(env) = env {
+                    if !profile_snapshot.dispatch_sites.is_empty() {
+                        let sites = specializer::extract_rule_data_for_specialization(
+                            &profile_snapshot.dispatch_sites,
+                            env,
+                            p.rule_epoch,
+                        );
+                        p.specialized_dispatch_sites = sites;
+                    }
                 }
-                state_clone.set_jit2_failed();
-                #[cfg(feature = "track-stats")]
-                {
-                    let cache = global_tiered_cache();
-                    cache.jit2_failures_nondeterminism.fetch_add(1, Ordering::Relaxed);
-                    cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
-                }
-                return;
             }
 
-            if !JitCompiler::can_compile_stage1(&chunk) {
+            plan
+        };
+
+        // Capture the current rule epoch for the deopt guard
+        let current_rule_epoch = crate::backend::environment::rule_management::RULE_EPOCH
+            .load(Ordering::Acquire);
+        let chunk_hash = state.expr_hash;
+
+        // JIT Stage 2 compilation closure
+        let jit_compile = move || {
+            // Stage 2 accepts nondeterministic chunks (Fork/Yield/Collect/etc.)
+            // via native runtime FFI calls. Use can_compile_stage2 which only
+            // checks opcode support, not nondeterminism flags.
+            if !JitCompiler::can_compile_stage2(&chunk) {
                 if is_jit_debug() {
                     eprintln!(
                         "[JIT2] Rejected (unsupported opcode): chunk '{}' len={}",
@@ -1323,34 +1465,60 @@ impl TieredCache {
                 return;
             }
 
-            // Create JIT compiler and compile
-            // TODO: Add Stage 2-specific optimizations (more aggressive inlining, etc.)
+            // Phase 9: Try profile-guided specialization, fall back to generic JIT2
             match JitCompiler::new() {
-                Ok(mut compiler) => match compiler.compile(&chunk) {
-                    Ok(ptr) => {
-                        let code = NativeCode {
-                            ptr,
-                            code_size: chunk.len() * 10, // Stage 2 generates more code
-                        };
-                        state_clone.set_jit2_ready(Arc::new(code));
-                        #[cfg(feature = "track-stats")]
-                        global_tiered_cache()
-                            .jit2_compilations_completed
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(e) => {
+                Ok(mut compiler) => {
+                    let compile_result = if let Some(ref plan) = specialization_plan {
                         if is_jit_debug() {
-                            eprintln!("[JIT2] Compile failed for '{}': {:?}", chunk.name(), e);
+                            eprintln!(
+                                "[JIT2] Specializing '{}': {} dispatch sites, quality={:.2}",
+                                chunk.name(),
+                                plan.specialized_dispatch_sites.len(),
+                                plan.quality_score
+                            );
                         }
-                        state_clone.set_jit2_failed();
-                        #[cfg(feature = "track-stats")]
-                        {
-                            let cache = global_tiered_cache();
-                            cache.jit2_failures_codegen.fetch_add(1, Ordering::Relaxed);
-                            cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                        compiler.compile_specialized(&chunk, plan)
+                    } else {
+                        // No specialization opportunities — generic JIT2
+                        compiler.compile(&chunk)
+                    };
+
+                    match compile_result {
+                        Ok(ptr) => {
+                            let code = NativeCode {
+                                ptr,
+                                code_size: chunk.len() * 15, // Stage 2 generates more code
+                            };
+                            state_clone.set_jit2_ready(Arc::new(code));
+
+                            // Store deoptimization guard if we used specialization
+                            if specialization_plan.is_some() {
+                                use super::jit::compiler::specializer::DeoptimizationGuard;
+                                state_clone.set_deopt_guard(DeoptimizationGuard {
+                                    expected_epoch: current_rule_epoch,
+                                    chunk_hash,
+                                });
+                            }
+
+                            #[cfg(feature = "track-stats")]
+                            global_tiered_cache()
+                                .jit2_compilations_completed
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            if is_jit_debug() {
+                                eprintln!("[JIT2] Compile failed for '{}': {:?}", chunk.name(), e);
+                            }
+                            state_clone.set_jit2_failed();
+                            #[cfg(feature = "track-stats")]
+                            {
+                                let cache = global_tiered_cache();
+                                cache.jit2_failures_codegen.fetch_add(1, Ordering::Relaxed);
+                                cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
-                },
+                }
                 Err(e) => {
                     if is_jit_debug() {
                         eprintln!("[JIT2] Compiler init failed: {:?}", e);
@@ -1391,7 +1559,12 @@ impl TieredCache {
 
             // Check from highest to lowest tier
             if state.jit2_status() == TierStatusKind::Ready {
-                return ExecutionTier::JitStage2;
+                if state.check_deopt_guard() {
+                    return ExecutionTier::JitStage2;
+                }
+                // Deopt guard failed — rules changed since JIT2 compilation.
+                // Invalidate to allow recompilation with fresh profile data.
+                state.invalidate_jit2();
             }
             if state.jit1_status() == TierStatusKind::Ready {
                 return ExecutionTier::JitStage1;
@@ -1750,12 +1923,17 @@ pub fn try_sub_expr_dispatch(
     // Cascade: JIT Stage 2 > JIT Stage 1 > Bytecode VM
     // env.clone() is deferred to here — only when a tier actually dispatches.
     if state.jit2_status() == TierStatusKind::Ready {
-        if let Some(code) = state.jit2_code() {
-            if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
-                #[cfg(feature = "track-stats")]
-                cache.record_tier_execution(ExecutionTier::JitStage2);
-                return Some((results, new_env));
+        if state.check_deopt_guard() {
+            if let Some(code) = state.jit2_code() {
+                if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                    #[cfg(feature = "track-stats")]
+                    cache.record_tier_execution(ExecutionTier::JitStage2);
+                    return Some((results, new_env));
+                }
             }
+        } else {
+            // Rules changed since JIT2 was compiled — invalidate for recompilation
+            state.invalidate_jit2();
         }
     }
     if state.jit1_status() == TierStatusKind::Ready {
@@ -1804,12 +1982,17 @@ pub fn try_sub_expr_dispatch_with_hash(
     // Cascade: JIT Stage 2 > JIT Stage 1 > Bytecode VM
     // env.clone() deferred to dispatch site — only when a tier is actually invoked.
     if state.jit2_status() == TierStatusKind::Ready {
-        if let Some(code) = state.jit2_code() {
-            if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
-                #[cfg(feature = "track-stats")]
-                cache.record_tier_execution(ExecutionTier::JitStage2);
-                return Some((results, new_env));
+        if state.check_deopt_guard() {
+            if let Some(code) = state.jit2_code() {
+                if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
+                    #[cfg(feature = "track-stats")]
+                    cache.record_tier_execution(ExecutionTier::JitStage2);
+                    return Some((results, new_env));
+                }
             }
+        } else {
+            // Rules changed since JIT2 was compiled — invalidate for recompilation
+            state.invalidate_jit2();
         }
     }
     if state.jit1_status() == TierStatusKind::Ready {
@@ -1848,9 +2031,39 @@ fn dispatch_jit(
     let factory = global_factory();
     let chunk = state.bytecode_chunk().ok_or(())?;
     let mut executor = HybridExecutor::new();
-    executor
+
+    // Phase 9: Enable dispatch site profiling during the JIT1→JIT2 window.
+    // When the execution count is between HOT_THRESHOLD (200) and STAGE2_THRESHOLD (2000),
+    // JIT Stage 1 code is running and we collect rule match frequencies for Stage 2
+    // specialization. We increment the Arc strong count so the profile stays alive
+    // during execution; the Arc::from_raw at the end restores the original count.
+    let count = state.count();
+    let profiling_active = count >= super::jit::profile::HOT_THRESHOLD as u32
+        && count < super::jit::STAGE2_THRESHOLD
+        && state.jit2_status() != TierStatusKind::Ready;
+    let profile_raw_ptr = if profiling_active {
+        let profile_arc = std::sync::Arc::clone(&state.runtime_profile);
+        let ptr = std::sync::Arc::into_raw(profile_arc) as *mut ();
+        unsafe { executor.set_profile_ptr(ptr); }
+        ptr
+    } else {
+        std::ptr::null_mut()
+    };
+
+    let result = executor
         .execute_jit_arena_with_env(&chunk, native_ptr, allocator, &factory, env)
-        .map_err(|_| ())
+        .map_err(|_| ());
+
+    // Reclaim the Arc we leaked for profiling
+    if !profile_raw_ptr.is_null() {
+        unsafe {
+            let _ = std::sync::Arc::from_raw(
+                profile_raw_ptr as *const parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>
+            );
+        }
+    }
+
+    result
 }
 
 // =============================================================================

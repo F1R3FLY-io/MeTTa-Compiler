@@ -22,6 +22,7 @@ pub(crate) mod step;
 pub mod trampoline;
 pub(crate) mod type_fixpoint;
 pub(crate) mod types_generic;
+pub mod wam;
 
 #[cfg(test)]
 mod arena_tests;
@@ -194,7 +195,7 @@ fn eval_inner_with_trace(
         set_thread_trace_collector, clear_thread_trace_collector,
     };
 
-    let compilation_state = global_tiered_cache().record_execution(&value);
+    let compilation_state = global_tiered_cache().record_execution_with_env(&value, &env);
     let execution_count = compilation_state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
     let expr_hash = compilation_state.expr_hash;
 
@@ -356,7 +357,7 @@ fn eval_inner(
 
     // Record execution in arena tiered cache
     // This triggers background bytecode and JIT compilation at thresholds
-    let compilation_state = global_tiered_cache().record_execution(&value);
+    let compilation_state = global_tiered_cache().record_execution_with_env(&value, &env);
 
     // Check if this expression can be compiled to bytecode (pure expressions)
     if can_compile(&value) {
@@ -461,6 +462,13 @@ fn execute_jit_arena_with_env(
 
     // Create hybrid executor and run in arena mode with environment
     let mut executor = HybridExecutor::new();
+
+    // Phase 9: Set deoptimization epoch from the compilation state's deopt guard.
+    // This propagates to JitContext.deopt_expected_epoch for FFI runtime functions.
+    if let Some(epoch) = state.deopt_epoch() {
+        executor.set_deopt_epoch(epoch);
+    }
+
     executor
         .execute_jit_arena_with_env(&chunk, native_ptr, allocator, &factory, env)
         .map_err(|_| ())

@@ -61,6 +61,19 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
         GenericBindings::Empty
     }
 
+    /// Create bindings pre-sized for the expected number of entries.
+    ///
+    /// Returns `Empty` for 0, avoids reallocation for known sizes.
+    #[inline]
+    pub fn with_capacity(n: usize) -> Self {
+        match n {
+            0 => GenericBindings::Empty,
+            // For 1, we'll upgrade to Single on the first insert
+            // For 2+, pre-allocate the SmallVec
+            _ => GenericBindings::Small(SmallVec::with_capacity(n)),
+        }
+    }
+
     /// Get a binding by name
     #[inline]
     pub fn get(&self, name: &str) -> Option<&V> {

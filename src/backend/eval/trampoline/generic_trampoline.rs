@@ -1080,10 +1080,34 @@ where
                     continue;
                 }
 
+                // Phase 6 remediation: Check operator cache for WAM fully-evaluable
+                // fast path. If the expression's operator has WAM code that fully
+                // evaluates, skip eval_memo hash entirely — WAM re-execution is
+                // cheaper than hashing (~700 cycles saved per evaluation).
+                let wam_fast_path = if is_sexpr
+                    && std::any::TypeId::of::<C::Value>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                {
+                    value.as_sexpr()
+                        .and_then(|items| items.first())
+                        .and_then(|h| h.as_atom())
+                        .and_then(|head| {
+                            let arity = value.as_sexpr()
+                                .map(|i| i.len().saturating_sub(1))
+                                .unwrap_or(0);
+                            super::dispatch_hints::operator_cache_get(head, arity)
+                        })
+                        .map(|entry| entry.wam_fully_evaluable)
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
-                let memo_hash = if is_sexpr
+                // Phase 6 remediation: skip hash for wam_fully_evaluable operators.
+                let memo_hash = if !wam_fast_path && is_sexpr
                     && std::any::TypeId::of::<C::Value>()
                         == std::any::TypeId::of::<crate::backend::models::MettaValue>()
                     && should_memoize(&value)
@@ -1431,7 +1455,7 @@ where
                     // Evaluate rule matches with unevaluated arguments (lazy evaluation)
                     // Note: matches are now in generic type (V, GenericBindings<V>, Option<V>)
                     // Phase 8.7: Prune matches whose rhs_type is incompatible with expected_type
-                    GenericEvalStep::EvalRuleMatchesLazy { mut matches, env, depth } => {
+                    GenericEvalStep::EvalRuleMatchesLazy { mut matches, env, depth, wam_results_final } => {
                         // 8.7: Branch pruning — filter out matches whose rhs_type
                         // is known to be incompatible with the expected_type
                         if let Some(ref expected) = expected_type {
@@ -1482,6 +1506,14 @@ where
                         if matches.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
                                 result: (SmallVec::new(), env),
+                            });
+                        } else if wam_results_final {
+                            // Phase 6C: All results are leaf values — skip dispatch_rule_matches
+                            let leaf_results: SmallVec<[C::Value; 2]> = matches.into_iter()
+                                .map(|(t, _, _)| t)
+                                .collect();
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (leaf_results, env),
                             });
                         } else {
                             // Strip rhs_type from 3-tuples → 2-tuples for unified dispatch
@@ -3188,7 +3220,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let generic_sexpr = ctx.factory().sexpr(combo.to_vec());
 
                 // Try to match rules using generic version - no conversion needed!
-                let all_matches_with_types = try_match_all_rules_generic(&generic_sexpr, &result_env, *ctx.factory());
+                let (all_matches_with_types, wam_results_final) = try_match_all_rules_generic(&generic_sexpr, &result_env, *ctx.factory());
 
                 if all_matches_with_types.is_empty() {
                     // No rule matches - expression is data
@@ -3202,6 +3234,21 @@ fn process_continuation_generic<C: EvalContext>(
                         depth,
                     });
 
+                    work_stack.push(GenericWorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                } else if wam_results_final {
+                    // Phase 6C: All results are leaf values — add directly to results
+                    for (t, _, _) in all_matches_with_types {
+                        results.push(t);
+                    }
+                    continuations.push(GenericContinuation::ProcessCombinations {
+                        combinations,
+                        results,
+                        pending_rule_matches: Vec::new(),
+                        env: result_env.clone(),
+                        depth,
+                    });
                     work_stack.push(GenericWorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
@@ -3644,17 +3691,27 @@ fn process_continuation_generic<C: EvalContext>(
                             // that were skipped when Step 2 (EvalGroundedArgs) fired.
 
                             // Step 3: Try rule matching with the (unchanged) expression
-                            let all_matches_with_types = try_match_all_rules_generic(
+                            let (all_matches_with_types, wam_results_final) = try_match_all_rules_generic(
                                 &sexpr, &result_env, *ctx.factory()
                             );
 
                             if !all_matches_with_types.is_empty() {
-                                // Rules matched — strip rhs_type and dispatch via unified gate
-                                let matches_deque: Vec<_> =
-                                    all_matches_with_types.into_iter()
-                                        .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                                if wam_results_final {
+                                    // Phase 6C: All results are leaf values — return directly
+                                    let leaf_results: SmallVec<[C::Value; 2]> = all_matches_with_types.into_iter()
+                                        .map(|(t, _, _)| t)
                                         .collect();
-                                dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations);
+                                    work_stack.push(GenericWorkItem::Resume {
+                                        result: (leaf_results, result_env),
+                                    });
+                                } else {
+                                    // Rules matched — strip rhs_type and dispatch via unified gate
+                                    let matches_deque: Vec<_> =
+                                        all_matches_with_types.into_iter()
+                                            .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                                            .collect();
+                                    dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations);
+                                }
                             } else {
                                 // Step 4: No rules matched — return as data constructor
                                 work_stack.push(GenericWorkItem::Resume {

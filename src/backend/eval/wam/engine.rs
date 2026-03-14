@@ -33,7 +33,7 @@ use crate::backend::models::{GenericBindings, MettaValue};
 
 use super::binding_frame::WamBindingFrame;
 use super::choice_point::WamChoicePoint;
-use super::compiler::{WamCode, RhsInfo};
+use super::compiler::{WamCode, RhsInfo, WamIndexKey};
 use super::instructions::{WamInstruction, GroundedBinaryOp};
 use super::registers::WamRegisters;
 use super::trail::{Trail, TrailEntry};
@@ -45,6 +45,35 @@ pub struct WamMatchResult {
     pub rhs_info: RhsInfo,
     /// Bindings produced by the match (converted from WamBindingFrame).
     pub bindings: GenericBindings<MettaValue>,
+}
+
+/// Saved caller state for the heap call stack (Phase 3 remediation).
+///
+/// When `CallUserFunc` dispatches a recursive call, the caller's state is
+/// saved into a `WamCallFrame` and pushed onto `WamState.call_stack`.
+/// The callee executes in the same `execute_wam` loop. On callee completion
+/// (IP past code end), `handle_callee_return` restores the caller state.
+struct WamCallFrame {
+    /// Instruction pointer to resume at on callee success.
+    return_ip: usize,
+    /// Caller's WAM code (the code being executed before the call).
+    return_code: Arc<WamCode>,
+    /// Caller's register file.
+    saved_registers: WamRegisters,
+    /// Caller's binding frame.
+    saved_frame: WamBindingFrame,
+    /// Trail position at call time (callee entries discarded on return).
+    trail_mark: usize,
+    /// Caller's choice points (isolated from callee).
+    saved_choice_points: Vec<WamChoicePoint>,
+    /// Caller's accumulated match results.
+    saved_match_results: Vec<WamMatchResult>,
+    /// Caller's pending default offset.
+    saved_pending_default: Option<usize>,
+    /// Register to store the callee's result in on success.
+    result_reg: u8,
+    /// IP to jump to if the callee does not produce a single leaf result.
+    fallback_ip: u16,
 }
 
 /// WAM execution state for a single rule dispatch operation.
@@ -69,7 +98,28 @@ pub struct WamState {
     /// Whether a `Proceed` instruction was reached (successful match).
     /// Used by `wam_try_match` to distinguish success from failure.
     pub matched: bool,
+    /// Pending default group offset for first-argument indexing.
+    ///
+    /// When `SwitchOnFirstArg` matches an indexed group, this is set to
+    /// the default group's instruction offset. After the indexed group is
+    /// fully exhausted (no more choice points), `wam_fail` transitions to
+    /// the default group for all-solutions semantics.
+    pub pending_default_offset: Option<usize>,
+    /// Environment for Phase 3 recursive WAM calls (CallUserFunc).
+    /// `None` for unit tests and Phase 1/2 usage without environment.
+    pub env: Option<MettaEnvironment>,
+    /// Current WAM call depth (for recursion limiting in Phase 3).
+    pub depth: usize,
+    /// Heap-allocated call stack for recursive CallUserFunc dispatch.
+    /// Each entry saves the caller's state so the callee executes in the
+    /// same `execute_wam` loop (no Rust stack recursion).
+    call_stack: Vec<WamCallFrame>,
 }
+
+/// Maximum WAM call stack depth for CallUserFunc.
+/// Heap-allocated, so no stack overflow risk — this is a policy limit
+/// to prevent infinite recursion from consuming unbounded memory.
+const MAX_WAM_DEPTH: usize = 256;
 
 impl WamState {
     /// Create a new WAM state for executing the given code.
@@ -88,6 +138,10 @@ impl WamState {
             ip: 0,
             code,
             matched: false,
+            pending_default_offset: None,
+            env: None,
+            depth: 0,
+            call_stack: Vec::new(),
         }
     }
 
@@ -99,18 +153,22 @@ impl WamState {
         for cp in &self.choice_points {
             cp.collect_gc_roots(out);
         }
-        for result in &self.match_results {
-            out.push(result.rhs_info.template);
-            if let Some(rhs_type) = result.rhs_info.rhs_type {
-                out.push(rhs_type);
-            }
-            for (_, v) in result.bindings.iter() {
-                out.push(*v);
-            }
-        }
+        collect_match_result_roots(&self.match_results, out);
         // Constants referenced by LoadConst during execution
         for c in &self.code.constants {
             out.push(*c);
+        }
+        // Heap call stack: saved caller frames
+        for frame in &self.call_stack {
+            frame.saved_registers.collect_gc_roots(out);
+            frame.saved_frame.collect_gc_roots(out);
+            for cp in &frame.saved_choice_points {
+                cp.collect_gc_roots(out);
+            }
+            collect_match_result_roots(&frame.saved_match_results, out);
+            for c in &frame.return_code.constants {
+                out.push(*c);
+            }
         }
     }
 }
@@ -140,6 +198,19 @@ pub fn wam_try_match(
     }
 }
 
+/// Collect GC roots from a slice of match results.
+fn collect_match_result_roots(results: &[WamMatchResult], out: &mut Vec<MettaValue>) {
+    for result in results {
+        out.push(result.rhs_info.template);
+        if let Some(rhs_type) = result.rhs_info.rhs_type {
+            out.push(rhs_type);
+        }
+        for (_, v) in result.bindings.iter() {
+            out.push(*v);
+        }
+    }
+}
+
 /// Execute WAM code to find all matching rules for an expression.
 ///
 /// This is the primary entry point for WAM-based rule dispatch. It executes
@@ -158,16 +229,35 @@ pub fn wam_dispatch_rules(
     value: MettaValue,
     code: &Arc<WamCode>,
 ) -> Vec<(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>, bool)> {
+    wam_dispatch_rules_with_env(value, code, None)
+}
+
+/// Execute WAM with environment for Phase 3 recursive calls.
+///
+/// When `env` is `Some`, the WAM engine can recursively dispatch
+/// user-defined function calls via `CallUserFunc` instructions.
+pub fn wam_dispatch_rules_with_env(
+    value: MettaValue,
+    code: &Arc<WamCode>,
+    env: Option<MettaEnvironment>,
+) -> Vec<(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>, bool)> {
     let mut state = WamState::new(code.clone(), value);
+    state.env = env;
 
     // Execute the instruction loop
     execute_wam(&mut state);
 
     // Convert match results to the format expected by dispatch_rule_matches.
-    // Phase 3: Move bindings for the last multiplicity copy instead of cloning all.
-    // For the common case (multiplicity = 1), this eliminates the clone entirely.
-    let mut results = Vec::with_capacity(state.match_results.len());
-    for match_result in state.match_results {
+    convert_match_results(state.match_results)
+}
+
+/// Convert WAM match results to the 4-tuple format for dispatch_rule_matches.
+/// Moves bindings for the last multiplicity copy (no clone for multiplicity=1).
+fn convert_match_results(
+    match_results: Vec<WamMatchResult>,
+) -> Vec<(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>, bool)> {
+    let mut results = Vec::with_capacity(match_results.len());
+    for match_result in match_results {
         let multiplicity = match_result.rhs_info.multiplicity as usize;
         if multiplicity == 0 {
             continue;
@@ -186,15 +276,64 @@ pub fn wam_dispatch_rules(
     results
 }
 
+/// Handle callee return: restore caller state and process callee results.
+///
+/// Called when the callee's IP runs past its code end (i.e., the callee
+/// finished executing all its instructions/alternatives).
+fn handle_callee_return(state: &mut WamState, frame: WamCallFrame) {
+    // 1. Collect callee results
+    let callee_results = std::mem::take(&mut state.match_results);
+
+    // 2. Discard callee trail entries (caller frame is restored wholesale)
+    state.trail.truncate(frame.trail_mark);
+
+    // 3. Restore caller state
+    state.registers = frame.saved_registers;
+    state.frame = frame.saved_frame;
+    state.code = frame.return_code;
+    state.choice_points = frame.saved_choice_points;
+    state.match_results = frame.saved_match_results;
+    state.pending_default_offset = frame.saved_pending_default;
+    state.depth -= 1;
+
+    // 4. Process callee results: only handle single fully-evaluated leaf result
+    let success = if callee_results.len() == 1 {
+        let r = &callee_results[0];
+        if !r.rhs_info.has_variables && r.bindings.is_empty() {
+            let template = r.rhs_info.template;
+            // Only accept leaf values (not S-expressions that need further eval)
+            if template.as_sexpr().is_none() {
+                state.registers.set(frame.result_reg, template);
+                state.ip = frame.return_ip;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !success {
+        state.ip = frame.fallback_ip as usize;
+    }
+}
+
 /// The WAM instruction execution loop.
 ///
 /// Dispatches instructions sequentially. On failure, backtracks to the most
 /// recent choice point. Terminates when all alternatives have been explored.
 fn execute_wam(state: &mut WamState) {
     loop {
-        // Bounds check: if IP is past the end, we're done
+        // Bounds check: if IP is past the end, check for callee return
         if state.ip >= state.code.instructions.len() {
-            break;
+            if let Some(frame) = state.call_stack.pop() {
+                handle_callee_return(state, frame);
+                continue;
+            }
+            break; // Top-level: done
         }
 
         let instruction = state.code.instructions[state.ip].clone();
@@ -426,13 +565,24 @@ fn execute_wam(state: &mut WamState) {
                 count,
                 target_reg,
             } => {
-                use crate::backend::models::{MettaValueFactory, gc_allocator::global_factory};
-                let factory = global_factory();
-                let items: Vec<MettaValue> = (0..count)
-                    .map(|i| state.registers.get(start_reg + i))
-                    .collect();
-                let sexpr = factory.sexpr(items);
-                state.registers.set(target_reg, sexpr);
+                if (count as usize) <= 16 {
+                    // Stack-local array for small S-expressions (avoid Vec heap allocation)
+                    let mut stack_buf: [MettaValue; 16] = [MettaValue::inline_unit(); 16];
+                    for i in 0..count as usize {
+                        stack_buf[i] = state.registers.get(start_reg + i as u8);
+                    }
+                    let sexpr = super::wam_alloc::wam_sexpr(&stack_buf[..count as usize]);
+                    state.registers.set(target_reg, sexpr);
+                } else {
+                    // Fallback for large S-expressions (rare)
+                    use crate::backend::models::{MettaValueFactory, gc_allocator::global_factory};
+                    let factory = global_factory();
+                    let items: Vec<MettaValue> = (0..count)
+                        .map(|i| state.registers.get(start_reg + i))
+                        .collect();
+                    let sexpr = factory.sexpr(items);
+                    state.registers.set(target_reg, sexpr);
+                }
             }
 
             WamInstruction::LoadConst {
@@ -489,6 +639,157 @@ fn execute_wam(state: &mut WamState) {
                 });
 
                 // Continue to try next alternative (all-solutions semantics)
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Phase 2: Body Evaluation — Control Flow
+            // ════════════════════════════════════════════════════════════
+
+            WamInstruction::BranchOnBool {
+                cond_reg,
+                then_ip,
+                else_ip,
+            } => {
+                let val = state.registers.get(cond_reg);
+                match val.as_bool() {
+                    Some(true) => {
+                        state.ip = then_ip as usize;
+                    }
+                    Some(false) => {
+                        state.ip = else_ip as usize;
+                    }
+                    None => {
+                        // Non-boolean condition: fail this alternative.
+                        // The compiler guard (condition_guaranteed_boolean) should
+                        // prevent this, but type mismatches in grounded ops at
+                        // runtime can produce non-boolean values.
+                        wam_fail(state);
+                        continue;
+                    }
+                }
+            }
+
+            WamInstruction::Jump { target_ip } => {
+                state.ip = target_ip as usize;
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Phase 3: Recursive WAM Execution
+            // ════════════════════════════════════════════════════════════
+
+            WamInstruction::CallUserFunc {
+                expr_reg,
+                result_reg,
+                fallback_ip,
+            } => {
+                let expr = state.registers.get(expr_reg);
+
+                // Attempt heap call stack dispatch (no Rust stack recursion)
+                let dispatched = 'dispatch: {
+                    // Check depth limit (heap-allocated, policy limit only)
+                    if state.call_stack.len() >= MAX_WAM_DEPTH {
+                        break 'dispatch false;
+                    }
+
+                    // Extract head atom and arity from the call expression
+                    let items = match expr.as_sexpr() {
+                        Some(items) if !items.is_empty() => items,
+                        _ => break 'dispatch false,
+                    };
+                    let head = match items[0].as_atom() {
+                        Some(h) => h,
+                        None => break 'dispatch false,
+                    };
+                    let arity = items.len() - 1;
+
+                    // Need environment for rule lookup
+                    let env = match &state.env {
+                        Some(env) => env,
+                        None => break 'dispatch false,
+                    };
+
+                    // Look up WAM code for the callee
+                    let callee_code = {
+                        let rule_index = env.shared.rule_index.read();
+                        rule_index.get_wam_group_code(head, arity)
+                    };
+                    let callee_code = match callee_code {
+                        Some(code) => code,
+                        None => break 'dispatch false,
+                    };
+
+                    // Build call frame from current caller state.
+                    // return_ip = state.ip (already past CallUserFunc due to pre-increment)
+                    let callee_frame = WamBindingFrame::with_names(
+                        &callee_code.slot_names, 0,
+                    );
+                    let frame = WamCallFrame {
+                        return_ip: state.ip,
+                        return_code: std::mem::replace(&mut state.code, callee_code),
+                        saved_registers: std::mem::replace(
+                            &mut state.registers,
+                            WamRegisters::new(),
+                        ),
+                        saved_frame: std::mem::replace(&mut state.frame, callee_frame),
+                        trail_mark: state.trail.mark(),
+                        saved_choice_points: std::mem::take(&mut state.choice_points),
+                        saved_match_results: std::mem::take(&mut state.match_results),
+                        saved_pending_default: state.pending_default_offset.take(),
+                        result_reg,
+                        fallback_ip,
+                    };
+
+                    // Load callee input and set IP to start
+                    state.registers.load_input(expr);
+                    state.ip = 0;
+                    state.depth += 1;
+
+                    // Push frame and continue in the same execute_wam loop
+                    state.call_stack.push(frame);
+                    true
+                };
+
+                if !dispatched {
+                    state.ip = fallback_ip as usize;
+                }
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Phase 4: First-Argument Indexing
+            // ════════════════════════════════════════════════════════════
+
+            WamInstruction::SwitchOnFirstArg {
+                table_index,
+                default_offset,
+            } => {
+                let val = state.registers.get(0); // A0 = root expression
+
+                // Extract first argument (items[1]) from root S-expression
+                // and compute its discriminant key for index table lookup.
+                let first_arg_key = val
+                    .as_sexpr()
+                    .filter(|items| items.len() >= 2)
+                    .and_then(|items| compute_index_key(&items[1]));
+
+                let table = &state.code.index_tables[table_index as usize];
+
+                if let Some(ref key) = first_arg_key {
+                    if let Some(&target_ip) = table.entries.get(key) {
+                        // Found matching indexed group — jump to it.
+                        state.ip = target_ip as usize;
+                        // Set pending default for all-solutions semantics:
+                        // after the indexed group is exhausted, also try the
+                        // default (variable first-arg) rules.
+                        let def_off = default_offset as usize;
+                        if def_off < state.code.instructions.len() {
+                            state.pending_default_offset = Some(def_off);
+                        }
+                        continue;
+                    }
+                }
+
+                // No match in index table — go directly to default group.
+                state.ip = default_offset as usize;
             }
         }
     }
@@ -598,17 +899,52 @@ fn execute_grounded_binary(
     }
 }
 
+/// Compute the index key for a runtime value (used by SwitchOnFirstArg).
+///
+/// Maps the value to its discriminant for hash-table lookup:
+/// - Atom → Atom(name)
+/// - Long → Long(n)
+/// - Bool → Bool(b)
+/// - Float → FloatBits(bits)
+/// - S-expression with atom head → SExprHead(head)
+/// - Other → None
+fn compute_index_key(val: &MettaValue) -> Option<WamIndexKey> {
+    use crate::backend::models::metta_value::ValueView;
+    match val.view() {
+        ValueView::Atom(name) => Some(WamIndexKey::Atom(name)),
+        ValueView::Long(n) => Some(WamIndexKey::Long(n)),
+        ValueView::Bool(b) => Some(WamIndexKey::Bool(b)),
+        ValueView::Float(f) => Some(WamIndexKey::FloatBits(f.to_bits())),
+        ValueView::SExpr(items) if !items.is_empty() => {
+            items[0].as_atom().map(WamIndexKey::SExprHead)
+        }
+        _ => None,
+    }
+}
+
 /// Handle a match failure: backtrack to the most recent choice point.
 ///
 /// 1. Unwind the trail to restore bindings
 /// 2. Reset registers (reload input into A0)
 /// 3. Jump to the next alternative's instruction offset
-/// 4. If no choice points remain, execution terminates
+/// 4. If no choice points remain, check `pending_default_offset` for
+///    first-argument indexing fallthrough to the default group
+/// 5. If no pending default, execution terminates
 fn wam_fail(state: &mut WamState) {
     loop {
         match state.choice_points.last() {
             None => {
-                // No more choice points — all alternatives exhausted
+                // No more choice points — check pending default group transition.
+                // After an indexed group is exhausted, the default group (variable
+                // first-arg rules) must also be explored for all-solutions semantics.
+                if let Some(offset) = state.pending_default_offset.take() {
+                    let input = state.registers.args[0];
+                    state.registers.reset();
+                    state.registers.load_input(input);
+                    state.ip = offset;
+                    return;
+                }
+                // All alternatives truly exhausted
                 state.ip = state.code.instructions.len(); // Terminate loop
                 return;
             }
@@ -1732,5 +2068,1267 @@ mod tests {
         assert_eq!(results.len(), 1);
         let expected = f.sexpr(vec![f.atom("pair"), MettaValue::Long(42), MettaValue::Long(42)]);
         assert_eq!(results[0].0, expected, "should construct (pair 42 42)");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 4: First-Argument Indexing Execution Tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    fn make_indexed_rule_group() -> (Arc<WamCode>, crate::backend::models::GcFactory) {
+        let f = factory();
+        // 4 rules:
+        //   (f "a" 1) → 10   — key Atom("a")
+        //   (f "a" 2) → 20   — key Atom("a")
+        //   (f "b" 3) → 30   — key Atom("b")
+        //   (f $x $y) → 40   — default (variable first arg)
+        let entries: Vec<RuleEntry<MettaValue>> = vec![
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("f"), f.atom("a"), MettaValue::Long(1)]),
+                rhs: MettaValue::Long(10),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec![],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: false,
+                structural_matcher: None,
+                wam_code: None,
+            },
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("f"), f.atom("a"), MettaValue::Long(2)]),
+                rhs: MettaValue::Long(20),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec![],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: false,
+                structural_matcher: None,
+                wam_code: None,
+            },
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("f"), f.atom("b"), MettaValue::Long(3)]),
+                rhs: MettaValue::Long(30),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec![],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: false,
+                structural_matcher: None,
+                wam_code: None,
+            },
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("f"), f.atom("$x"), f.atom("$y")]),
+                rhs: MettaValue::Long(40),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec!["$x", "$y"],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: false,
+                structural_matcher: None,
+                wam_code: None,
+            },
+        ];
+
+        let code = compile_rule_group(&entries).expect("indexed compilation should succeed");
+        (code, f)
+    }
+
+    #[test]
+    fn test_indexed_dispatch_matching_key() {
+        let (code, f) = make_indexed_rule_group();
+        // Input (f "a" 1): should match rule 0 (indexed key "a") + rule 3 (default)
+        let input = f.sexpr(vec![f.atom("f"), f.atom("a"), MettaValue::Long(1)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        let rhs_values: Vec<i64> = results
+            .iter()
+            .filter_map(|(v, _, _, _)| v.as_long())
+            .collect();
+        assert!(
+            rhs_values.contains(&10),
+            "should match indexed rule (f a 1) → 10, got {:?}",
+            rhs_values
+        );
+        assert!(
+            rhs_values.contains(&40),
+            "should also match default rule (f $x $y) → 40, got {:?}",
+            rhs_values
+        );
+        // Should NOT match (f a 2) because second arg doesn't match
+        assert!(
+            !rhs_values.contains(&20),
+            "should not match (f a 2), got {:?}",
+            rhs_values
+        );
+    }
+
+    #[test]
+    fn test_indexed_dispatch_key_not_found() {
+        let (code, f) = make_indexed_rule_group();
+        // Input (f "c" 5): key "c" not in index → only default rule matches
+        let input = f.sexpr(vec![f.atom("f"), f.atom("c"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        let rhs_values: Vec<i64> = results
+            .iter()
+            .filter_map(|(v, _, _, _)| v.as_long())
+            .collect();
+        assert_eq!(
+            rhs_values,
+            vec![40],
+            "only default rule should match for unknown key, got {:?}",
+            rhs_values
+        );
+    }
+
+    #[test]
+    fn test_indexed_dispatch_multiple_in_bucket() {
+        let (code, f) = make_indexed_rule_group();
+        // Input (f "a" 2): should match rule 1 (indexed) + rule 3 (default)
+        let input = f.sexpr(vec![f.atom("f"), f.atom("a"), MettaValue::Long(2)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        let rhs_values: Vec<i64> = results
+            .iter()
+            .filter_map(|(v, _, _, _)| v.as_long())
+            .collect();
+        assert!(
+            rhs_values.contains(&20),
+            "should match (f a 2) → 20, got {:?}",
+            rhs_values
+        );
+        assert!(
+            rhs_values.contains(&40),
+            "should also match default, got {:?}",
+            rhs_values
+        );
+        // Should NOT match (f a 1) because second arg mismatch
+        assert!(
+            !rhs_values.contains(&10),
+            "should not match (f a 1), got {:?}",
+            rhs_values
+        );
+    }
+
+    #[test]
+    fn test_indexed_dispatch_other_indexed_key() {
+        let (code, f) = make_indexed_rule_group();
+        // Input (f "b" 3): should match rule 2 (key "b") + rule 3 (default)
+        let input = f.sexpr(vec![f.atom("f"), f.atom("b"), MettaValue::Long(3)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        let rhs_values: Vec<i64> = results
+            .iter()
+            .filter_map(|(v, _, _, _)| v.as_long())
+            .collect();
+        assert!(
+            rhs_values.contains(&30),
+            "should match (f b 3) → 30, got {:?}",
+            rhs_values
+        );
+        assert!(
+            rhs_values.contains(&40),
+            "should also match default, got {:?}",
+            rhs_values
+        );
+    }
+
+    #[test]
+    fn test_indexed_dispatch_no_match_in_bucket() {
+        let (code, f) = make_indexed_rule_group();
+        // Input (f "b" 99): key "b" found, but second arg mismatch → only default
+        let input = f.sexpr(vec![f.atom("f"), f.atom("b"), MettaValue::Long(99)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        let rhs_values: Vec<i64> = results
+            .iter()
+            .filter_map(|(v, _, _, _)| v.as_long())
+            .collect();
+        // Rule 2 requires (f "b" 3) — mismatch on 99
+        assert!(
+            !rhs_values.contains(&30),
+            "should not match (f b 3) with input b/99, got {:?}",
+            rhs_values
+        );
+        // Default rule (f $x $y) still matches anything
+        assert!(
+            rhs_values.contains(&40),
+            "default should still match, got {:?}",
+            rhs_values
+        );
+    }
+
+    #[test]
+    fn test_indexed_dispatch_with_variables() {
+        // Test that variable bindings work correctly through indexed dispatch
+        let f = factory();
+        let entries: Vec<RuleEntry<MettaValue>> = vec![
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("g"), f.atom("a"), f.atom("$x")]),
+                rhs: f.atom("$x"),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec!["$x"],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: true,
+                structural_matcher: None,
+                wam_code: None,
+            },
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("g"), f.atom("b"), f.atom("$x")]),
+                rhs: f.atom("$x"),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec!["$x"],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: true,
+                structural_matcher: None,
+                wam_code: None,
+            },
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("g"), f.atom("c"), f.atom("$x")]),
+                rhs: f.atom("$x"),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec!["$x"],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: true,
+                structural_matcher: None,
+                wam_code: None,
+            },
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("g"), f.atom("d"), f.atom("$x")]),
+                rhs: f.atom("$x"),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec!["$x"],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: true,
+                structural_matcher: None,
+                wam_code: None,
+            },
+        ];
+
+        let code = compile_rule_group(&entries).expect("compile");
+        // Input (g "b" 42): should match only the "b" rule, binding $x = 42
+        let input = f.sexpr(vec![f.atom("g"), f.atom("b"), MettaValue::Long(42)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1, "only one rule should match, got {}", results.len());
+        // The RHS is $x which should be bound to 42
+        // With body compilation, the template is the constructed result
+        let (template, bindings, _, has_vars) = &results[0];
+        if *has_vars {
+            // TailEval path: template is $x, bindings contain $x → 42
+            let bound = bindings.iter().find(|(k, _)| *k == "$x");
+            assert!(bound.is_some(), "should have binding for $x");
+            assert_eq!(*bound.unwrap().1, MettaValue::Long(42));
+        } else {
+            // Body construction path: template is already 42
+            assert_eq!(*template, MettaValue::Long(42), "constructed result should be 42");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 2: Special Form Tests (if, let, let*, chain)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_if_true_branch() {
+        // Rule: (= (f $x $y) (if (< $x $y) "yes" "no"))
+        // Input: (f 3 5) → 3 < 5 = True → "yes"
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x"), f.atom("$y")]),
+            rhs: f.sexpr(vec![
+                f.atom("if"),
+                f.sexpr(vec![f.atom("<"), f.atom("$x"), f.atom("$y")]),
+                f.string("yes"),
+                f.string("no"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x", "$y"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(3), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1, "should have 1 result, got {}", results.len());
+        let (rhs, ref bindings, _, has_vars) = results[0];
+        assert_eq!(rhs, f.string("yes"), "3 < 5 → True → 'yes'");
+        assert!(bindings.is_empty(), "special form result has empty bindings");
+        assert!(!has_vars, "special form result has no variables");
+    }
+
+    #[test]
+    fn test_if_false_branch() {
+        // Rule: (= (f $x $y) (if (< $x $y) "yes" "no"))
+        // Input: (f 10 3) → 10 < 3 = False → "no"
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x"), f.atom("$y")]),
+            rhs: f.sexpr(vec![
+                f.atom("if"),
+                f.sexpr(vec![f.atom("<"), f.atom("$x"), f.atom("$y")]),
+                f.string("yes"),
+                f.string("no"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x", "$y"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(10), MettaValue::Long(3)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, f.string("no"), "10 < 3 → False → 'no'");
+    }
+
+    #[test]
+    fn test_if_with_equality_comparison() {
+        // Rule: (= (eq? $x $y) (if (== $x $y) True False))
+        // Input: (eq? 5 5) → True
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("eq?"), f.atom("$x"), f.atom("$y")]),
+            rhs: f.sexpr(vec![
+                f.atom("if"),
+                f.sexpr(vec![f.atom("=="), f.atom("$x"), f.atom("$y")]),
+                MettaValue::inline_bool(true),
+                MettaValue::inline_bool(false),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x", "$y"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("eq?"), MettaValue::Long(5), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::inline_bool(true), "5 == 5 → True");
+    }
+
+    #[test]
+    fn test_if_with_grounded_branches() {
+        // Rule: (= (abs $x) (if (< $x 0) (- 0 $x) $x))
+        // Input: (abs -5) → -5 < 0 = True → 0 - (-5) = 5
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("abs"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("if"),
+                f.sexpr(vec![f.atom("<"), f.atom("$x"), MettaValue::Long(0)]),
+                f.sexpr(vec![f.atom("-"), MettaValue::Long(0), f.atom("$x")]),
+                f.atom("$x"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+
+        // Test negative input
+        let input = f.sexpr(vec![f.atom("abs"), MettaValue::Long(-5)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(5), "abs(-5) = 5");
+
+        // Test positive input
+        let input = f.sexpr(vec![f.atom("abs"), MettaValue::Long(7)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(7), "abs(7) = 7");
+    }
+
+    #[test]
+    fn test_if_non_boolean_condition_fallback() {
+        // Rule: (= (f $x) (if $x "yes" "no"))
+        // Condition is just a variable — not guaranteed boolean
+        // Special form compilation fails → falls to body construction (the RHS
+        // is an S-expression referencing $x, so it can be built as data)
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("if"),
+                f.atom("$x"),
+                f.string("yes"),
+                f.string("no"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        // Should NOT have BranchOnBool (special form compilation fails)
+        let has_branch = code.instructions.iter().any(|i| matches!(i, WamInstruction::BranchOnBool { .. }));
+        assert!(!has_branch, "non-boolean condition should not produce BranchOnBool");
+        // Falls through to body construction (BuildSExpr), not TailEval
+        let has_build = code.instructions.iter().any(|i| matches!(i, WamInstruction::BuildSExpr { .. }));
+        assert!(has_build, "should fall back to body construction (BuildSExpr)");
+    }
+
+    #[test]
+    fn test_let_binding() {
+        // Rule: (= (double $x) (let $y (+ $x $x) $y))
+        // Input: (double 5) → let y = 5+5=10, return y → 10
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("double"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("let"),
+                f.atom("$y"),
+                f.sexpr(vec![f.atom("+"), f.atom("$x"), f.atom("$x")]),
+                f.atom("$y"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("double"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(10), "double(5) = 10");
+        assert!(results[0].1.is_empty(), "special form result has empty bindings");
+    }
+
+    #[test]
+    fn test_let_with_body_using_binding() {
+        // Rule: (= (f $x) (let $y (+ $x 1) (+ $y $y)))
+        // Input: (f 3) → let y = 3+1=4, return y+y=8
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("let"),
+                f.atom("$y"),
+                f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(1)]),
+                f.sexpr(vec![f.atom("+"), f.atom("$y"), f.atom("$y")]),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(3)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(8), "let y=(3+1)=4, y+y=8");
+    }
+
+    #[test]
+    fn test_letstar_sequential_bindings() {
+        // Rule: (= (f $x) (let* (($a (+ $x 1)) ($b (+ $a $a))) $b))
+        // Input: (f 3) → a=4, b=8 → 8
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("let*"),
+                f.sexpr(vec![
+                    f.sexpr(vec![f.atom("$a"), f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(1)])]),
+                    f.sexpr(vec![f.atom("$b"), f.sexpr(vec![f.atom("+"), f.atom("$a"), f.atom("$a")])]),
+                ]),
+                f.atom("$b"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(3)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(8), "let* a=4, b=8 → 8");
+    }
+
+    #[test]
+    fn test_chain_binding() {
+        // Rule: (= (f $x) (chain (+ $x 10) $y $y))
+        // Input: (f 5) → chain value=(5+10)=15, bind $y=15, body=$y → 15
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("chain"),
+                f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(10)]),
+                f.atom("$y"),
+                f.atom("$y"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(15), "chain 5+10=15 → 15");
+    }
+
+    #[test]
+    fn test_nested_if_in_let() {
+        // Rule: (= (clamp $x $lo $hi) (let $cond (< $x $lo) (if $cond $lo $x)))
+        // Wait, this won't work because $cond might not be guaranteed boolean from the
+        // compiler's perspective. Instead use a directly nested form.
+        //
+        // Rule: (= (f $x $y) (let $sum (+ $x $y) (if (< $sum 10) $sum 10)))
+        // Input: (f 3 5) → sum=8, 8<10 → 8
+        // Input: (f 5 7) → sum=12, 12<10 → False → 10
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x"), f.atom("$y")]),
+            rhs: f.sexpr(vec![
+                f.atom("let"),
+                f.atom("$sum"),
+                f.sexpr(vec![f.atom("+"), f.atom("$x"), f.atom("$y")]),
+                f.sexpr(vec![
+                    f.atom("if"),
+                    f.sexpr(vec![f.atom("<"), f.atom("$sum"), MettaValue::Long(10)]),
+                    f.atom("$sum"),
+                    MettaValue::Long(10),
+                ]),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x", "$y"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+
+        // Case 1: sum=8, 8<10 → 8
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(3), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(8), "3+5=8 < 10 → 8");
+
+        // Case 2: sum=12, 12<10=False → 10
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5), MettaValue::Long(7)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(10), "5+7=12 >= 10 → 10");
+    }
+
+    #[test]
+    fn test_multi_rule_with_if_special_form() {
+        // Rule 1: (= (f 0) "zero") — ground RHS
+        // Rule 2: (= (f $n) (if (< $n 0) "negative" "positive"))
+        // Input: (f 0) → "zero" (rule 1) AND "positive" (rule 2)
+        // Input: (f -1) → "negative" (rule 2 only)
+        let f = factory();
+
+        let entries: Vec<RuleEntry<MettaValue>> = vec![
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("f"), MettaValue::Long(0)]),
+                rhs: f.string("zero"),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec![],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: false,
+                structural_matcher: None,
+                wam_code: None,
+            },
+            RuleEntry {
+                lhs: f.sexpr(vec![f.atom("f"), f.atom("$n")]),
+                rhs: f.sexpr(vec![
+                    f.atom("if"),
+                    f.sexpr(vec![f.atom("<"), f.atom("$n"), MettaValue::Long(0)]),
+                    f.string("negative"),
+                    f.string("positive"),
+                ]),
+                lhs_debruijn: Vec::new(),
+                lhs_wide_debruijn: Vec::new(),
+                var_names: vec!["$n"],
+                wildcard_indices: smallvec::smallvec![],
+                multiplicity: 1,
+                rhs_type: None,
+                rhs_has_variables: true,
+                structural_matcher: None,
+                wam_code: None,
+            },
+        ];
+
+        let code = compile_rule_group(&entries).expect("compile");
+
+        // Input (f -1): only rule 2 matches, $n=-1, -1<0=True → "negative"
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(-1)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, f.string("negative"), "(f -1) → 'negative'");
+
+        // Input (f 0): rule 1 → "zero", rule 2 → 0<0=False → "positive"
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(0)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 2);
+        let result_set: std::collections::HashSet<MettaValue> =
+            results.iter().map(|(r, _, _, _)| *r).collect();
+        assert!(result_set.contains(&f.string("zero")), "should contain 'zero'");
+        assert!(result_set.contains(&f.string("positive")), "should contain 'positive'");
+    }
+
+    #[test]
+    fn test_if_constant_fold_true() {
+        // Rule: (= (f $x) (if True $x "unreachable"))
+        // Constant True → always take then branch
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("if"),
+                MettaValue::inline_bool(true),
+                f.atom("$x"),
+                f.string("unreachable"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        // Should NOT have BranchOnBool (constant-folded)
+        let has_branch = code.instructions.iter().any(|i| matches!(i, WamInstruction::BranchOnBool { .. }));
+        assert!(!has_branch, "constant True should be folded away");
+
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(42)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(42), "constant True → then branch");
+    }
+
+    #[test]
+    fn test_if_constant_fold_false() {
+        // Rule: (= (f $x) (if False "unreachable" $x))
+        let f = factory();
+
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![
+                f.atom("if"),
+                MettaValue::inline_bool(false),
+                f.string("unreachable"),
+                f.atom("$x"),
+            ]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+
+        let code = compile_rule_group(&[entry]).expect("compile");
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(99)]);
+        let results = wam_dispatch_rules(input, &code);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, MettaValue::Long(99), "constant False → else branch");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 3: Recursive WAM Execution Tests (CallUserFunc)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_call_user_func_basic() {
+        // Callee: (= (g $x) (+ $x 1))  — grounded RHS, compiled to WAM
+        // Caller: (= (f $x) (g $x))    — user call RHS
+        // Input:  (f 5)
+        // Expected: 6 (g evaluates (+ 5 1) = 6, f returns g's result)
+        let f = factory();
+
+        // Set up environment with callee rule
+        let mut env = crate::backend::eval::trampoline::new_env();
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(1)]),
+        );
+
+        // Compile caller rule
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile caller");
+
+        // Verify CallUserFunc was compiled
+        let has_call = code.instructions.iter().any(|i| matches!(i, WamInstruction::CallUserFunc { .. }));
+        assert!(has_call, "should have CallUserFunc instruction");
+
+        // Execute with environment
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        // CallUserFunc should resolve g(5) = 6 via recursive WAM execution
+        assert_eq!(results.len(), 1, "should produce exactly 1 result");
+        assert_eq!(results[0].0, MettaValue::Long(6), "f(5) = g(5) = 5+1 = 6");
+        // Result should be fully evaluated (no bindings needed)
+        assert!(results[0].1.is_empty(), "result should have empty bindings");
+    }
+
+    #[test]
+    fn test_call_user_func_fallback_no_env() {
+        // Caller: (= (f $x) (g $x)) — user call with NO environment
+        // CallUserFunc should fall back since env is None
+        let f = factory();
+
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile caller");
+
+        // Execute WITHOUT environment
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules(input, &code);
+
+        // Should fall back: return the built expression (g 5) for trampoline evaluation
+        assert_eq!(results.len(), 1, "should produce 1 result (fallback)");
+        let result_items = results[0].0.as_sexpr().expect("result should be S-expression");
+        assert_eq!(result_items.len(), 2, "should be (g 5)");
+        assert_eq!(result_items[0].as_atom(), Some("g"));
+        assert_eq!(result_items[1], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_call_user_func_fallback_no_wam_code() {
+        // Callee has NO rules in the environment (no WAM code for g)
+        // CallUserFunc should fall back
+        let f = factory();
+
+        let env = crate::backend::eval::trampoline::new_env();
+        // No rules added for "g"
+
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile caller");
+
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        // Should fall back: return (g 5) for trampoline
+        assert_eq!(results.len(), 1);
+        let result_items = results[0].0.as_sexpr().expect("result should be S-expression");
+        assert_eq!(result_items[0].as_atom(), Some("g"));
+        assert_eq!(result_items[1], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_call_user_func_depth_limit() {
+        // Callee: (= (g $x) (g $x)) — infinite recursion
+        // Should hit depth limit and fall back
+        let f = factory();
+
+        let mut env = crate::backend::eval::trampoline::new_env();
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+        );
+
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile caller");
+
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        // Depth limit should cause fallback — returns built expression (g 5)
+        assert_eq!(results.len(), 1, "should produce 1 result despite depth limit");
+        let result_items = results[0].0.as_sexpr().expect("result should be S-expression");
+        assert_eq!(result_items[0].as_atom(), Some("g"));
+    }
+
+    #[test]
+    fn test_call_user_func_chain() {
+        // h(x) = x * 2, g(x) = h(x) + 1, f(x) = g(x)
+        // But WAM can only resolve one level of recursion at a time from the caller
+        // (g calls h, but g's RHS (+ (h $x) 1) is a grounded op with a nested user call —
+        // try_compile_inline_eval won't handle it, so g falls back to body construction)
+        //
+        // Instead, test: g(x) = x + 1, f(x) = g(x)
+        // This verifies the basic CallUserFunc works end-to-end
+        let f = factory();
+
+        let mut env = crate::backend::eval::trampoline::new_env();
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(10)]),
+        );
+
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile caller");
+
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(7)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        assert_eq!(results.len(), 1, "should produce 1 result");
+        assert_eq!(results[0].0, MettaValue::Long(17), "f(7) = g(7) = 7+10 = 17");
+    }
+
+    #[test]
+    fn test_call_user_func_multi_result_fallback() {
+        // Callee has two rules: g(x) = x and g(x) = (+ x 1)
+        // Multiple results → CallUserFunc should fall back
+        let f = factory();
+
+        let mut env = crate::backend::eval::trampoline::new_env();
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            f.atom("$x"),
+        );
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(1)]),
+        );
+
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile caller");
+
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        // Multi-result callee → CallUserFunc falls back, returns (g 5)
+        assert_eq!(results.len(), 1, "should produce 1 fallback result");
+        let result_items = results[0].0.as_sexpr().expect("result should be S-expression");
+        assert_eq!(result_items[0].as_atom(), Some("g"), "fallback returns built (g 5)");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 3 Remediation: Heap Call Stack Tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_heap_call_stack_deep_recursion() {
+        // Chain: f(x) -> g(x), g(x) -> h(x), h(x) -> (+ x 100)
+        // This tests 3-level deep heap call stack (no Rust stack overflow risk)
+        let f = factory();
+
+        let mut env = crate::backend::eval::trampoline::new_env();
+        // h(x) = x + 100
+        env.add_rule(
+            f.sexpr(vec![f.atom("h"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(100)]),
+        );
+        // g(x) = h(x)
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("h"), f.atom("$x")]),
+        );
+
+        // Compile f(x) = g(x) as the caller
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile caller");
+
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        assert_eq!(results.len(), 1, "should produce 1 result from 3-level chain");
+        assert_eq!(results[0].0, MettaValue::Long(105), "f(5) -> g(5) -> h(5) -> 5+100 = 105");
+    }
+
+    #[test]
+    fn test_heap_call_stack_callee_choice_points_isolated() {
+        // Callee g has two rules, but the caller f should NOT see g's choice points.
+        // g(0) = "zero", g($n) = "other"
+        // f($x) = (g $x) — CallUserFunc falls back (multiple results)
+        let f = factory();
+
+        let mut env = crate::backend::eval::trampoline::new_env();
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), MettaValue::Long(0)]),
+            f.atom("zero"),
+        );
+        env.add_rule(
+            f.sexpr(vec![f.atom("g"), f.atom("$n")]),
+            f.atom("other"),
+        );
+
+        let caller_entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[caller_entry]).expect("compile");
+
+        // g(0) produces 2 results → CallUserFunc falls back
+        let input = f.sexpr(vec![f.atom("f"), MettaValue::Long(0)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        // Should get 1 result (fallback: the built (g 0) expression)
+        assert_eq!(results.len(), 1, "multi-result callee → fallback");
+        assert!(results[0].0.as_sexpr().is_some(), "fallback should be S-expression");
+    }
+
+    #[test]
+    fn test_heap_call_stack_gc_roots() {
+        // Verify GC root collection includes call stack frames
+        let f = factory();
+        let code = Arc::new(WamCode {
+            instructions: Vec::new(),
+            num_slots: 0,
+            slot_names: Vec::new(),
+            rhs_templates: Vec::new(),
+            constants: vec![MettaValue::Long(999)],
+            index_tables: Vec::new(),
+            fully_evaluable: false,
+        });
+
+        let mut state = WamState::new(code.clone(), MettaValue::Long(1));
+
+        // Simulate a saved call frame with known values
+        let mut saved_regs = WamRegisters::new();
+        saved_regs.set(0, MettaValue::Long(42));
+        let mut saved_frame = WamBindingFrame::with_names(&["$a"], 0);
+        saved_frame.set_slot_unchecked(0, MettaValue::Long(77));
+
+        state.call_stack.push(WamCallFrame {
+            return_ip: 0,
+            return_code: code,
+            saved_registers: saved_regs,
+            saved_frame,
+            trail_mark: 0,
+            saved_choice_points: Vec::new(),
+            saved_match_results: vec![WamMatchResult {
+                rhs_info: RhsInfo {
+                    template: MettaValue::Long(88),
+                    has_variables: false,
+                    rhs_type: None,
+                    multiplicity: 1,
+                    slot_names: Vec::new(),
+                },
+                bindings: GenericBindings::Empty,
+            }],
+            saved_pending_default: None,
+            result_reg: 0,
+            fallback_ip: 0,
+        });
+
+        let mut roots = Vec::new();
+        state.collect_gc_roots(&mut roots);
+
+        // Should include: register value (42), frame binding (77),
+        // match result template (88), and constants (999)
+        assert!(roots.contains(&MettaValue::Long(42)), "call stack registers");
+        assert!(roots.contains(&MettaValue::Long(77)), "call stack frame bindings");
+        assert!(roots.contains(&MettaValue::Long(88)), "call stack match results");
+        assert!(roots.contains(&MettaValue::Long(999)), "call stack constants");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 6 Tests: operator cache, eval_memo bypass, leaf short-circuit
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_operator_cache_wam_fully_evaluable() {
+        use crate::backend::eval::trampoline::dispatch_hints::{
+            operator_cache_put, operator_cache_get, OperatorCacheEntry,
+        };
+        use crate::backend::environment::rule_management::RULE_EPOCH;
+
+        let epoch = RULE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+
+        // Fully evaluable entry
+        operator_cache_put("test_wam_op_fe", 2, OperatorCacheEntry {
+            rule_epoch: epoch,
+            all_structural: false,
+            candidate_count: 0,
+            wam_fully_evaluable: true,
+        });
+        let entry = operator_cache_get("test_wam_op_fe", 2);
+        assert!(entry.is_some(), "entry should be cached");
+        assert!(entry.expect("checked").wam_fully_evaluable, "should be fully evaluable");
+
+        // Non-fully-evaluable entry
+        operator_cache_put("test_wam_op_nfe", 1, OperatorCacheEntry {
+            rule_epoch: epoch,
+            all_structural: false,
+            candidate_count: 0,
+            wam_fully_evaluable: false,
+        });
+        let entry2 = operator_cache_get("test_wam_op_nfe", 1);
+        assert!(entry2.is_some(), "entry should be cached");
+        assert!(!entry2.expect("checked").wam_fully_evaluable, "should NOT be fully evaluable");
+    }
+
+    #[test]
+    fn test_eval_memo_bypass_correctness() {
+        use crate::backend::models::metta_state::MettaState;
+
+        let f = factory();
+        let state = MettaState::new();
+        let mut env = crate::backend::eval::trampoline::new_env();
+        env.add_rule(
+            f.sexpr(vec![f.atom("memo_f"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(1)]),
+        );
+
+        let expr = f.sexpr(vec![f.atom("memo_f"), MettaValue::Long(5)]);
+        let (r1, _) = crate::backend::eval::eval_trampoline(expr, env.clone(), &state);
+        let (r2, _) = crate::backend::eval::eval_trampoline(expr, env, &state);
+        assert_eq!(r1.as_slice(), &[MettaValue::Long(6)], "first eval: memo_f(5) = 6");
+        assert_eq!(r2.as_slice(), &[MettaValue::Long(6)], "second eval: memo_f(5) = 6 (consistent)");
+    }
+
+    #[test]
+    fn test_wam_leaf_result_short_circuit() {
+        use crate::backend::models::metta_state::MettaState;
+
+        let f = factory();
+        let state = MettaState::new();
+        let mut env = crate::backend::eval::trampoline::new_env();
+        env.add_rule(
+            f.sexpr(vec![f.atom("leaf_f"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("*"), f.atom("$x"), MettaValue::Long(2)]),
+        );
+
+        let expr = f.sexpr(vec![f.atom("leaf_f"), MettaValue::Long(7)]);
+        let (results, _) = crate::backend::eval::eval_trampoline(expr, env, &state);
+        assert_eq!(results.as_slice(), &[MettaValue::Long(14)], "leaf_f(7) = 7 * 2 = 14");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 3: Deep recursion test (256 levels)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_heap_call_stack_256_levels() {
+        let f = factory();
+        let mut env = crate::backend::eval::trampoline::new_env();
+
+        // Base case: f_255(x) = x + 1000
+        let base_name = format!("f_{}", MAX_WAM_DEPTH - 1);
+        env.add_rule(
+            f.sexpr(vec![f.atom(&base_name), f.atom("$x")]),
+            f.sexpr(vec![f.atom("+"), f.atom("$x"), MettaValue::Long(1000)]),
+        );
+
+        // Chain: f_i(x) = f_{i+1}(x) for i in 1..255
+        for i in (1..MAX_WAM_DEPTH - 1).rev() {
+            let caller_name = format!("f_{}", i);
+            let callee_name = format!("f_{}", i + 1);
+            env.add_rule(
+                f.sexpr(vec![f.atom(&caller_name), f.atom("$x")]),
+                f.sexpr(vec![f.atom(&callee_name), f.atom("$x")]),
+            );
+        }
+
+        // Entry: f_0(x) = f_1(x) — compiled as WAM
+        let entry = RuleEntry {
+            lhs: f.sexpr(vec![f.atom("f_0"), f.atom("$x")]),
+            rhs: f.sexpr(vec![f.atom("f_1"), f.atom("$x")]),
+            lhs_debruijn: Vec::new(),
+            lhs_wide_debruijn: Vec::new(),
+            var_names: vec!["$x"],
+            wildcard_indices: smallvec::smallvec![],
+            multiplicity: 1,
+            rhs_type: None,
+            rhs_has_variables: true,
+            structural_matcher: None,
+            wam_code: None,
+        };
+        let code = compile_rule_group(&[entry]).expect("compile 256-level chain");
+        let input = f.sexpr(vec![f.atom("f_0"), MettaValue::Long(5)]);
+        let results = wam_dispatch_rules_with_env(input, &code, Some(env));
+
+        assert_eq!(results.len(), 1, "should produce 1 result from 256-level chain");
+        assert_eq!(results[0].0, MettaValue::Long(1005),
+            "f_0(5) → ... → f_255(5) → 5 + 1000 = 1005");
     }
 }

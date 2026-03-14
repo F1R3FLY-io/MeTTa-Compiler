@@ -34,7 +34,7 @@ use smallvec::SmallVec;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
-use super::dispatch_hints::{match_result_get, match_result_put};
+use super::dispatch_hints::{match_result_get, match_result_put, operator_cache_put, OperatorCacheEntry};
 
 use crate::backend::models::MettaValue;
 
@@ -415,7 +415,7 @@ pub fn try_match_all_rules_generic<V, F>(
     expr: &V,
     env: &GenericEnvironment<V, F>,
     _factory: F,
-) -> Vec<(V, GenericBindings<V>, Option<V>)>
+) -> (Vec<(V, GenericBindings<V>, Option<V>)>, bool)
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Copy + Clone,
@@ -445,26 +445,58 @@ where
 
             if let Some(wam_code) = wam_code {
                 if !has_wildcards {
-                    // Check match result cache first
-                    let expr_hash = expr.hash_value();
-                    if let Some(cached) = match_result_get(expr_hash, expr_arity) {
-                        return unsafe {
-                            let mut md = std::mem::ManuallyDrop::new(cached);
-                            Vec::from_raw_parts(
-                                md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
-                                md.len(),
-                                md.capacity(),
-                            )
-                        };
-                    }
+                    // Phase 6: When the WAM fully evaluates all rules (no TailEval,
+                    // no YieldToTrampoline), skip hash computation and match result
+                    // cache entirely. The WAM is fast enough to re-execute, and
+                    // hash overhead (~6.5% CPU) exceeds cache benefit for these groups.
+                    //
+                    // For non-fully-evaluable groups, compute hash once and use for
+                    // both cache lookup and cache put.
+                    let expr_hash = if !wam_code.fully_evaluable {
+                        let h = expr.hash_value();
+                        if let Some(cached) = match_result_get(h, expr_arity) {
+                            return (unsafe {
+                                let mut md = std::mem::ManuallyDrop::new(cached);
+                                Vec::from_raw_parts(
+                                    md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
+                                    md.len(),
+                                    md.capacity(),
+                                )
+                            }, false);
+                        }
+                        Some(h)
+                    } else {
+                        None
+                    };
 
                     // WAM group dispatch: single execute_wam call for all rules
                     // SAFETY: V == MettaValue verified by TypeId check above.
                     let metta_expr: &MettaValue =
                         unsafe { &*(expr as *const V as *const MettaValue) };
-                    let wam_results = crate::backend::eval::wam::engine::wam_dispatch_rules(
-                        *metta_expr, &wam_code,
+                    // Phase 3: Pass environment for recursive WAM execution (CallUserFunc).
+                    // SAFETY: V == MettaValue verified by TypeId, so GenericEnvironment<V, F>
+                    // has the same layout as GenericEnvironment<MettaValue, F>.
+                    let metta_env: Option<crate::backend::environment::MettaEnvironment> = unsafe {
+                        let env_ptr = env as *const GenericEnvironment<V, F>
+                            as *const crate::backend::environment::MettaEnvironment;
+                        Some((*env_ptr).clone())
+                    };
+                    let wam_results = crate::backend::eval::wam::engine::wam_dispatch_rules_with_env(
+                        *metta_expr, &wam_code, metta_env,
                     );
+
+                    // Phase 6 remediation: Populate operator cache with wam_fully_evaluable
+                    // so the trampoline can skip eval_memo hash for subsequent calls.
+                    {
+                        let current_epoch = crate::backend::environment::rule_management::RULE_EPOCH
+                            .load(std::sync::atomic::Ordering::Acquire);
+                        operator_cache_put(head, expr_arity, OperatorCacheEntry {
+                            rule_epoch: current_epoch,
+                            all_structural: false,
+                            candidate_count: 0, // N/A for WAM path
+                            wam_fully_evaluable: wam_code.fully_evaluable,
+                        });
+                    }
 
                     // Convert 4-tuple (template, bindings, rhs_type, has_vars) to 3-tuple
                     let metta_result_vec: Vec<(
@@ -476,21 +508,32 @@ where
                         .map(|(t, b, rt, _has_vars)| (t, b, rt))
                         .collect();
 
-                    // Store in match result cache
-                    if !metta_result_vec.is_empty() {
-                        match_result_put(expr_hash, expr_arity, &metta_result_vec);
+                    // Phase 6C: Check if all WAM results are already final (leaf values).
+                    // When fully_evaluable AND all results have no bindings, no variables,
+                    // and are not S-expressions, they need no further trampoline evaluation.
+                    let all_results_final = wam_code.fully_evaluable
+                        && !metta_result_vec.is_empty()
+                        && metta_result_vec.iter().all(|(t, b, _rt)| {
+                            b.is_empty() && !t.has_variables_fast() && t.as_sexpr().is_none()
+                        });
+
+                    // Phase 6: Only cache non-fully-evaluable results.
+                    if let Some(h) = expr_hash {
+                        if !metta_result_vec.is_empty() {
+                            match_result_put(h, expr_arity, &metta_result_vec);
+                        }
                     }
 
                     // Transmute Vec<(MettaValue, ...)> to Vec<(V, ...)>
                     // SAFETY: V == MettaValue verified by TypeId. Identical layout.
-                    return unsafe {
+                    return (unsafe {
                         let mut md = std::mem::ManuallyDrop::new(metta_result_vec);
                         Vec::from_raw_parts(
                             md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
                             md.len(),
                             md.capacity(),
                         )
-                    };
+                    }, all_results_final);
                 }
             }
         }
@@ -505,10 +548,10 @@ where
                 if cache_entry.all_structural && cache_entry.candidate_count == 1 {
                     // Fast path: skip hash, skip match_result_cache, go straight to structural match
                     let results = env.match_rules_native(expr, |v: &V, _: &GenericBindings<V>, _: &F| v.clone());
-                    return results
+                    return (results
                         .into_iter()
                         .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
-                        .collect();
+                        .collect(), false);
                 }
             }
         }
@@ -521,14 +564,14 @@ where
         if let Some(cached) = match_result_get(expr_hash, expr_arity) {
             // Safety: V = MettaValue verified by TypeId check above.
             // Both types have identical layout, so Vec reinterpretation is sound.
-            return unsafe {
+            return (unsafe {
                 let mut md = std::mem::ManuallyDrop::new(cached);
                 Vec::from_raw_parts(
                     md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
                     md.len(),
                     md.capacity(),
                 )
-            };
+            }, false);
         }
     }
 
@@ -553,7 +596,7 @@ where
         match_result_put(expr_hash, expr_arity, slice);
     }
 
-    result_vec
+    (result_vec, false)
 }
 
 // ============================================================================

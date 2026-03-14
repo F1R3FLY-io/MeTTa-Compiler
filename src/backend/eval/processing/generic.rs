@@ -270,9 +270,16 @@ where
 
     // Try rule matching using generic rule matching (zero-conversion)
     let sexpr = factory.sexpr(evaled_items.clone());
-    let all_matches_with_types = try_match_all_rules_generic(&sexpr, &unified_env, *factory);
+    let (all_matches_with_types, wam_results_final) = try_match_all_rules_generic(&sexpr, &unified_env, *factory);
 
     if !all_matches_with_types.is_empty() {
+        if wam_results_final {
+            // Phase 6C: All results are leaf values — return directly
+            let leaf_results: SmallVec<[V; 2]> = all_matches_with_types.into_iter()
+                .map(|(t, _, _)| t)
+                .collect();
+            return GenericProcessedSExpr::Done((leaf_results, unified_env));
+        }
         // Rules match with evaluated arguments - evaluate the rule RHS
         // Strip rhs_type from 3-tuples → 2-tuples
         return GenericProcessedSExpr::EvalRuleMatches {

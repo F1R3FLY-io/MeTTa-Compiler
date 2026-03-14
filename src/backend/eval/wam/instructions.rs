@@ -221,6 +221,74 @@ pub enum WamInstruction {
         rhs_index: u16,
         result_reg: u8,
     },
+
+    // ════════════════════════════════════════════════════════════════════
+    // Phase 4: First-Argument Indexing
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Index on the first argument of the expression in register A0.
+    ///
+    /// Extracts the first argument (items[1]) from the root S-expression,
+    /// computes its discriminant key (atom name, integer, bool, float bits,
+    /// or nested S-expression head), and looks up the key in the index table
+    /// at `table_index`. On hit, jumps to the clause group for that key.
+    /// On miss (or variable/wildcard first arg), jumps to `default_offset`
+    /// for the variable-first-arg rules.
+    ///
+    /// After the indexed group's alternatives are exhausted, execution falls
+    /// through to the default group (all-solutions semantics requires both
+    /// indexed AND variable rules to fire).
+    SwitchOnFirstArg {
+        table_index: u16,
+        default_offset: u16,
+    },
+
+    // ════════════════════════════════════════════════════════════════════
+    // Phase 2: Body Evaluation — Control Flow
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Conditional branch on a boolean value in a register.
+    ///
+    /// If `True`, jumps to `then_ip`. If `False`, jumps to `else_ip`.
+    /// If the value is not a boolean, triggers `Fail` (non-boolean conditions
+    /// are only reached through a guard violation — the compiler ensures
+    /// conditions are guaranteed boolean via `condition_guaranteed_boolean`).
+    BranchOnBool {
+        cond_reg: u8,
+        then_ip: u16,
+        else_ip: u16,
+    },
+
+    /// Unconditional jump to a target instruction offset.
+    ///
+    /// Used after a then-branch's `ReturnEvaluated` to skip past the
+    /// else-branch in compiled `if` special forms.
+    Jump {
+        target_ip: u16,
+    },
+
+    // ════════════════════════════════════════════════════════════════════
+    // Phase 3: Recursive WAM Execution
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Dispatch a user-defined function call via recursive WAM execution.
+    ///
+    /// Reads the fully-constructed call expression from `expr_reg` (built
+    /// by prior BuildSExpr). Looks up WAM code for the expression's head/arity
+    /// in the environment's rule index.
+    ///
+    /// - If WAM code found and callee produces exactly 1 fully-evaluated result:
+    ///   stores it in `result_reg`, advances IP.
+    /// - Otherwise: jumps to `fallback_ip` (which should emit the built expression
+    ///   as a ReturnEvaluated result for the trampoline to evaluate).
+    ///
+    /// Requires `env` to be set on WamState (otherwise falls back immediately).
+    /// Respects `max_depth` to prevent unbounded recursion.
+    CallUserFunc {
+        expr_reg: u8,
+        result_reg: u8,
+        fallback_ip: u16,
+    },
 }
 
 /// Supported binary grounded operations for inline WAM evaluation.
@@ -272,6 +340,10 @@ pub enum WamOpcode {
     LoadConst = 0x53,
     CallGroundedBinary = 0x50,
     ReturnEvaluated = 0x51,
+    SwitchOnFirstArg = 0x80,
+    BranchOnBool = 0x60,
+    Jump = 0x61,
+    CallUserFunc = 0x70,
 }
 
 #[cfg(test)]
@@ -315,6 +387,10 @@ mod tests {
             WamOpcode::LoadConst as u8,
             WamOpcode::CallGroundedBinary as u8,
             WamOpcode::ReturnEvaluated as u8,
+            WamOpcode::SwitchOnFirstArg as u8,
+            WamOpcode::BranchOnBool as u8,
+            WamOpcode::Jump as u8,
+            WamOpcode::CallUserFunc as u8,
         ];
         for (i, &a) in opcodes.iter().enumerate() {
             for (j, &b) in opcodes.iter().enumerate() {

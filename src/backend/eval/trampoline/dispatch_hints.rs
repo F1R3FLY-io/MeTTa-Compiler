@@ -504,6 +504,10 @@ pub struct OperatorCacheEntry {
     pub all_structural: bool,
     /// Number of rule candidates for this (head, arity).
     pub candidate_count: usize,
+    /// Whether this operator has WAM code that fully evaluates all rules
+    /// (no TailEval, no YieldToTrampoline). When true, the trampoline can
+    /// skip eval_memo hash computation — WAM re-execution is cheaper than hashing.
+    pub wam_fully_evaluable: bool,
 }
 
 thread_local! {

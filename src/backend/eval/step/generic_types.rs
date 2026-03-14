@@ -107,6 +107,9 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         env: E,
         /// Evaluation depth
         depth: usize,
+        /// Phase 6C: When true, all WAM results are leaf values (no bindings, no variables,
+        /// no S-expressions) — skip `dispatch_rule_matches` and return results directly.
+        wam_results_final: bool,
     },
 
     /// Evaluate grounded arguments before rule matching.

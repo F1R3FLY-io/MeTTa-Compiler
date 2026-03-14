@@ -44,6 +44,7 @@ pub mod registers;
 pub mod instructions;
 pub mod compiler;
 pub mod engine;
+pub mod wam_alloc;
 
 // Re-exports for convenience
 pub use trail::{Trail, TrailEntry};

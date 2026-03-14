@@ -2002,6 +2002,7 @@ where
                         rule_epoch: current_epoch,
                         all_structural,
                         candidate_count: candidates.len(),
+                        wam_fully_evaluable: false, // Non-WAM path
                     },
                 );
             }

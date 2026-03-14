@@ -116,6 +116,17 @@ impl Trail {
         self.entries.is_empty()
     }
 
+    /// Truncate the trail to `mark` entries, discarding later entries
+    /// without restoring bindings.
+    ///
+    /// Used by the heap call stack: when a callee returns, its trail entries
+    /// are irrelevant (the caller's frame is restored wholesale), so we just
+    /// discard them rather than unwinding.
+    #[inline]
+    pub fn truncate(&mut self, mark: usize) {
+        self.entries.truncate(mark);
+    }
+
     /// Clear the trail, keeping allocated capacity.
     #[inline]
     pub fn clear(&mut self) {

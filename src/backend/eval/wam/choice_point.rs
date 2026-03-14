@@ -159,6 +159,8 @@ mod tests {
                 slot_names: Vec::new(),
                 rhs_templates: Vec::new(),
                 constants: Vec::new(),
+                index_tables: Vec::new(),
+                fully_evaluable: false,
             }),
             rhs_template: rhs,
             rhs_has_variables: false,

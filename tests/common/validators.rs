@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_validate_outputs_pass() {
-        let stdout = r#"{|(("source", []), ("output", [3, 7]))|}  "#;
+        let stdout = r#"{|[["source", []], ["output", [3, 7]]]|}  "#;
         let expectation = Expectation::outputs("test", vec!["3".to_string(), "7".to_string()]);
         let result = validate(stdout, "", 0, &expectation);
         assert!(result.is_pass());
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_validate_outputs_fail() {
-        let stdout = r#"{|(("source", []), ("output", [3]))|}  "#;
+        let stdout = r#"{|[["source", []], ["output", [3]]]|}  "#;
         let expectation = Expectation::outputs("test", vec!["7".to_string()]);
         let result = validate(stdout, "", 0, &expectation);
         assert!(result.is_fail());
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_validate_pathmap_structure_pass() {
-        let stdout = r#"{|(("source", [(+ 1 2)]), ("environment", ...), ("output", [3]))|}  "#;
+        let stdout = r#"{|[["source", [(+ 1 2)]], ["environment", ...], ["output", [3]]]|}  "#;
         let expectation = Expectation::pathmap_structure("test", true, true, 1);
         let result = validate(stdout, "", 0, &expectation);
         assert!(result.is_pass());
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_validate_pathmap_structure_fail_output_count() {
-        let stdout = r#"{|(("source", []), ("environment", ...), ("output", [3, 7]))|}  "#;
+        let stdout = r#"{|[["source", []], ["environment", ...], ["output", [3, 7]]]|}  "#;
         let expectation = Expectation::pathmap_structure("test", false, true, 1);
         let result = validate(stdout, "", 0, &expectation);
         assert!(result.is_fail());

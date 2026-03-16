@@ -199,6 +199,24 @@ fn parse_tuple(input: &str) -> IResult<&str, MettaValue> {
     )(input)
 }
 
+/// Parse a list [...] as an S-expression (MeTTa s-expressions are now EList)
+fn parse_list(input: &str) -> IResult<&str, MettaValue> {
+    map(
+        delimited(
+            char('['),
+            separated_list0(ws(char(',')), ws(parse_metta_value_recursive)),
+            char(']'),
+        ),
+        |elements| {
+            if elements.is_empty() {
+                MettaValue::Unit()
+            } else {
+                MettaValue::SExpr(elements)
+            }
+        },
+    )(input)
+}
+
 /// Parse any MettaValue using direct nom combinators (recursive for nested structures)
 fn parse_metta_value_recursive(input: &str) -> IResult<&str, MettaValue> {
     alt((
@@ -206,7 +224,8 @@ fn parse_metta_value_recursive(input: &str) -> IResult<&str, MettaValue> {
         parse_integer,
         parse_string_literal,
         parse_nil,
-        parse_tuple, // Recursively parse tuples
+        parse_list,  // Recursively parse lists (MeTTa s-expressions)
+        parse_tuple, // Recursively parse tuples (legacy)
         parse_symbol,
     ))(input)
 }
@@ -248,7 +267,8 @@ fn parse_metta_value(input: &str) -> IResult<&str, MettaValue> {
         parse_integer,
         parse_string_literal,
         parse_nil,
-        parse_tuple, // Now parses tuples recursively
+        parse_list,  // Parse lists (MeTTa s-expressions)
+        parse_tuple, // Parse tuples (legacy)
         map(parse_sexpr_string, |s| {
             // Fallback: store as atom if tuple parser fails
             MettaValue::Atom(s)
@@ -266,11 +286,24 @@ fn array_of_values(input: &str) -> IResult<&str, Vec<MettaValue>> {
     )(input)
 }
 
-/// Parse a tuple value - anything between outer parentheses with depth tracking
-fn tuple_value(input: &str) -> IResult<&str, String> {
-    let (input, _) = char('(')(input)?;
+/// Parse a nested value - anything between matching delimiters with depth tracking
+/// Handles both parentheses `(...)` and brackets `[...]`, plus `{|...|}` nesting
+fn nested_value(input: &str) -> IResult<&str, String> {
+    // Determine the opening/closing delimiter
+    let (open, close) = if input.starts_with('(') {
+        ('(', ')')
+    } else if input.starts_with('[') {
+        ('[', ']')
+    } else {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        )));
+    };
 
-    // Track depth to handle nested parentheses and handle {|...|}
+    let input = &input[1..]; // consume opening delimiter
+
+    // Track depth to handle nested delimiters and handle {|...|}
     let mut depth = 1;
     let mut pos = 0;
     let chars: Vec<char> = input.chars().collect();
@@ -309,8 +342,8 @@ fn tuple_value(input: &str) -> IResult<&str, String> {
             }
 
             match current_char {
-                '(' if brace_depth == 0 => depth += 1,
-                ')' if brace_depth == 0 => depth -= 1,
+                c if c == open && brace_depth == 0 => depth += 1,
+                c if c == close && brace_depth == 0 => depth -= 1,
                 _ => {}
             }
         }
@@ -362,26 +395,26 @@ fn quoted_string(input: &str) -> IResult<&str, &str> {
 
 /// Parse a simple token (like `...` or placeholders)
 fn simple_token(input: &str) -> IResult<&str, &str> {
-    take_while1(|c: char| c != ',' && c != ')' && c != '(' && !c.is_whitespace())(input)
+    take_while1(|c: char| c != ',' && c != ')' && c != '(' && c != ']' && c != '[' && !c.is_whitespace())(input)
 }
 
-/// Parse a field tuple: ("fieldname", value)
-fn field_tuple<'a>(field_name: &'a str) -> impl FnMut(&'a str) -> IResult<&'a str, String> {
+/// Parse a field list item: ["fieldname", value]
+fn field_list<'a>(field_name: &'a str) -> impl FnMut(&'a str) -> IResult<&'a str, String> {
     move |input: &'a str| {
-        let (input, _) = ws(char('('))(input)?;
+        let (input, _) = ws(char('['))(input)?;
         let (input, _) = ws(char('"'))(input)?;
         let (input, _) = tag(field_name)(input)?;
         let (input, _) = ws(char('"'))(input)?;
         let (input, _) = ws(char(','))(input)?;
 
-        // Parse the value - could be quoted string, tuple, or simple token
+        // Parse the value - could be nested structure, quoted string, or simple token
         let (input, value) = ws(alt((
-            map(tuple_value, |s| s),
+            map(nested_value, |s| s),
             map(quoted_string, |s| format!("\"{}\"", s)),
             map(simple_token, |s| s.to_string()),
         )))(input)?;
 
-        let (input, _) = ws(char(')'))(input)?;
+        let (input, _) = ws(char(']'))(input)?;
 
         Ok((input, value))
     }
@@ -392,7 +425,7 @@ fn array_field<'a>(
     field_name: &'a str,
 ) -> impl FnMut(&'a str) -> IResult<&'a str, Vec<MettaValue>> {
     move |input: &'a str| {
-        let (input, _) = ws(char('('))(input)?;
+        let (input, _) = ws(char('['))(input)?;
         let (input, _) = ws(char('"'))(input)?;
         let (input, _) = tag(field_name)(input)?;
         let (input, _) = ws(char('"'))(input)?;
@@ -401,7 +434,7 @@ fn array_field<'a>(
         // Parse array of MettaValues
         let (input, values) = ws(array_of_values)(input)?;
 
-        let (input, _) = ws(char(')'))(input)?;
+        let (input, _) = ws(char(']'))(input)?;
 
         Ok((input, values))
     }
@@ -411,7 +444,7 @@ fn array_field<'a>(
 fn pathmap_structure(input: &str) -> IResult<&str, PathMapOutput> {
     // Parse {|
     let (input, _) = ws(tag("{|"))(input)?;
-    let (input, _) = ws(char('('))(input)?;
+    let (input, _) = ws(char('['))(input)?;
 
     // We need to parse fields in any order
     // Try to parse each field type
@@ -439,7 +472,7 @@ fn pathmap_structure(input: &str) -> IResult<&str, PathMapOutput> {
         } else if let Ok((rest, vals)) = array_field("output")(remaining) {
             output = vals;
             remaining = rest;
-        } else if let Ok((rest, val)) = field_tuple("environment")(remaining) {
+        } else if let Ok((rest, val)) = field_list("environment")(remaining) {
             environment = Some(val);
             remaining = rest;
         } else {
@@ -447,7 +480,7 @@ fn pathmap_structure(input: &str) -> IResult<&str, PathMapOutput> {
         }
     }
 
-    let (input, _) = ws(char(')'))(remaining)?;
+    let (input, _) = ws(char(']'))(remaining)?;
     let (input, _) = ws(tag("|}"))(input)?;
 
     Ok((
@@ -466,7 +499,7 @@ fn pathmap_structure(input: &str) -> IResult<&str, PathMapOutput> {
 
 /// Parse PathMap output from Rholang stdout
 ///
-/// Extracts the PathMap structure: {|(("source", [...]), ("environment", ...), ("output", [...]))|}.
+/// Extracts the PathMap structure: {|[["source", [...]], ["environment", ...], ["output", [...]]]|}.
 pub fn parse_pathmap(output: &str) -> Vec<PathMapOutput> {
     let mut results = Vec::new();
     let mut remaining = output;
@@ -547,7 +580,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple_pathmap() {
-        let output = r#"{|(("source", [(+ 1 2)]), ("environment", "..."), ("output", [3]))|}  "#;
+        let output = r#"{|[["source", [(+ 1 2)]], ["environment", "..."], ["output", [3]]]|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);
@@ -556,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty_output() {
-        let output = r#"{|(("source", []), ("environment", "..."), ("output", []))|}  "#;
+        let output = r#"{|[["source", []], ["environment", "..."], ["output", []]]|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);
@@ -565,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_outputs() {
-        let output = r#"{|(("source", []), ("environment", "..."), ("output", [10, 15, 20]))|}  "#;
+        let output = r#"{|[["source", []], ["environment", "..."], ["output", [10, 15, 20]]]|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);
@@ -578,7 +611,7 @@ mod tests {
     #[test]
     fn test_parse_nested_expressions() {
         let output =
-            r#"{|(("source", [(+ 1 (* 2 3))]), ("environment", "..."), ("output", [(+ 1 6)]))|}  "#;
+            r#"{|[["source", [(+ 1 (* 2 3))]], ["environment", "..."], ["output", [(+ 1 6)]]]|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);
@@ -593,8 +626,8 @@ mod tests {
     #[test]
     fn test_extract_all_outputs() {
         let output = r#"
-            Test 1: {|(("source", []), ("output", [3]))|}
-            Test 2: {|(("source", []), ("output", [7, 10]))|}  "#;
+            Test 1: {|[["source", []], ["output", [3]]]|}
+            Test 2: {|[["source", []], ["output", [7, 10]]]|}  "#;
         let results = extract_all_outputs(output);
 
         assert_eq!(results.len(), 3);
@@ -605,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_environment() {
-        let output = r#"{|(("source", []), ("environment", "..."), ("output", []))|}  "#;
+        let output = r#"{|[["source", []], ["environment", "..."], ["output", []]]|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);
@@ -617,7 +650,7 @@ mod tests {
     #[test]
     fn test_parse_with_nested_braces() {
         // Real Rholang output format with nested {||}
-        let output = r#"{|(("source", []), ("environment", (("space", {||}), ("multiplicities", {}))), ("output", [12]))|}  "#;
+        let output = r#"{|[["source", []], ["environment", [["space", {||}], ["large_exprs", {}]]], ["output", [12]]]|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);
@@ -627,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_parse_boolean_values() {
-        let output = r#"{|(("source", []), ("output", [true, false]))|}  "#;
+        let output = r#"{|[["source", []], ["output", [true, false]]]|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);

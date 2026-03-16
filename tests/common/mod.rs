@@ -111,15 +111,15 @@ pub fn contains_error(output: &str) -> bool {
 
 /// Extract eval_outputs from PathMap output
 ///
-/// Looks for patterns like: ("output", [value1, value2, ...])
+/// Looks for patterns like: ["output", [value1, value2, ...]]
 pub fn extract_eval_outputs(output: &str) -> Vec<String> {
     use regex::Regex;
 
     let mut results = Vec::new();
 
-    // Pattern to match output array (updated field name from eval_outputs to output)
-    // Example: ("output", [3, 12, 5])
-    let re = Regex::new(r#"\("output",\s*\[(.*?)\]\)"#).unwrap();
+    // Pattern to match output array in list format
+    // Example: ["output", [3, 12, 5]]
+    let re = Regex::new(r#"\["output",\s*\[(.*?)\]\]"#).unwrap();
 
     if let Some(caps) = re.captures(output) {
         if let Some(values) = caps.get(1) {
@@ -160,14 +160,14 @@ mod tests {
 
     #[test]
     fn test_extract_eval_outputs() {
-        let output = r#"{|("output", [3, 12, 5])|}"#;
+        let output = r#"{|["output", [3, 12, 5]]|}"#;
         let results = extract_eval_outputs(output);
         assert_eq!(results, vec!["3", "12", "5"]);
     }
 
     #[test]
     fn test_extract_eval_outputs_empty() {
-        let output = r#"{|("output", [])|}"#;
+        let output = r#"{|["output", []]|}"#;
         let results = extract_eval_outputs(output);
         assert_eq!(results, Vec::<String>::new());
     }

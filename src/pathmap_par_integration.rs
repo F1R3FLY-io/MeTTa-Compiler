@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use models::rhoapi::{expr::ExprInstance, EList, EPathMap, ETuple, Expr, Par};
+use models::rhoapi::{expr::ExprInstance, EList, EPathMap, Expr, Par};
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use tracing::{debug, trace};
 
@@ -59,72 +59,77 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             Par::default()
         }
         MettaValueInner::SExpr(items) => {
-            // Convert S-expressions to Rholang tuples (more semantically appropriate than lists)
+            // Convert S-expressions to Rholang lists for ...rest decomposition
             let item_pars: Vec<Par> = items.iter().map(metta_value_to_par).collect();
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: item_pars,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::Error(msg, details) => {
-            // Represent errors as tuples: ("error", msg, details)
+            // Represent errors as lists: ["error", msg, details]
             let tag_par = create_string_par("error".to_string());
             let msg_par = create_string_par(msg.to_string());
             let details_par = metta_value_to_par(details);
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![tag_par, msg_par, details_par],
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::Type(t) => {
-            // Represent types as tagged tuples: ("type", <inner_value>)
+            // Represent types as tagged lists: ["type", <inner_value>]
             let tag_par = create_string_par("type".to_string());
             let value_par = metta_value_to_par(t);
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![tag_par, value_par],
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::Quoted(inner) => {
-            // Represent quoted as tagged tuples: ("quote", <inner_value>)
+            // Represent quoted as tagged lists: ["quote", <inner_value>]
             let tag_par = create_string_par("quote".to_string());
             let value_par = metta_value_to_par(inner);
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![tag_par, value_par],
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::Conjunction(goals) => {
-            // Represent conjunctions as tagged tuples: ("conjunction", goal1, goal2, ...)
+            // Represent conjunctions as tagged lists: ["conjunction", goal1, goal2, ...]
             let mut ps = vec![create_string_par("conjunction".to_string())];
             ps.extend(goals.iter().map(metta_value_to_par));
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::Space(handle) => {
-            // Represent spaces as tagged tuples: ("space", id, name)
+            // Represent spaces as tagged lists: ["space", id, name]
             let ps = vec![
                 create_string_par("space".to_string()),
                 create_int_par(handle.id as i64),
@@ -132,30 +137,32 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             ];
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::State(id) => {
-            // Represent states as tagged tuples: ("state", id)
+            // Represent states as tagged lists: ["state", id]
             let ps = vec![
                 create_string_par("state".to_string()),
                 create_int_par(*id as i64),
             ];
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::Memo(handle) => {
-            // Represent memos as tagged tuples: ("memo", id, name)
+            // Represent memos as tagged lists: ["memo", id, name]
             let ps = vec![
                 create_string_par("memo".to_string()),
                 create_int_par(handle.id as i64),
@@ -163,22 +170,24 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             ];
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
         MettaValueInner::Empty => {
-            // Empty sentinel - represent as tagged tuple: ("empty",)
+            // Empty sentinel - represent as tagged list: ["empty"]
             let ps = vec![create_string_par("empty".to_string())];
 
             Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                expr_instance: Some(ExprInstance::EListBody(EList {
                     ps,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    remainder: None,
                 })),
             }])
         }
@@ -207,7 +216,7 @@ pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
 
 /// Convert Environment to a Rholang Par tuple
 /// Serializes the Space's PathMap with inline multiplicities as byte arrays
-/// Returns an ETuple with two named fields:
+/// Returns an EList with two named fields:
 ///   ("space", GByteArray) - Raw MORK trie bytes with inline multiplicities
 ///   ("large_exprs", GByteArray) - Wide MORK paths (arity >= 64) with inline multiplicities
 /// Note: Type assertions are stored within the space, not separately
@@ -482,66 +491,59 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
             Some(ExprInstance::GInt(n)) => Ok(MettaValue::Long(*n)),
             Some(ExprInstance::GBool(b)) => Ok(MettaValue::Bool(*b)),
             Some(ExprInstance::EListBody(list)) => {
-                // Lists are also converted to S-expressions for compatibility
-                let items: Result<Vec<MettaValue>, String> =
-                    list.ps.iter().map(par_to_metta_value).collect();
-                Ok(MettaValue::SExpr(items?))
-            }
-            Some(ExprInstance::ETupleBody(tuple)) => {
                 // Check if it's a tagged structure (error, type)
                 // Tagged structures have string tag as first element
-                if tuple.ps.len() >= 2 {
-                    if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                if list.ps.len() >= 2 {
+                    if let Some(ExprInstance::GString(tag)) = list.ps[0]
                         .exprs
                         .first()
                         .and_then(|e| e.expr_instance.as_ref())
                     {
                         // Check if the tag looks like a quoted string (for distinguishing from atoms)
                         if tag.starts_with('"') {
-                            // It's a tagged structure, not a plain S-expr
                             match tag.as_str() {
                                 "error" => {
-                                    // Error tuple: (tag, msg, details)
-                                    if tuple.ps.len() >= 3 {
-                                        let msg = par_to_metta_value(&tuple.ps[1])?;
-                                        let details = par_to_metta_value(&tuple.ps[2])?;
+                                    // Error list: [tag, msg, details]
+                                    if list.ps.len() >= 3 {
+                                        let msg = par_to_metta_value(&list.ps[1])?;
+                                        let details = par_to_metta_value(&list.ps[2])?;
                                         if let MettaValueInner::String(msg_str) = msg.inner() {
                                             Ok(MettaValue::Error(msg_str, details))
                                         } else {
                                             Err("Error message must be a string".to_string())
                                         }
                                     } else {
-                                        Err("Error tuple must have 3 elements".to_string())
+                                        Err("Error list must have 3 elements".to_string())
                                     }
                                 }
                                 "type" => {
-                                    // Type tuple: (tag, inner_value)
-                                    let inner = par_to_metta_value(&tuple.ps[1])?;
+                                    // Type list: [tag, inner_value]
+                                    let inner = par_to_metta_value(&list.ps[1])?;
                                     Ok(MettaValue::Type(inner))
                                 }
                                 _ => {
                                     // Unknown tag, treat as regular S-expr
                                     let items: Result<Vec<MettaValue>, String> =
-                                        tuple.ps.iter().map(par_to_metta_value).collect();
+                                        list.ps.iter().map(par_to_metta_value).collect();
                                     Ok(MettaValue::SExpr(items?))
                                 }
                             }
                         } else {
                             // First element is an atom, not a tag - it's a regular S-expr
                             let items: Result<Vec<MettaValue>, String> =
-                                tuple.ps.iter().map(par_to_metta_value).collect();
+                                list.ps.iter().map(par_to_metta_value).collect();
                             Ok(MettaValue::SExpr(items?))
                         }
                     } else {
                         // First element is not a string - it's a regular S-expr
                         let items: Result<Vec<MettaValue>, String> =
-                            tuple.ps.iter().map(par_to_metta_value).collect();
+                            list.ps.iter().map(par_to_metta_value).collect();
                         Ok(MettaValue::SExpr(items?))
                     }
                 } else {
-                    // Small tuple, treat as S-expr
+                    // Small list, treat as S-expr
                     let items: Result<Vec<MettaValue>, String> =
-                        tuple.ps.iter().map(par_to_metta_value).collect();
+                        list.ps.iter().map(par_to_metta_value).collect();
                     Ok(MettaValue::SExpr(items?))
                 }
             }
@@ -855,14 +857,14 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
     // Get the EPathMap from the Par
     if let Some(expr) = par.exprs.first() {
         if let Some(ExprInstance::EPathmapBody(pathmap)) = &expr.expr_instance {
-            // The PathMap should contain a single ETuple with three named field tuples
+            // The PathMap should contain a single EList with three named field lists
             if pathmap.ps.len() != 1 {
                 debug!(
                     target: "mettatron::rholang_integration::pathmap_par_to_metta_state",
                     expected = 1, got = pathmap.ps.len(), "invalid PathMap size"
                 );
                 return Err(format!(
-                    "Expected 1 element (ETuple) in PathMap, got {}",
+                    "Expected 1 element (EList) in PathMap, got {}",
                     pathmap.ps.len()
                 ));
             }
@@ -1702,10 +1704,10 @@ mod tests {
         let par = metta_value_to_par(&sexpr);
 
         assert_eq!(par.exprs.len(), 1);
-        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
-            assert_eq!(tuple.ps.len(), 3);
+        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
+            assert_eq!(list.ps.len(), 3);
         } else {
-            panic!("Expected ETupleBody");
+            panic!("Expected EListBody");
         }
 
         // Test round-trip
@@ -2209,11 +2211,11 @@ mod tests {
         let empty_val = MettaValue::Empty();
         let par = metta_value_to_par(&empty_val);
 
-        // Empty should be a tuple with single "empty" tag
+        // Empty should be a list with single "empty" tag
         assert_eq!(par.exprs.len(), 1);
-        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
-            assert_eq!(tuple.ps.len(), 1);
-            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
+            assert_eq!(list.ps.len(), 1);
+            if let Some(ExprInstance::GString(tag)) = list.ps[0]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
@@ -2223,7 +2225,7 @@ mod tests {
                 panic!("Expected GString tag");
             }
         } else {
-            panic!("Expected ETupleBody for Empty");
+            panic!("Expected EListBody for Empty");
         }
     }
 
@@ -2232,12 +2234,12 @@ mod tests {
         let type_val = MettaValue::Type(MettaValue::Atom("Int".to_string()));
         let par = metta_value_to_par(&type_val);
 
-        // Type should be tagged tuple: ("type", inner_value)
+        // Type should be tagged list: ["type", inner_value]
         assert_eq!(par.exprs.len(), 1);
-        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
-            assert_eq!(tuple.ps.len(), 2);
+        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
+            assert_eq!(list.ps.len(), 2);
             // First should be "type" tag
-            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+            if let Some(ExprInstance::GString(tag)) = list.ps[0]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
@@ -2245,7 +2247,7 @@ mod tests {
                 assert_eq!(tag, "type");
             }
         } else {
-            panic!("Expected ETupleBody for Type");
+            panic!("Expected EListBody for Type");
         }
     }
 
@@ -2257,12 +2259,12 @@ mod tests {
         ]);
         let par = metta_value_to_par(&conj);
 
-        // Conjunction should be tagged tuple: ("conjunction", goal1, goal2, ...)
+        // Conjunction should be tagged list: ["conjunction", goal1, goal2, ...]
         assert_eq!(par.exprs.len(), 1);
-        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
-            assert_eq!(tuple.ps.len(), 3); // tag + 2 goals
+        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
+            assert_eq!(list.ps.len(), 3); // tag + 2 goals
             // First should be "conjunction" tag
-            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+            if let Some(ExprInstance::GString(tag)) = list.ps[0]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
@@ -2270,7 +2272,7 @@ mod tests {
                 assert_eq!(tag, "conjunction");
             }
         } else {
-            panic!("Expected ETupleBody for Conjunction");
+            panic!("Expected EListBody for Conjunction");
         }
     }
 
@@ -2279,12 +2281,12 @@ mod tests {
         let state_val = MettaValue::State(42);
         let par = metta_value_to_par(&state_val);
 
-        // State should be tagged tuple: ("state", id)
+        // State should be tagged list: ["state", id]
         assert_eq!(par.exprs.len(), 1);
-        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
-            assert_eq!(tuple.ps.len(), 2);
+        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
+            assert_eq!(list.ps.len(), 2);
             // First should be "state" tag
-            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+            if let Some(ExprInstance::GString(tag)) = list.ps[0]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
@@ -2292,7 +2294,7 @@ mod tests {
                 assert_eq!(tag, "state");
             }
             // Second should be state id
-            if let Some(ExprInstance::GInt(id)) = tuple.ps[1]
+            if let Some(ExprInstance::GInt(id)) = list.ps[1]
                 .exprs
                 .first()
                 .and_then(|e| e.expr_instance.as_ref())
@@ -2300,7 +2302,7 @@ mod tests {
                 assert_eq!(*id, 42);
             }
         } else {
-            panic!("Expected ETupleBody for State");
+            panic!("Expected EListBody for State");
         }
     }
 
@@ -2474,34 +2476,36 @@ mod tests {
     }
 
     #[test]
-    fn test_par_to_metta_value_tuple_small() {
-        // Small tuple (less than 2 elements) should become S-expr
+    fn test_par_to_metta_value_list_small() {
+        // Small list (less than 2 elements) should become S-expr
         let par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            expr_instance: Some(ExprInstance::EListBody(EList {
                 ps: vec![create_int_par(42)],
                 locally_free: Vec::new(),
                 connective_used: false,
+                remainder: None,
             })),
         }]);
 
         let result = par_to_metta_value(&par).unwrap();
 
-        // Small tuples become S-exprs
+        // Small lists become S-exprs
         if let MettaValueInner::SExpr(items) = result.inner() {
             assert_eq!(items.len(), 1);
         } else {
-            panic!("Expected SExpr from small tuple");
+            panic!("Expected SExpr from small list");
         }
     }
 
     #[test]
-    fn test_par_to_metta_value_tuple_non_string_first() {
-        // Tuple where first element is not a string
+    fn test_par_to_metta_value_list_non_string_first() {
+        // List where first element is not a string
         let par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            expr_instance: Some(ExprInstance::EListBody(EList {
                 ps: vec![create_int_par(1), create_int_par(2), create_int_par(3)],
                 locally_free: Vec::new(),
                 connective_used: false,
+                remainder: None,
             })),
         }]);
 
@@ -2511,15 +2515,15 @@ mod tests {
         if let MettaValueInner::SExpr(items) = result.inner() {
             assert_eq!(items.len(), 3);
         } else {
-            panic!("Expected SExpr from tuple with non-string first element");
+            panic!("Expected SExpr from list with non-string first element");
         }
     }
 
     #[test]
-    fn test_par_to_metta_value_tuple_atom_first() {
-        // Tuple where first element is an atom (unquoted string) - should be S-expr
+    fn test_par_to_metta_value_list_atom_first() {
+        // List where first element is an atom (unquoted string) - should be S-expr
         let par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            expr_instance: Some(ExprInstance::EListBody(EList {
                 ps: vec![
                     create_string_par("add".to_string()), // unquoted = atom
                     create_int_par(1),
@@ -2527,6 +2531,7 @@ mod tests {
                 ],
                 locally_free: Vec::new(),
                 connective_used: false,
+                remainder: None,
             })),
         }]);
 
@@ -2536,7 +2541,7 @@ mod tests {
         if let MettaValueInner::SExpr(items) = result.inner() {
             assert_eq!(items.len(), 3);
         } else {
-            panic!("Expected SExpr from tuple with atom first element");
+            panic!("Expected SExpr from list with atom first element");
         }
     }
 

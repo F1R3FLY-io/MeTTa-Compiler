@@ -464,6 +464,10 @@ where
         let span = *span; // Copy
         let stripped = template.strip_one_span();
         let result = apply_bindings_generic(&stripped, bindings, factory);
+        // Skip wrapping if result already carries a span
+        if result.span().is_some() {
+            return result;
+        }
         return factory.spanned(result, span);
     }
 

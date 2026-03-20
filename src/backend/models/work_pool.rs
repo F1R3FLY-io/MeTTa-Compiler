@@ -1462,14 +1462,32 @@ fn read_rss_bytes(page_size: usize) -> Option<usize> {
         Some(rss_pages.saturating_mul(page_size))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        let _ = page_size; // Suppress unused warning on non-Linux
-        use sysinfo::{Pid, ProcessesToUpdate, System};
-        let pid = Pid::from_u32(std::process::id());
-        let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-        sys.process(pid).map(|p| p.memory() as usize)
+        let _ = page_size; // Suppress unused warning on macOS
+        use std::mem;
+        let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
+        let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
+            / mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+        let kr = unsafe {
+            libc::task_info(
+                libc::mach_task_self(),
+                libc::MACH_TASK_BASIC_INFO,
+                &mut info as *mut _ as libc::task_info_t,
+                &mut count,
+            )
+        };
+        if kr == libc::KERN_SUCCESS {
+            Some(info.resident_size as usize)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = page_size; // Suppress unused warning on unsupported platforms
+        None // RSS monitoring disabled on unsupported platforms
     }
 }
 
@@ -1478,7 +1496,7 @@ fn read_rss_bytes(page_size: usize) -> Option<usize> {
 /// Priority:
 /// 1. `METTATRON_RSS_LIMIT_MB` environment variable (in MB)
 /// 2. 80% of system physical memory (auto-detected via sysconf on Linux,
-///    `sysinfo` crate on other platforms)
+///    `sysctl` on macOS)
 /// 3. 0 (disables RSS pressure if both fail)
 fn get_rss_limit() -> usize {
     if let Ok(val) = std::env::var("METTATRON_RSS_LIMIT_MB") {
@@ -1498,13 +1516,29 @@ fn get_rss_limit() -> usize {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        use sysinfo::System;
-        let total = System::new_all().total_memory() as usize;
-        if total > 0 {
-            return total * 4 / 5; // 80% of physical memory
+        let mut memsize: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        let mib = [libc::CTL_HW, libc::HW_MEMSIZE];
+        let ret = unsafe {
+            libc::sysctl(
+                mib.as_ptr() as *mut _,
+                2,
+                &mut memsize as *mut _ as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if ret == 0 && memsize > 0 {
+            return (memsize as usize) * 4 / 5; // 80% of physical memory
         }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        // No system memory detection — RSS limit disabled
     }
 
     0 // Disabled

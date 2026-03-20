@@ -72,7 +72,14 @@ where
         (Some(span), GenericEvalStep::Done((results, env))) => {
             let wrapped = results
                 .into_iter()
-                .map(|v| ctx.factory().spanned(v, span))
+                .map(|v| {
+                    // Skip wrapping if value already carries a span
+                    if v.span().is_some() {
+                        v
+                    } else {
+                        ctx.factory().spanned(v, span)
+                    }
+                })
                 .collect();
             GenericEvalStep::Done((wrapped, env))
         }

@@ -67,11 +67,11 @@ where
 
                 if is_conjunction {
                     // Convert to Conjunction variant (skip the comma operator)
-                    let goals: Result<Vec<V>, String> = items[1..]
-                        .iter()
-                        .map(|e| expr_to_value_generic(e, factory))
-                        .collect();
-                    Ok(maybe_spanned(factory, factory.conjunction(goals?), span))
+                    let mut goals = Vec::with_capacity(items.len() - 1);
+                    for e in &items[1..] {
+                        goals.push(expr_to_value_generic(e, factory)?);
+                    }
+                    Ok(maybe_spanned(factory, factory.conjunction(goals), span))
                 } else {
                     // Check for (quote expr) → Quoted(expr) variant
                     let is_quote = items.len() == 2
@@ -82,11 +82,11 @@ where
                         Ok(maybe_spanned(factory, factory.quote(inner), span))
                     } else {
                         // Regular S-expression
-                        let values: Result<Vec<V>, String> = items
-                            .iter()
-                            .map(|e| expr_to_value_generic(e, factory))
-                            .collect();
-                        Ok(maybe_spanned(factory, factory.sexpr(values?), span))
+                        let mut values = Vec::with_capacity(items.len());
+                        for e in items {
+                            values.push(expr_to_value_generic(e, factory)?);
+                        }
+                        Ok(maybe_spanned(factory, factory.sexpr(values), span))
                     }
                 }
             }

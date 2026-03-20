@@ -1034,7 +1034,7 @@ impl StructuralMatcher {
 /// This is used as a diagnostic tool to catch byte misalignment issues before they
 /// cause panics in `ExprZipper::new()` or `ExprZipper::tag()` (which call `byte_item()`).
 #[cfg(any(debug_assertions, test))]
-fn validate_mork_bytes(bytes: &[u8]) -> Result<usize, (usize, u8)> {
+pub(crate) fn validate_mork_bytes(bytes: &[u8]) -> Result<usize, (usize, u8)> {
     let mut offset = 0usize;
     let mut depth = 1u32;
 

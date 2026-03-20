@@ -129,6 +129,21 @@ impl FloatFormatCache {
     }
 }
 
+/// Ground fragment cache entry with epoch for lazy ABA validation.
+///
+/// After a GC sweep, slab slots may be freed and reused for different values.
+/// Instead of clearing the entire `ground_cache` on every GC epoch change,
+/// each entry records the slot's allocation epoch at insertion time. On lookup
+/// after a GC sweep, only entries whose epoch no longer matches the slot's
+/// current epoch are evicted — valid entries survive across GC cycles.
+struct GroundCacheEntry {
+    /// Serialized MORK byte fragment.
+    fragment: Vec<u8>,
+    /// Slot allocation epoch at insertion time. Bump-allocated slots have epoch 0;
+    /// free-list-recycled slots have a monotonically increasing non-zero epoch.
+    alloc_epoch: u64,
+}
+
 /// Unified thread-local state for MORK conversion.
 ///
 /// Combines the buffer, scratch space, variable context, and symbol cache into a
@@ -159,14 +174,25 @@ struct ConvertState {
     /// Ground sub-expression MORK fragment cache.
     ///
     /// Keyed by `inner_ptr as usize` (slab pointer, stable between GC safepoints).
-    /// Stores the serialized MORK byte fragment for ground (variable-free) sub-expressions.
-    /// This eliminates redundant recursive serialization of repeated ground sub-trees
-    /// (e.g., `(stv 0.5 0.9)` appearing in multiple PLN expressions).
+    /// Stores the serialized MORK byte fragment and slot allocation epoch for
+    /// ground (variable-free) sub-expressions. This eliminates redundant recursive
+    /// serialization of repeated ground sub-trees (e.g., `(stv 0.5 0.9)` appearing
+    /// in multiple PLN expressions).
     ///
-    /// Invalidated on epoch change and at GC safepoints (pointer-keyed).
-    ground_cache: HashMap<usize, Vec<u8>, FxBuildHasher>,
+    /// Entries are lazily validated after GC sweeps: each entry's `alloc_epoch` is
+    /// checked against the slot's current epoch on lookup, so only stale entries
+    /// are evicted while valid entries survive across GC cycles.
+    ground_cache: HashMap<usize, GroundCacheEntry, FxBuildHasher>,
     /// Inline cache for float-to-string formatting (ryu bypass).
     float_cache: FloatFormatCache,
+    /// Last-seen GC sweep epoch. When the global GC sweep epoch advances
+    /// (slab slots freed and potentially reused), the `needs_gc_validation` flag
+    /// is set to trigger per-entry lazy validation on the next ground_cache lookup.
+    gc_sweep_epoch: u64,
+    /// When `true`, ground_cache lookups must validate each entry's `alloc_epoch`
+    /// against the slot's current epoch before using it. Set on GC sweep epoch
+    /// change; cleared when the entire ground_cache is cleared (MORK epoch change).
+    needs_gc_validation: bool,
 }
 
 impl ConvertState {
@@ -179,33 +205,49 @@ impl ConvertState {
             symbol_cache_epoch: 0,
             ground_cache: HashMap::with_hasher(FxBuildHasher),
             float_cache: FloatFormatCache::new(),
+            gc_sweep_epoch: 0,
+            needs_gc_validation: false,
         }
     }
 
-    /// Ensure the symbol cache is valid for the given environment epoch.
-    /// If the epoch changed (different environment), clear the cache.
+    /// Ensure all caches are valid for the given environment epoch and current
+    /// GC sweep epoch.
     ///
-    /// Epochs are monotonically increasing `u64` values assigned at environment
-    /// construction. Unlike pointer-based identity, epochs are never reused,
-    /// eliminating the ABA problem where a dropped `SharedMapping` has its heap
-    /// address recycled by a new allocation.
+    /// Two invalidation triggers:
+    /// 1. **MORK epoch change** — different environment = different symbol table.
+    ///    Clears both `symbol_cache` and `ground_cache`.
+    /// 2. **GC sweep epoch change** — slab slots may have been freed and reused.
+    ///    Only clears `ground_cache` (pointer-keyed). The `symbol_cache` is
+    ///    content-addressed (keyed by byte content, not slab pointers) and is
+    ///    unaffected by GC sweeps.
     #[inline]
-    fn validate_symbol_cache(&mut self, epoch: u64) {
+    fn validate_caches(&mut self, epoch: u64) {
         if self.symbol_cache_epoch != epoch {
             self.symbol_cache.clear();
             self.ground_cache.clear();
             self.symbol_cache_epoch = epoch;
+            self.needs_gc_validation = false;
+        }
+        // Check GC sweep epoch: slab slots may have been freed and reused,
+        // making pointer-keyed ground_cache entries potentially stale.
+        // Instead of clearing the entire cache, set a flag for lazy per-entry
+        // validation on the next lookup.
+        let current_gc_epoch = super::models::gc_allocator::gc_sweep_epoch();
+        if self.gc_sweep_epoch != current_gc_epoch {
+            self.needs_gc_validation = true;
+            self.gc_sweep_epoch = current_gc_epoch;
         }
     }
 }
 
-/// Clear the thread-local ground fragment cache.
+/// Flag the thread-local ground fragment cache for lazy validation.
 ///
-/// Called at GC safepoints (before GC runs) to ensure no stale pointers
-/// persist across GC mark-sweep cycles where slab slots may be reused.
+/// Called at GC safepoints (before GC runs) to ensure stale entries are
+/// detected on next lookup. Individual entries are validated against their
+/// slot's current allocation epoch rather than clearing the entire cache.
 pub fn clear_ground_fragment_cache() {
     CONVERT_STATE.with(|state| {
-        state.borrow_mut().ground_cache.clear();
+        state.borrow_mut().needs_gc_validation = true;
     });
 }
 
@@ -272,8 +314,8 @@ pub fn with_mork_bytes<V: MettaValueTrait, R>(
     CONVERT_STATE.with(|state| {
         let mut state = state.borrow_mut();
         // Invalidate symbol cache if the environment epoch changed.
-        state.validate_symbol_cache(cache_epoch);
-        let ConvertState { buffer, scratch, context, symbol_cache, ground_cache, float_cache, .. } = &mut *state;
+        state.validate_caches(cache_epoch);
+        let ConvertState { buffer, scratch, context, symbol_cache, ground_cache, float_cache, needs_gc_validation, .. } = &mut *state;
         context.var_map.clear();
         context.var_names.clear();
         // buffer is initialized to MAX_MORK_BUFFER in ConvertState::new()
@@ -285,7 +327,7 @@ pub fn with_mork_bytes<V: MettaValueTrait, R>(
         // Use inner_raw() which safely handles inline NaN-boxed values (returns
         // static singletons for Bool/Long/Unit/Empty instead of null pointer).
         let inner = value.inner_raw();
-        write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache)?;
+        write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, *needs_gc_validation)?;
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
                 "Expression too large: {} bytes (max {})",
@@ -312,20 +354,31 @@ pub fn with_mork_query_bytes<V: MettaValueTrait, R>(
     CONVERT_STATE.with(|state| {
         let mut state = state.borrow_mut();
         // Invalidate symbol cache if the environment epoch changed.
-        state.validate_symbol_cache(cache_epoch);
-        let ConvertState { buffer, scratch, context, symbol_cache, ground_cache, float_cache, .. } = &mut *state;
+        state.validate_caches(cache_epoch);
+        let ConvertState { buffer, scratch, context, symbol_cache, ground_cache, float_cache, needs_gc_validation, .. } = &mut *state;
         context.var_map.clear();
         context.var_names.clear();
         let expr = Expr { ptr: buffer.as_mut_ptr() };
         let mut ez = ExprZipper::new(expr);
         let mut pdp = ParDataParser::new(sm);
         let inner = value.inner_raw();
-        write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache)?;
+        write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, *needs_gc_validation)?;
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
                 "Expression too large: {} bytes (max {})",
                 ez.loc, MAX_MORK_BUFFER
             ));
+        }
+        #[cfg(debug_assertions)]
+        {
+            use crate::backend::environment::rule_management::validate_mork_bytes;
+            if let Err((off, byte)) = validate_mork_bytes(&buffer[..ez.loc]) {
+                panic!(
+                    "write_metta_value_debruijn_inner produced invalid MORK at offset {} \
+                     (byte 0x{:02x}), total len={}",
+                    off, byte, ez.loc
+                );
+            }
         }
         Ok(f(&buffer[..ez.loc], context))
     })
@@ -392,8 +445,9 @@ fn write_metta_value_inner(
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
     symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
-    ground_cache: &mut HashMap<usize, Vec<u8>, FxBuildHasher>,
+    ground_cache: &mut HashMap<usize, GroundCacheEntry, FxBuildHasher>,
     float_cache: &mut FloatFormatCache,
+    needs_gc_validation: bool,
 ) -> Result<(), String> {
     // Pre-bounds-check: detect buffer overrun before any write.
     if ez.loc >= MAX_MORK_BUFFER {
@@ -477,7 +531,23 @@ fn write_metta_value_inner(
                 let key_ptr = item.inner_ptr();
                 if !key_ptr.is_null() && !item.has_variables_fast() {
                     let key = key_ptr as usize;
-                    if let Some(frag) = ground_cache.get(&key) {
+                    // Two-phase lookup: check validity first, then use or evict.
+                    let cache_hit = if let Some(entry) = ground_cache.get(&key) {
+                        if needs_gc_validation {
+                            let current_epoch = global_allocator().get_slot_epoch(key_ptr as *const u8);
+                            current_epoch == Some(entry.alloc_epoch)
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    if !cache_hit {
+                        // Evict stale entry if present
+                        ground_cache.remove(&key);
+                    }
+                    if cache_hit {
+                        let frag = &ground_cache[&key].fragment;
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
                             // SAFETY: ez.root.ptr is the buffer, and we write within bounds.
@@ -492,20 +562,23 @@ fn write_metta_value_inner(
                             continue;
                         }
                     }
-                    // Cache miss: serialize normally, then capture fragment
+                    // Cache miss or stale: serialize normally, then capture fragment
                     let start_loc = ez.loc;
-                    write_metta_value_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                     let end_loc = ez.loc;
                     let frag_len = end_loc - start_loc;
                     // Only cache fragments up to 256 bytes (avoids bloating cache with large subtrees)
                     if frag_len > 0 && frag_len <= 256 {
+                        let alloc_epoch = global_allocator()
+                            .get_slot_epoch(key_ptr as *const u8)
+                            .unwrap_or(0);
                         let frag = unsafe {
                             std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
                         }.to_vec();
-                        ground_cache.insert(key, frag);
+                        ground_cache.insert(key, GroundCacheEntry { fragment: frag, alloc_epoch });
                     }
                 } else {
-                    write_metta_value_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                 }
             }
         }
@@ -519,18 +592,18 @@ fn write_metta_value_inner(
             scratch.extend_from_slice(msg.as_bytes());
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez, symbol_cache)?;
-            write_metta_value_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
 
         MettaValueInner::Type(t) => {
-            write_metta_value_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
 
         MettaValueInner::Quoted(inner) => {
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"quote", pdp, ez, symbol_cache)?;
-            write_metta_value_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
 
         MettaValueInner::Conjunction(goals) => {
@@ -550,7 +623,21 @@ fn write_metta_value_inner(
                 let goal_key_ptr = goal.inner_ptr();
                 if !goal_key_ptr.is_null() && !goal.has_variables_fast() {
                     let key = goal_key_ptr as usize;
-                    if let Some(frag) = ground_cache.get(&key) {
+                    let cache_hit = if let Some(entry) = ground_cache.get(&key) {
+                        if needs_gc_validation {
+                            let current_epoch = global_allocator().get_slot_epoch(goal_key_ptr as *const u8);
+                            current_epoch == Some(entry.alloc_epoch)
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    if !cache_hit {
+                        ground_cache.remove(&key);
+                    }
+                    if cache_hit {
+                        let frag = &ground_cache[&key].fragment;
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
                             unsafe {
@@ -565,17 +652,20 @@ fn write_metta_value_inner(
                         }
                     }
                     let start_loc = ez.loc;
-                    write_metta_value_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                     let end_loc = ez.loc;
                     let frag_len = end_loc - start_loc;
                     if frag_len > 0 && frag_len <= 256 {
+                        let alloc_epoch = global_allocator()
+                            .get_slot_epoch(goal_key_ptr as *const u8)
+                            .unwrap_or(0);
                         let frag = unsafe {
                             std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
                         }.to_vec();
-                        ground_cache.insert(key, frag);
+                        ground_cache.insert(key, GroundCacheEntry { fragment: frag, alloc_epoch });
                     }
                 } else {
-                    write_metta_value_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                 }
             }
         }
@@ -617,7 +707,7 @@ fn write_metta_value_inner(
         }
 
         MettaValueInner::Spanned(v, _) => {
-            write_metta_value_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
     }
 
@@ -636,8 +726,9 @@ fn write_metta_value_debruijn_inner(
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
     symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
-    ground_cache: &mut HashMap<usize, Vec<u8>, FxBuildHasher>,
+    ground_cache: &mut HashMap<usize, GroundCacheEntry, FxBuildHasher>,
     float_cache: &mut FloatFormatCache,
+    needs_gc_validation: bool,
 ) -> Result<(), String> {
     if ez.loc >= MAX_MORK_BUFFER {
         return Err(format!(
@@ -741,7 +832,21 @@ fn write_metta_value_debruijn_inner(
                 let item_key_ptr = item.inner_ptr();
                 if !item_key_ptr.is_null() && !item.has_variables_fast() {
                     let key = item_key_ptr as usize;
-                    if let Some(frag) = ground_cache.get(&key) {
+                    let cache_hit = if let Some(entry) = ground_cache.get(&key) {
+                        if needs_gc_validation {
+                            let current_epoch = global_allocator().get_slot_epoch(item_key_ptr as *const u8);
+                            current_epoch == Some(entry.alloc_epoch)
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    if !cache_hit {
+                        ground_cache.remove(&key);
+                    }
+                    if cache_hit {
+                        let frag = &ground_cache[&key].fragment;
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
                             unsafe {
@@ -756,17 +861,20 @@ fn write_metta_value_debruijn_inner(
                         }
                     }
                     let start_loc = ez.loc;
-                    write_metta_value_debruijn_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_debruijn_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                     let end_loc = ez.loc;
                     let frag_len = end_loc - start_loc;
                     if frag_len > 0 && frag_len <= 256 {
+                        let alloc_epoch = global_allocator()
+                            .get_slot_epoch(item_key_ptr as *const u8)
+                            .unwrap_or(0);
                         let frag = unsafe {
                             std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
                         }.to_vec();
-                        ground_cache.insert(key, frag);
+                        ground_cache.insert(key, GroundCacheEntry { fragment: frag, alloc_epoch });
                     }
                 } else {
-                    write_metta_value_debruijn_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_debruijn_inner(item.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                 }
             }
         }
@@ -780,18 +888,18 @@ fn write_metta_value_debruijn_inner(
             scratch.extend_from_slice(msg.as_bytes());
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez, symbol_cache)?;
-            write_metta_value_debruijn_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_debruijn_inner(details.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
 
         MettaValueInner::Type(t) => {
-            write_metta_value_debruijn_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_debruijn_inner(t.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
 
         MettaValueInner::Quoted(inner) => {
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"quote", pdp, ez, symbol_cache)?;
-            write_metta_value_debruijn_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_debruijn_inner(inner.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
 
         MettaValueInner::Conjunction(goals) => {
@@ -809,7 +917,21 @@ fn write_metta_value_debruijn_inner(
                 let goal_key_ptr = goal.inner_ptr();
                 if !goal_key_ptr.is_null() && !goal.has_variables_fast() {
                     let key = goal_key_ptr as usize;
-                    if let Some(frag) = ground_cache.get(&key) {
+                    let cache_hit = if let Some(entry) = ground_cache.get(&key) {
+                        if needs_gc_validation {
+                            let current_epoch = global_allocator().get_slot_epoch(goal_key_ptr as *const u8);
+                            current_epoch == Some(entry.alloc_epoch)
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    if !cache_hit {
+                        ground_cache.remove(&key);
+                    }
+                    if cache_hit {
+                        let frag = &ground_cache[&key].fragment;
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
                             unsafe {
@@ -824,17 +946,20 @@ fn write_metta_value_debruijn_inner(
                         }
                     }
                     let start_loc = ez.loc;
-                    write_metta_value_debruijn_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_debruijn_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                     let end_loc = ez.loc;
                     let frag_len = end_loc - start_loc;
                     if frag_len > 0 && frag_len <= 256 {
+                        let alloc_epoch = global_allocator()
+                            .get_slot_epoch(goal_key_ptr as *const u8)
+                            .unwrap_or(0);
                         let frag = unsafe {
                             std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
                         }.to_vec();
-                        ground_cache.insert(key, frag);
+                        ground_cache.insert(key, GroundCacheEntry { fragment: frag, alloc_epoch });
                     }
                 } else {
-                    write_metta_value_debruijn_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+                    write_metta_value_debruijn_inner(goal.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
                 }
             }
         }
@@ -876,7 +1001,7 @@ fn write_metta_value_debruijn_inner(
         }
 
         MettaValueInner::Spanned(v, _) => {
-            write_metta_value_debruijn_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache)?;
+            write_metta_value_debruijn_inner(v.inner_ref(), pdp, ctx, ez, scratch, symbol_cache, ground_cache, float_cache, needs_gc_validation)?;
         }
     }
     Ok(())

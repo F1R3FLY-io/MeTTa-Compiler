@@ -2277,6 +2277,19 @@ impl SlabAllocator {
         false
     }
 
+    /// Read the allocation epoch for the slab slot at `ptr`.
+    /// Returns `Some(epoch)` if the pointer is in a known page, `None` otherwise.
+    /// A freed slot has epoch `u64::MAX`.
+    pub fn get_slot_epoch(&self, ptr: *const u8) -> Option<u64> {
+        let pages = self.values.pages.read();
+        for page in pages.iter() {
+            if let Some(idx) = page.slot_index(ptr, self.values.slot_size) {
+                return Some(page.slot_epoch(idx));
+            }
+        }
+        None
+    }
+
     /// Free a value slot (lock-free).
     ///
     /// # Safety
@@ -5039,13 +5052,13 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
             if let Some(existing) = hash_cons_lookup(key, &items) {
                 return existing;
             }
-            let slice = self.alloc.alloc_slice_from_iter(items);
+            let slice = self.alloc.alloc_slice_copy(&items);
             let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
             let result = MettaValue::from_inner(inner); // flags = 0 (no variables)
             hash_cons_insert(key, result);
             result
         } else {
-            let slice = self.alloc.alloc_slice_from_iter(items);
+            let slice = self.alloc.alloc_slice_copy(&items);
             let inner = self.alloc.alloc_value(MettaValueInner::SExpr(slice));
             MettaValue::from_inner_tagged(inner, super::metta_value::FLAG_HAS_VARIABLES as u8)
         }
@@ -5093,7 +5106,7 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     #[inline]
     fn conjunction(&self, goals: Vec<MettaValue>) -> MettaValue {
         let has_vars = goals.iter().any(|g| g.has_variables_fast());
-        let slice = self.alloc.alloc_slice_from_iter(goals);
+        let slice = self.alloc.alloc_slice_copy(&goals);
         let inner = self.alloc.alloc_value(MettaValueInner::Conjunction(slice));
         let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
         MettaValue::from_inner_tagged(inner, flags)

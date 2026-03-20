@@ -13,6 +13,8 @@ pub mod strings;
 
 pub use emitter::{IrEmitter, ParseEmitter, ValueEmitter};
 
+use smallvec::SmallVec;
+
 use crate::ir::{Position, Span};
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
@@ -159,7 +161,7 @@ impl<'src> MettaParser<'src> {
         // Consume opening delimiter
         self.advance(1);
 
-        let mut items = Vec::new();
+        let mut items: SmallVec<[E::Output; 8]> = SmallVec::new();
         let mut first_is_comma = false;
 
         loop {
@@ -200,9 +202,9 @@ impl<'src> MettaParser<'src> {
         if first_is_comma && !items.is_empty() {
             // Remove the comma atom and emit as conjunction
             items.remove(0);
-            Ok(emitter.emit_conjunction(items, span))
+            Ok(emitter.emit_conjunction(items.into_vec(), span))
         } else {
-            Ok(emitter.emit_sexpr(items, span))
+            Ok(emitter.emit_sexpr(items.into_vec(), span))
         }
     }
 

@@ -269,7 +269,8 @@ where
     }
 
     // Try rule matching using generic rule matching (zero-conversion)
-    let sexpr = factory.sexpr(evaled_items.clone());
+    // Build sexpr once and reuse for both rule matching and no-match fallback
+    let sexpr = factory.sexpr(evaled_items);
     let all_matches_with_types = try_match_all_rules_generic(&sexpr, &unified_env, *factory);
 
     if !all_matches_with_types.is_empty() {
@@ -286,8 +287,11 @@ where
     }
 
     // No rules matched - add to space at top level and return as data constructor
-    let result = handle_no_rule_match_generic(evaled_items, factory, &mut unified_env, depth);
-    GenericProcessedSExpr::Done((smallvec![result], unified_env))
+    // Reuse the sexpr already built above (avoids redundant allocation)
+    if depth == 0 {
+        unified_env.add_to_space(&sexpr);
+    }
+    GenericProcessedSExpr::Done((smallvec![sexpr], unified_env))
 }
 
 /// Handle no rule match (generic version).
@@ -295,6 +299,9 @@ where
 /// **ADD Mode Semantics**: Only top-level expressions (depth == 0) are added to space.
 /// Nested sub-expressions evaluated as arguments are NOT added to space.
 /// This matches the heap path behavior in `handle_no_rule_match`.
+// NOTE: Currently unused — process_single_combination_generic inlines the
+// logic to avoid a redundant factory.sexpr() allocation. Kept for reference.
+#[allow(dead_code)]
 fn handle_no_rule_match_generic<V, F>(
     evaled_items: Vec<V>,
     factory: &F,

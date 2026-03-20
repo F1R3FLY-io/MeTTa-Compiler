@@ -2975,15 +2975,38 @@ mod tests {
             );
         }
 
-        // Wait for workers to pick up the blocking tasks
-        thread::sleep(Duration::from_millis(50));
+        // Wait for all workers to publish initial CPU state and pick up blocking tasks.
+        // Workers call publish_initial() at startup, setting wall_nanos > 0. Without
+        // this, detect_blocked_workers skips workers with curr_wall == 0, and the
+        // compensatory logic never fires (macOS thread scheduling can be slow).
+        {
+            let cpu_states = pool.worker_cpu_states();
+            for _ in 0..100 {
+                let all_published = cpu_states.iter().all(|s| {
+                    s.wall_nanos.load(Ordering::Relaxed) > 0
+                });
+                if all_published {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            // Also wait for the blocking tasks to be dequeued
+            thread::sleep(Duration::from_millis(50));
+        }
 
-        // Submit additional tasks so queue is non-empty
+        // Submit additional tasks that also block on the same mutex.
+        // This ensures tasks stay in the queue (or block if dequeued by a
+        // spuriously-unparked worker), keeping queue_len > 0 for the
+        // compensatory logic check.
         let counter = Arc::new(AtomicU32::new(0));
         for _ in 0..5 {
             let c = Arc::clone(&counter);
+            let b = Arc::clone(&blocker);
             pool.spawn_eval(
-                move || { c.fetch_add(1, Ordering::Relaxed); },
+                move || {
+                    let _lock = b.lock().unwrap_or_else(|e| e.into_inner());
+                    c.fetch_add(1, Ordering::Relaxed);
+                },
                 TaskTypeId::Generic,
                 priority_levels::NORMAL,
             );
@@ -2992,7 +3015,7 @@ mod tests {
         // Run multiple ticks so detect_blocked_workers converges
         // (needs wall_delta >= MIN_WALL_DELTA_NS with low CPU ratio on Linux,
         // or 2+ ticks with 0 task completions on non-Linux heartbeat fallback)
-        for _ in 0..4 {
+        for _ in 0..6 {
             state.prev_sample_time = Instant::now() - Duration::from_millis(200);
             work_scaling_monitor_tick(&pool, &mut state);
             thread::sleep(Duration::from_millis(50));

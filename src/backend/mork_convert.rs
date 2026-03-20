@@ -327,7 +327,14 @@ pub fn with_mork_bytes<V: MettaValueTrait, R>(
         // Use inner_raw() which safely handles inline NaN-boxed values (returns
         // static singletons for Bool/Long/Unit/Empty instead of null pointer).
         let inner = value.inner_raw();
-        write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, *needs_gc_validation)?;
+        let gc_val = *needs_gc_validation;
+        write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, gc_val)?;
+        // Reset flag: all looked-up entries were validated in this pass.
+        // Entries not looked up may still be stale but will be checked on next access.
+        // validate_caches() will re-set the flag if another GC sweep occurs.
+        if gc_val {
+            *needs_gc_validation = false;
+        }
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
                 "Expression too large: {} bytes (max {})",
@@ -362,7 +369,11 @@ pub fn with_mork_query_bytes<V: MettaValueTrait, R>(
         let mut ez = ExprZipper::new(expr);
         let mut pdp = ParDataParser::new(sm);
         let inner = value.inner_raw();
-        write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, *needs_gc_validation)?;
+        let gc_val = *needs_gc_validation;
+        write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, gc_val)?;
+        if gc_val {
+            *needs_gc_validation = false;
+        }
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
                 "Expression too large: {} bytes (max {})",

@@ -37,3 +37,5 @@ tests/proptest/eval/arithmetics/mod.proptest-regressions
 .nra.cache
 .Makefile.d
 Makefile.conf
+
+.claude/worktrees/

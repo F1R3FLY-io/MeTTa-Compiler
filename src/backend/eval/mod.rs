@@ -5,6 +5,7 @@
 // tree-walker fallback via eval_trampoline().
 
 pub(crate) mod bindings_generic;
+pub mod cesk;
 pub(crate) mod frame_chain;
 pub(crate) mod freshening;
 mod helpers;

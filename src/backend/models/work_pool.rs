@@ -2968,7 +2968,10 @@ mod tests {
             let b = Arc::clone(&blocker);
             pool.spawn_eval(
                 move || {
-                    let _lock = b.lock().expect("lock in worker");
+                    // Use poison-tolerant lock: if the test assertion fails and the
+                    // test thread panics while holding `_guard`, the mutex becomes
+                    // poisoned. Workers must tolerate this to avoid cascade panics.
+                    let _lock = b.lock().unwrap_or_else(|e| e.into_inner());
                 },
                 TaskTypeId::Generic,
                 priority_levels::NORMAL,
@@ -2981,7 +2984,7 @@ mod tests {
         // compensatory logic never fires (macOS thread scheduling can be slow).
         {
             let cpu_states = pool.worker_cpu_states();
-            for _ in 0..100 {
+            for _ in 0..200 {
                 let all_published = cpu_states.iter().all(|s| {
                     s.wall_nanos.load(Ordering::Relaxed) > 0
                 });
@@ -2991,7 +2994,7 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
             // Also wait for the blocking tasks to be dequeued
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(100));
         }
 
         // Submit additional tasks that also block on the same mutex.
@@ -3012,13 +3015,21 @@ mod tests {
             );
         }
 
-        // Run multiple ticks so detect_blocked_workers converges
-        // (needs wall_delta >= MIN_WALL_DELTA_NS with low CPU ratio on Linux,
-        // or 2+ ticks with 0 task completions on non-Linux heartbeat fallback)
-        for _ in 0..6 {
+        // Run multiple ticks so detect_blocked_workers converges.
+        // Needs wall_delta >= MIN_WALL_DELTA_NS with low CPU ratio on Linux,
+        // or 2+ ticks with 0 task completions on non-Linux heartbeat fallback.
+        // Under heavy concurrent test load (3600+ parallel tests), macOS thread
+        // scheduling can delay worker startup, so we use more ticks with larger
+        // artificial time gaps to ensure convergence.
+        for _ in 0..10 {
             state.prev_sample_time = Instant::now() - Duration::from_millis(200);
             work_scaling_monitor_tick(&pool, &mut state);
             thread::sleep(Duration::from_millis(50));
+
+            // Early exit: check if compensatory logic already fired
+            if pool.active_workers() > 2 || pool.overflow_count() > 0 {
+                break;
+            }
         }
 
         // Compensatory logic should have unparked workers (from parked pool)

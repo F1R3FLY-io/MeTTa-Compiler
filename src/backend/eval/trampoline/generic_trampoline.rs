@@ -954,25 +954,29 @@ where
     // Increased from u8 (256) to reduce maybe_process_gc_response overhead (4.9% → ~1%).
     let mut gc_counter: u16 = 0;
 
+    // SECK Phase 0.5: Reusable root set for GC safepoints.
+    // Allocated once here, cleared and reused across safepoints. This avoids
+    // re-allocating a Vec<V> on every safepoint (previously ~every 4096 iterations).
+    let mut root_set = crate::backend::eval::cesk::RootSet::<C::Value>::with_estimated_capacity(
+        32, 64, 0,
+    );
+
     // Main trampoline loop
     while let Some(work) = work_stack.pop() {
         // Periodic GC safepoint check (every 4096 trampoline iterations)
         gc_counter = gc_counter.wrapping_add(1);
         if gc_counter & 0xFFF == 0 && ctx.should_safepoint() {
-            // Collect all live values from trampoline state as GC roots.
-            // This ensures values in the work stack and continuations survive
-            // the mark-sweep cycle that runs during the safepoint pause.
-            // Pre-allocate estimate: ~2 values per work item + ~4 per continuation.
-            let estimated_roots = 2 + work_stack.len() * 2 + continuations.len() * 4;
-            let mut roots = Vec::with_capacity(estimated_roots);
-            // Root from the work item we just popped (it's not on the stack)
-            work.collect_values(&mut roots);
-            for w in &work_stack {
-                w.collect_values(&mut roots);
-            }
-            for c in &continuations {
-                c.collect_values(&mut roots);
-            }
+            // SECK Phase 0.5: Algebraic root set collection.
+            // Uses reusable RootSet buffer (allocated once before the loop)
+            // instead of a fresh Vec on every safepoint.
+            //
+            // Root formula: roots = addrs_in(C) ∪ addrs_in(K)
+            // where C = current work item + work stack, K = continuations.
+            // Environment roots (E) are managed separately via RootProvider.
+            root_set.clear();
+            root_set.collect_from_work_items(&work, &work_stack);
+            root_set.collect_from_continuations(&continuations);
+
             // Collect roots from all caller frames in the thread-local chain.
             // This protects values held by callers of nested trampolines
             // (e.g., compiled expressions in eval_include_generic).
@@ -982,7 +986,7 @@ where
                 // SAFETY: C::Value is MettaValue, so Vec<C::Value> and Vec<MettaValue>
                 // have identical layout. We transmute the reference temporarily.
                 let concrete_roots: &mut Vec<crate::backend::models::MettaValue> =
-                    unsafe { &mut *(&mut roots as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
+                    unsafe { &mut *(root_set.as_mut_vec() as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
             }
             // Collect GC roots from the eval memo cache. Cached MettaValue
@@ -991,7 +995,7 @@ where
                 == std::any::TypeId::of::<crate::backend::models::MettaValue>()
             {
                 let concrete_roots: &mut Vec<crate::backend::models::MettaValue> =
-                    unsafe { &mut *(&mut roots as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
+                    unsafe { &mut *(root_set.as_mut_vec() as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 collect_eval_memo_roots(concrete_roots);
                 collect_match_result_roots(concrete_roots);
             }
@@ -1015,12 +1019,14 @@ where
             invalidate_normal_form_memo();
 
             #[cfg(feature = "eval-trace")]
-            let _root_count = roots.len() as u32;
+            let _root_count = root_set.len() as u32;
             #[cfg(feature = "eval-trace")]
             let _safepoint_start = {
                 ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
             };
-            ctx.perform_safepoint(roots);
+            // Drain roots into a Vec for the GC. The RootSet retains its
+            // allocated capacity for reuse at the next safepoint.
+            ctx.perform_safepoint(root_set.drain_into_vec());
             // Trace: GcSafepoint with measured pause duration
             #[cfg(feature = "eval-trace")]
             {

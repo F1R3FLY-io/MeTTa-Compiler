@@ -489,10 +489,13 @@ impl WorkPool {
         let runtime_tracker = Arc::clone(&self.runtime_tracker);
         let shutdown = Arc::clone(&self.shutdown);
         let cpu_state = Arc::clone(&self.worker_cpu_states[id]);
+
         let handle = thread::Builder::new()
             .name(format!("work-pool-{}", id))
             .spawn(move || {
-                work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state)
+                work_pool_worker_loop(
+                    id, queue, runtime_tracker, shutdown, park, cpu_state,
+                )
             })
             .expect("failed to spawn work pool worker thread");
         *self.workers[id].lock() = Some(handle);
@@ -823,7 +826,9 @@ impl WorkPool {
             let new_handle = thread::Builder::new()
                 .name(format!("work-pool-{}", id))
                 .spawn(move || {
-                    work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state);
+                    work_pool_worker_loop(
+                        id, queue, runtime_tracker, shutdown, park, cpu_state,
+                    );
                 })
                 .expect("failed to respawn work pool worker thread");
 
@@ -1286,7 +1291,7 @@ fn work_pool_worker_loop(
                 }
             }
             None => {
-                // Timeout or shutdown — loop back to check flags
+                // PriorityQueue empty/timeout — loop back to park/shutdown check.
             }
         }
     }
@@ -1730,9 +1735,18 @@ impl WorkMonitorState {
             let curr_wall = state.wall_nanos.load(Ordering::Relaxed);
             let curr_tasks = state.task_count.load(Ordering::Relaxed);
 
-            // Worker hasn't published yet (just spawned, no tasks executed)
+            // Worker hasn't published yet (just spawned, no tasks executed).
+            // Treat it like a stalled heartbeat: increment ticks_stalled and
+            // count as blocked after 2 ticks, matching the non-Linux heartbeat
+            // fallback threshold. This handles the case where OS thread
+            // scheduling delays prevent publish_initial() from running.
             if curr_wall == 0 {
-                snap.ticks_stalled = 0;
+                snap.ticks_stalled += 1;
+                if snap.ticks_stalled >= 2 {
+                    blocked += 1;
+                    blocked_indices.push(i as u32);
+                    snap.prev_blocked = true;
+                }
                 continue;
             }
 
@@ -3018,11 +3032,11 @@ mod tests {
         // Run multiple ticks so detect_blocked_workers converges.
         // Needs wall_delta >= MIN_WALL_DELTA_NS with low CPU ratio on Linux,
         // or 2+ ticks with 0 task completions on non-Linux heartbeat fallback.
-        // Under heavy concurrent test load (3600+ parallel tests), macOS thread
-        // scheduling can delay worker startup, so we use more ticks with larger
-        // artificial time gaps to ensure convergence.
-        for _ in 0..10 {
-            state.prev_sample_time = Instant::now() - Duration::from_millis(200);
+        // Under heavy concurrent test load (3790+ parallel tests), macOS thread
+        // scheduling can delay worker startup and task pickup, so we use many
+        // ticks with larger artificial time gaps to ensure convergence.
+        for _ in 0..40 {
+            state.prev_sample_time = Instant::now() - Duration::from_millis(300);
             work_scaling_monitor_tick(&pool, &mut state);
             thread::sleep(Duration::from_millis(50));
 

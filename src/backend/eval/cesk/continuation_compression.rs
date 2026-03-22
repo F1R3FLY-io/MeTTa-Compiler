@@ -1,0 +1,204 @@
+//! Continuation Compression (Phase 5.4)
+//!
+//! Eliminates dead match arms per program using AAM analysis results.
+//! When AAM proves a rule can never fire from any reachable state, the
+//! rule is excluded from candidate matching at runtime.
+
+use std::collections::HashSet;
+
+use crate::backend::analysis::derived::DerivedAnalysis;
+
+// ============================================================================
+// Compressed Rule Filter
+// ============================================================================
+
+/// Filters rule candidates to exclude dead (unreachable) rules.
+///
+/// Built from `DerivedAnalysis` results. When active, `is_live()` returns
+/// false for dead rules, allowing the rule matching hot path to skip them.
+#[derive(Debug, Clone)]
+pub struct CompressedRuleFilter {
+    /// Set of live (reachable) rule indices.
+    live_rules: HashSet<u32>,
+    /// Whether compression is active.
+    active: bool,
+    /// Total rules known to the filter.
+    total_rules: u32,
+}
+
+impl CompressedRuleFilter {
+    /// Create from derived analysis results.
+    pub fn from_analysis(analysis: &DerivedAnalysis, total_rules: u32) -> Self {
+        let dead = &analysis.dead_rules;
+        let live: HashSet<u32> = (0..total_rules)
+            .filter(|idx| !dead.contains(idx))
+            .collect();
+
+        Self {
+            live_rules: live,
+            active: !dead.is_empty(), // Only active if there are dead rules to filter
+            total_rules,
+        }
+    }
+
+    /// Create an inactive (no-op) filter.
+    pub fn inactive() -> Self {
+        Self {
+            live_rules: HashSet::new(),
+            active: false,
+            total_rules: 0,
+        }
+    }
+
+    /// Check if a specific rule is live (should be included in matching).
+    #[inline]
+    pub fn is_live(&self, rule_index: u32) -> bool {
+        if !self.active {
+            return true; // No filtering when inactive
+        }
+        self.live_rules.contains(&rule_index)
+    }
+
+    /// Whether compression is active.
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Number of dead rules filtered out.
+    pub fn dead_count(&self) -> usize {
+        if self.active {
+            self.total_rules as usize - self.live_rules.len()
+        } else {
+            0
+        }
+    }
+
+    /// Number of live rules.
+    pub fn live_count(&self) -> usize {
+        if self.active {
+            self.live_rules.len()
+        } else {
+            self.total_rules as usize
+        }
+    }
+}
+
+// ============================================================================
+// Thread-Local Rule Filter
+// ============================================================================
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// Thread-local rule filter installed from AAM analysis.
+    /// When active, `is_rule_live()` consults this filter to skip dead rules.
+    static THREAD_RULE_FILTER: RefCell<CompressedRuleFilter> = RefCell::new(CompressedRuleFilter::inactive());
+}
+
+/// Install a rule filter on the current thread.
+///
+/// After installation, `is_rule_live(idx)` returns false for dead rules.
+/// Call from the main thread after analysis completes.
+pub fn install_rule_filter(filter: CompressedRuleFilter) {
+    THREAD_RULE_FILTER.with(|cell| {
+        *cell.borrow_mut() = filter;
+    });
+}
+
+/// Check if a rule is live according to the thread-local filter.
+///
+/// Returns true if no filter is installed (default: all rules live).
+#[inline]
+pub fn is_rule_live(rule_index: u32) -> bool {
+    THREAD_RULE_FILTER.with(|cell| {
+        cell.borrow().is_live(rule_index)
+    })
+}
+
+// ============================================================================
+// Dispatch Strategy
+// ============================================================================
+
+/// AAM-derived dispatch strategy for an expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStrategy {
+    /// Normal dispatch (no compression applied).
+    Normal,
+    /// Deterministic: exactly 1 rule matches. Skip nondeterministic dispatch.
+    Deterministic { rule_index: u32 },
+    /// Dead: no rules match. Return empty results immediately.
+    Dead,
+}
+
+/// Determine dispatch strategy for an expression hash.
+pub fn dispatch_strategy_for(
+    expr_hash: u64,
+    analysis: &DerivedAnalysis,
+) -> DispatchStrategy {
+    // Check if all rules for this expression are dead
+    // (would need expression-to-rule mapping, which Phase 4.5 provides)
+    // For now, return Normal — full integration requires the mapping.
+    DispatchStrategy::Normal
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_analysis(dead_rules: Vec<u32>) -> DerivedAnalysis {
+        DerivedAnalysis {
+            dead_rules: dead_rules.into_iter().collect(),
+            deterministic_dispatch: HashMap::new(),
+            pure_expressions: HashSet::new(),
+            type_specializations: HashMap::new(),
+            ground_expressions: HashSet::new(),
+            memo_candidates: HashSet::new(),
+            parallel_candidates: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn test_inactive_filter() {
+        let filter = CompressedRuleFilter::inactive();
+        assert!(!filter.is_active());
+        assert!(filter.is_live(0));
+        assert!(filter.is_live(999));
+    }
+
+    #[test]
+    fn test_filter_with_dead_rules() {
+        let analysis = make_analysis(vec![2, 5, 7]);
+        let filter = CompressedRuleFilter::from_analysis(&analysis, 10);
+
+        assert!(filter.is_active());
+        assert!(filter.is_live(0));
+        assert!(filter.is_live(1));
+        assert!(!filter.is_live(2)); // Dead
+        assert!(filter.is_live(3));
+        assert!(!filter.is_live(5)); // Dead
+        assert!(!filter.is_live(7)); // Dead
+        assert_eq!(filter.dead_count(), 3);
+        assert_eq!(filter.live_count(), 7);
+    }
+
+    #[test]
+    fn test_filter_no_dead_rules() {
+        let analysis = make_analysis(vec![]);
+        let filter = CompressedRuleFilter::from_analysis(&analysis, 10);
+
+        assert!(!filter.is_active()); // No dead rules → inactive
+        assert!(filter.is_live(0));
+    }
+
+    #[test]
+    fn test_dispatch_strategy() {
+        let analysis = make_analysis(vec![]);
+        assert_eq!(dispatch_strategy_for(42, &analysis), DispatchStrategy::Normal);
+    }
+}

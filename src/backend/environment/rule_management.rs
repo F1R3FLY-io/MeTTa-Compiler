@@ -24,9 +24,31 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+/// Gate for I-13/I-14 hot-path analysis tracking.
+/// When false (default), `with_incremental_index` and `with_adaptive_registry`
+/// calls in `match_rules_native` are skipped — a single branch-predicted
+/// `load(Relaxed)` check. Set to true via `activate_analysis()` when
+/// `METTATRON_AAM_ANALYSIS=1`.
+static ANALYSIS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Enable I-13/I-14 analysis tracking on the hot path.
+pub fn activate_analysis() {
+    ANALYSIS_ACTIVE.store(true, Ordering::Relaxed);
+}
+
+/// Check whether analysis tracking is active.
+#[inline(always)]
+pub fn is_analysis_active() -> bool {
+    ANALYSIS_ACTIVE.load(Ordering::Relaxed)
+}
 
 use lru::LruCache;
+
+/// I-12: Global monotonic counter for assigning unique global rule indices.
+/// Used by CompressedRuleFilter to identify dead rules across all groups.
+static GLOBAL_RULE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 use crate::backend::hash_utils::FxBuildHasher;
 
@@ -196,6 +218,13 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// `Some` for rules with structurally-matchable LHS (>95% of rules).
     /// `None` for rules too complex for structural matching — falls back to MORK.
     pub structural_matcher: Option<StructuralMatcher>,
+    /// Enhanced matcher for deep patterns (depth > 8) that StructuralMatcher rejects (I-2).
+    /// Provides indexed binding slots and no depth limit.
+    pub enhanced_matcher: Option<crate::backend::eval::cesk::EnhancedMatcher>,
+    /// Monotonic index within the RuleGroup (for discrimination tree indexing, I-1).
+    pub rule_index_in_group: u32,
+    /// I-12: Global monotonic rule index (for CompressedRuleFilter dead-rule filtering).
+    pub global_rule_index: u32,
 }
 
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
@@ -234,6 +263,12 @@ struct RuleGroup<V: MettaValueTrait + Clone> {
     /// Rules with variable/wildcard/non-S-expression first argument.
     /// Always included in query results since they match any first argument.
     variable_first_arg: Vec<RuleEntry<V>>,
+    /// Discrimination tree for multi-level candidate pruning (Phase 1.3 / I-1).
+    /// Built when the group has 4+ rules. Prunes candidates before structural
+    /// matching, reducing the number of try_match() invocations.
+    disc_tree: Option<crate::backend::eval::cesk::DiscriminationTree>,
+    /// Monotonic counter for assigning rule_index_in_group to new entries.
+    next_rule_index: u32,
 }
 
 impl<V: MettaValueTrait + Clone> RuleGroup<V> {
@@ -241,6 +276,8 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
         RuleGroup {
             by_first_arg_head: HashMap::new(),
             variable_first_arg: Vec::new(),
+            disc_tree: None,
+            next_rule_index: 0,
         }
     }
 
@@ -320,6 +357,12 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
             }
         }
         None // Not found in this group
+    }
+
+    /// Invalidate the discrimination tree (force rebuild on next query).
+    /// Called after rule removal.
+    fn invalidate_disc_tree(&mut self) {
+        self.disc_tree = None;
     }
 }
 
@@ -433,7 +476,31 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                     }
                 }
 
+                // I-1: Assign monotonic rule index and insert into disc tree
+                let mut entry = entry;
+                let idx = group.next_rule_index;
+                entry.rule_index_in_group = idx;
+                entry.global_rule_index = GLOBAL_RULE_COUNTER.fetch_add(1, Ordering::Relaxed);
+                group.next_rule_index += 1;
+
+                // I-1: Build/update discrimination tree for multi-level pruning
+                let lhs_for_disc = entry.lhs.clone();
                 group.entries_for_mut(first_arg_head).push(entry);
+
+                // Build disc tree when group has 4+ rules, or insert into existing
+                let total_rules = group.len();
+                if total_rules >= 4 {
+                    if let Some(ref mut tree) = group.disc_tree {
+                        tree.insert(idx, &lhs_for_disc);
+                    } else {
+                        // First time crossing threshold — build and backfill
+                        let mut tree = crate::backend::eval::cesk::DiscriminationTree::new();
+                        for existing in group.all_entries() {
+                            tree.insert(existing.rule_index_in_group, &existing.lhs);
+                        }
+                        group.disc_tree = Some(tree);
+                    }
+                }
             }
             None => {
                 // Check for duplicate in wildcard list
@@ -443,6 +510,9 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                         return;
                     }
                 }
+                let mut entry = entry;
+                entry.rule_index_in_group = self.wildcard.len() as u32;
+                entry.global_rule_index = GLOBAL_RULE_COUNTER.fetch_add(1, Ordering::Relaxed);
                 self.wildcard.push(entry);
             }
         }
@@ -1637,6 +1707,12 @@ where
                 let first_arg_head_interned: Option<&'static str> =
                     get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
                 let structural_matcher = StructuralMatcher::analyze(&lhs);
+                // I-2: If StructuralMatcher fails (e.g., depth > 8), try EnhancedMatcher
+                let enhanced_matcher = if structural_matcher.is_none() {
+                    crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
+                } else {
+                    None
+                };
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
                     rhs_has_variables: rhs.contains_variables(),
@@ -1648,6 +1724,9 @@ where
                     multiplicity: 1,
                     rhs_type: rhs_type.clone(),
                     structural_matcher,
+                    enhanced_matcher,
+                    rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
+                    global_rule_index: 0, // Assigned by RuleIndex::add_rule
                 };
                 // Phase 4a: Pre-seed tiered cache so first RHS evaluation
                 // immediately triggers bytecode compilation (no warmup delay)
@@ -1693,6 +1772,11 @@ where
             let first_arg_head_interned: Option<&'static str> =
                 get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
             let structural_matcher = StructuralMatcher::analyze(&lhs);
+            let enhanced_matcher = if structural_matcher.is_none() {
+                crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
+            } else {
+                None
+            };
             let entry = RuleEntry {
                 lhs: lhs.clone(),
                 rhs_has_variables: rhs.contains_variables(),
@@ -1704,6 +1788,9 @@ where
                 multiplicity: 1,
                 rhs_type, // Phase 8.1: computed before closure, last use — no clone needed
                 structural_matcher,
+                enhanced_matcher,
+                rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
+                global_rule_index: 0, // Assigned by RuleIndex::add_rule
             };
             // Phase 4a: Pre-seed tiered cache for wide MORK path
             crate::backend::bytecode::tiered_cache::global_tiered_cache()
@@ -1805,6 +1892,56 @@ where
                 return Vec::new();
             }
 
+            // I-12: Filter out dead rules via CompressedRuleFilter (from AAM analysis).
+            // The filter is installed on the thread-local by `install_rule_filter()`.
+            let candidates: SmallVec<[&RuleEntry<V>; 16]> = candidates
+                .into_iter()
+                .filter(|e| crate::backend::eval::cesk::continuation_compression::is_rule_live(e.global_rule_index))
+                .collect();
+
+            if candidates.is_empty() {
+                return Vec::new();
+            }
+
+            // I-14: Record query pattern for adaptive indexing.
+            // I-13: Record consulted (head, arity) group for incremental invalidation.
+            // Both are gated behind ANALYSIS_ACTIVE — a single branch-predicted
+            // Relaxed load when analysis is not enabled (the common case).
+            if is_analysis_active() && !head.is_empty() {
+                // I-14: Tracks which argument positions are queried most frequently,
+                // enabling runtime rebalancing of the second-level index.
+                let head_hash = {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    head.hash(&mut h);
+                    h.finish()
+                };
+                let arg_heads: SmallVec<[Option<&str>; 4]> = if let Some(items) = expr.as_sexpr() {
+                    items.iter().skip(1).map(|item| item.get_head_symbol()).collect()
+                } else {
+                    SmallVec::new()
+                };
+                crate::backend::eval::cesk::with_adaptive_registry(|r| {
+                    r.record_query(head_hash, arity, &arg_heads);
+                });
+
+                // I-13: On space mutation, only subgoals that consulted the affected group
+                // are selectively invalidated (instead of blanket invalidation).
+                let expr_hash = expr.hash_value();
+                // Intern head as &'static str for the dependency record.
+                // Atom strings from MeTTa values are already slab-allocated ('static),
+                // but get_head_symbol() returns &str; re-intern is O(1) for existing strings.
+                let head_static: &'static str = crate::backend::models::gc_allocator::global_allocator().alloc_str(head);
+                crate::backend::eval::cesk::with_incremental_index(|idx| {
+                    idx.record_dependency(crate::backend::eval::cesk::rete_incremental::SubgoalDependency {
+                        subgoal_hash: expr_hash,
+                        consulted_groups: smallvec::smallvec![(head_static, arity)],
+                        matched_rules: smallvec::SmallVec::new(), // Populated after matching
+                        transitive_deps: smallvec::SmallVec::new(),
+                    });
+                });
+            }
+
             // Check if ALL candidates have structural matchers
             let all_structural = candidates.iter().all(|e| e.structural_matcher.is_some());
 
@@ -1825,40 +1962,134 @@ where
             }
 
             if all_structural {
-                // Fast path: all candidates have structural matchers — bypass MORK entirely
+                // I-10: Parallel speculative matching for large candidate sets
+                if crate::backend::eval::cesk::should_speculate(candidates.len())
+                    && std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                {
+                    // I-10: Parallel speculative matching — head matching is pure read-only.
+                    // Only for MettaValue (GcFactory is Send+Sync).
+                    let chunks = crate::backend::eval::cesk::chunk_candidates(
+                        candidates.len(),
+                        std::thread::available_parallelism()
+                            .map(|n| n.get())
+                            .unwrap_or(4)
+                            .min(candidates.len()),
+                    );
+
+                    // SAFETY: V is MettaValue (TypeId checked above). GcFactory is Send+Sync.
+                    // We need to transmute the factory to a concrete Send+Sync type for
+                    // std::thread::scope since the generic F doesn't promise Send.
+                    let factory_ptr = &self.factory as *const F as *const crate::backend::models::GcFactory;
+                    let gc_factory: crate::backend::models::GcFactory = unsafe { *factory_ptr };
+                    let mut all_results: Vec<RuleMatchResult<V>> = Vec::new();
+
+                    std::thread::scope(|s| {
+                        let handles: Vec<_> = chunks.iter().map(|&(start, end)| {
+                            let chunk = &candidates[start..end];
+                            let fac = gc_factory;
+                            s.spawn(move || {
+                                let mut chunk_results = Vec::new();
+                                for entry in chunk {
+                                    let bindings = if let Some(ref m) = entry.structural_matcher {
+                                        m.try_match(expr)
+                                    } else if let Some(ref m) = entry.enhanced_matcher {
+                                        m.try_match(expr)
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(bindings) = bindings {
+                                        let instantiated_rhs = if entry.rhs_has_variables {
+                                            // SAFETY: V is MettaValue, fac is GcFactory (TypeId checked).
+                                            let v_ref: &crate::backend::models::MettaValue =
+                                                unsafe { &*(&entry.rhs as *const V as *const crate::backend::models::MettaValue) };
+                                            let b_ref: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
+                                                unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
+                                            let result = crate::backend::eval::trampoline::apply_bindings_generic(
+                                                v_ref, b_ref, &fac,
+                                            );
+                                            // SAFETY: MettaValue and V are the same type
+                                            unsafe { std::mem::transmute_copy::<crate::backend::models::MettaValue, V>(&result) }
+                                        } else {
+                                            entry.rhs.clone()
+                                        };
+                                        let multiplicity = entry.multiplicity.max(1);
+                                        for _ in 0..multiplicity {
+                                            chunk_results.push(RuleMatchResult {
+                                                instantiated_rhs: instantiated_rhs.clone(),
+                                                rhs_template: entry.rhs.clone(),
+                                                bindings: bindings.clone(),
+                                                multiplicity,
+                                                rhs_type: entry.rhs_type.clone(),
+                                                rhs_has_variables: entry.rhs_has_variables,
+                                            });
+                                        }
+                                    }
+                                }
+                                chunk_results
+                            })
+                        }).collect();
+
+                        for handle in handles {
+                            all_results.extend(handle.join().expect("speculative match thread panicked"));
+                        }
+                    });
+
+                    return all_results;
+                }
+
+                // Sequential fast path: all candidates have structural matchers — bypass MORK
                 let mut results: Vec<RuleMatchResult<V>> = Vec::new();
 
+                // I-3: Use binding arena for O(1) rollback on failed matches
+                let mut arena = crate::backend::eval::cesk::BindingArena::<V>::new();
+                arena.push_frame();
+
                 for entry in &candidates {
-                    if let Some(ref matcher) = entry.structural_matcher {
-                        if let Some(bindings) = matcher.try_match(expr) {
-                            let instantiated_rhs = if entry.rhs_has_variables {
-                                apply_bindings(&entry.rhs, &bindings, &self.factory)
-                            } else {
-                                entry.rhs.clone()
-                            };
-                            let multiplicity = entry.multiplicity.max(1);
-                            if multiplicity == 1 {
+                    // I-3: Save choice point before each attempt
+                    arena.save_choice_point();
+
+                    // I-2: Try enhanced matcher if structural matcher is None
+                    let bindings = if let Some(ref matcher) = entry.structural_matcher {
+                        matcher.try_match(expr)
+                    } else if let Some(ref matcher) = entry.enhanced_matcher {
+                        matcher.try_match(expr)
+                    } else {
+                        None
+                    };
+
+                    if let Some(bindings) = bindings {
+                        // Match succeeded — commit choice point
+                        arena.commit_choice_point();
+                        let instantiated_rhs = if entry.rhs_has_variables {
+                            apply_bindings(&entry.rhs, &bindings, &self.factory)
+                        } else {
+                            entry.rhs.clone()
+                        };
+                        let multiplicity = entry.multiplicity.max(1);
+                        if multiplicity == 1 {
+                            results.push(RuleMatchResult {
+                                instantiated_rhs,
+                                rhs_template: entry.rhs.clone(),
+                                bindings,
+                                multiplicity: 1,
+                                rhs_type: entry.rhs_type.clone(),
+                                rhs_has_variables: entry.rhs_has_variables,
+                            });
+                        } else {
+                            for _ in 0..multiplicity {
                                 results.push(RuleMatchResult {
-                                    instantiated_rhs,
+                                    instantiated_rhs: instantiated_rhs.clone(),
                                     rhs_template: entry.rhs.clone(),
-                                    bindings,
-                                    multiplicity: 1,
+                                    bindings: bindings.clone(),
+                                    multiplicity,
                                     rhs_type: entry.rhs_type.clone(),
                                     rhs_has_variables: entry.rhs_has_variables,
                                 });
-                            } else {
-                                for _ in 0..multiplicity {
-                                    results.push(RuleMatchResult {
-                                        instantiated_rhs: instantiated_rhs.clone(),
-                                        rhs_template: entry.rhs.clone(),
-                                        bindings: bindings.clone(),
-                                        multiplicity,
-                                        rhs_type: entry.rhs_type.clone(),
-                                        rhs_has_variables: entry.rhs_has_variables,
-                                    });
-                                }
                             }
                         }
+                    } else {
+                        // I-3: Match failed — restore choice point (O(1) rollback)
+                        arena.restore_choice_point();
                     }
                 }
 
@@ -2641,6 +2872,11 @@ impl MettaEnvironment {
                         }
 
                         let structural_matcher = StructuralMatcher::analyze(&lhs);
+                        let enhanced_matcher = if structural_matcher.is_none() {
+                            crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
+                        } else {
+                            None
+                        };
                         let entry = RuleEntry {
                             lhs: lhs.clone(),
                             rhs_has_variables: rhs.contains_variables(),
@@ -2652,6 +2888,9 @@ impl MettaEnvironment {
                             multiplicity,
                             rhs_type,
                             structural_matcher,
+                            enhanced_matcher,
+                            rule_index_in_group: 0,
+                            global_rule_index: 0, // Assigned by RuleIndex::add_rule
                         };
 
                         // Phase 4a: Pre-seed tiered cache for bulk path

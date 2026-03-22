@@ -210,16 +210,11 @@ impl ConvertState {
         }
     }
 
-    /// Ensure all caches are valid for the given environment epoch and current
-    /// GC sweep epoch.
+    /// Ensure all caches are valid for the given environment epoch.
     ///
-    /// Two invalidation triggers:
-    /// 1. **MORK epoch change** — different environment = different symbol table.
-    ///    Clears both `symbol_cache` and `ground_cache`.
-    /// 2. **GC sweep epoch change** — slab slots may have been freed and reused.
-    ///    Only clears `ground_cache` (pointer-keyed). The `symbol_cache` is
-    ///    content-addressed (keyed by byte content, not slab pointers) and is
-    ///    unaffected by GC sweeps.
+    /// I-9: The GC sweep epoch check has been removed — with deterministic GC
+    /// always-on, the nursery collector keeps the state space garbage-free at
+    /// every safepoint, so pointer-keyed caches never go stale.
     #[inline]
     fn validate_caches(&mut self, epoch: u64) {
         if self.symbol_cache_epoch != epoch {
@@ -227,15 +222,6 @@ impl ConvertState {
             self.ground_cache.clear();
             self.symbol_cache_epoch = epoch;
             self.needs_gc_validation = false;
-        }
-        // Check GC sweep epoch: slab slots may have been freed and reused,
-        // making pointer-keyed ground_cache entries potentially stale.
-        // Instead of clearing the entire cache, set a flag for lazy per-entry
-        // validation on the next lookup.
-        let current_gc_epoch = super::models::gc_allocator::gc_sweep_epoch();
-        if self.gc_sweep_epoch != current_gc_epoch {
-            self.needs_gc_validation = true;
-            self.gc_sweep_epoch = current_gc_epoch;
         }
     }
 }

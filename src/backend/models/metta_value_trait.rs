@@ -350,6 +350,82 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
         self.contains_variables()
     }
 
+    /// Collect the set of free variable names referenced in this value.
+    ///
+    /// Returns the names of all variables (`$x`, `&y`, `'z`) that appear in
+    /// the expression. Wildcards (`_`) are excluded since they don't bind.
+    /// Space references (`&self`, `&kb`, `&stack`) are also excluded.
+    ///
+    /// Used for environment trimming (Phase 2.4): bindings not referenced
+    /// by the body expression can be removed before evaluation.
+    ///
+    /// # Performance
+    ///
+    /// O(n) in expression size. For typical PLN bodies (5-20 subexpressions),
+    /// this is ~10-50ns. Short-circuits on ground values via `has_variables_fast()`.
+    fn free_variables(&self) -> smallvec::SmallVec<[&'static str; 8]> {
+        let mut vars = smallvec::SmallVec::new();
+        self.collect_free_variables(&mut vars);
+        vars
+    }
+
+    /// Collect free variable names into the provided buffer.
+    ///
+    /// Helper for `free_variables()`. Avoids allocating intermediate SmallVecs
+    /// during recursive traversal.
+    fn collect_free_variables(&self, out: &mut smallvec::SmallVec<[&'static str; 8]>) {
+        // Fast path: no variables in this value
+        if !self.has_variables_fast() {
+            return;
+        }
+
+        if let Some(name) = self.as_atom() {
+            // Variables start with $, &, or ' (excluding special space refs and wildcards)
+            if name != "_"
+                && name != "&"
+                && name != "&self"
+                && name != "&kb"
+                && name != "&stack"
+                && name.len() > 1
+                && (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
+            {
+                // Deduplicate: only add if not already present
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+            return;
+        }
+
+        if let Some(items) = self.as_sexpr() {
+            for item in items {
+                item.collect_free_variables(out);
+            }
+            return;
+        }
+
+        if let Some(goals) = self.as_conjunction() {
+            for g in goals {
+                g.collect_free_variables(out);
+            }
+            return;
+        }
+
+        if let Some((_, details)) = self.as_error() {
+            details.collect_free_variables(out);
+            return;
+        }
+
+        if let Some(t) = self.as_type() {
+            t.collect_free_variables(out);
+            return;
+        }
+
+        if let Some(q) = self.as_quoted_ref() {
+            q.collect_free_variables(out);
+        }
+    }
+
     /// Space references (`&self`, `&kb`, `&stack`) are NOT variables.
     /// Ground types (Bool, Long, Float, String, Unit, Space, State, Memo, Empty)
     /// never contain variables.

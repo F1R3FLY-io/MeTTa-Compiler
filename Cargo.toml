@@ -203,6 +203,8 @@ gxhash = "3"
 
 # Crossbeam - Lock-free channels for thread pools and GC pool
 crossbeam-channel = "0.5"
+# Crossbeam deque - Lock-free work-stealing deques (Chase-Lev algorithm)
+crossbeam-deque = "0.8"
 
 # phf - Compile-time perfect hash sets for O(1) lookup
 phf = { version = "0.11", features = ["macros"] }

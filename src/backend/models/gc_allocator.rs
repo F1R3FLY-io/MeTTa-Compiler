@@ -1887,7 +1887,7 @@ impl SlabAllocator {
             // setting GC_REQUESTED; the trampoline picks it up at the next safe point.
         }
 
-        unsafe {
+        let result: &'static MettaValueInner = unsafe {
             let val_size = mem::size_of::<MettaValueInner>();
             let val_bytes = &val as *const MettaValueInner as *const u8;
 
@@ -1903,7 +1903,22 @@ impl SlabAllocator {
             mem::forget(val);
 
             &*(ptr as *const MettaValueInner)
-        }
+        };
+
+        // Track in nursery for incremental GC (~3ns RefCell borrow overhead,
+        // bounded by the slab alloc cost of 10-50ns).
+        let slot_size = self.values.slot_size;
+        crate::backend::eval::cesk::with_nursery_collector(|c| {
+            c.record_alloc(ptr as usize, slot_size);
+        });
+
+        // Track in region stack for let* bulk deallocation.
+        // Fast early-exit when no region is active.
+        crate::backend::eval::cesk::with_region_stack(|s| {
+            s.record_alloc();
+        });
+
+        result
     }
 
     /// Allocate a string slice, return a reference.
@@ -2858,13 +2873,13 @@ pub fn gc_sweep_epoch() -> u64 {
 
 /// Increment the GC sweep epoch after dead slab slots have been freed.
 ///
-/// Called from `process_gc_response()` and `release_session_with_surviving()`
-/// after slab slots are returned to the free list. Any thread-local cache
-/// keyed by `MettaValue` or `inner_ptr` that was populated before this bump
-/// may reference freed/reused slots and must be invalidated.
+/// I-9: With deterministic GC always-on, the nursery collector keeps the state
+/// space garbage-free at every safepoint. Epoch-based invalidation is no longer
+/// needed — this function is unconditionally a no-op. The `GC_SWEEP_EPOCH`
+/// counter is kept for diagnostic/backward-compat purposes but never bumped.
 #[inline]
 pub(super) fn bump_gc_sweep_epoch() {
-    GC_SWEEP_EPOCH.fetch_add(1, Ordering::Release);
+    // No-op: deterministic GC eliminates need for epoch-based cache invalidation.
 }
 
 // ============================================================================

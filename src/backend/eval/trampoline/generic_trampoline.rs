@@ -82,17 +82,30 @@ use super::dispatch_hints::REDUCIBLE_HEADS;
 // identical results. Programs needing ordering must use sequential combinators
 // (`chain`, `let*`).
 
-/// Global budget of available parallel branch slots.
-/// Prevents nested fork bombs from exponential thread explosion.
-static PARALLEL_BRANCH_BUDGET: AtomicU32 = AtomicU32::new(0);
-static PARALLEL_BUDGET_INITIALIZED: OnceLock<()> = OnceLock::new();
+/// Maximum number of depth levels for per-depth budget quotas.
+const MAX_DEPTH_LEVELS: usize = 8;
+
+/// Per-depth budget quotas as percentage of total budget.
+/// Depth 0: 50%, Depth 1: 30%, Depth 2: 15%, Depth 3+: 5%.
+/// This replaces the exponential `4^(-depth)` decay with configurable quotas,
+/// allowing inner forks to exploit more parallelism when outer levels are idle.
+const DEPTH_QUOTA_PERCENTS: [u32; MAX_DEPTH_LEVELS] = [50, 30, 15, 5, 0, 0, 0, 0];
+
+/// Per-depth parallel branch budget quotas (Phase 3.6).
+///
+/// Each depth level has its own atomic budget counter, independently acquired
+/// and released. This prevents shallow forks from exhausting all budget and
+/// starving deeper levels.
+struct DepthBudgets {
+    /// Budget counters per depth level. Index = min(depth, MAX_DEPTH_LEVELS-1).
+    quotas: [AtomicU32; MAX_DEPTH_LEVELS],
+    /// Total budget across all levels (for diagnostics).
+    total: u32,
+}
+
+static DEPTH_BUDGETS: OnceLock<DepthBudgets> = OnceLock::new();
 
 /// Maximum parallel nesting depth, cached from `METTATRON_MAX_PARALLEL_DEPTH`.
-///
-/// - Depth 0 (top-level): full budget (e.g., 72 slots on 36 cores)
-/// - Depth 1 (nested in worker): budget / 4 (e.g., 18 slots)
-/// - Depth 2 (double-nested): budget / 16 (e.g., 4 slots)
-/// - Depth >= max_depth: sequential (no parallelism)
 ///
 /// Default: 3. Set to 0 to disable parallel branching entirely.
 static MAX_PARALLEL_DEPTH: OnceLock<u32> = OnceLock::new();
@@ -106,54 +119,55 @@ fn max_parallel_depth() -> u32 {
     })
 }
 
-fn init_parallel_budget() {
-    PARALLEL_BUDGET_INITIALIZED.get_or_init(|| {
+fn depth_budgets() -> &'static DepthBudgets {
+    DEPTH_BUDGETS.get_or_init(|| {
         let cpus = num_cpus::get() as u32;
-        PARALLEL_BRANCH_BUDGET.store(cpus.saturating_mul(2).min(128), Ordering::Relaxed);
-    });
+        let total = cpus.saturating_mul(2).min(128);
+
+        // Initialize per-depth quotas. Can't use array init with AtomicU32
+        // directly, so initialize each element.
+        let quotas = std::array::from_fn(|i| {
+            let pct = DEPTH_QUOTA_PERCENTS[i];
+            let quota = (total * pct) / 100;
+            // Ensure at least 1 slot for active depth levels (depths 0-3)
+            AtomicU32::new(if pct > 0 { quota.max(1) } else { 0 })
+        });
+
+        DepthBudgets { quotas, total }
+    })
 }
 
 /// Try to acquire N budget slots at the given nesting depth.
 ///
-/// Budget is scaled by two factors:
-/// 1. **Depth decay**: `4^(-depth)` (exponential) prevents pool exhaustion from
-///    nested forks while allowing inner forks to exploit some parallelism.
-/// 2. **Queue pressure**: When the work pool queue is saturated
-///    (`queue_depth > active_workers * 2`), no budget is granted (back off).
-///    When workers are starving (`queue_depth < active_workers / 2`), full
-///    budget is available (more parallelism).
+/// Phase 3.6: Uses per-depth quota system instead of exponential `4^(-depth)` decay.
+/// Each depth level has its own budget pool, preventing shallow forks from
+/// starving deeper levels.
+///
+/// Budget gate: when the work pool queue is saturated
+/// (`queue_depth > active_workers * 2`), no budget is granted.
 ///
 /// Returns actual slots acquired (0..=N).
 fn try_acquire_budget(n: u32, depth: u32) -> u32 {
-    init_parallel_budget();
+    let budgets = depth_budgets();
 
     // Dynamic budget gate: check queue pressure.
-    // If the pool is saturated, don't add more parallel work.
     let pool = global_eval_pool();
     let queue_depth = pool.queue_len();
     let active = pool.active_workers();
     if active > 0 && queue_depth > active * 2 {
-        // Pool is saturated — back off, evaluate sequentially
         return 0;
     }
 
-    // Scale requested budget down by 4^depth.
-    // depth 0: n, depth 1: n/4, depth 2: n/16, depth 3: n/64, ...
-    let scaled_n = if depth == 0 {
-        n
-    } else {
-        // 4^depth = 1 << (2*depth)
-        let divisor = 1u32.checked_shl(depth.saturating_mul(2)).unwrap_or(u32::MAX);
-        n.saturating_div(divisor).max(1) // at least 1 slot if any requested
-    };
+    let level = (depth as usize).min(MAX_DEPTH_LEVELS - 1);
+    let quota = &budgets.quotas[level];
 
-    let mut current = PARALLEL_BRANCH_BUDGET.load(Ordering::Relaxed);
+    let mut current = quota.load(Ordering::Relaxed);
     loop {
-        let granted = scaled_n.min(current);
+        let granted = n.min(current);
         if granted == 0 {
             return 0;
         }
-        match PARALLEL_BRANCH_BUDGET.compare_exchange_weak(
+        match quota.compare_exchange_weak(
             current,
             current - granted,
             Ordering::AcqRel,
@@ -165,8 +179,11 @@ fn try_acquire_budget(n: u32, depth: u32) -> u32 {
     }
 }
 
-fn release_budget(n: u32) {
-    PARALLEL_BRANCH_BUDGET.fetch_add(n, Ordering::Release);
+/// Release N budget slots back to the given depth level.
+fn release_budget(n: u32, depth: u32) {
+    let budgets = depth_budgets();
+    let level = (depth as usize).min(MAX_DEPTH_LEVELS - 1);
+    budgets.quotas[level].fetch_add(n, Ordering::Release);
 }
 
 /// Dispatch nondeterministic rule matches either in parallel or sequentially.
@@ -200,6 +217,7 @@ fn dispatch_rule_matches<C: EvalContext>(
     ctx: &C,
     work_stack: &mut Vec<GenericWorkItem<C::Value, ContextEnv<C>>>,
     continuations: &mut Vec<GenericContinuation<C::Value, ContextEnv<C>>>,
+    demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
 )
 where
     C::Value: Clone,
@@ -289,18 +307,66 @@ where
         return;
     }
 
+    // ── I-15: Lazy demand-driven dispatch via BranchCoroutine ──
+    // When demand is not All and we have multiple matches, evaluate branches
+    // one-at-a-time via ProcessRuleMatchesLazy instead of eagerly expanding all.
+    if let Some(ref demand) = demand {
+        if !demand.is_all() && matches.len() > 1 {
+            let mut coroutine = crate::backend::eval::cesk::coroutine::BranchCoroutine::new(
+                matches, *demand,
+            );
+            // BranchCoroutine with non-empty matches always has at least one branch.
+            let (rhs, bindings) = coroutine.next_branch()
+                .expect("BranchCoroutine::new with non-empty matches must have first branch");
+            // Push the lazy continuation to collect results incrementally
+            continuations.push(GenericContinuation::ProcessRuleMatchesLazy {
+                coroutine,
+                results: base_results.into_vec(),
+                env: env.clone(),
+                depth,
+            });
+            // Evaluate the first branch
+            if rhs.has_variables_fast() {
+                work_stack.push(GenericWorkItem::EvalWithBindings {
+                    template: rhs,
+                    bindings,
+                    env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                });
+            } else {
+                work_stack.push(GenericWorkItem::Eval {
+                    value: apply_bindings_generic(&rhs, &bindings, ctx.factory()),
+                    env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                });
+            }
+            return;
+        }
+    }
+
     // ── Parallel nondeterministic branching gate ──
-    // Check conditions: MettaValue only (compile-time constant after monomorphization),
-    // at least 2 matches, not at max parallel depth, active workers available,
-    // and budget slots remain.
+    // I-7: Check branch purity — pure branches bypass budget entirely.
     let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
+    let all_pure = matches.len() >= 2 && matches.iter().all(|(rhs, _)| {
+        crate::backend::eval::cesk::analyze_branch_purity(rhs).is_safe_to_parallelize()
+    });
+
     let budget = if matches.len() >= 2
         && std::any::TypeId::of::<C::Value>()
             == std::any::TypeId::of::<crate::backend::models::MettaValue>()
         && current_depth < max_parallel_depth()
         && global_eval_pool().active_workers() > 0
     {
-        try_acquire_budget((matches.len() - 1) as u32, current_depth)
+        if all_pure {
+            // Pure branches parallelize freely — no budget consumed
+            (matches.len() - 1) as u32
+        } else {
+            try_acquire_budget((matches.len() - 1) as u32, current_depth)
+        }
     } else {
         0
     };
@@ -362,7 +428,9 @@ where
             }
         }
 
-        let results = parallel_branch_eval(branches, metta_env, budget, current_depth);
+        // I-7: When all_pure, budget was not acquired from quotas — pass 0 to avoid leak
+        let actual_budget_acquired = if all_pure { 0 } else { budget };
+        let results = parallel_branch_eval(branches, metta_env, actual_budget_acquired, current_depth);
 
         // SAFETY: MettaValue and C::Value are the same type (TypeId checked).
         let generic_results: Vec<C::Value> =
@@ -541,7 +609,9 @@ fn parallel_branch_eval(
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
-    // Spawn branches 1..N to the work pool
+    // Spawn branches 1..N to the work pool via PriorityQueue.
+    // PriorityQueue provides instant condvar wakeup, priority levels, and
+    // adaptive worker scaling — purpose-built for MeTTaTron's scheduling.
     for (slot, branch_expr) in branches.iter().enumerate().skip(1) {
         let branch_expr = branch_expr.clone();
         let env = env.clone();
@@ -554,6 +624,9 @@ fn parallel_branch_eval(
                 // Set depth for nested parallel branching. At depth >= MAX_PARALLEL_DEPTH,
                 // the gate falls through to sequential. Budget is scaled by 4^(-depth).
                 PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+
+                // I-8: Enter thread-local allocation region for contention-free allocation
+                let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
 
                 // Track this parallel eval as active (prevents GC during evaluation)
                 let _guard = EvalGuard::enter();
@@ -673,8 +746,8 @@ fn parallel_branch_eval(
         }
     }
 
-    // Release budget slots
-    release_budget(budget_acquired);
+    // Release budget slots back to the depth level they were acquired from
+    release_budget(budget_acquired, caller_depth);
 
     // Merge results in branch order
     let mut merged = Vec::new();
@@ -745,6 +818,9 @@ fn parallel_collapse_eval(
         pool.spawn_eval(
             move || {
                 PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+
+                // I-8: Enter thread-local allocation region
+                let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
 
                 let _guard = EvalGuard::enter();
                 let ctx = ParallelBranchContext::get();
@@ -843,8 +919,8 @@ fn parallel_collapse_eval(
         }
     }
 
-    // Release budget slots
-    release_budget(budget_acquired);
+    // Release budget slots back to the depth level they were acquired from
+    release_budget(budget_acquired, caller_depth);
 
     // Merge results in item order, filtering empty values
     let _ = eval_depth; // depth used by caller for trace; items already eval'd at depth+1
@@ -882,11 +958,77 @@ fn parallel_collapse_eval(
 /// # Returns
 ///
 /// A tuple of (results, final_environment)
+/// I-18: Run eval_trampoline_generic to completion, resuming any yields.
+///
+/// This is the backward-compatible entry point used by all callers.
+/// Internally, the trampoline may yield after exhausting its reduction budget,
+/// but this wrapper loops until `Complete`.
 pub fn eval_trampoline_generic<C: EvalContext>(
     value: C::Value,
     env: ContextEnv<C>,
     ctx: &C,
 ) -> GenericEvalResult<C::Value, ContextEnv<C>>
+where
+    C::Value: Clone,
+{
+    let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0);
+    loop {
+        match outcome {
+            crate::backend::eval::cesk::EvalOutcome::Complete(results, env) => {
+                return (results, env);
+            }
+            crate::backend::eval::cesk::EvalOutcome::Yielded(suspended) => {
+                // Resume from suspended state with a fresh reduction budget
+                outcome = resume_trampoline_inner(suspended, ctx);
+            }
+        }
+    }
+}
+
+/// Resume a suspended trampoline evaluation from saved state.
+///
+/// Reconstructs the trampoline loop from the saved work_stack and continuations,
+/// continuing with a fresh reduction budget slice.
+fn resume_trampoline_inner<C: EvalContext>(
+    suspended: crate::backend::eval::cesk::SuspendedEval<C::Value, ContextEnv<C>>,
+    ctx: &C,
+) -> crate::backend::eval::cesk::EvalOutcome<C::Value, ContextEnv<C>>
+where
+    C::Value: Clone,
+{
+    // Extract environment from the first work item.
+    // The `value` and `env` parameters to eval_trampoline_inner are unused when
+    // resuming (work_stack is pre-populated). We extract env from saved state.
+    let env = match suspended.work_stack.first() {
+        Some(GenericWorkItem::Eval { env, .. }) => env.clone(),
+        Some(GenericWorkItem::EvalWithBindings { env, .. }) => env.clone(),
+        Some(GenericWorkItem::Resume { result }) => result.1.clone(),
+        None => panic!("resume_trampoline_inner: SuspendedEval has empty work_stack"),
+    };
+
+    eval_trampoline_inner(
+        ctx.factory().unit(), // Dummy value — unused since work_stack is pre-populated
+        env,
+        ctx,
+        Some(suspended.work_stack),
+        Some(suspended.continuations),
+        suspended.total_reductions,
+    )
+}
+
+/// Internal trampoline that returns EvalOutcome (may yield).
+///
+/// When `resume_work_stack` and `resume_continuations` are `Some`, this resumes
+/// a previously suspended evaluation from saved state rather than starting fresh.
+/// `resume_reductions` carries the lifetime reduction count across yields.
+fn eval_trampoline_inner<C: EvalContext>(
+    value: C::Value,
+    env: ContextEnv<C>,
+    ctx: &C,
+    resume_work_stack: Option<Vec<GenericWorkItem<C::Value, ContextEnv<C>>>>,
+    resume_continuations: Option<Vec<GenericContinuation<C::Value, ContextEnv<C>>>>,
+    resume_reductions: u64,
+) -> crate::backend::eval::cesk::EvalOutcome<C::Value, ContextEnv<C>>
 where
     C::Value: Clone,
 {
@@ -931,21 +1073,31 @@ where
         }
     }
 
-    // Initialize work stack with pre-allocated capacity to avoid reallocation.
-    // Typical PLN evaluation reaches 10-20 work items; 32 covers most cases.
-    let mut work_stack: Vec<GenericWorkItem<C::Value, ContextEnv<C>>> = Vec::with_capacity(32);
-    work_stack.push(GenericWorkItem::Eval {
-        value,
-        env: env.clone(),
-        depth: 0,
-        is_tail_call: false,
-        expected_type: None,
-    });
+    // Initialize work stack and continuations, either from resume state or fresh.
+    let is_resuming = resume_work_stack.is_some();
+    let mut work_stack: Vec<GenericWorkItem<C::Value, ContextEnv<C>>> =
+        if let Some(ws) = resume_work_stack {
+            ws
+        } else {
+            let mut ws = Vec::with_capacity(32);
+            ws.push(GenericWorkItem::Eval {
+                value,
+                env: env.clone(),
+                depth: 0,
+                is_tail_call: false,
+                expected_type: None,
+            });
+            ws
+        };
 
-    // Continuation storage with pre-allocated capacity.
-    // Typical PLN evaluation reaches 40-60 continuations; 64 covers most cases.
-    let mut continuations: Vec<GenericContinuation<C::Value, ContextEnv<C>>> = Vec::with_capacity(64);
-    continuations.push(GenericContinuation::Done);
+    let mut continuations: Vec<GenericContinuation<C::Value, ContextEnv<C>>> =
+        if let Some(cs) = resume_continuations {
+            cs
+        } else {
+            let mut cs = Vec::with_capacity(64);
+            cs.push(GenericContinuation::Done);
+            cs
+        };
 
     // Final result storage
     let mut final_result: Option<GenericEvalResult<C::Value, ContextEnv<C>>> = None;
@@ -954,12 +1106,30 @@ where
     // Increased from u8 (256) to reduce maybe_process_gc_response overhead (4.9% → ~1%).
     let mut gc_counter: u16 = 0;
 
+    // I-18: Reduction counter for cooperative yielding.
+    // Initializes from resume_reductions for lifetime tracking across yields.
+    let mut reduction_counter = crate::backend::eval::cesk::ReductionCounter::new();
+    if resume_reductions > 0 {
+        reduction_counter.add_total(resume_reductions);
+    }
+
     // SECK Phase 0.5: Reusable root set for GC safepoints.
     // Allocated once here, cleared and reused across safepoints. This avoids
     // re-allocating a Vec<V> on every safepoint (previously ~every 4096 iterations).
     let mut root_set = crate::backend::eval::cesk::RootSet::<C::Value>::with_estimated_capacity(
         32, 64, 0,
     );
+
+    // I-4/I-6: Clear subgoal and thunk tables between top-level evaluations
+    // to prevent stale cached results from previous evaluations.
+    // Skip when resuming — tables were already cleared on the initial call.
+    if !is_resuming
+        && std::any::TypeId::of::<C::Value>()
+            == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+    {
+        crate::backend::eval::cesk::clear_subgoal_table();
+        crate::backend::eval::cesk::clear_thunk_table();
+    }
 
     // Main trampoline loop
     while let Some(work) = work_stack.pop() {
@@ -998,6 +1168,26 @@ where
                     unsafe { &mut *(root_set.as_mut_vec() as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 collect_eval_memo_roots(concrete_roots);
                 collect_match_result_roots(concrete_roots);
+            }
+
+            // Phase 2.2: Incremental nursery collection (thread-local, no quiescence needed).
+            // Runs BEFORE cache clearing and old-gen safepoint. Uses the algebraic
+            // root set to determine which nursery values are live.
+            if std::any::TypeId::of::<C::Value>()
+                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+            {
+                crate::backend::eval::cesk::with_nursery_collector(|collector| {
+                    if collector.should_collect() {
+                        // Build live pointer set from root set
+                        let concrete_roots: &Vec<crate::backend::models::MettaValue> =
+                            unsafe { &*(root_set.as_mut_vec() as *const Vec<C::Value> as *const Vec<crate::backend::models::MettaValue>) };
+                        let live_ptrs: std::collections::HashSet<usize> = concrete_roots
+                            .iter()
+                            .map(|v| v.inner_ptr() as usize)
+                            .collect();
+                        collector.collect(&live_ptrs);
+                    }
+                });
             }
 
             // Clear thread-local MORK serialization caches before GC runs.
@@ -1050,6 +1240,35 @@ where
                 }
             }
         }
+
+        // I-18: Cooperative yield check. When the reduction budget is exhausted,
+        // yield if we are on a worker thread (not the main thread), not inside
+        // a nested parallel branch, and have continuations to resume.
+        // Amortize reduction_counter.tick() to every 4096 iterations by
+        // piggybacking on the GC safepoint cadence. This eliminates ~200ns/iter
+        // overhead from 2 increments + 1 comparison on every trampoline step.
+        if gc_counter & 0xFFF == 0
+            && reduction_counter.tick()
+            && !continuations.is_empty()
+            && crate::backend::eval::cesk::current_worker_id().is_some()
+            && PARALLEL_BRANCH_DEPTH.with(|d| d.get()) == 0
+        {
+            // Push the popped work item back so it can be resumed
+            work_stack.push(work);
+            let depth_hint = continuations.last()
+                .map(|c| c.depth_hint())
+                .unwrap_or(0) as u32;
+            return crate::backend::eval::cesk::EvalOutcome::Yielded(
+                crate::backend::eval::cesk::SuspendedEval {
+                    work_stack,
+                    continuations,
+                    depth: depth_hint,
+                    total_reductions: reduction_counter.total(),
+                    worker_id: crate::backend::eval::cesk::current_worker_id(),
+                },
+            );
+        }
+
         match work {
             GenericWorkItem::Eval {
                 value,
@@ -1084,6 +1303,46 @@ where
                         result: (smallvec![value], env),
                     });
                     continue;
+                }
+
+                // I-4: Subgoal tabling — check if this expression has been
+                // previously evaluated (Complete) or is currently being evaluated
+                // (Active → cycle detection). Only for S-expressions at depth >= 2
+                // and only for MettaValue (GC-managed).
+                if is_sexpr && depth >= 2
+                    && std::any::TypeId::of::<C::Value>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                {
+                    let tabling_hash = value.hash_value();
+                    let lookup = crate::backend::eval::cesk::with_subgoal_table(|t| {
+                        t.lookup(tabling_hash, depth as u32)
+                    });
+                    match lookup {
+                        crate::backend::eval::cesk::TableLookup::Complete(cached) => {
+                            let generic_results: Vec<C::Value> =
+                                unsafe { std::mem::transmute(cached.into_vec()) };
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (SmallVec::from_vec(generic_results), env),
+                            });
+                            continue;
+                        }
+                        crate::backend::eval::cesk::TableLookup::Cycle(partial) => {
+                            let generic_results: Vec<C::Value> =
+                                unsafe { std::mem::transmute(partial.into_vec()) };
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (SmallVec::from_vec(generic_results), env),
+                            });
+                            continue;
+                        }
+                        crate::backend::eval::cesk::TableLookup::Absent => {
+                            // Push CompleteSubgoal continuation so results are cached
+                            continuations.push(GenericContinuation::CompleteSubgoal {
+                                expr_hash: tabling_hash,
+                                env: env.clone(),
+                                depth,
+                            });
+                        }
+                    }
                 }
 
                 // Expression-level memoization: check if we've evaluated this
@@ -1494,7 +1753,7 @@ where
                             let matches_deque: Vec<_> = matches.into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                 .collect();
-                            dispatch_rule_matches(matches_deque, SmallVec::new(), env, depth, ctx, &mut work_stack, &mut continuations);
+                            dispatch_rule_matches(matches_deque, SmallVec::new(), env, depth, ctx, &mut work_stack, &mut continuations, None);
                         }
                     }
 
@@ -2441,6 +2700,72 @@ where
                     continue;
                 }
 
+                // Phase 2.4: Environment trimming — remove bindings not referenced
+                // by the template. This reduces root set size at GC safepoints and
+                // avoids carrying dead bindings through nested let* chains.
+                let bindings = if bindings.len() > 1 {
+                    let needed = template.free_variables();
+                    if needed.len() < bindings.len() {
+                        let mut trimmed = crate::backend::models::GenericBindings::new();
+                        for (name, val) in bindings.iter() {
+                            if needed.contains(&name) {
+                                trimmed.insert(name, val.clone());
+                            }
+                        }
+                        trimmed
+                    } else {
+                        bindings
+                    }
+                } else {
+                    bindings
+                };
+
+                // I-6: ThunkTable lookup — check if (template, bindings) was previously evaluated.
+                // Only for MettaValue at depth >= 3 where template has variables.
+                // The hash incorporates BOTH template AND bindings to distinguish
+                // recursive calls with different arguments.
+                if depth >= 3
+                    && template.has_variables_fast()
+                    && std::any::TypeId::of::<C::Value>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                {
+                    // Hash template + bindings content for unique identification
+                    let mut thunk_hash = template.hash_value();
+                    for (name, val) in bindings.iter() {
+                        thunk_hash ^= val.hash_value().wrapping_mul(0x9e3779b97f4a7c15);
+                        for b in name.bytes() {
+                            thunk_hash = thunk_hash.wrapping_mul(31).wrapping_add(b as u64);
+                        }
+                    }
+                    let lookup = crate::backend::eval::cesk::with_thunk_table(|t| t.lookup(thunk_hash));
+                    match lookup {
+                        crate::backend::eval::cesk::ThunkLookup::Evaluated(cached) => {
+                            let generic_results: Vec<C::Value> =
+                                unsafe { std::mem::transmute(cached.into_vec()) };
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (SmallVec::from_vec(generic_results), env),
+                            });
+                            continue;
+                        }
+                        crate::backend::eval::cesk::ThunkLookup::Blackhole => {
+                            // Infinite recursion detected — return error
+                            let error_val = ctx.factory().error("blackhole", ctx.factory().atom("infinite recursion in EvalWithBindings"));
+                            work_stack.push(GenericWorkItem::Resume {
+                                result: (smallvec![error_val], env),
+                            });
+                            continue;
+                        }
+                        _ => {
+                            // Absent or Suspended — push CompleteThunk, proceed normally
+                            continuations.push(GenericContinuation::CompleteThunk {
+                                thunk_hash,
+                                env: env.clone(),
+                                depth,
+                            });
+                        }
+                    }
+                }
+
                 // Template is a variable atom → resolve from bindings
                 if let Some(var_name) = template.as_atom() {
                     if is_variable_str(var_name) {
@@ -2614,6 +2939,8 @@ where
                                 &first_value_expr, &bindings, ctx.factory(),
                             );
 
+                            // I-5: Enter region for let* scope
+                            let region_id = crate::backend::eval::cesk::with_region_stack(|s| s.enter(depth as u32));
                             continuations.push(GenericContinuation::ProcessLetStar {
                                 current_pattern: first_pattern,
                                 remaining_pairs: pairs,
@@ -2622,6 +2949,7 @@ where
                                 env: env.clone(),
                                 depth,
                                 is_tail_call,
+                                region_id,
                             });
 
                             work_stack.push(GenericWorkItem::Eval {
@@ -2744,7 +3072,7 @@ where
                                 &template, &bindings, head_name, arity, &env, ctx.factory(),
                             ) {
                                 if !matches.is_empty() {
-                                    dispatch_rule_matches(matches, SmallVec::new(), env, depth, ctx, &mut work_stack, &mut continuations);
+                                    dispatch_rule_matches(matches, SmallVec::new(), env, depth, ctx, &mut work_stack, &mut continuations, None);
                                     continue;
                                 }
                                 // matches is empty → no rule matched → self-evaluating
@@ -2814,8 +3142,9 @@ where
         crate::backend::trace::thread_local_sink::clear_thread_trace_collector();
     }
 
-    // Return final result
-    final_result.unwrap_or_else(|| (SmallVec::new(), env))
+    // Return final result as EvalOutcome::Complete
+    let (results, final_env) = final_result.unwrap_or_else(|| (SmallVec::new(), env));
+    crate::backend::eval::cesk::EvalOutcome::Complete(results, final_env)
 }
 
 /// Process a continuation with generic value types.
@@ -2863,7 +3192,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
                         } else {
                             // Dispatch via unified parallel/sequential gate
-                            dispatch_rule_matches(matches, base_results, env, depth, ctx, work_stack, continuations);
+                            dispatch_rule_matches(matches, base_results, env, depth, ctx, work_stack, continuations, None);
                         }
                     }
                     GenericProcessedSExpr::EvalCombinations { combinations, env, depth } => {
@@ -3060,6 +3389,61 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
+        // ── I-15: ProcessRuleMatchesLazy — demand-driven branch evaluation ──
+        GenericContinuation::ProcessRuleMatchesLazy {
+            mut coroutine,
+            mut results,
+            env: _,
+            depth,
+        } => {
+            let (eval_results, result_env) = result;
+
+            // Record results from the just-evaluated branch
+            for val in eval_results.iter() {
+                results.push(val.clone());
+                coroutine.record_result(val.clone());
+            }
+
+            if coroutine.is_done() {
+                // Demand satisfied or branches exhausted
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (SmallVec::from_vec(results), result_env),
+                });
+            } else if let Some((rhs, bindings)) = coroutine.next_branch() {
+                // More branches to evaluate — push continuation and eval next
+                continuations.push(GenericContinuation::ProcessRuleMatchesLazy {
+                    coroutine,
+                    results,
+                    env: result_env.clone(),
+                    depth,
+                });
+
+                if rhs.has_variables_fast() {
+                    work_stack.push(GenericWorkItem::EvalWithBindings {
+                        template: rhs,
+                        bindings,
+                        env: result_env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                    });
+                } else {
+                    work_stack.push(GenericWorkItem::Eval {
+                        value: rhs,
+                        env: result_env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                    });
+                }
+            } else {
+                // Exhausted — return what we have
+                work_stack.push(GenericWorkItem::Resume {
+                    result: (SmallVec::from_vec(results), result_env),
+                });
+            }
+        }
+
         GenericContinuation::ProcessGroundedOp {
             mut state,
             pending_arg_idx,
@@ -3228,7 +3612,7 @@ fn process_continuation_generic<C: EvalContext>(
                     });
 
                     // Dispatch rule matches (parallel or sequential)
-                    dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations);
+                    dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations, None);
                 }
             } else {
                 // All combinations processed - results already contains generic values
@@ -3660,7 +4044,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     all_matches_with_types.into_iter()
                                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                         .collect();
-                                dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations);
+                                dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations, None);
                             } else {
                                 // Step 4: No rules matched — return as data constructor
                                 work_stack.push(GenericWorkItem::Resume {
@@ -7351,6 +7735,7 @@ fn process_continuation_generic<C: EvalContext>(
             env: _,
             depth,
             is_tail_call,
+            region_id,
         } => {
             let (result_values, result_env) = result;
 
@@ -7363,6 +7748,8 @@ fn process_continuation_generic<C: EvalContext>(
                     accumulated_bindings = accumulated_bindings.compose(&pm_bindings);
 
                     if remaining_pairs.is_empty() {
+                        // I-5: Exit region — let* scope complete
+                        crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
                         // All bindings resolved — evaluate body with composed bindings
                         work_stack.push(GenericWorkItem::EvalWithBindings {
                             template: body,
@@ -7387,6 +7774,7 @@ fn process_continuation_generic<C: EvalContext>(
                             env: result_env.clone(),
                             depth,
                             is_tail_call,
+                            region_id, // I-5: propagate region through let* chain
                         });
 
                         work_stack.push(GenericWorkItem::Eval {
@@ -7399,17 +7787,21 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 } else {
                     // Pattern match failed — let* produces empty (MeTTa HE semantics)
+                    crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); }); // I-5
                     work_stack.push(GenericWorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 }
             } else if result_values.is_empty() {
                 // Zero results — let* produces empty
+                crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); }); // I-5
                 work_stack.push(GenericWorkItem::Resume {
                     result: (SmallVec::new(), result_env),
                 });
             } else {
                 // Multiple results — nondeterministic value expression.
+                // I-5: Exit region before fallback (region doesn't span materialized let forms)
+                crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
                 // Fall back to standard `let` machinery for each result.
                 // Build nested let form for remaining pairs + body, then
                 // use ProcessAmb to handle each result.
@@ -7465,6 +7857,66 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 }
             }
+        }
+
+        // ── I-4: CompleteSubgoal — cache tabling results ──
+        GenericContinuation::CompleteSubgoal {
+            expr_hash,
+            env: _,
+            depth: _,
+        } => {
+            let (result_values, result_env) = result;
+
+            // Store results in the subgoal table for future cache hits.
+            if std::any::TypeId::of::<C::Value>()
+                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+            {
+                let concrete_results: &[crate::backend::models::MettaValue] = unsafe {
+                    std::slice::from_raw_parts(
+                        result_values.as_ptr() as *const crate::backend::models::MettaValue,
+                        result_values.len(),
+                    )
+                };
+                let cached: smallvec::SmallVec<[crate::backend::models::MettaValue; 2]> =
+                    concrete_results.iter().cloned().collect();
+                crate::backend::eval::cesk::with_subgoal_table(|t| {
+                    t.complete(expr_hash, cached);
+                });
+            }
+
+            work_stack.push(GenericWorkItem::Resume {
+                result: (result_values, result_env),
+            });
+        }
+
+        // ── I-6: CompleteThunk — cache thunk results ──
+        GenericContinuation::CompleteThunk {
+            thunk_hash,
+            env: _,
+            depth: _,
+        } => {
+            let (result_values, result_env) = result;
+
+            // Store results in the thunk table for future cache hits.
+            if std::any::TypeId::of::<C::Value>()
+                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+            {
+                let concrete_results: &[crate::backend::models::MettaValue] = unsafe {
+                    std::slice::from_raw_parts(
+                        result_values.as_ptr() as *const crate::backend::models::MettaValue,
+                        result_values.len(),
+                    )
+                };
+                let cached: smallvec::SmallVec<[crate::backend::models::MettaValue; 2]> =
+                    concrete_results.iter().cloned().collect();
+                crate::backend::eval::cesk::with_thunk_table(|t| {
+                    t.update(thunk_hash, cached);
+                });
+            }
+
+            work_stack.push(GenericWorkItem::Resume {
+                result: (result_values, result_env),
+            });
         }
     }
 }

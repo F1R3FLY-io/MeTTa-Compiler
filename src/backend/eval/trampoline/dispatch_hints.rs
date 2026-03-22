@@ -25,52 +25,18 @@ use crate::backend::hash_utils::IdentityU64BuildHasher;
 use std::sync::atomic::Ordering;
 
 use crate::backend::environment::rule_management::RULE_EPOCH;
-use crate::backend::models::{gc_sweep_epoch, GenericBindings, MettaValue, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::context::EvalContext;
 
 // ============================================================================
-// GC Epoch Tracking — Thread-local staleness detection
+// GC Epoch Tracking — REMOVED (I-9: Deterministic GC)
 // ============================================================================
 //
-// When GC frees slab slots, it bumps a global monotonic `GC_SWEEP_EPOCH`.
-// Thread-local caches that store `MettaValue` or pointer-keyed entries compare
-// their local epoch snapshot against the global epoch before every access.
-// If they diverge, the cache is stale (slab slots may have been freed and
-// reused — ABA) and must be cleared.
-
-thread_local! {
-    /// Thread-local snapshot of `GC_SWEEP_EPOCH` at last cache validation.
-    /// When the global epoch advances past this value, all pointer-keyed
-    /// caches on this thread are invalidated.
-    static LOCAL_GC_EPOCH: Cell<u64> = const { Cell::new(0) };
-}
-
-/// Check if thread-local caches are stale w.r.t. the global GC sweep epoch.
-/// If so, clear EVAL_MEMO and NORMAL_FORM_BLOOM, and update the local epoch.
-///
-/// Returns `true` if the caches were stale and cleared.
-#[inline]
-fn check_gc_epoch() -> bool {
-    let global = gc_sweep_epoch();
-    LOCAL_GC_EPOCH.with(|local| {
-        if local.get() != global {
-            local.set(global);
-            // Invalidate all pointer-keyed caches on this thread.
-            EVAL_MEMO.with(|memo_cell| memo_cell.borrow_mut().clear());
-            MATCH_RESULT_CACHE.with(|cache_cell| cache_cell.borrow_mut().clear());
-            clear_operator_cache();
-            invalidate_normal_form_memo();
-            crate::backend::environment::rule_management::clear_mork_bytes_cache();
-            crate::backend::mork_convert::clear_ground_fragment_cache();
-            crate::backend::models::metta_value::clear_value_hash_cache();
-            crate::backend::models::gc_allocator::clear_hash_cons_table();
-            true
-        } else {
-            false
-        }
-    })
-}
+// The epoch-based cache invalidation system (GC_SWEEP_EPOCH, LOCAL_GC_EPOCH,
+// check_gc_epoch) has been removed. With deterministic GC always-on, the
+// nursery collector keeps the state space garbage-free at every safepoint.
+// Caches never hold stale pointers, so epoch checking is unnecessary.
 
 // ============================================================================
 // Phase 9.5: Evaluated-expression normal-form memoization
@@ -110,8 +76,7 @@ pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
     if !NORMAL_FORM_BLOOM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
-    // Invalidate if GC freed slab slots since our last check (ABA safety).
-    check_gc_epoch();
+    // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
     if !NORMAL_FORM_BLOOM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
@@ -341,8 +306,7 @@ pub fn should_memoize<V: MettaValueTrait>(value: &V) -> bool {
 /// is cleared (returning `None`) to avoid use-after-free on stale pointers.
 #[inline]
 pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
-    // Invalidate if GC freed slab slots since our last check (ABA safety).
-    check_gc_epoch();
+    // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
     EVAL_MEMO.with(|memo_cell| {
         let mut memo = memo_cell.borrow_mut();
         memo.get(&expr_hash).map(|entries| entries.to_vec())
@@ -427,8 +391,7 @@ pub fn match_result_get(
     expr_hash: u64,
     expr_arity: usize,
 ) -> Option<Vec<(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)>> {
-    // Invalidate if GC freed slab slots since our last check (ABA safety).
-    check_gc_epoch();
+    // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
     let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
     MATCH_RESULT_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();

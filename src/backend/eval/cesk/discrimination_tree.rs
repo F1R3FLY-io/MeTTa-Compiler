@@ -97,7 +97,7 @@ pub enum DiscKey {
 /// - A set of rule indices that terminate at this node
 ///
 /// Rule indices are stored as `u32` to save memory (supports up to 4B rules).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct DiscNode {
     /// Children indexed by discrimination key.
     children: HashMap<DiscKey, DiscNode>,
@@ -137,7 +137,7 @@ impl DiscNode {
 /// Rules that cannot be indexed (e.g., patterns that are bare variables,
 /// or patterns with unsupported structure) are placed in `catch_all_indices`.
 /// These are always included in query results.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DiscriminationTree {
     /// Root node of the trie.
     root: DiscNode,

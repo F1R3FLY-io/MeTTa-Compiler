@@ -2209,6 +2209,7 @@ dependencies = [
  "cranelift-native",
  "criterion",
  "crossbeam-channel",
+ "crossbeam-deque",
  "dashmap",
  "dirs",
  "divan",

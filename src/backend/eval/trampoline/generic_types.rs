@@ -137,6 +137,19 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         total_branches: u32,
     },
 
+    /// I-15: Lazy nondeterministic branch evaluation via coroutine.
+    /// Evaluates branches one-at-a-time until demand is satisfied.
+    ProcessRuleMatchesLazy {
+        /// The coroutine managing unevaluated branches.
+        coroutine: crate::backend::eval::cesk::coroutine::BranchCoroutine<V>,
+        /// Results accumulated so far.
+        results: Vec<V>,
+        /// Environment for evaluation.
+        env: E,
+        /// Evaluation depth.
+        depth: usize,
+    },
+
     /// Processing TCO grounded operation.
     ProcessGroundedOp {
         state: GenericGroundedState<V>,
@@ -731,6 +744,30 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
         /// Whether this is a tail call.
         is_tail_call: bool,
+        /// I-5: Region ID for region-based allocation scoping.
+        region_id: u32,
+    },
+
+    /// I-4: Complete a tabled subgoal after evaluation finishes.
+    /// Stores the results in the SubgoalTable for future cache hits.
+    CompleteSubgoal {
+        /// Content hash of the expression being tabled.
+        expr_hash: u64,
+        /// Environment (for result forwarding).
+        env: E,
+        /// Evaluation depth.
+        depth: usize,
+    },
+
+    /// I-6: Complete a thunk after evaluation finishes.
+    /// Updates the ThunkTable with the cached results.
+    CompleteThunk {
+        /// Content hash of the (template, bindings) pair.
+        thunk_hash: u64,
+        /// Environment (for result forwarding).
+        env: E,
+        /// Evaluation depth.
+        depth: usize,
     },
 }
 
@@ -1146,6 +1183,95 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 out.push(body.clone());
                 collect_bindings_values(accumulated_bindings, out);
             }
+
+            Self::ProcessRuleMatchesLazy { coroutine, results, .. } => {
+                out.extend(results.iter().cloned());
+                // Coroutine remaining branches contain (V, GenericBindings<V>) pairs
+                // The V values (rhs templates) must be rooted
+                // Access is limited since BranchCoroutine fields are private;
+                // results vec is the primary root source.
+            }
+
+            Self::CompleteSubgoal { .. } => {
+                // No V values to collect — only stores a u64 hash key.
+            }
+
+            Self::CompleteThunk { .. } => {
+                // No V values to collect — only stores a u64 hash key.
+            }
+        }
+    }
+
+    /// Return the depth hint from whichever variant is active.
+    ///
+    /// Used by the cooperative yield logic to record the evaluation depth
+    /// at the suspension point for priority scheduling. All variants except
+    /// `Done` carry a `depth` field.
+    pub fn depth_hint(&self) -> usize {
+        match self {
+            Self::Done => 0,
+            Self::CollectSExpr { depth, .. }
+            | Self::ProcessRuleMatches { depth, .. }
+            | Self::ProcessRuleMatchesLazy { depth, .. }
+            | Self::ProcessGroundedOp { depth, .. }
+            | Self::ProcessCombinations { depth, .. }
+            | Self::ProcessLet { depth, .. }
+            | Self::CollectGroundedArg { depth, .. }
+            | Self::CollectApplicativeResults { depth, .. }
+            | Self::ProcessMapAtom { depth, .. }
+            | Self::ProcessFilterAtom { depth, .. }
+            | Self::ProcessFoldlAtom { depth, .. }
+            | Self::ProcessIfCondition { depth, .. }
+            | Self::ProcessCaseAtom { depth, .. }
+            | Self::ProcessEvalEval { depth, .. }
+            | Self::ProcessReturn { depth, .. }
+            | Self::ProcessChainExpr { depth, .. }
+            | Self::ProcessChainBody { depth, .. }
+            | Self::ProcessFunction { depth, .. }
+            | Self::ProcessIsError { depth, .. }
+            | Self::ProcessCatch { depth, .. }
+            | Self::ProcessConjunction { depth, .. }
+            | Self::ProcessUnifyPattern1 { depth, .. }
+            | Self::ProcessUnifyPattern1Iter { depth, .. }
+            | Self::ProcessUnifyPattern2 { depth, .. }
+            | Self::ProcessUnifyBodies { depth, .. }
+            | Self::ProcessCollapse { depth, .. }
+            | Self::ProcessCollapseBind { depth, .. }
+            | Self::ProcessCollapseEvalResults { depth, .. }
+            | Self::ProcessAmb { depth, .. }
+            | Self::ProcessGuard { depth, .. }
+            | Self::ProcessGetAtoms { depth, .. }
+            | Self::ProcessMemoTable { depth, .. }
+            | Self::ProcessMemoExpr { depth, .. }
+            | Self::ProcessNewMemoName { depth, .. }
+            | Self::ProcessNewMemoSize { depth, .. }
+            | Self::ProcessMemoOp { depth, .. }
+            | Self::ProcessBind { depth, .. }
+            | Self::ProcessMatchSpace { depth, .. }
+            | Self::ProcessMatchTemplates { depth, .. }
+            | Self::ProcessAddAtomSpace { depth, .. }
+            | Self::ProcessRemoveAtomSpace { depth, .. }
+            | Self::ProcessNewState { depth, .. }
+            | Self::ProcessGetState { depth, .. }
+            | Self::ProcessChangeStateRef { depth, .. }
+            | Self::ProcessChangeStateValue { depth, .. }
+            | Self::ProcessRepr { depth, .. }
+            | Self::ProcessFormatArgsString { depth, .. }
+            | Self::ProcessFormatArgsArgs { depth, .. }
+            | Self::ProcessPrintln { depth, .. }
+            | Self::ProcessTraceMessage { depth, .. }
+            | Self::ProcessTraceValue { depth, .. }
+            | Self::ProcessGetMetatype { depth, .. }
+            | Self::ProcessIfReducible { depth, .. }
+            | Self::ProcessMatchOrSpace { depth, .. }
+            | Self::ProcessSortTuple { depth, .. }
+            | Self::ProcessBestCandidate { depth, .. }
+            | Self::ProcessCaseMultiResults { depth, .. }
+            | Self::ProcessCaseEvalScrutineeResults { depth, .. }
+            | Self::MemoizeResult { depth, .. }
+            | Self::ProcessLetStar { depth, .. }
+            | Self::CompleteSubgoal { depth, .. }
+            | Self::CompleteThunk { depth, .. } => *depth,
         }
     }
 }

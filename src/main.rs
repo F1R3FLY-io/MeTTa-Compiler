@@ -407,6 +407,60 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
     }
     timings.mark("all_evals");
 
+    // ── I-16: AAM static analysis pipeline (opt-in) ──
+    // Run after all rules are loaded and top-level expressions evaluated.
+    // Enabled via METTATRON_AAM_ANALYSIS=1 environment variable.
+    if std::env::var("METTATRON_AAM_ANALYSIS").map_or(false, |v| v == "1") {
+        // Activate I-13/I-14 hot-path tracking for subsequent evaluations.
+        mettatron::backend::activate_analysis();
+        let source_exprs_snapshot: Vec<mettatron::backend::models::MettaValue> =
+            state.source().iter().copied().collect();
+
+        let analysis_config = mettatron::backend::analysis::AnalysisConfig::default();
+        let analysis_result = mettatron::backend::analysis::fixpoint::run_analysis(
+            &source_exprs_snapshot, &env, &analysis_config,
+        );
+        let derived = mettatron::backend::analysis::derived::derive_analysis(&analysis_result);
+
+        // Report analysis results to stderr
+        eprintln!("[analysis] AAM converged in {} iterations ({} ms)",
+            analysis_result.iterations, analysis_result.analysis_time_ms);
+        eprintln!("[analysis] Dead rules: {}, Deterministic dispatches: {}, Pure exprs: {}",
+            derived.dead_rules.len(), derived.deterministic_dispatch.len(), derived.pure_expressions.len());
+
+        // I-16: Run post-pass analyses
+        let env_snapshot = mettatron::backend::analysis::fixpoint::snapshot_environment(&env);
+
+        let pushdown_config = mettatron::backend::analysis::pushdown::PushdownConfig::default();
+        let pushdown_result = mettatron::backend::analysis::pushdown::run_pushdown_analysis(
+            &source_exprs_snapshot, &env_snapshot, &pushdown_config,
+        );
+        eprintln!("[analysis] Pushdown: {} states, {} recursive exprs, converged={}",
+            pushdown_result.states.len(), pushdown_result.recursive_exprs.len(), pushdown_result.converged);
+
+        let module_reach = mettatron::backend::analysis::module_dce::ModuleReachability::compute(
+            std::collections::HashMap::new(), // Module→rule mapping not yet wired
+            &derived.dead_rules,
+        );
+        eprintln!("[analysis] Module reachability: {} live, {} dead",
+            module_reach.live_modules.len(), module_reach.dead_modules.len());
+
+        let race_result = mettatron::backend::analysis::race_detection::detect_races(
+            &analysis_result, &derived,
+        );
+        eprintln!("[analysis] Race detection: {} potential races, {} safe parallel exprs",
+            race_result.potential_races.len(), race_result.safe_parallel.len());
+
+        // I-12: Install rule filter from analysis for subsequent evaluations.
+        // The CompressedRuleFilter is used by match_rules_native to skip dead rules.
+        let rule_filter = mettatron::backend::eval::cesk::continuation_compression::CompressedRuleFilter::from_analysis(
+            &derived, env_snapshot.total_rules,
+        );
+        mettatron::backend::eval::cesk::continuation_compression::install_rule_filter(rule_filter);
+
+        timings.mark("analysis");
+    }
+
     // Finalize trace collector — flush remaining events and write footer.
     #[cfg(feature = "eval-trace")]
     {

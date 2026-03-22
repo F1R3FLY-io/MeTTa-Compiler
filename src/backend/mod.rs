@@ -6,6 +6,7 @@
 // - `run`: PathMap method to execute s-expressions (will be in Rholang)
 // - `bytecode`: Stack-based bytecode VM for faster execution (WIP)
 
+pub mod analysis;
 pub mod builtin_signatures;
 pub mod bytecode;
 pub mod compile;
@@ -33,6 +34,7 @@ pub use compile::{
     compile, compile_generic, compile_with_path,
 };
 pub use environment::{GenericEnvironment, MettaEnvironment, ScopeTracker};
+pub use environment::rule_management::activate_analysis;
 pub use eval::{eval, pattern_match};
 #[cfg(feature = "eval-trace")]
 pub use eval::eval_with_trace;

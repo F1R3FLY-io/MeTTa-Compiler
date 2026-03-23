@@ -2198,6 +2198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "metta-trie"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "smallvec",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "mettatron"
 version = "0.2.0"
 dependencies = [
@@ -2222,6 +2231,7 @@ dependencies = [
  "liblevenshtein",
  "lru",
  "memchr",
+ "metta-trie",
  "models",
  "mork",
  "mork-expr",

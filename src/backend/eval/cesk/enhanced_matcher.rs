@@ -66,12 +66,14 @@ impl MatchPathDyn {
     }
 
     /// Navigate to the target node in an expression tree.
+    ///
+    /// Supports S-expressions, Type wrappers, Quoted wrappers, Conjunctions,
+    /// and Error nodes by trying each structural accessor in order.
     #[inline]
     pub fn navigate<'a, V: MettaValueTrait>(&self, root: &'a V) -> Option<&'a V> {
         let mut current = root;
         for &idx in &self.indices {
-            let items = current.as_sexpr()?;
-            current = items.get(idx as usize)?;
+            current = get_child(current, idx as usize)?;
         }
         Some(current)
     }
@@ -85,9 +87,8 @@ impl MatchPathDyn {
     ) -> Option<V> {
         let mut current = resolve_var(root, bindings);
         for &idx in &self.indices {
-            let items = current.as_sexpr()?;
-            let child = items.get(idx as usize)?;
-            current = resolve_var(child, bindings);
+            let child = get_child_owned(&current, idx as usize)?;
+            current = resolve_var(&child, bindings);
         }
         Some(current)
     }
@@ -110,6 +111,55 @@ fn resolve_var<V: MettaValueTrait + Clone>(val: &V, bindings: &GenericBindings<V
         }
     }
     val.clone()
+}
+
+/// Get the `idx`-th child of a value, trying all structural types:
+/// S-expression children, Type inner (idx 0), Quoted inner (idx 0),
+/// Conjunction goals (idx n), Error fields (idx 0 = details).
+#[inline]
+fn get_child<'a, V: MettaValueTrait>(value: &'a V, idx: usize) -> Option<&'a V> {
+    // S-expression (most common)
+    if let Some(items) = value.as_sexpr() {
+        return items.get(idx);
+    }
+    // Type wrapper: single child at index 0
+    if let Some(inner) = value.as_type() {
+        return if idx == 0 { Some(inner) } else { None };
+    }
+    // Quoted wrapper: single child at index 0
+    if let Some(inner) = value.as_quoted_ref() {
+        return if idx == 0 { Some(inner) } else { None };
+    }
+    // Conjunction: N children
+    if let Some(goals) = value.as_conjunction() {
+        return goals.get(idx);
+    }
+    // Error: child 0 = details value (skip msg string — not a Value)
+    if let Some((_msg, details)) = value.as_error() {
+        return if idx == 0 { Some(details) } else { None };
+    }
+    None
+}
+
+/// Owned version of get_child for navigate_resolving (which works with owned values).
+#[inline]
+fn get_child_owned<V: MettaValueTrait + Clone>(value: &V, idx: usize) -> Option<V> {
+    if let Some(items) = value.as_sexpr() {
+        return items.get(idx).cloned();
+    }
+    if let Some(inner) = value.as_type() {
+        return if idx == 0 { Some(inner.clone()) } else { None };
+    }
+    if let Some(inner) = value.as_quoted_ref() {
+        return if idx == 0 { Some(inner.clone()) } else { None };
+    }
+    if let Some(goals) = value.as_conjunction() {
+        return goals.get(idx).cloned();
+    }
+    if let Some((_msg, details)) = value.as_error() {
+        return if idx == 0 { Some(details.clone()) } else { None };
+    }
+    None
 }
 
 /// Check if an atom name is a variable (starts with $, &, or ').
@@ -140,6 +190,14 @@ pub enum ECheck {
     Float { path: MatchPathDyn, expected_bits: u64 },
     /// Verify string equality at path (interned pointer comparison).
     Str { path: MatchPathDyn, expected: &'static str },
+    /// Verify value at path is a Type wrapper.
+    IsType { path: MatchPathDyn },
+    /// Verify value at path is a Quoted wrapper.
+    IsQuoted { path: MatchPathDyn },
+    /// Verify value at path is an Error with the given message.
+    IsError { path: MatchPathDyn, expected_msg: &'static str },
+    /// Verify value at path is a Conjunction with the given number of goals.
+    IsConjunction { path: MatchPathDyn, expected_len: u16 },
 }
 
 /// A variable slot operation, executed after all structural checks pass.
@@ -367,6 +425,22 @@ impl EnhancedMatcher {
                     .and_then(|v| v.as_string())
                     .map_or(false, |s| s == *expected)
             }
+            ECheck::IsType { path } => {
+                path.navigate(expr).map_or(false, |v| v.is_type())
+            }
+            ECheck::IsQuoted { path } => {
+                path.navigate(expr).map_or(false, |v| v.is_quoted())
+            }
+            ECheck::IsError { path, expected_msg } => {
+                path.navigate(expr)
+                    .and_then(|v| v.as_error())
+                    .map_or(false, |(msg, _)| msg == *expected_msg)
+            }
+            ECheck::IsConjunction { path, expected_len } => {
+                path.navigate(expr)
+                    .and_then(|v| v.as_conjunction())
+                    .map_or(false, |goals| goals.len() == *expected_len as usize)
+            }
         }
     }
 
@@ -405,6 +479,24 @@ impl EnhancedMatcher {
             ECheck::Str { path, expected } => {
                 path.navigate_resolving(template, bindings)
                     .and_then(|v| v.as_string().map(|s| s == *expected))
+                    .unwrap_or(false)
+            }
+            ECheck::IsType { path } => {
+                path.navigate_resolving(template, bindings)
+                    .map_or(false, |v| v.is_type())
+            }
+            ECheck::IsQuoted { path } => {
+                path.navigate_resolving(template, bindings)
+                    .map_or(false, |v| v.is_quoted())
+            }
+            ECheck::IsError { path, expected_msg } => {
+                path.navigate_resolving(template, bindings)
+                    .and_then(|v| v.as_error().map(|(msg, _)| msg == *expected_msg))
+                    .unwrap_or(false)
+            }
+            ECheck::IsConjunction { path, expected_len } => {
+                path.navigate_resolving(template, bindings)
+                    .and_then(|v| v.as_conjunction().map(|g| g.len() == *expected_len as usize))
                     .unwrap_or(false)
             }
         }
@@ -538,7 +630,88 @@ impl EnhancedMatcher {
             return true;
         }
 
-        // Unsupported: Type, Conjunction, Error, Quoted
+        // Type wrapper: single child (the inner type value)
+        if let Some(inner) = value.as_type() {
+            arity_checks.push(ECheck::IsType { path: path.clone() });
+            return Self::analyze_node(
+                inner,
+                path.child(0),
+                arity_checks,
+                atom_checks,
+                literal_checks,
+                slot_ops,
+                seen_vars,
+                slot_count,
+                max_depth,
+                current_depth + 1,
+            );
+        }
+
+        // Quoted wrapper: single child (the quoted inner value)
+        if let Some(inner) = value.as_quoted_ref() {
+            arity_checks.push(ECheck::IsQuoted { path: path.clone() });
+            return Self::analyze_node(
+                inner,
+                path.child(0),
+                arity_checks,
+                atom_checks,
+                literal_checks,
+                slot_ops,
+                seen_vars,
+                slot_count,
+                max_depth,
+                current_depth + 1,
+            );
+        }
+
+        // Conjunction: N children (the goals)
+        if let Some(goals) = value.as_conjunction() {
+            arity_checks.push(ECheck::IsConjunction {
+                path: path.clone(),
+                expected_len: goals.len() as u16,
+            });
+            for (i, goal) in goals.iter().enumerate() {
+                if !Self::analyze_node(
+                    goal,
+                    path.child(i as u8),
+                    arity_checks,
+                    atom_checks,
+                    literal_checks,
+                    slot_ops,
+                    seen_vars,
+                    slot_count,
+                    max_depth,
+                    current_depth + 1,
+                ) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Error: has message + details
+        if let Some((msg, details)) = value.as_error() {
+            let interned_msg = crate::backend::models::gc_allocator::global_allocator().alloc_str(msg);
+            arity_checks.push(ECheck::IsError {
+                path: path.clone(),
+                expected_msg: interned_msg,
+            });
+            // Recurse into the details value as child 0
+            return Self::analyze_node(
+                details,
+                path.child(0),
+                arity_checks,
+                atom_checks,
+                literal_checks,
+                slot_ops,
+                seen_vars,
+                slot_count,
+                max_depth,
+                current_depth + 1,
+            );
+        }
+
+        // Truly unsupported (should not occur with current MettaValue variants)
         false
     }
 }

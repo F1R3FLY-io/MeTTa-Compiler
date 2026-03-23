@@ -10,6 +10,7 @@ pub mod analysis;
 pub mod builtin_signatures;
 pub mod bytecode;
 pub mod compile;
+pub mod decompose;
 pub mod diagnostics;
 pub mod environment;
 pub mod eval;

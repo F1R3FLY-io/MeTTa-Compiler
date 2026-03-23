@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "metta-trie"]
+resolver = "2"
+
 [package]
 name = "mettatron"
 version = "0.2.0"
@@ -99,6 +103,8 @@ name = "type_system"
 harness = false
 
 [dependencies]
+# MettaTrie - Native trie-map for MeTTa expression storage (replaces MORK+PathMap)
+metta-trie = { path = "metta-trie" }
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
 # MORK expr - S-expression representation used by MORK (formerly mork-bytestring)

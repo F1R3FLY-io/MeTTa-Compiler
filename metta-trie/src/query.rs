@@ -361,6 +361,35 @@ mod tests {
     }
 
     #[test]
+    fn test_variable_matches_rule_with_nested_and_simple_fact() {
+        let mut trie: MettaTrie<String, u64> = MettaTrie::new();
+        // Store: (= (f $0) (g $0)) → nested S-expressions as children of "="
+        trie.insert_at(
+            &[
+                TrieKey::Arity(3), TrieKey::Atom("="),
+                TrieKey::Arity(2), TrieKey::Atom("f"), TrieKey::Atom("$0"),
+                TrieKey::Arity(2), TrieKey::Atom("g"), TrieKey::Atom("$0"),
+            ],
+            "(= (f $0) (g $0))".to_string(),
+            1,
+        );
+        // Store: (fact A B) → simple atom children
+        trie.insert_at(
+            &[TrieKey::Arity(3), TrieKey::Atom("fact"), TrieKey::Atom("A"), TrieKey::Atom("B")],
+            "(fact A B)".to_string(),
+            1,
+        );
+
+        // Query: (fact $a $b) — simple children, should work
+        let r1 = trie.query(&[TrieKey::Arity(3), TrieKey::Atom("fact"), TrieKey::Variable, TrieKey::Variable]);
+        assert_eq!(r1.len(), 1, "Should find (fact A B)");
+
+        // Query: (= $a $b) — nested S-expression children, Variable must skip subtrees
+        let r2 = trie.query(&[TrieKey::Arity(3), TrieKey::Atom("="), TrieKey::Variable, TrieKey::Variable]);
+        assert_eq!(r2.len(), 1, "Should find (= (f $0) (g $0))");
+    }
+
+    #[test]
     fn test_count_keys_for_children() {
         // Simple: 2 atom children
         let keys = vec![TrieKey::Atom("a"), TrieKey::Atom("b"), TrieKey::Atom("c")];

@@ -6,9 +6,11 @@ pub mod backend;
 pub mod config;
 pub mod ir;
 pub mod parser;
-pub mod pathmap_par_integration;
+// Temporarily disabled: models crate (f1r3node) has rspace_plus_plus compile error.
+// Re-enable once f1r3node rspace++ is fixed.
+// pub mod pathmap_par_integration;
 pub mod repl;
-pub mod rholang_integration;
+// pub mod rholang_integration;
 pub mod tree_sitter_parser;
 
 /// MeTTaTron - MeTTa Evaluator Library
@@ -99,21 +101,21 @@ pub use backend::{
     diagnostics::install_signal_handlers,
 };
 
-// State evaluation API
-pub use rholang_integration::run_state;
-#[cfg(feature = "async")]
-pub use rholang_integration::run_state_async;
+// State evaluation API — temporarily disabled (models crate unavailable)
+// pub use rholang_integration::run_state;
+// #[cfg(feature = "async")]
+// pub use rholang_integration::run_state_async;
 
 // Session-based evaluation API
-pub use rholang_integration::{state_to_json, eval_metta_session, eval_metta_session_raw};
-
-pub use pathmap_par_integration::{
-    decode_large_exprs_bytes_to_pars,
-    decode_space_bytes_to_pars, has_metta_state_structure, metta_error_to_par,
-    metta_run_error_expr, metta_run_error_par, metta_state_to_pathmap_par,
-    metta_value_to_par, par_to_metta_value, pathmap_par_to_metta_state,
-    pathmap_par_to_metta_state_lenient,
-};
+// Temporarily disabled: models crate dependency unavailable
+// pub use rholang_integration::{state_to_json, eval_metta_session, eval_metta_session_raw};
+// pub use pathmap_par_integration::{
+//     decode_large_exprs_bytes_to_pars,
+//     decode_space_bytes_to_pars, has_metta_state_structure, metta_error_to_par,
+//     metta_run_error_expr, metta_run_error_par, metta_state_to_pathmap_par,
+//     metta_value_to_par, par_to_metta_value, pathmap_par_to_metta_state,
+//     pathmap_par_to_metta_state_lenient,
+// };
 
 pub use config::{configure_eval, get_eval_config, EvalConfig};
 

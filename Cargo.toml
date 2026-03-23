@@ -106,7 +106,10 @@ harness = false
 # MettaTrie - Native trie-map for MeTTa expression storage (replaces MORK+PathMap)
 metta-trie = { path = "metta-trie" }
 # Models - Rholang protobuf models for Par integration
-models = { path = "../f1r3node/models" }
+# Temporarily disabled: rspace_plus_plus (transitive dep) has a pre-existing
+# compile error exposed by dependency graph change from MORK/PathMap removal.
+# Re-enable once f1r3node rspace++ is fixed or on dylon/pln-support branch.
+# models = { path = "../f1r3node/models" }
 # Tokio - Async runtime for parallel evaluation (optional)
 tokio = { version = "1", features = ["rt", "sync"], optional = true }
 

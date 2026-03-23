@@ -1054,7 +1054,7 @@ mod tests {
 
     // --- Fixpoint Detection (bloom filter false positives) ---
 
-    eval_test!(
+    eval_test_unordered!(
         test_fixpoint_data_constructor_no_infinite_loop,
         // S has facts but NO rewrite rules for arity 1 as a head.
         // Bloom filter may flag it → pre-eval → fixpoint → data.

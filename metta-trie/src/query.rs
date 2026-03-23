@@ -87,44 +87,39 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
 
         match first_key {
             TrieKey::Variable => {
-                // Variable in pattern: match ALL children
+                // Variable in pattern: match ALL children at this position.
+                // A Variable matches a single atomic key OR an entire S-expression
+                // subtree (Arity + all nested children in the trie).
+                //
+                // When Variable matches an Arity(n) key in the trie, we need to
+                // recursively collect all entries from the subtree rooted at that
+                // Arity node, then continue matching `rest` at each leaf of that
+                // subtree. This is equivalent to "Variable matches the entire
+                // S-expression at this position."
                 let this_var_idx = *var_index;
                 *var_index += 1;
 
                 for (child_key, child_node) in &node.children {
-                    // Handle Arity keys: when the pattern has Variable where an
-                    // Arity(n) lives in the trie, we need to skip n children's
-                    // worth of keys in the remaining pattern. But since the
-                    // pattern's remaining keys after Variable don't know about
-                    // the arity, we need to consume the subtree.
-                    //
-                    // For now, Variable matches single keys (atoms, literals).
-                    // Matching entire S-expression subtrees with Variable requires
-                    // consuming the correct number of subsequent keys, which needs
-                    // the arity information from the matched Arity key.
                     if matches!(child_key, TrieKey::Arity(_)) {
-                        // Skip: Variable matching an entire S-expression subtree
-                        // requires knowing how many subsequent keys to consume.
-                        // This is handled by walking the subtree depth-first.
+                        // Variable matches an entire S-expression subtree.
+                        // We need to find all leaves of this subtree (the "end"
+                        // of the S-expression) and continue matching `rest` from there.
                         let arity = match child_key {
                             TrieKey::Arity(n) => *n as usize,
                             _ => unreachable!(),
                         };
-                        // We need to skip `arity` children's keys in `rest`.
-                        // But each child could itself be an S-expression with its
-                        // own arity. We need to count the total keys consumed.
-                        let keys_to_skip = count_keys_for_children(rest, arity);
-                        if keys_to_skip <= rest.len() {
-                            bindings.push((this_var_idx, child_key.clone()));
-                            Self::query_recursive(
-                                child_node,
-                                &rest[keys_to_skip..],
-                                bindings,
-                                var_index,
-                                results,
-                            );
-                            bindings.pop();
-                        }
+                        bindings.push((this_var_idx, child_key.clone()));
+                        // Descend through the subtree's children, skipping the
+                        // entire S-expression structure, then continue with `rest`
+                        Self::skip_subtree_and_continue(
+                            child_node,
+                            arity,
+                            rest,
+                            bindings,
+                            var_index,
+                            results,
+                        );
+                        bindings.pop();
                     } else {
                         // Simple key: Variable matches this single key
                         bindings.push((this_var_idx, child_key.clone()));
@@ -149,6 +144,67 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
                     // Record what the trie's variable matched
                     Self::query_recursive(var_child, rest, bindings, var_index, results);
                     bindings.truncate(saved_bindings_len);
+                }
+            }
+        }
+    }
+}
+
+impl<E: Clone, V: Clone> MettaTrie<E, V> {
+    /// Skip an S-expression subtree in the trie (descend through `remaining_children`
+    /// levels of children) then continue matching `rest_pattern` at the leaves.
+    ///
+    /// This handles the case where a pattern `Variable` matches an entire S-expression
+    /// in the trie. The S-expression's structure is `Arity(n) → n children`, where
+    /// each child is either an atomic key or another `Arity(m) → m children`.
+    ///
+    /// We recursively descend through the trie's structure until we've consumed
+    /// all `remaining_children` children, then call `query_recursive` with the
+    /// remaining pattern keys.
+    fn skip_subtree_and_continue(
+        node: &MettaTrieNode<E, V>,
+        remaining_children: usize,
+        rest_pattern: &[TrieKey],
+        bindings: &mut SmallVec<[(u16, TrieKey); 4]>,
+        var_index: &mut u16,
+        results: &mut Vec<QueryMatch<E, V>>,
+    ) {
+        if remaining_children == 0 {
+            // We've consumed the entire S-expression subtree.
+            // Continue matching the rest of the pattern at this node.
+            Self::query_recursive(node, rest_pattern, bindings, var_index, results);
+            return;
+        }
+
+        // We still need to consume `remaining_children` children of the S-expression.
+        // Each child in the trie is either:
+        // - An atomic key (Atom, Long, Bool, etc.) → consumes 1 child
+        // - An Arity(m) key → consumes 1 child but adds m grandchildren to descend
+        for (_child_key, child_node) in &node.children {
+            match _child_key {
+                TrieKey::Arity(m) => {
+                    // This child is itself an S-expression with m children.
+                    // We consume 1 child from remaining_children, but need to
+                    // descend through m grandchildren first.
+                    Self::skip_subtree_and_continue(
+                        child_node,
+                        remaining_children - 1 + *m as usize,
+                        rest_pattern,
+                        bindings,
+                        var_index,
+                        results,
+                    );
+                }
+                _ => {
+                    // Atomic key — consumes 1 child
+                    Self::skip_subtree_and_continue(
+                        child_node,
+                        remaining_children - 1,
+                        rest_pattern,
+                        bindings,
+                        var_index,
+                        results,
+                    );
                 }
             }
         }

@@ -73,19 +73,12 @@ impl Hash for TrieKey {
         std::mem::discriminant(self).hash(state);
         match self {
             TrieKey::Arity(n) => n.hash(state),
-            TrieKey::Atom(s) => {
-                // Hash pointer address for interned strings (O(1))
-                (*s as *const str).hash(state);
-            }
+            TrieKey::Atom(s) => s.hash(state),
             TrieKey::Long(n) => n.hash(state),
             TrieKey::Bool(b) => b.hash(state),
             TrieKey::Float(bits) => bits.hash(state),
-            TrieKey::Str(s) => {
-                (*s as *const str).hash(state);
-            }
-            TrieKey::Uri(s) => {
-                (*s as *const str).hash(state);
-            }
+            TrieKey::Str(s) => s.hash(state),
+            TrieKey::Uri(s) => s.hash(state),
             TrieKey::Variable | TrieKey::Unit | TrieKey::Error => {}
         }
     }

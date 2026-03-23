@@ -252,7 +252,7 @@ pub fn run_analysis(
         }
         iterations += 1;
 
-        let (successors, store_changed) = abstract_step(
+        let (successors, _store_changed) = abstract_step(
             &state, &mut store, &env_snapshot, config,
         );
 

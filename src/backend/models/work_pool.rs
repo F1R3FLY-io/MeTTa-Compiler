@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use tracing::{debug, trace};
 
-use super::adaptive_pool::{Ema, HillClimber, ScaleAction, ScaleDecision, WorkerPark};
+use super::adaptive_pool::{Ema, HillClimber, ScaleAction, WorkerPark};
 use crate::backend::priority_scheduler::{
     PriorityQueue, PriorityTask, RuntimeTracker, SchedulerConfig, TaskTypeId,
 };

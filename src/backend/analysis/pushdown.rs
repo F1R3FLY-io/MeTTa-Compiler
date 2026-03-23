@@ -10,8 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 
-use super::abstract_domain::{AbstractEnv, AnalysisConfig};
-use super::abstract_transition::{AbstractControl, EnvironmentSnapshot};
+use super::abstract_transition::EnvironmentSnapshot;
 
 // ============================================================================
 // Stack Frames and States
@@ -115,7 +114,7 @@ pub struct PushdownResult {
 pub fn run_pushdown_analysis(
     initial_exprs: &[crate::backend::models::MettaValue],
     env_snapshot: &EnvironmentSnapshot,
-    config: &PushdownConfig,
+    _config: &PushdownConfig,
 ) -> PushdownResult {
     let mut states: HashSet<PushdownState> = HashSet::new();
     let mut recursive_exprs: HashSet<u64> = HashSet::new();

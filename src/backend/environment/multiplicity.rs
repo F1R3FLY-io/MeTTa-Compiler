@@ -20,10 +20,8 @@
 //! - No arity-64 limit (arbitrary arity supported natively)
 
 use metta_trie::{MettaTrie, Multiplicity, TrieKey};
-use crate::backend::models::MettaValueTrait;
 
 // Re-export from metta_trie for convenience
-pub use metta_trie::Multiplicity as MultiplicityType;
 
 // =-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-=
 // =-*   MettaTrie-based Multiplicity Operations                               *-=

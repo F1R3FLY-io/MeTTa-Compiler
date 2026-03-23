@@ -27,7 +27,7 @@
 //!
 //! See: `hyperon-experimental/lib/src/metta/runner/stdlib/debug.rs`
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::smallvec;
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};

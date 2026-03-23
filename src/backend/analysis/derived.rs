@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use smallvec::SmallVec;
 
 use super::abstract_domain::AbstractType;
-use super::fixpoint::{AnalysisResult, ExprFact};
+use super::fixpoint::AnalysisResult;
 
 // ============================================================================
 // Derived Analysis Results
@@ -155,9 +155,9 @@ pub fn detect_dead_rules_with_total(result: &AnalysisResult, total_rules: u32) -
 
 /// Detect deterministic expressions.
 fn detect_determinism(result: &AnalysisResult) -> HashMap<(&'static str, usize), u32> {
-    let mut deterministic = HashMap::new();
+    let deterministic = HashMap::new();
 
-    for (hash, fact) in &result.expr_facts {
+    for (_hash, fact) in &result.expr_facts {
         if fact.is_deterministic == Some(true) && fact.reachable_rules.len() == 1 {
             // We need (head, arity) but only have the hash.
             // For now, store the rule index keyed by a synthetic key.

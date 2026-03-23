@@ -12,7 +12,7 @@
 //! - **Eval memo cache**: Thread-local LRU for pure expression memoization
 //! - **Match result cache**: Thread-local LRU for rule match result memoization
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::sync::LazyLock;
 

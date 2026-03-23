@@ -1066,7 +1066,7 @@ mod tests {
             (number (S (S Z)))
             !(match &self (number (S $x)) (S $x))
         "#,
-        &["(number (S Z))", "(number (S (S Z)))", "(S (S Z))", "(S Z)"]
+        &["(number (S Z))", "(number (S (S Z)))", "(S Z)", "(S (S Z))"]
     );
 
     eval_test!(

@@ -5,7 +5,7 @@
 //! from Phase 3.3 and reachability from Phase 4 to identify expressions that
 //! contain Write-Write or Read-Write conflicts on the same target.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::derived::DerivedAnalysis;
 use super::fixpoint::AnalysisResult;

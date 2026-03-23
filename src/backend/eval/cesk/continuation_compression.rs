@@ -133,8 +133,8 @@ pub enum DispatchStrategy {
 
 /// Determine dispatch strategy for an expression hash.
 pub fn dispatch_strategy_for(
-    expr_hash: u64,
-    analysis: &DerivedAnalysis,
+    _expr_hash: u64,
+    _analysis: &DerivedAnalysis,
 ) -> DispatchStrategy {
     // Check if all rules for this expression are dead
     // (would need expression-to-rule mapping, which Phase 4.5 provides)

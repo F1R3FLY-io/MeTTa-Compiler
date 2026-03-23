@@ -10,13 +10,13 @@
 //! - `MettaValueFactory` (via `EvalContext`) for value construction
 //! - `GenericEnvironment<V, F>` directly for environment operations
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::smallvec;
 use tracing::trace;
 
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
-use super::generic_sexpr::{eval_sexpr_step_generic, eval_sexpr_step_with_original};
+use super::generic_sexpr::eval_sexpr_step_with_original;
 use super::generic_types::GenericEvalStep;
 
 /// Perform a single step of generic evaluation.

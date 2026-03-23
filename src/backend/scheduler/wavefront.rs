@@ -22,7 +22,6 @@
 //! Uses Kahn's algorithm with level grouping (identical to `wavefront_schedule()`
 //! from MeTTaIL2Matrix).
 
-use std::collections::VecDeque;
 
 use super::cost_class::CostClass;
 

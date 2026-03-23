@@ -16,7 +16,7 @@ use super::work_item::{
 use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::{register_root_provider, MettaValue, MettaValueInner, RootProvider, ValueView};
+use crate::backend::models::{register_root_provider, MettaValue, RootProvider, ValueView};
 
 // ============================================================================
 // Cached Synthetic Atoms

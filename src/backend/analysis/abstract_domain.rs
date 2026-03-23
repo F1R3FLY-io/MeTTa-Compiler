@@ -143,7 +143,7 @@ pub fn alpha(value: &MettaValue) -> AbstractValue {
     if let Some(f) = value.as_float() {
         return AbstractValue::Float(f.to_bits());
     }
-    if let Some(s) = value.as_string() {
+    if let Some(_s) = value.as_string() {
         // String may not be 'static in abstract domain; use type tag
         return AbstractValue::AnyOfType(AbstractType::String);
     }

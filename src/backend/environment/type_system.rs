@@ -3,7 +3,6 @@
 //! Provides methods for type assertions, type indexing, and type lookups.
 //! Type assertions are stored as (: name type) in MORK Space.
 
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use tracing::trace;

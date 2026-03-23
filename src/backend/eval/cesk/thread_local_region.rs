@@ -27,7 +27,6 @@
 //! the global Treiber stack.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ============================================================================
 // Thread-Local Allocation Region

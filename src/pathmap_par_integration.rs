@@ -506,10 +506,34 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 /// This is the inverse of `MettaValue::Display`. It parses a single expression
 /// from the text and returns it as a MettaValue. Returns an Atom if parsing fails
 /// (graceful degradation for unusual Display formats like `<Space:name>`).
+/// Recursively strip all Spanned wrappers from a MettaValue tree.
+/// Deserialized values should be span-free to match originals.
+fn strip_spans_recursive(value: &MettaValue, factory: &crate::backend::models::GcFactory) -> MettaValue {
+    use crate::backend::models::MettaValueTrait;
+    // Strip outermost span
+    let stripped = value.strip_spans();
+    // If it's an S-expression, recursively strip children
+    if let Some(items) = stripped.as_sexpr() {
+        let stripped_children: Vec<MettaValue> = items
+            .iter()
+            .map(|child| strip_spans_recursive(child, factory))
+            .collect();
+        use crate::backend::models::MettaValueFactory;
+        factory.sexpr(stripped_children)
+    } else {
+        stripped
+    }
+}
+
 fn parse_metta_text(text: &str) -> MettaValue {
     let factory = global_factory();
     match compile_generic(text, &factory) {
-        Ok(values) if !values.is_empty() => values.into_iter().next().expect("checked non-empty"),
+        Ok(values) if !values.is_empty() => {
+            // Strip span annotations recursively — deserialized values should be
+            // span-free to match the original values which had no spans.
+            let value = values.into_iter().next().expect("checked non-empty");
+            strip_spans_recursive(&value, &factory)
+        }
         _ => {
             // Fallback: if the text can't be parsed, treat as a plain atom.
             // This handles edge cases like <Space:name>, <State:id>, etc.

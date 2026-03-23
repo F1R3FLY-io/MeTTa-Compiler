@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 
-use crate::backend::models::{MettaValue, MettaValueTrait};
+use crate::backend::models::MettaValue;
 
 // ============================================================================
 // Space Mutation Events

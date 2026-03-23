@@ -27,7 +27,7 @@
 //! condvars) are preserved unchanged. Session release work items perform the
 //! same quiescence waiting as the original `session_release_thread_main()`.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;

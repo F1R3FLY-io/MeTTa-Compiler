@@ -17,7 +17,6 @@
 
 use dashmap::DashMap;
 
-use super::cost_class::TaskDescriptor;
 use super::semiring::{Semiring, TropicalWeight};
 use super::wpds::{SchedulerStackSymbol, Wpds, WpdsRule, hash_context};
 

@@ -34,10 +34,10 @@
 //! enabled, the trampoline calls `nursery_collect()` at each safepoint,
 //! which uses the `RootSet` to determine which nursery values are live.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashSet;
 
-use crate::backend::models::{MettaValue, MettaValueInner, MettaValueTrait};
+use crate::backend::models::MettaValueTrait;
 
 // ============================================================================
 // GC Generation Tracking

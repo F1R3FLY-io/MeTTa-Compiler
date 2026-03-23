@@ -6,7 +6,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::derived::DerivedAnalysis;
 
 // ============================================================================
 // Module Reachability

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use smallvec::SmallVec;
 
-use crate::backend::eval::cesk::branch_analysis::{BranchPurity, analyze_branch_purity};
+use crate::backend::eval::cesk::branch_analysis::BranchPurity;
 use crate::backend::models::{MettaValue, MettaValueTrait};
 
 use super::abstract_domain::*;
@@ -128,17 +128,17 @@ pub fn abstract_step(
     state: &AbstractState,
     store: &mut AbstractStore,
     env_snapshot: &EnvironmentSnapshot,
-    config: &AnalysisConfig,
+    _config: &AnalysisConfig,
 ) -> (SmallVec<[AbstractState; 4]>, bool) {
     let mut successors = SmallVec::new();
     let mut store_changed = false;
 
     match &state.control {
-        AbstractControl::Eval { expr_hash, env, depth } => {
+        AbstractControl::Eval { expr_hash, env: _, depth } => {
             // The expression hash identifies what's being evaluated.
             // In the abstract domain, we track which rules could fire
             // and what types could result.
-            let result_addr = AbstractAddr::mono(*expr_hash);
+            let _result_addr = AbstractAddr::mono(*expr_hash);
 
             // For ground values, the result is the value itself
             // (handled by the fixed-point caller via alpha injection).
@@ -210,7 +210,7 @@ pub fn abstract_step(
                         kont: AbstractKont::Done,
                     });
                 }
-                AbstractKont::Generic { env: generic_env } => {
+                AbstractKont::Generic { env: _generic_env } => {
                     // Generic continuation — conservatively assume it schedules
                     // the same expression at the next depth
                     // (this is imprecise but safe)

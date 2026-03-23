@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 
 use crate::backend::models::adaptive_pool::Ema;
-use crate::backend::models::metta_value::{MettaValue, MettaValueInner, ValueView};
+use crate::backend::models::metta_value::{MettaValue, ValueView};
 
 use super::cost_class::{
     AffinityHint, CostClass, SchedulingAction, TaskDescriptor, descriptor_flags,

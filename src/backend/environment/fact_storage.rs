@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 
 use tracing::trace;
 
-use metta_trie::Multiplicity;
 
 use super::{MettaEnvironment, MettaValue};
 use crate::backend::decompose::decompose_literal;

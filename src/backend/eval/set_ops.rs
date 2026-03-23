@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::smallvec;
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};

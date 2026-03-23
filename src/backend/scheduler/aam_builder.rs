@@ -16,7 +16,7 @@ use crate::backend::priority_scheduler::RuntimeTracker;
 
 use super::classification::SchedulerAutomaton;
 use super::context_weights::build_context_weights;
-use super::cost_class::{CostClass, TaskDescriptor, descriptor_flags};
+use super::cost_class::{CostClass, descriptor_flags};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Builder
@@ -113,7 +113,7 @@ fn populate_from_analysis(automaton: &mut SchedulerAutomaton, analysis: &Derived
 }
 
 /// Seed weight EMAs with P² median estimates.
-fn warm_start_weights(automaton: &SchedulerAutomaton, tracker: &RuntimeTracker) {
+fn warm_start_weights(_automaton: &SchedulerAutomaton, tracker: &RuntimeTracker) {
     let global_median = tracker.global_median();
     if global_median > 0.0 {
         // The P² tracker uses TaskTypeId, which doesn't directly map to

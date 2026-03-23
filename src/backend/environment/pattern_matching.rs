@@ -62,7 +62,7 @@ impl MettaEnvironment {
                 .atom_space
                 .head_arity_bloom
                 .read()
-                .may_contain(expected_head.as_bytes(), pattern_arity);
+                .may_contain(expected_head, pattern_arity);
             if !bloom_result {
                 return Some(Vec::new());
             }
@@ -77,9 +77,13 @@ impl MettaEnvironment {
         // Use MettaTrie::query() for trie-based pattern matching
         // query() follows both concrete and Variable edges at each level
         for qm in btm.query(&pattern_keys) {
-            // qm.expr is the stored expression, qm.value is Multiplicity
-            // Use pattern_match to extract proper bindings
-            if let Some(bindings) = pattern_match(pattern, &qm.expr) {
+            // Freshen stored expression variables to prevent capture (MeTTa HE semantics)
+            let freshened = if qm.expr.contains_variables() {
+                crate::backend::eval::freshening::freshen_variables_generic(&qm.expr, &crate::backend::models::global_factory())
+            } else {
+                qm.expr.clone()
+            };
+            if let Some(bindings) = pattern_match(pattern, &freshened) {
                 let instantiated = apply_bindings(template, &bindings).into_owned();
                 let multiplicity = qm.value.count().max(1) as usize;
                 results.push(MultiplicityMatch::new(instantiated, multiplicity));
@@ -115,7 +119,7 @@ impl MettaEnvironment {
                 .atom_space
                 .head_arity_bloom
                 .read()
-                .may_contain(expected_head.as_bytes(), pattern_arity)
+                .may_contain(expected_head, pattern_arity)
             {
                 return None;
             }
@@ -126,7 +130,13 @@ impl MettaEnvironment {
         let btm = self.shared.atom_space.btm.read();
 
         for qm in btm.query(&pattern_keys) {
-            if let Some(bindings) = pattern_match(pattern, &qm.expr) {
+            // Freshen stored expression variables to prevent capture (MeTTa HE semantics)
+            let freshened = if qm.expr.contains_variables() {
+                crate::backend::eval::freshening::freshen_variables_generic(&qm.expr, &crate::backend::models::global_factory())
+            } else {
+                qm.expr.clone()
+            };
+            if let Some(bindings) = pattern_match(pattern, &freshened) {
                 let instantiated = apply_bindings(template, &bindings).into_owned();
                 return Some(instantiated); // EARLY EXIT
             }

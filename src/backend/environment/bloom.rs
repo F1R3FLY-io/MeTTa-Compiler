@@ -48,8 +48,8 @@ impl HeadArityBloomFilter {
 
     /// Insert a (head, arity) pair into the bloom filter.
     #[inline]
-    pub fn insert(&mut self, head: &[u8], arity: u8) {
-        let (h1, h2) = Self::hash_pair(head, arity);
+    pub fn insert(&mut self, head: &str, arity: u8) {
+        let (h1, h2) = Self::hash_pair(head.as_bytes(), arity);
         for i in 0usize..3 {
             let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
             self.bits[idx / 64] |= 1 << (idx % 64);
@@ -60,8 +60,8 @@ impl HeadArityBloomFilter {
     /// Check if a (head, arity) pair may exist in the filter.
     /// Returns false only if the pair definitely doesn't exist.
     #[inline]
-    pub fn may_contain(&self, head: &[u8], arity: u8) -> bool {
-        let (h1, h2) = Self::hash_pair(head, arity);
+    pub fn may_contain(&self, head: &str, arity: u8) -> bool {
+        let (h1, h2) = Self::hash_pair(head.as_bytes(), arity);
         (0usize..3).all(|i| {
             let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
             self.bits[idx / 64] & (1 << (idx % 64)) != 0
@@ -108,7 +108,7 @@ impl HeadArityBloomFilter {
 /// Bloom filter for atom names that have type declarations.
 ///
 /// Enables O(1) rejection in `get_type()`/`get_types_generic()` when an atom
-/// name definitely has no type declared. Avoids HashMap lookup and MORK trie
+/// name definitely has no type declared. Avoids HashMap lookup and MettaTrie
 /// traversal for the common case of untyped atoms.
 ///
 /// # Design Notes
@@ -140,8 +140,8 @@ impl TypeBloomFilter {
 
     /// Insert an atom name into the type bloom filter.
     #[inline]
-    pub fn insert(&mut self, name: &[u8]) {
-        let (h1, h2) = Self::hash_name(name);
+    pub fn insert(&mut self, name: &str) {
+        let (h1, h2) = Self::hash_name(name.as_bytes());
         for i in 0usize..3 {
             let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
             self.bits[idx / 64] |= 1 << (idx % 64);
@@ -152,8 +152,8 @@ impl TypeBloomFilter {
     /// Check if an atom name may have a type declaration.
     /// Returns false only if the name definitely has no type.
     #[inline]
-    pub fn may_have_type(&self, name: &[u8]) -> bool {
-        let (h1, h2) = Self::hash_name(name);
+    pub fn may_have_type(&self, name: &str) -> bool {
+        let (h1, h2) = Self::hash_name(name.as_bytes());
         (0usize..3).all(|i| {
             let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
             self.bits[idx / 64] & (1 << (idx % 64)) != 0
@@ -213,8 +213,8 @@ impl AtomicBloomFilter {
 
     /// Lock-free insertion via fetch_or.
     #[inline]
-    pub fn insert(&self, key: &[u8]) {
-        let (h1, h2) = Self::hash_key(key);
+    pub fn insert(&self, key: impl AsRef<[u8]>) {
+        let (h1, h2) = Self::hash_key(key.as_ref());
         for i in 0..Self::NUM_HASHES {
             let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
             let word = idx / 64;
@@ -225,8 +225,8 @@ impl AtomicBloomFilter {
 
     /// Lock-free query via load.
     #[inline]
-    pub fn may_contain(&self, key: &[u8]) -> bool {
-        let (h1, h2) = Self::hash_key(key);
+    pub fn may_contain(&self, key: impl AsRef<[u8]>) -> bool {
+        let (h1, h2) = Self::hash_key(key.as_ref());
         (0..Self::NUM_HASHES).all(|i| {
             let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
             let word = idx / 64;

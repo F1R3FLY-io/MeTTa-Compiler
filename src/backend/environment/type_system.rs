@@ -1,7 +1,7 @@
 //! Type system operations for Environment.
 //!
 //! Provides methods for type assertions, type indexing, and type lookups.
-//! Type assertions are stored as (: name type) in MORK Space.
+//! Type assertions are stored as (: name type) in MettaTrie.
 
 use std::sync::atomic::Ordering;
 
@@ -24,8 +24,8 @@ where
     ///
     /// Appends the type to the `types` HashMap Vec for the given name (with dedup).
     /// HE parity: an atom can have multiple types declared via separate `(: name type)` assertions.
-    /// For MettaValue environments that need MORK persistence, use
-    /// `Environment::add_type` which also stores in MORK Space.
+    /// For MettaValue environments that need MettaTrie persistence, use
+    /// `Environment::add_type` which also stores in MettaTrie Space.
     pub fn add_type_generic(&mut self, name: &str, typ: V) {
         trace!(target: "mettatron::environment::add_type_generic", name);
         self.make_owned();
@@ -38,7 +38,7 @@ where
         drop(types);
 
         // Update type bloom filter for O(1) early rejection
-        self.shared.atom_space.type_bloom.write().insert(name.as_bytes());
+        self.shared.atom_space.type_bloom.write().insert(name);
 
         // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
         super::rule_management::increment_rule_epoch();
@@ -57,10 +57,10 @@ where
     /// then `get_types_generic("a")` returns `[Dog, Animal, LivingThing]`.
     ///
     /// For MettaValue environments, prefer `Environment::get_type` which
-    /// uses the optimized MORK index.
+    /// uses the optimized MettaTrie index.
     pub fn get_types_generic(&self, name: &str) -> Vec<V> {
         // O(1) bloom filter rejection: if the name definitely has no type, skip HashMap
-        if !self.shared.atom_space.type_bloom.read().may_have_type(name.as_bytes()) {
+        if !self.shared.atom_space.type_bloom.read().may_have_type(name) {
             return Vec::new();
         }
         let mut types: Vec<V> = self.shared.types.read().get(name).cloned().unwrap_or_default();
@@ -90,7 +90,7 @@ where
     /// no supertype closure computation, no Vec allocation.
     #[inline]
     pub fn may_have_type(&self, name: &str) -> bool {
-        self.shared.atom_space.type_bloom.read().may_have_type(name.as_bytes())
+        self.shared.atom_space.type_bloom.read().may_have_type(name)
     }
 
     /// Get all atom names that have a specific declared type.
@@ -100,7 +100,7 @@ where
     ///
     /// Used by Phase 8.4 match type-aware space pre-filtering: when the
     /// match pattern is `(: $x SomeType)`, use this as a reverse index
-    /// instead of scanning the entire MORK space.
+    /// instead of scanning the entire MettaTrie space.
     pub fn get_atoms_of_type(&self, type_name: &str) -> Vec<String> {
         self.shared.types.read()
             .iter()
@@ -115,7 +115,7 @@ where
     ///
     /// Removes the specific type from the `types` HashMap Vec. If the Vec
     /// becomes empty, removes the key entirely. Also removes the
-    /// `(: name type)` atom from the MORK space for consistency.
+    /// `(: name type)` atom from the MettaTrie space for consistency.
     /// Invalidates the type index cache.
     pub fn remove_type_generic(&mut self, name: &str, type_val: &V) {
         trace!(target: "mettatron::environment::remove_type_generic", name);
@@ -131,7 +131,7 @@ where
             }
         }
 
-        // Remove the type assertion from MORK space
+        // Remove the type assertion from MettaTrie space
         let type_assertion = self.factory.sexpr(vec![
             self.factory.atom(":"),
             self.factory.atom(name),
@@ -249,7 +249,7 @@ where
         self.shared
             .atom_space
             .inferred_type_bloom
-            .may_contain(name.as_bytes())
+            .may_contain(name)
     }
 
     /// Get inferred return types for a function name (Phase 10.1).
@@ -286,7 +286,7 @@ where
         self.shared
             .atom_space
             .inferred_type_bloom
-            .insert(name.as_bytes());
+            .insert(name);
 
         // Phase 10.5: Increment generation counter to trigger fixpoint at next eval boundary.
         self.shared
@@ -355,12 +355,12 @@ where
 }
 
 // ============================================================================
-// MettaValue-specific Type Operations (with MORK persistence)
+// MettaValue-specific Type Operations (with MettaTrie persistence)
 // ============================================================================
 
 impl MettaEnvironment {
     /// Add a type assertion
-    /// Type assertions are stored as (: name type) in MORK Space
+    /// Type assertions are stored as (: name type) in MettaTrie Space
     /// Invalidates the type index cache
     pub fn add_type(&mut self, name: String, typ: MettaValue) {
         trace!(target: "mettatron::environment::add_type", name, ?typ);
@@ -402,7 +402,7 @@ impl MettaEnvironment {
         self.shared.type_index_dirty.store(false, Ordering::Release);
     }
 
-    /// Get all types for an atom by querying MORK Space (nondeterministic).
+    /// Get all types for an atom by querying MettaTrie Space (nondeterministic).
     /// Searches for type assertions of the form (: name type)
     /// Returns empty Vec if no type assertion exists for the given name.
     ///
@@ -415,7 +415,7 @@ impl MettaEnvironment {
         trace!(target: "mettatron::environment::get_type", name);
 
         // O(1) bloom filter rejection
-        if !self.shared.atom_space.type_bloom.read().may_have_type(name.as_bytes()) {
+        if !self.shared.atom_space.type_bloom.read().may_have_type(name) {
             return Vec::new();
         }
 
@@ -942,7 +942,7 @@ mod tests {
         let f = factory();
         let mut e = env();
 
-        // Add type via add_to_space (exercises the MORK path bloom insert)
+        // Add type via add_to_space (exercises the MettaTrie path bloom insert)
         let type_atom = f.sexpr(vec![f.atom(":"), f.atom("y"), f.atom("Bool")]);
         e.add_to_space(&type_atom);
 
@@ -972,16 +972,16 @@ mod tests {
         let f = factory();
         let mut e = env();
 
-        // Add type via add_to_space (populates both HashMap and MORK type_btm)
+        // Add type via add_to_space (populates both HashMap and MettaTrie type_btm)
         let type_atom = f.sexpr(vec![f.atom(":"), f.atom("z"), f.atom("String")]);
         e.add_to_space(&type_atom);
 
-        // get_type (MORK path) should pass bloom filter
+        // get_type (MettaTrie path) should pass bloom filter
         let types = e.get_type("z");
-        assert!(!types.is_empty(), "get_type('z') should find String via MORK path");
+        assert!(!types.is_empty(), "get_type('z') should find String via MettaTrie path");
         assert!(types.iter().any(|t| t.as_atom() == Some("String")));
 
-        // Untyped atom should be rejected by bloom filter before MORK trie traversal
+        // Untyped atom should be rejected by bloom filter before MettaTrie trie traversal
         let empty = e.get_type("nonexistent");
         assert!(empty.is_empty(), "bloom filter should reject nonexistent atom");
     }

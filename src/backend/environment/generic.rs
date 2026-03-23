@@ -749,7 +749,7 @@ where
             let types = new_shared.types.read();
             let mut bloom = new_shared.atom_space.type_bloom.write();
             for name in types.keys() {
-                bloom.insert(name.as_bytes());
+                bloom.insert(name);
             }
         }
 
@@ -1122,7 +1122,7 @@ where
             let types = new_shared.types.read();
             let mut bloom = new_shared.atom_space.type_bloom.write();
             for name in types.keys() {
-                bloom.insert(name.as_bytes());
+                bloom.insert(name);
             }
         }
 
@@ -1377,16 +1377,9 @@ where
         self.make_owned();
 
         // Check if this is a rule (= lhs rhs) — route through add_rule() which handles
-        // BOTH MettaTrie insertion AND RuleIndex population.
+        // BOTH MettaTrie insertion AND RuleIndex population (including bloom filter for "=").
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
             self.add_rule(lhs, rhs);
-            // add_rule() inserts the LHS head/arity into the bloom filter (for match_rules_native),
-            // but match_space() queries by the full expression head ("=", arity 3).
-            // Insert the full rule expression head/arity so match_space() doesn't reject it.
-            if let Some(head) = value.get_head_symbol() {
-                let arity = value.get_arity() as u8;
-                self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
-            }
             return;
         }
 
@@ -1445,7 +1438,7 @@ where
             trie_add_atom(&mut type_btm, &keys, value.clone());
             // Insert atom name into type bloom filter for O(1) early rejection
             if let Some(ref name) = type_atom_name {
-                self.shared.atom_space.type_bloom.write().insert(name.as_bytes());
+                self.shared.atom_space.type_bloom.write().insert(name);
             }
         } else if is_subtype_atom {
             let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
@@ -1457,7 +1450,7 @@ where
         // Use trait method for head symbol extraction
         if let Some(head) = value.get_head_symbol() {
             let arity = value.get_arity() as u8;
-            self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
+            self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
         }
     }
 
@@ -1644,7 +1637,7 @@ where
 
             if let Some(head) = value.get_head_symbol() {
                 let arity = value.get_arity() as u8;
-                self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
+                self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
             }
 
             self.mark_modified();
@@ -1662,7 +1655,7 @@ where
         // Use trait method for head symbol extraction
         if let Some(head) = value.get_head_symbol() {
             let arity = value.get_arity() as u8;
-            self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
+            self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
         }
 
         // Mark as modified for union() fast-path detection
@@ -1751,7 +1744,7 @@ where
             .atom_space
             .head_arity_bloom
             .read()
-            .may_contain(head.as_bytes(), arity as u8)
+            .may_contain(head, arity as u8)
     }
 
     pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
@@ -1759,7 +1752,7 @@ where
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
             let bloom_result = self.shared.atom_space.head_arity_bloom.read()
-                .may_contain(expected_head.as_bytes(), pattern_arity);
+                .may_contain(expected_head, pattern_arity);
             if !bloom_result {
                 return Vec::new();
             }
@@ -1771,18 +1764,26 @@ where
         let pattern_keys = decompose(pattern);
         let btm = self.shared.atom_space.btm.read();
         for qm in btm.query(&pattern_keys) {
-            // qm.expr is the stored expression, qm.value is the Multiplicity
-            if let Some(bindings) = pattern_match_generic(pattern, &qm.expr) {
+            // Freshen stored expression variables to prevent capture (MeTTa HE semantics).
+            // Without this, variables like $x in different matched rules collide,
+            // causing incorrect unification and infinite loops in PLN.
+            let freshened = if qm.expr.contains_variables() {
+                crate::backend::eval::freshening::freshen_variables_generic(&qm.expr, &self.factory)
+            } else {
+                qm.expr.clone()
+            };
+            if let Some(bindings) = pattern_match_generic(pattern, &freshened) {
                 let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
                 results.push(MultiplicityMatch::new(instantiated, qm.value.count() as usize));
             }
         }
 
-        // Also check variable atoms (bidirectional matching)
+        // Also check variable atoms (bidirectional matching with freshening)
         {
             let var_atoms = self.shared.atom_space.variable_atoms.read();
             for (atom, multiplicity) in var_atoms.iter() {
-                if let Some(bindings) = pattern_match_generic(pattern, atom) {
+                let freshened = crate::backend::eval::freshening::freshen_variables_generic(atom, &self.factory);
+                if let Some(bindings) = pattern_match_generic(pattern, &freshened) {
                     let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
                     results.push(MultiplicityMatch::new(instantiated, *multiplicity));
                 }
@@ -1806,7 +1807,7 @@ where
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
             if !self.shared.atom_space.head_arity_bloom.read()
-                .may_contain(expected_head.as_bytes(), pattern_arity)
+                .may_contain(expected_head, pattern_arity)
             {
                 return false;
             }
@@ -1920,6 +1921,86 @@ mod tests {
         // Should have one rule for (add, 2)
         let rules = env.get_matching_rules_for_expr(&lhs);
         assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn test_match_space_finds_rules_added_via_add_rule() {
+        // Regression test: add_rule() must insert ("=", 3) into the bloom filter
+        // so that match_space() queries with pattern (= $a $b) are not rejected.
+        let mut env: MettaEnvironment = MettaEnvironment::default();
+
+        // Add rule: (= (f $x) (g $x))
+        let lhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        let rhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("g".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        env.add_rule(lhs, rhs);
+
+        // Query: match_space with pattern (= $a $b) should find the rule
+        let pattern = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::Atom("$a".to_string()),
+            MettaValue::Atom("$b".to_string()),
+        ]);
+        let template = MettaValue::SExpr(vec![
+            MettaValue::Atom("$a".to_string()),
+            MettaValue::Atom("$b".to_string()),
+        ]);
+        let results = env.match_space(&pattern, &template);
+
+        assert!(
+            !results.is_empty(),
+            "match_space should find rules stored via add_rule; bloom filter must include (\"=\", 3)"
+        );
+    }
+
+    #[test]
+    fn test_match_space_freshens_variables() {
+        // Regression test: match_space must freshen variables in stored expressions
+        // to prevent variable capture across different matched rules.
+        let mut env: MettaEnvironment = MettaEnvironment::default();
+
+        // Add two rules with the same variable name $x
+        env.add_rule(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("f".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("g".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        );
+        env.add_rule(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("h".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("k".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        );
+
+        // Query all rules — match_space should return freshened variables
+        let pattern = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::Atom("$a".to_string()),
+            MettaValue::Atom("$b".to_string()),
+        ]);
+        let template = MettaValue::Atom("$b".to_string());
+        let results = env.match_space(&pattern, &template);
+
+        // The two results should have DIFFERENT variable names (freshened)
+        assert_eq!(results.len(), 2);
+        let r0 = &results[0].value;
+        let r1 = &results[1].value;
+        // Variables in r0 and r1 should NOT be the same $x — they should be freshened
+        assert_ne!(r0, r1, "Freshening should make variables unique across matches");
     }
 
     #[test]

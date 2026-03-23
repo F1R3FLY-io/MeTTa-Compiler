@@ -136,7 +136,7 @@ impl MettaEnvironment {
                     .atom_space
                     .head_arity_bloom
                     .write()
-                    .insert(head.as_bytes(), arity);
+                    .insert(head, arity);
             }
         }
         // No wide_btm — MettaTrie handles any arity natively

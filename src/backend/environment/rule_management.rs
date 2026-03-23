@@ -1313,8 +1313,18 @@ where
             self.shared
                 .atom_space.head_arity_bloom
                 .write()
-                .insert(head.as_bytes(), arity_u8);
+                .insert(head, arity_u8);
         }
+
+        // Also insert the rule s-expression's head/arity ("=", arity=2) so that
+        // match_space() queries for (= $a $b) patterns aren't rejected by
+        // the bloom filter. get_arity() returns items.len()-1 (excludes head),
+        // so (= lhs rhs) has arity 2. Without this, direct add_rule() callers
+        // (= special form eval, module loading) miss the bloom filter entry.
+        self.shared
+            .atom_space.head_arity_bloom
+            .write()
+            .insert("=", 2);
 
         self.modified.store(true, Ordering::Release);
     }
@@ -1350,7 +1360,7 @@ where
                 .shared
                 .atom_space.head_arity_bloom
                 .read()
-                .may_contain(head.as_bytes(), arity as u8);
+                .may_contain(head, arity as u8);
             if bloom_says_no && !self.shared.rule_index.read().has_wildcard_rules() {
                 return Vec::new();
             }
@@ -1585,7 +1595,7 @@ where
                 .shared
                 .atom_space.head_arity_bloom
                 .read()
-                .may_contain(head.as_bytes(), arity as u8);
+                .may_contain(head, arity as u8);
             if bloom_says_no && !self.shared.rule_index.read().has_wildcard_rules() {
                 return Vec::new();
             }
@@ -1757,7 +1767,7 @@ impl MettaEnvironment {
                     self.shared
                         .atom_space.head_arity_bloom
                         .write()
-                        .insert(head.as_bytes(), arity as u8);
+                        .insert(head, arity as u8);
                 }
 
                 // Rebuild RuleIndex entry

@@ -334,6 +334,33 @@ mod tests {
     }
 
     #[test]
+    fn test_variable_matches_nested_sexpr_subtree() {
+        // Scenario: stored (= (f $0) (g $0)), query (= $lhs $rhs)
+        // The two Variables in the query must each skip an entire nested S-expression
+        let mut trie: MettaTrie<String, u64> = MettaTrie::new();
+        // Store: (= (f $0) (g $0)) → keys: [Arity(3), =, Arity(2), f, $0, Arity(2), g, $0]
+        trie.insert_at(
+            &[
+                TrieKey::Arity(3), TrieKey::Atom("="),
+                TrieKey::Arity(2), TrieKey::Atom("f"), TrieKey::Atom("$0"),
+                TrieKey::Arity(2), TrieKey::Atom("g"), TrieKey::Atom("$0"),
+            ],
+            "(= (f $0) (g $0))".to_string(),
+            1,
+        );
+
+        // Query: (= $lhs $rhs) → keys: [Arity(3), =, Variable, Variable]
+        let results = trie.query(&[
+            TrieKey::Arity(3), TrieKey::Atom("="),
+            TrieKey::Variable,
+            TrieKey::Variable,
+        ]);
+
+        assert_eq!(results.len(), 1, "Should find the stored rule");
+        assert_eq!(results[0].expr, "(= (f $0) (g $0))");
+    }
+
+    #[test]
     fn test_count_keys_for_children() {
         // Simple: 2 atom children
         let keys = vec![TrieKey::Atom("a"), TrieKey::Atom("b"), TrieKey::Atom("c")];

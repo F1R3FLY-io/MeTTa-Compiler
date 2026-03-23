@@ -150,6 +150,45 @@ fn decompose_spanned<V: MettaValueTrait>(value: &V, keys: &mut SmallVec<[TrieKey
     decompose_into(&stripped, keys);
 }
 
+/// Get the canonical De Bruijn variable name for a given index.
+///
+/// Returns `&'static str` like `"$__0"`, `"$__1"`, etc.
+/// Fast path: static array for the first 64 indices (zero allocation).
+/// Slow path: thread-local cache with GC allocator interning (allocated once per thread).
+fn debruijn_var_name(idx: usize) -> &'static str {
+    use std::cell::RefCell;
+
+    static NAMES: &[&str] = &[
+        "$__0", "$__1", "$__2", "$__3", "$__4", "$__5", "$__6", "$__7",
+        "$__8", "$__9", "$__10", "$__11", "$__12", "$__13", "$__14", "$__15",
+        "$__16", "$__17", "$__18", "$__19", "$__20", "$__21", "$__22", "$__23",
+        "$__24", "$__25", "$__26", "$__27", "$__28", "$__29", "$__30", "$__31",
+        "$__32", "$__33", "$__34", "$__35", "$__36", "$__37", "$__38", "$__39",
+        "$__40", "$__41", "$__42", "$__43", "$__44", "$__45", "$__46", "$__47",
+        "$__48", "$__49", "$__50", "$__51", "$__52", "$__53", "$__54", "$__55",
+        "$__56", "$__57", "$__58", "$__59", "$__60", "$__61", "$__62", "$__63",
+    ];
+
+    if idx < NAMES.len() {
+        return NAMES[idx];
+    }
+
+    // Overflow: thread-local cache so each name is interned once per thread
+    thread_local! {
+        static OVERFLOW: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    }
+
+    OVERFLOW.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let overflow_idx = idx - NAMES.len();
+        while cache.len() <= overflow_idx {
+            let name = format!("$__{}", NAMES.len() + cache.len());
+            cache.push(crate::backend::models::gc_allocator::global_allocator().alloc_str(&name));
+        }
+        cache[overflow_idx]
+    })
+}
+
 /// Check if an atom name is a variable (starts with $, &, or ').
 /// Excludes special atoms: &, &self, &kb, &stack.
 #[inline]
@@ -164,24 +203,33 @@ fn is_var_name(name: &str) -> bool {
                 && name != "&stack"))
 }
 
-/// Decompose for storage (variables kept as literals, not Variable keys).
+/// Decompose for storage with De Bruijn normalization.
 ///
-/// Used when storing atoms in the space — variable names like `$x` are stored
-/// as `TrieKey::Atom("$x")` rather than `TrieKey::Variable`, because the trie
-/// needs to distinguish between different variable names in stored expressions.
+/// Variables are renamed to canonical positional names (`$__0`, `$__1`, etc.)
+/// based on first-occurrence order in the expression. This ensures alpha-equivalent
+/// expressions like `(= (f $x) $x)` and `(= (f $y) $y)` produce identical trie
+/// keys, enabling correct duplicate detection and multiplicity tracking.
 ///
-/// Pattern queries use `decompose()` (with Variable) for matching.
+/// Pattern queries use `decompose()` (with `Variable` wildcards) for matching.
 pub fn decompose_literal<V: MettaValueTrait>(value: &V) -> SmallVec<[TrieKey; 16]> {
     let mut keys = SmallVec::new();
-    decompose_literal_into(value, &mut keys);
+    let mut var_map: SmallVec<[&'static str; 8]> = SmallVec::new();
+    decompose_literal_debruijn(value, &mut keys, &mut var_map);
     keys
 }
 
-/// Literal decomposition (variables as atoms). See `decompose_literal()`.
-pub fn decompose_literal_into<V: MettaValueTrait>(value: &V, keys: &mut SmallVec<[TrieKey; 16]>) {
+/// De Bruijn normalized literal decomposition.
+///
+/// `var_map` tracks the mapping from original variable names to De Bruijn indices.
+/// The first variable encountered becomes `$__0`, the second `$__1`, etc.
+fn decompose_literal_debruijn<V: MettaValueTrait>(
+    value: &V,
+    keys: &mut SmallVec<[TrieKey; 16]>,
+    var_map: &mut SmallVec<[&'static str; 8]>,
+) {
     let value = if value.is_spanned() {
         let stripped = value.strip_one_span();
-        decompose_literal_into(&stripped, keys);
+        decompose_literal_debruijn(&stripped, keys, var_map);
         return;
     } else {
         value
@@ -190,14 +238,28 @@ pub fn decompose_literal_into<V: MettaValueTrait>(value: &V, keys: &mut SmallVec
     if let Some(items) = value.as_sexpr() {
         keys.push(TrieKey::Arity(items.len() as u16));
         for child in items {
-            decompose_literal_into(child, keys);
+            decompose_literal_debruijn(child, keys, var_map);
         }
         return;
     }
 
-    // Atoms stored literally (no Variable conversion)
+    // Atoms: variables are De Bruijn normalized, non-variables stored literally
     if let Some(atom) = value.as_atom() {
-        keys.push(TrieKey::Atom(atom));
+        if is_var_name(atom) {
+            // De Bruijn normalize: map original name to positional index
+            let idx = if let Some(pos) = var_map.iter().position(|&v| v == atom) {
+                pos
+            } else {
+                let pos = var_map.len();
+                var_map.push(atom);
+                pos
+            };
+            // Use a canonical interned name for the De Bruijn index
+            let canonical = debruijn_var_name(idx);
+            keys.push(TrieKey::Atom(canonical));
+        } else {
+            keys.push(TrieKey::Atom(atom));
+        }
         return;
     }
 
@@ -223,26 +285,26 @@ pub fn decompose_literal_into<V: MettaValueTrait>(value: &V, keys: &mut SmallVec
     }
 
     if let Some(inner) = value.as_type() {
-        decompose_literal_into(inner, keys);
+        decompose_literal_debruijn(inner, keys, var_map);
         return;
     }
 
     if let Some(inner) = value.as_quoted_ref() {
-        decompose_literal_into(inner, keys);
+        decompose_literal_debruijn(inner, keys, var_map);
         return;
     }
 
     if let Some(goals) = value.as_conjunction() {
         keys.push(TrieKey::Arity(goals.len() as u16));
         for goal in goals {
-            decompose_literal_into(goal, keys);
+            decompose_literal_debruijn(goal, keys, var_map);
         }
         return;
     }
 
     if let Some((_msg, details)) = value.as_error() {
         keys.push(TrieKey::Error);
-        decompose_literal_into(details, keys);
+        decompose_literal_debruijn(details, keys, var_map);
         return;
     }
 
@@ -332,16 +394,16 @@ mod tests {
     }
 
     #[test]
-    fn test_decompose_literal_preserves_variables() {
-        // $x stored as Atom("$x"), not Variable
+    fn test_decompose_literal_debruijn_normalizes_variables() {
+        // $x stored as De Bruijn normalized $__0
         let val = f().atom("$x");
         let keys = decompose_literal(&val);
-        assert_eq!(keys.as_slice(), &[TrieKey::Atom("$x")]);
+        assert_eq!(keys.as_slice(), &[TrieKey::Atom("$__0")]);
     }
 
     #[test]
     fn test_decompose_literal_sexpr() {
-        // (= (f $x) $x) stored with literal variable names
+        // (= (f $x) $x) stored with De Bruijn normalized variable names
         let val = f().sexpr(vec![
             f().atom("="),
             f().sexpr(vec![f().atom("f"), f().atom("$x")]),
@@ -355,8 +417,50 @@ mod tests {
                 TrieKey::Atom("="),
                 TrieKey::Arity(2),
                 TrieKey::Atom("f"),
-                TrieKey::Atom("$x"),
-                TrieKey::Atom("$x"),
+                TrieKey::Atom("$__0"),
+                TrieKey::Atom("$__0"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_decompose_literal_alpha_equivalence() {
+        // (= (f $x) $x) and (= (f $y) $y) should produce identical keys
+        let val_x = f().sexpr(vec![
+            f().atom("="),
+            f().sexpr(vec![f().atom("f"), f().atom("$x")]),
+            f().atom("$x"),
+        ]);
+        let val_y = f().sexpr(vec![
+            f().atom("="),
+            f().sexpr(vec![f().atom("f"), f().atom("$y")]),
+            f().atom("$y"),
+        ]);
+        assert_eq!(decompose_literal(&val_x), decompose_literal(&val_y));
+    }
+
+    #[test]
+    fn test_decompose_literal_distinct_variables() {
+        // (= (f $x $y) (+ $x $y)) — two distinct vars get different De Bruijn indices
+        let val = f().sexpr(vec![
+            f().atom("="),
+            f().sexpr(vec![f().atom("f"), f().atom("$x"), f().atom("$y")]),
+            f().sexpr(vec![f().atom("+"), f().atom("$x"), f().atom("$y")]),
+        ]);
+        let keys = decompose_literal(&val);
+        assert_eq!(
+            keys.as_slice(),
+            &[
+                TrieKey::Arity(3),
+                TrieKey::Atom("="),
+                TrieKey::Arity(3),
+                TrieKey::Atom("f"),
+                TrieKey::Atom("$__0"),
+                TrieKey::Atom("$__1"),
+                TrieKey::Arity(3),
+                TrieKey::Atom("+"),
+                TrieKey::Atom("$__0"),
+                TrieKey::Atom("$__1"),
             ]
         );
     }

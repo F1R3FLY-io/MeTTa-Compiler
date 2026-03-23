@@ -198,6 +198,8 @@ pub enum ECheck {
     IsError { path: MatchPathDyn, expected_msg: &'static str },
     /// Verify value at path is a Conjunction with the given number of goals.
     IsConjunction { path: MatchPathDyn, expected_len: u16 },
+    /// Verify value at path is Unit (empty tuple `()`).
+    IsUnit { path: MatchPathDyn },
 }
 
 /// A variable slot operation, executed after all structural checks pass.
@@ -441,6 +443,10 @@ impl EnhancedMatcher {
                     .and_then(|v| v.as_conjunction())
                     .map_or(false, |goals| goals.len() == *expected_len as usize)
             }
+            ECheck::IsUnit { path } => {
+                path.navigate(expr)
+                    .map_or(false, |v| v.is_unit() || v.is_empty())
+            }
         }
     }
 
@@ -498,6 +504,10 @@ impl EnhancedMatcher {
                 path.navigate_resolving(template, bindings)
                     .and_then(|v| v.as_conjunction().map(|g| g.len() == *expected_len as usize))
                     .unwrap_or(false)
+            }
+            ECheck::IsUnit { path } => {
+                path.navigate_resolving(template, bindings)
+                    .map_or(false, |v| v.is_unit() || v.is_empty())
             }
         }
     }
@@ -625,8 +635,11 @@ impl EnhancedMatcher {
             return true;
         }
 
-        // Unit / Empty — match as wildcards
+        // Unit / Empty — must match Unit exactly (NOT a wildcard).
+        // GcFactory::sexpr(vec![]) converts empty S-expressions to Unit,
+        // so () in rule patterns appears as Unit here.
         if value.is_unit() || value.is_empty() {
+            literal_checks.push(ECheck::IsUnit { path });
             return true;
         }
 

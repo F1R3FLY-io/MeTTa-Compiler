@@ -672,6 +672,10 @@ enum StructuralCheck {
         path: MatchPath,
         expected: &'static str,
     },
+    /// Check that the node at `path` is Unit (empty tuple `()`).
+    IsUnit {
+        path: MatchPath,
+    },
 }
 
 /// Variable binding operation, executed after all structural checks pass.
@@ -842,6 +846,13 @@ impl StructuralMatcher {
             return true;
         }
 
+        // Unit — must match Unit exactly (empty tuple `()`)
+        // GcFactory::sexpr(vec![]) converts to Unit, so () in patterns is Unit.
+        if value.is_unit() || value.is_empty() {
+            checks.push(StructuralCheck::IsUnit { path });
+            return true;
+        }
+
         // Unsupported node type (Type, Conjunction, Error, Quoted, etc.)
         // Fall back to pattern_match_generic
         false
@@ -898,6 +909,12 @@ impl StructuralMatcher {
                     let val = path.navigate(expr)?;
                     let s = val.as_string()?;
                     if s != *expected {
+                        return None;
+                    }
+                }
+                StructuralCheck::IsUnit { path } => {
+                    let val = path.navigate(expr)?;
+                    if !val.is_unit() && !val.is_empty() {
                         return None;
                     }
                 }
@@ -991,6 +1008,12 @@ impl StructuralMatcher {
                     let val = path.navigate_resolving(template, outer_bindings)?;
                     let s = val.as_string()?;
                     if s != *expected {
+                        return None;
+                    }
+                }
+                StructuralCheck::IsUnit { path } => {
+                    let val = path.navigate_resolving(template, outer_bindings)?;
+                    if !val.is_unit() && !val.is_empty() {
                         return None;
                     }
                 }

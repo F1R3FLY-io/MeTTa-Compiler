@@ -19,12 +19,12 @@ pub mod grounded;
 pub(crate) mod hash_utils;
 pub mod models;
 pub mod modules;
-pub mod mork_convert;
+// mork_convert module removed -- MORK byte conversion replaced by MettaTrie decomposition
 pub mod priority_scheduler;
 pub mod scheduler;
 pub mod symbol;
 pub mod varint_encoding;
-pub mod wide_mork;
+// wide_mork module removed -- MettaTrie handles arbitrary arity natively
 
 #[cfg(feature = "eval-trace")]
 pub mod trace;

@@ -212,6 +212,12 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
         old
     }
 
+    /// Check if an entry exists at the given key path.
+    #[inline]
+    pub fn contains(&self, keys: &[TrieKey]) -> bool {
+        self.get_at(keys).is_some()
+    }
+
     /// Get the value at the given key path.
     pub fn get_at(&self, keys: &[TrieKey]) -> Option<&V> {
         self.navigate_to(keys)

@@ -1347,8 +1347,7 @@ where
             // Clear thread-local MORK serialization caches before GC runs.
             // After GC, slab slots may be reused (ABA), so cached pointer keys
             // would alias different values. Clear BEFORE perform_safepoint.
-            crate::backend::environment::rule_management::clear_mork_bytes_cache();
-            crate::backend::mork_convert::clear_ground_fragment_cache();
+            // MORK byte caches removed — MettaTrie stores expressions directly.
 
             // Clear value hash cache — pointer-keyed, same ABA concern.
             crate::backend::models::metta_value::clear_value_hash_cache();

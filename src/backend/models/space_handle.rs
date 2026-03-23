@@ -4,50 +4,47 @@
 //! independently of the Environment. This matches HE's design where
 //! spaces are first-class values.
 //!
-//! ## Copy-on-Write (CoW) via PathMap Clone
+//! ## Copy-on-Write (CoW) via MettaTrie Clone
 //!
 //! When MeTTa evaluation forks into nondeterministic branches (e.g., from `match`
 //! returning multiple results), each branch needs isolated access to mutable state.
 //! Without isolation, one branch's `add-atom` affects all other branches.
 //!
-//! PathMap::clone() provides O(1) CoW via Arc-based structural sharing:
+//! MettaTrie::clone() provides O(1) CoW via Arc-based structural sharing:
 //! - `fork()` creates a logical copy that shares trie data (O(1) operation)
 //! - First write to forked space copies only the affected trie nodes
 //! - Each branch sees its own modifications without affecting others
 //!
 //! SpaceHandle supports two backing stores:
-//! - PathMap<Multiplicity> — For dynamically created spaces (`new-space`)
+//! - MettaTrie<MettaValue, Multiplicity> — For dynamically created spaces (`new-space`)
 //! - ModuleSpace — For module-backed spaces (`mod-space!`) with live references
 //!
 //! ## Multiplicity Tracking
 //!
-//! Space atoms are stored as MORK bytes in a PathMap<Multiplicity>, providing:
+//! Space atoms are stored as TrieKey sequences in a MettaTrie<MettaValue, Multiplicity>,
+//! providing:
 //! - Proper multiplicity tracking (count per unique atom path)
 //! - Memory-efficient storage via trie structural sharing
-//! - O(1) fork via PathMap::clone()
+//! - O(1) fork via MettaTrie::clone()
 //!
-//! ## MORK Serialization
+//! ## TrieKey Decomposition
 //!
-//! Each SpaceHandle has a SharedMappingHandle for MORK symbol interning.
-//! MettaValue ↔ MORK bytes conversion happens at add/remove/collapse boundaries.
+//! Each SpaceHandle stores atoms by decomposing MettaValues into TrieKey sequences
+//! via `decompose_literal()`. Pattern queries use `decompose()` for wildcard matching.
 
 use std::sync::Arc;
 
-use mork_interning::{SharedMapping, SharedMappingHandle};
 use parking_lot::RwLock;
-use pathmap::PathMap;
-use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 
 use super::gc_allocator::GcFactory;
 use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::MettaValue;
 
+use crate::backend::decompose::decompose_literal;
 use crate::backend::environment::atom_space::AtomSpace;
-use crate::backend::environment::multiplicity::{self, Multiplicity};
-use crate::backend::environment::mork_encoding;
+use crate::backend::environment::multiplicity;
 use crate::backend::environment::MultiplicityMatch;
 use crate::backend::modules::{ModId, ModuleSpace};
-use crate::backend::mork_convert::with_mork_bytes;
 
 /// Generic version of MultiplicityMatch that works with any value type.
 ///
@@ -72,13 +69,13 @@ impl<V> GenericMultiplicityMatch<V> {
 /// The backing store for a SpaceHandle.
 ///
 /// This enum allows SpaceHandle to work with both:
-/// - Standalone spaces (from `new-space`) with AtomSpace-based storage (MORK + Bloom + variable atoms)
+/// - Standalone spaces (from `new-space`) with AtomSpace-based storage (MettaTrie + Bloom + variable atoms)
 /// - Module spaces (from `mod-space!`) with live references
 #[derive(Clone)]
 pub enum SpaceBacking {
     /// Owned space data (for new-space) backed by AtomSpace.
-    /// AtomSpace provides: PathMap (ground atoms), Bloom filter (O(1) rejection),
-    /// variable atoms Vec, and O(1) CoW fork via PathMap structural sharing.
+    /// AtomSpace provides: MettaTrie (ground atoms), Bloom filter (O(1) rejection),
+    /// variable atoms Vec, and O(1) CoW fork via MettaTrie structural sharing.
     Owned {
         space: Arc<AtomSpace<MettaValue>>,
     },
@@ -108,7 +105,7 @@ impl std::fmt::Debug for SpaceBacking {
 /// Thread-safe handle to a space's data.
 ///
 /// SpaceHandle wraps the space data in Arc<RwLock<>> for:
-/// - O(1) fork via PathMap structural sharing (CoW)
+/// - O(1) fork via MettaTrie structural sharing (CoW)
 /// - Thread-safe read/write access
 /// - Shared ownership across MettaValue instances
 ///
@@ -120,65 +117,35 @@ pub struct SpaceHandle {
     pub id: u64,
     /// Human-readable name
     pub name: String,
-    /// The backing store (owned PathMap or live ModuleSpace reference)
+    /// The backing store (owned MettaTrie or live ModuleSpace reference)
     backing: SpaceBacking,
-}
-
-/// Create a new SharedMappingHandle for a SpaceHandle.
-///
-/// Each SpaceHandle gets its own SharedMapping to avoid cross-handle
-/// lock contention during parallel evaluation. No warmup needed because
-/// SpaceHandle's PathMap is behind `Arc<RwLock>` which serializes writes,
-/// preventing the `ensure_root()` TOCTOU race.
-#[inline]
-fn new_space_mapping() -> SharedMappingHandle {
-    SharedMappingHandle::from(SharedMapping::new())
-}
-
-/// Create a MORK Space for deserialization (only sm is used).
-fn deserialization_space(sm: &SharedMappingHandle) -> mork::space::Space<Multiplicity> {
-    mork::space::Space {
-        sm: sm.clone(),
-        btm: PathMap::new(),
-        mmaps: std::collections::HashMap::new(),
-    }
 }
 
 impl SpaceHandle {
     /// Create a new space handle with the given ID and name.
     pub fn new(id: u64, name: String) -> Self {
-        let sm = new_space_mapping();
         Self {
             id,
             name,
             backing: SpaceBacking::Owned {
-                space: Arc::new(AtomSpace::new(sm, 1000)),
+                space: Arc::new(AtomSpace::new(1000)),
             },
         }
     }
 
     /// Create a space handle with existing data.
     pub fn with_data(id: u64, name: String, atoms: Vec<MettaValue>) -> Self {
-        let sm = new_space_mapping();
-        let atom_space = AtomSpace::new(sm, atoms.len().max(100));
+        let atom_space = AtomSpace::new(atoms.len().max(100));
         {
-            let mut pm = atom_space.btm.write();
-            let mut wbtm = atom_space.wide_btm.write();
+            let mut btm = atom_space.btm.write();
             for atom in &atoms {
-                match with_mork_bytes(atom, &atom_space.shared_mapping, atom_space.mork_cache_epoch, |bytes| {
-                    multiplicity::add_atom(&mut pm, bytes);
-                }) {
-                    Ok(()) => {}
-                    Err(_) => {
-                        // Wide expression (arity >= 64) — encode to wide_btm
-                        let mut wide_key = Vec::new();
-                        crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
-                        multiplicity::add_atom(&mut wbtm, &wide_key);
-                    }
-                }
+                let keys = decompose_literal(atom);
+                multiplicity::trie_add_atom(&mut btm, &keys, atom.clone());
             }
         }
-        atom_space.total_atoms.store(atoms.len(), std::sync::atomic::Ordering::Relaxed);
+        atom_space
+            .total_atoms
+            .store(atoms.len(), std::sync::atomic::Ordering::Relaxed);
         Self {
             id,
             name,
@@ -211,7 +178,7 @@ impl SpaceHandle {
 
     /// Fork this space handle for nondeterministic branch isolation.
     ///
-    /// Creates a new handle with an independent PathMap clone. PathMap::clone()
+    /// Creates a new handle with an independent MettaTrie clone. MettaTrie::clone()
     /// is O(1) via Arc-based structural sharing (CoW) — actual data copying
     /// only happens on first write to divergent trie nodes.
     ///
@@ -229,7 +196,7 @@ impl SpaceHandle {
     pub fn fork(&self) -> Self {
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                // AtomSpace::fork() is O(1) via PathMap CoW structural sharing.
+                // AtomSpace::fork() is O(1) via MettaTrie CoW structural sharing.
                 Self {
                     id: self.id,
                     name: self.name.clone(),
@@ -242,26 +209,18 @@ impl SpaceHandle {
                 // Module spaces: fork creates a snapshot (not live).
                 // Serialize module atoms into a new AtomSpace for isolation.
                 let module_atoms = space.read().get_all_atoms();
-                let sm = new_space_mapping();
-                let atom_space = AtomSpace::new(sm, module_atoms.len().max(100));
+                let atom_space = AtomSpace::new(module_atoms.len().max(100));
                 {
-                    let mut pm = atom_space.btm.write();
-                    let mut wbtm = atom_space.wide_btm.write();
+                    let mut btm = atom_space.btm.write();
                     for atom in &module_atoms {
-                        match with_mork_bytes(atom, &atom_space.shared_mapping, atom_space.mork_cache_epoch, |bytes| {
-                            multiplicity::add_atom(&mut pm, bytes);
-                        }) {
-                            Ok(()) => {}
-                            Err(_) => {
-                                // Wide expression (arity >= 64) — encode to wide_btm
-                                let mut wide_key = Vec::new();
-                                crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
-                                multiplicity::add_atom(&mut wbtm, &wide_key);
-                            }
-                        }
+                        let keys = decompose_literal(atom);
+                        multiplicity::trie_add_atom(&mut btm, &keys, atom.clone());
                     }
                 }
-                atom_space.total_atoms.store(module_atoms.len(), std::sync::atomic::Ordering::Relaxed);
+                atom_space.total_atoms.store(
+                    module_atoms.len(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 Self {
                     id: self.id,
                     name: self.name.clone(),
@@ -290,7 +249,7 @@ impl SpaceHandle {
     /// Used when creating references to the same underlying space.
     ///
     /// Note: This creates a shallow clone - both handles share the same
-    /// underlying PathMap and rules Vec via Arc. For isolated copies,
+    /// underlying MettaTrie and rules Vec via Arc. For isolated copies,
     /// use `fork()` instead.
     pub fn share_data(&self, new_id: u64, new_name: String) -> Self {
         Self {
@@ -302,7 +261,7 @@ impl SpaceHandle {
 
     /// Add an atom to this space.
     ///
-    /// For owned spaces: ground atoms go to PathMap (MORK bytes),
+    /// For owned spaces: ground atoms go to MettaTrie (TrieKey decomposition),
     /// variable atoms ($-prefixed) go to the variable_atoms Vec.
     /// For module spaces, delegates to ModuleSpace.
     pub fn add_atom(&self, atom: MettaValue) {
@@ -320,22 +279,14 @@ impl SpaceHandle {
                         var_atoms.push((atom, 1));
                     }
                 } else {
-                    // Ground atom → MORK PathMap
-                    match with_mork_bytes(&atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
-                        let mut pm = space.btm.write();
-                        multiplicity::add_atom(&mut pm, bytes);
-                    }) {
-                        Ok(()) => {}
-                        Err(_) => {
-                            // Wide expression (arity >= 64) — encode to wide_btm
-                            let mut wide_key = Vec::new();
-                            crate::backend::wide_mork::encoding::encode_wide_storage(&atom, &mut wide_key);
-                            let mut wbtm = space.wide_btm.write();
-                            multiplicity::add_atom(&mut wbtm, &wide_key);
-                        }
-                    }
+                    // Ground atom → MettaTrie via TrieKey decomposition
+                    let keys = decompose_literal(&atom);
+                    let mut btm = space.btm.write();
+                    multiplicity::trie_add_atom(&mut btm, &keys, atom);
                 }
-                space.total_atoms.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                space
+                    .total_atoms
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             SpaceBacking::Module { space, .. } => {
                 let mut space = space.write();
@@ -361,39 +312,26 @@ impl SpaceHandle {
                         } else {
                             var_atoms.swap_remove(idx);
                         }
-                        space.total_atoms.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        space
+                            .total_atoms
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         true
                     } else {
                         false
                     }
                 } else {
-                    // Ground atom → MORK PathMap
-                    match with_mork_bytes(atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
-                        let mut pm = space.btm.write();
-                        let old_count = multiplicity::get_multiplicity(&pm, bytes);
-                        if old_count > 0 {
-                            multiplicity::remove_atom(&mut pm, bytes);
-                            space.total_atoms.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                            true
-                        } else {
-                            false
-                        }
-                    }) {
-                        Ok(removed) => removed,
-                        Err(_) => {
-                            // Try wide_btm (arity >= 64)
-                            let mut wide_key = Vec::new();
-                            crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
-                            let mut wbtm = space.wide_btm.write();
-                            let old_count = multiplicity::get_multiplicity(&wbtm, &wide_key);
-                            if old_count > 0 {
-                                multiplicity::remove_atom(&mut wbtm, &wide_key);
-                                space.total_atoms.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                                true
-                            } else {
-                                false
-                            }
-                        }
+                    // Ground atom → MettaTrie via TrieKey decomposition
+                    let keys = decompose_literal(atom);
+                    let mut btm = space.btm.write();
+                    let old_count = multiplicity::trie_get_multiplicity(&btm, &keys);
+                    if old_count > 0 {
+                        multiplicity::trie_remove_atom(&mut btm, &keys);
+                        space
+                            .total_atoms
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        true
+                    } else {
+                        false
                     }
                 }
             }
@@ -406,7 +344,7 @@ impl SpaceHandle {
 
     /// Get all atoms in this space (collapse) - expands multiplicities.
     ///
-    /// Iterates the PathMap (ground atoms) and variable_atoms Vec.
+    /// Iterates the MettaTrie (ground atoms) and variable_atoms Vec.
     /// Variable atoms are freshened independently to ensure cross-atom
     /// variable isolation (matching HE's `make_variables_unique()`).
     pub fn collapse(&self) -> Vec<MettaValue> {
@@ -417,47 +355,13 @@ impl SpaceHandle {
                 let factory = super::GcFactory::default();
                 let mut result = Vec::new();
 
-                // Ground atoms from PathMap
+                // Ground atoms from MettaTrie
                 {
-                    let pm = space.btm.read();
-                    let deser_space = deserialization_space(&space.shared_mapping);
-
-                    let mut rz = pm.read_zipper();
-                    while rz.to_next_val() {
-                        let path = rz.path();
-                        let count = rz.val().map(|m| m.count()).unwrap_or(0);
-                        if count == 0 {
-                            continue;
-                        }
-                        if let Ok(value) =
-                            mork_encoding::mork_bytes_to_generic_value(path, &deser_space, &factory)
-                        {
-                            for _ in 0..count {
-                                result.push(value);
-                            }
-                        }
-                    }
-                }
-
-                // Wide atoms from wide_btm
-                {
-                    let wbtm = space.wide_btm.read();
-                    let mut wrz = wbtm.read_zipper();
-                    while wrz.to_next_val() {
-                        let path_bytes = wrz.path();
-                        let count = wrz.val().map(|m| m.count()).unwrap_or(0);
-                        if count == 0 {
-                            continue;
-                        }
-                        if let Ok(value) =
-                            crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<
-                                MettaValue,
-                                _,
-                            >(path_bytes, &factory)
-                        {
-                            for _ in 0..count {
-                                result.push(value);
-                            }
+                    let btm = space.btm.read();
+                    for (expr, mult) in btm.iter() {
+                        let count = mult.count() as usize;
+                        for _ in 0..count {
+                            result.push(expr.clone());
                         }
                     }
                 }
@@ -494,43 +398,13 @@ impl SpaceHandle {
                 let factory = super::GcFactory::default();
                 let mut results = Vec::new();
 
-                // Ground atoms from PathMap
+                // Ground atoms from MettaTrie
                 {
-                    let pm = space.btm.read();
-                    let deser_space = deserialization_space(&space.shared_mapping);
-
-                    let mut rz = pm.read_zipper();
-                    while rz.to_next_val() {
-                        let path = rz.path();
-                        let count = rz.val().map(|m| m.count()).unwrap_or(0);
-                        if count == 0 {
-                            continue;
-                        }
-                        if let Ok(value) =
-                            mork_encoding::mork_bytes_to_generic_value(path, &deser_space, &factory)
-                        {
-                            results.push(MultiplicityMatch::new(value, count as usize));
-                        }
-                    }
-                }
-
-                // Wide atoms from wide_btm
-                {
-                    let wbtm = space.wide_btm.read();
-                    let mut wrz = wbtm.read_zipper();
-                    while wrz.to_next_val() {
-                        let path_bytes = wrz.path();
-                        let count = wrz.val().map(|m| m.count()).unwrap_or(0);
-                        if count == 0 {
-                            continue;
-                        }
-                        if let Ok(value) =
-                            crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<
-                                MettaValue,
-                                _,
-                            >(path_bytes, &factory)
-                        {
-                            results.push(MultiplicityMatch::new(value, count as usize));
+                    let btm = space.btm.read();
+                    for (expr, mult) in btm.iter() {
+                        let count = mult.count() as usize;
+                        if count > 0 {
+                            results.push(MultiplicityMatch::new(expr.clone(), count));
                         }
                     }
                 }
@@ -573,23 +447,8 @@ impl SpaceHandle {
     pub fn distinct_atom_count(&self) -> usize {
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                let pm = space.btm.read();
-                let mut count: usize = 0;
-                let mut rz = pm.read_zipper();
-                while rz.to_next_val() {
-                    count += 1;
-                }
-                // Also count distinct wide atoms
-                {
-                    let wbtm = space.wide_btm.read();
-                    let mut wrz = wbtm.read_zipper();
-                    while wrz.to_next_val() {
-                        count += 1;
-                    }
-                }
-                // Also count distinct variable atoms
-                count += space.variable_atoms.read().len();
-                count
+                let btm = space.btm.read();
+                btm.val_count() + space.variable_atoms.read().len()
             }
             SpaceBacking::Module { space, .. } => {
                 let space = space.read();
@@ -609,20 +468,10 @@ impl SpaceHandle {
                     let var_atoms = space.variable_atoms.read();
                     var_atoms.iter().any(|(v, _)| v == atom)
                 } else {
-                    // Check PathMap
-                    match with_mork_bytes(atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
-                        let pm = space.btm.read();
-                        multiplicity::get_multiplicity(&pm, bytes) > 0
-                    }) {
-                        Ok(found) => found,
-                        Err(_) => {
-                            // Try wide_btm (arity >= 64)
-                            let mut wide_key = Vec::new();
-                            crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
-                            let wbtm = space.wide_btm.read();
-                            multiplicity::get_multiplicity(&wbtm, &wide_key) > 0
-                        }
-                    }
+                    // Check MettaTrie
+                    let keys = decompose_literal(atom);
+                    let btm = space.btm.read();
+                    multiplicity::trie_get_multiplicity(&btm, &keys) > 0
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -641,25 +490,16 @@ impl SpaceHandle {
                 if has_pattern_variables(atom) {
                     // Check variable atoms Vec
                     let var_atoms = space.variable_atoms.read();
-                    var_atoms.iter()
+                    var_atoms
+                        .iter()
                         .find(|(v, _)| v == atom)
                         .map(|(_, mult)| *mult)
                         .unwrap_or(0)
                 } else {
-                    // Check PathMap
-                    match with_mork_bytes(atom, &space.shared_mapping, space.mork_cache_epoch, |bytes| {
-                        let pm = space.btm.read();
-                        multiplicity::get_multiplicity(&pm, bytes) as usize
-                    }) {
-                        Ok(count) => count,
-                        Err(_) => {
-                            // Try wide_btm (arity >= 64)
-                            let mut wide_key = Vec::new();
-                            crate::backend::wide_mork::encoding::encode_wide_storage(atom, &mut wide_key);
-                            let wbtm = space.wide_btm.read();
-                            multiplicity::get_multiplicity(&wbtm, &wide_key) as usize
-                        }
-                    }
+                    // Check MettaTrie
+                    let keys = decompose_literal(atom);
+                    let btm = space.btm.read();
+                    multiplicity::trie_get_multiplicity(&btm, &keys) as usize
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -673,14 +513,14 @@ impl SpaceHandle {
         }
     }
 
-    // Rules are stored in the Environment's PathMap, not in SpaceHandle.
+    // Rules are stored in the Environment's MettaTrie, not in SpaceHandle.
     // Use env.add_rule(lhs, rhs) instead.
 
     // ========================================================================
     // Generic Value Operations
     // ========================================================================
     // These methods work with any value type implementing MettaValueTrait.
-    // Atoms are stored as MORK bytes in PathMap; generic methods
+    // Atoms are stored as TrieKey sequences in MettaTrie; generic methods
     // serialize/deserialize when crossing type boundaries.
     // ========================================================================
 
@@ -759,7 +599,7 @@ impl SpaceHandle {
     /// Returns all distinct TYPE values found, or empty Vec if none.
     ///
     /// Performance: O(n) where n = total atoms in space. For high-performance
-    /// type lookups, use the dedicated `type_btm` PathMap (Phase 7 optimization).
+    /// type lookups, use the dedicated `type_btm` MettaTrie (Phase 7 optimization).
     pub fn query_types_generic<V, F>(&self, atom_name: &str, factory: &F) -> Vec<V>
     where
         V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -798,11 +638,11 @@ impl SpaceHandle {
     /// Match a pattern against atoms in this space and instantiate a template.
     ///
     /// This is the unified match path for owned spaces. For &self/module spaces,
-    /// the caller should use `env.match_space()` instead (which uses RuleIndex + MORK).
+    /// the caller should use `env.match_space()` instead (which uses RuleIndex + MettaTrie).
     ///
     /// Returns a list of template instantiations — one per matching atom.
     ///
-    /// **Ground atoms** (PathMap): unidirectional matching via `pattern_match_generic`
+    /// **Ground atoms** (MettaTrie): unidirectional matching via `pattern_match_generic`
     /// (fast — variables only on pattern side).
     ///
     /// **Variable atoms** (Vec): freshened then matched bidirectionally via
@@ -827,52 +667,20 @@ impl SpaceHandle {
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                // 1. Match against ground atoms from PathMap (unidirectional)
+                // 1. Match against ground atoms from MettaTrie (unidirectional)
                 {
-                    let pm = space.btm.read();
-                    let deser_space = deserialization_space(&space.shared_mapping);
-
-                    let mut rz = pm.read_zipper();
-                    while rz.to_next_val() {
-                        let path = rz.path();
-                        let count = rz.val().map(|m| m.count()).unwrap_or(0);
+                    let btm = space.btm.read();
+                    for (expr, mult) in btm.iter() {
+                        let count = mult.count();
                         if count == 0 {
                             continue;
                         }
-                        if let Ok(atom) =
-                            mork_encoding::mork_bytes_to_generic_value(path, &deser_space, factory)
-                        {
-                            if let Some(bindings) = pattern_match_generic(pattern, &atom) {
-                                let instantiated = apply_bindings_generic(template, &bindings, factory);
-                                for _ in 0..count {
-                                    results.push(instantiated.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 1b. Match against wide atoms from wide_btm (unidirectional)
-                {
-                    let wbtm = space.wide_btm.read();
-                    let mut wrz = wbtm.read_zipper();
-                    while wrz.to_next_val() {
-                        let path_bytes = wrz.path();
-                        let count = wrz.val().map(|m| m.count()).unwrap_or(0);
-                        if count == 0 {
-                            continue;
-                        }
-                        if let Ok(atom) =
-                            crate::backend::wide_mork::decode::wide_bytes_to_generic_value::<V, _>(
-                                path_bytes, factory,
-                            )
-                        {
-                            if let Some(bindings) = pattern_match_generic(pattern, &atom) {
-                                let instantiated =
-                                    apply_bindings_generic(template, &bindings, factory);
-                                for _ in 0..count {
-                                    results.push(instantiated.clone());
-                                }
+                        let atom: V = factory.from_metta_value(expr.clone());
+                        if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                            let instantiated =
+                                apply_bindings_generic(template, &bindings, factory);
+                            for _ in 0..count {
+                                results.push(instantiated.clone());
                             }
                         }
                     }
@@ -892,7 +700,8 @@ impl SpaceHandle {
                             if let Some(bindings) =
                                 space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
                             {
-                                let instantiated = apply_bindings_generic(template, &bindings, factory);
+                                let instantiated =
+                                    apply_bindings_generic(template, &bindings, factory);
                                 for _ in 0..*mult {
                                     results.push(instantiated.clone());
                                 }
@@ -937,13 +746,12 @@ impl SpaceHandle {
     ///
     /// Used by the GC mark phase to traverse into Space values.
     ///
-    /// Owned spaces: collect variable_atoms values from AtomSpace
-    /// (wide_btm stores only byte keys + Multiplicity — no V references, no GC tracing).
+    /// Owned spaces: collect variable_atoms values + MettaTrie leaf values from AtomSpace.
     /// Module spaces: collect live MettaValue atoms from ModuleSpace.
     pub(crate) fn collect_gc_values(&self, values: &mut Vec<MettaValue>) {
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                // Collect GC roots from AtomSpace (variable_atoms only — wide_btm has no V refs)
+                // Collect GC roots from AtomSpace (variable_atoms + MettaTrie entries)
                 space.collect_gc_roots(values);
             }
             SpaceBacking::Module { space, .. } => {
@@ -1063,7 +871,7 @@ mod tests {
         let original = SpaceHandle::new(1, "stack".to_string());
         original.add_atom(MettaValue::Long(1));
 
-        // Fork creates isolated copy (O(1) via PathMap CoW)
+        // Fork creates isolated copy (O(1) via MettaTrie CoW)
         let forked = original.fork();
 
         // Forked sees original data

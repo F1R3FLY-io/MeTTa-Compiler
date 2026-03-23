@@ -105,33 +105,10 @@ harness = false
 [dependencies]
 # MettaTrie - Native trie-map for MeTTa expression storage (replaces MORK+PathMap)
 metta-trie = { path = "metta-trie" }
-# MORK - MeTTa Optimal Reduction Kernel for pattern matching
-mork = { path = "../MORK/kernel", features = ["interning"] }
-# MORK expr - S-expression representation used by MORK (formerly mork-bytestring)
-mork-expr = { path = "../MORK/expr" }
-# MORK frontend - Parser for MORK s-expressions
-mork-frontend = { path = "../MORK/frontend" }
-# MORK interning - Symbol interning for MORK
-mork-interning = { path = "../MORK/interning" }
-# Models - Rholang protobuf models for PathMap Par integration
+# Models - Rholang protobuf models for Par integration
 models = { path = "../f1r3node/models" }
 # Tokio - Async runtime for parallel evaluation (optional)
 tokio = { version = "1", features = ["rt", "sync"], optional = true }
-
-# PathMap - Trie-map library used by MORK
-# Note: Windows is not currently supported due to jemalloc incompatibility
-# MORK's workspace enables jemalloc which requires Unix build tools
-pathmap = {
-    git = "https://github.com/dylon/PathMap.git",
-    branch = "feature/mettatron-fixes",
-    features = [
-        "jemalloc",
-        "arena_compact",
-        "viz",
-    ]
-}
-# pathmap = { git = "https://github.com/Adam-Vandervorst/PathMap.git", branch = "master", features = ["jemalloc", "arena_compact"] }
-# pathmap = { version = "0.2.0-alpha0", features = ["jemalloc", "arena_compact"] }
 
 # Tree-sitter - Parser for LSP support
 tree-sitter = "0.25"
@@ -157,15 +134,14 @@ lasso = { version = "0.7", features = ["multi-threaded"], optional = true }
 itertools = "0.14"
 
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
-# liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
-liblevenshtein = { version = "^0.7", features = ["pathmap-backend", "simd"] }
+# liblevenshtein = { path = "../liblevenshtein-rust", features = ["simd"] }
+liblevenshtein = { version = "^0.7", features = ["simd"] }
 
 # TOML - Package manifest parsing (metta.toml)
 toml = "0.8"
 # Serde - Serialization for package manifest
 serde = { version = "1.0", features = ["derive"] }
-# Hex - Hex encoding for MORK bytes serialization
-hex = "0.4"
+# hex crate removed — was used for MORK byte serialization (deprecated)
 # itoa - Fast integer-to-string formatting on stack (no heap allocation)
 itoa = "1"
 # ryu - Fast float-to-string formatting on stack (no heap allocation)
@@ -176,8 +152,7 @@ semver = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
-# Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
-# PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
+# Note: jemalloc is no longer included via PathMap; add tikv-jemallocator directly if needed
 
 # Cranelift JIT - Native code generation for hot bytecode paths
 # Provides 2-5x additional speedup over bytecode VM for arithmetic chains
@@ -394,18 +369,4 @@ assets = [
     { source = "LICENSE", dest = "/usr/share/doc/mettatron/LICENSE", mode = "644", doc = true },
 ]
 
-# Override mork-expr's broken git gxhash (commit 55bde47 has duplicate
-# RandomState import and missing rustversion crate) with the working
-# registry version.
-[patch."https://github.com/luketpeterson/gxhash/"]
-gxhash = "3.5"
-
-# Unify all pathmap sources to the single local clone.
-# MORK and f1r3node use a git dep; liblevenshtein uses crates.io 0.2.2.
-# Without these patches, three different pathmap instances cause
-# global_allocator conflicts and trait/type mismatches (44 errors).
-[patch."https://github.com/dylon/PathMap.git"]
-pathmap = { path = "../PathMap" }
-
-[patch.crates-io]
-pathmap = { path = "../PathMap" }
+# MORK/PathMap patch sections removed — no longer needed after MettaTrie migration

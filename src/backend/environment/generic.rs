@@ -15,7 +15,7 @@
 //! ```ignore
 //! GenericEnvironment<V>
 //!   └── Arc<GenericEnvironmentShared<V>>
-//!         ├── btm: RwLock<PathMap<Multiplicity>>  (rules + facts as MORK bytes)
+//!         ├── atom_space: AtomSpace<V>  (MettaTrie-backed unified atom storage)
 //!         ├── named_spaces: RwLock<HashMap<u64, (String, Vec<V>)>>
 //!         ├── bindings: RwLock<HashMap<String, V>>
 //!         └── ... (type-agnostic fields: symbols, states, etc.)
@@ -25,30 +25,25 @@
 //!
 //! Uses non-blocking concurrent data structures for maximum parallelism:
 //! - `parking_lot::RwLock<HashMap>` for concurrent map access (single-threaded workloads)
-//! - `parking_lot::RwLock` for structures requiring exclusive access (PathMap, LruCache)
+//! - `parking_lot::RwLock` for structures requiring exclusive access (MettaTrie)
 //! - `AtomicBool`/`AtomicUsize` for simple flags and counters
 //!
 //! Clone operations are O(1) via Arc sharing until first mutation (CoW).
 
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use lru::LruCache;
-use mork::space::Space;
-use mork_interning::{SharedMapping, SharedMappingHandle};
+use metta_trie::Multiplicity;
 use parking_lot::RwLock;
-use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
-use pathmap::PathMap;
 use tracing::trace;
 
+use crate::backend::decompose::{decompose, decompose_literal};
 use crate::backend::hash_utils::IdentityU64BuildHasher;
 use super::bloom::HeadArityBloomFilter;
-use super::mork_encoding::mork_bytes_to_generic_value;
-use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
+use super::multiplicity::{trie_add_atom, trie_get_multiplicity, trie_remove_atom};
 use super::rule_management::extract_rule_parts;
 use super::scope::ScopeTracker;
 use crate::backend::eval::bindings_generic::{apply_bindings_generic, pattern_match_generic};
@@ -59,50 +54,6 @@ use crate::backend::models::{
     GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
 };
 use crate::backend::modules::ModuleRegistry;
-use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
-use crate::backend::wide_mork::decode::wide_bytes_to_generic_value;
-use crate::backend::wide_mork::encoding::encode_wide_storage;
-
-// ============================================================================
-// Static Sentinel for Unmodified Environments
-// ============================================================================
-
-
-// ============================================================================
-// Helper Functions for Environment Operations
-// ============================================================================
-
-/// Merge two PathMaps by taking the maximum multiplicity for each path.
-///
-/// This is used by environment union to combine facts from two environments.
-/// For each path present in either PathMap, the result contains that path with
-/// the maximum of the two multiplicities (or the single multiplicity if only in one).
-fn merge_pathmaps_max(
-    a: &PathMap<Multiplicity>,
-    b: &PathMap<Multiplicity>,
-) -> PathMap<Multiplicity> {
-    // Start with a clone of 'a'
-    let mut result = a.clone();
-
-    // Iterate through 'b' and take max for each path
-    let mut rz = b.read_zipper();
-    while rz.to_next_val() {
-        let path = rz.path();
-        let b_count = rz.val().map(|m| m.count()).unwrap_or(0);
-
-        // Check if path exists in result
-        if let Some(a_mult) = result.get(path) {
-            // Take max of multiplicities
-            let max_count = a_mult.count().max(b_count);
-            result.insert(path, Multiplicity::new(max_count));
-        } else {
-            // Path only in b, add it
-            result.insert(path, Multiplicity::new(b_count));
-        }
-    }
-
-    result
-}
 
 // ============================================================================
 // Multiplicity Match - Generic for any value type
@@ -164,15 +115,15 @@ impl<V: Clone> MultiplicityMatch<V> {
 /// after `make_owned()`, only a single writer accesses the new HashMap.
 ///
 /// Other structures use:
-/// - `parking_lot::RwLock`: For PathMap, LruCache, and other non-HashMap structures
+/// - `parking_lot::RwLock`: For MettaTrie and other non-HashMap structures
 /// - `AtomicU64`/`AtomicBool`/`AtomicUsize`: Lock-free counters and flags
 pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> {
     // ========================================================================
     // Unified Atom Storage (AtomSpace)
     // ========================================================================
-    /// Unified atom storage: MORK PathMap (ground atoms) + variable atom Vec.
-    /// Contains btm, wide_btm, shared_mapping, head_arity_bloom,
-    /// total_atoms, and variable_atoms.
+    /// Unified atom storage: MettaTrie (ground atoms) + variable atom Vec.
+    /// Contains btm, type_btm, subtype_btm, inferred_type_btm,
+    /// head_arity_bloom, type_bloom, total_atoms, and variable_atoms.
     pub(crate) atom_space: super::atom_space::AtomSpace<V>,
 
     // ========================================================================
@@ -235,13 +186,10 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// Stateless and Clone, no lock needed
     pub(crate) generic_grounded_registry: GenericGroundedRegistry,
 
-    /// Pattern cache for MORK serialization (keyed by MettaValue for heap mode)
-    /// Uses RwLock (LruCache requires exclusive access for get/put)
-    pub(crate) pattern_cache: RwLock<LruCache<MettaValue, Vec<u8>>>,
-
-    /// Type index: Lazy-initialized subtrie containing only type assertions
-    /// Uses RwLock (PathMap has no concurrent alternative)
-    pub(crate) type_index: RwLock<Option<PathMap<Multiplicity>>>,
+    /// Type index: Lazy-initialized snapshot of `type_btm` MettaTrie.
+    /// Rebuilt when `type_index_dirty` is true.
+    /// Uses RwLock (MettaTrie requires exclusive access for mutation)
+    pub(crate) type_index: RwLock<Option<metta_trie::MettaTrie<V, Multiplicity>>>,
 
     /// Type index invalidation flag (lock-free atomic)
     pub(crate) type_index_dirty: AtomicBool,
@@ -257,9 +205,9 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// deep-cloning the scope tree. Writes go through make_owned().
     pub(crate) scope_tracker: Arc<RwLock<ScopeTracker>>,
 
-    /// In-memory rule index for O(1) lookup + MORK byte-level matching.
+    /// In-memory rule index for O(1) lookup + pattern matching.
     /// Populated at `add_rule()` time. Authoritative for rule queries.
-    /// PathMap remains the storage-of-record (for match_space, serialization).
+    /// MettaTrie remains the storage-of-record (for match_space, serialization).
     /// Arc-wrapped so fork_for_nondeterminism is O(1) (Arc::clone) instead of
     /// deep-cloning the entire HashMap of rule entries (~2.3% wall time saved).
     /// Writes go through make_owned() which deep-clones into a new Arc.
@@ -275,18 +223,6 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// Fork: iterate + clone into new DashMap (infrequent operation).
     pub(crate) inferred_fn_types: DashMap<String, Vec<V>>,
 }
-
-/// Byte length of the MORK-serialized rule prefix: `[Arity(3)] + [SymbolSize(8)] + [8 symbol ID bytes]`.
-///
-/// This is structurally constant for all environments — MORK always encodes symbols as 8-byte IDs
-/// with a 1-byte size tag, and rules always have arity 3 for `(= lhs rhs)`.
-///
-/// Previously stored as a precomputed `Arc<[u8]>` field on `GenericEnvironment`, but the actual
-/// byte content could become stale when thread-local MORK symbol caches were invalidated across
-/// different `SharedMapping` epochs on the same thread. Since only the *length* is needed for
-/// splitting De Bruijn bytes into LHS/RHS ranges, a compile-time constant eliminates the
-/// stale-prefix problem entirely.
-pub(crate) const RULE_PREFIX_LEN: usize = 10;
 
 /// Generic environment parameterized over value type and factory.
 ///
@@ -317,9 +253,6 @@ where
     /// Factory for creating V values (used by match_space, etc.)
     pub(crate) factory: F,
 
-    /// SharedMappingHandle for MORK symbol interning
-    pub(crate) shared_mapping: SharedMappingHandle,
-
     /// CoW: Tracks if this clone owns its data
     pub(crate) owns_data: bool,
 
@@ -329,18 +262,6 @@ where
     /// Current module path for relative path resolution.
     /// Arc-wrapped for O(1) clone — module path is semantically immutable after construction.
     pub(crate) current_module_path: Option<Arc<PathBuf>>,
-
-    /// Monotonic epoch for MORK symbol cache invalidation.
-    ///
-    /// Assigned from `next_mork_epoch()` at construction. Environments that share
-    /// the same `SharedMapping` (clones, forks) keep the same epoch, since cached
-    /// symbol IDs remain valid. A new epoch is only allocated for a truly new
-    /// `SharedMapping` (i.e., `GenericEnvironment::new()`).
-    ///
-    /// Unlike pointer-based identity, epochs are never reused — this eliminates
-    /// the ABA problem where a dropped `SharedMapping` has its heap address
-    /// recycled by a new allocation.
-    pub(crate) mork_cache_epoch: u64,
 }
 
 impl<V, F> GenericEnvironment<V, F>
@@ -353,27 +274,11 @@ where
     /// # Parameters
     ///
     /// The factory is stored and used for creating V values during operations
-    /// like `match_space` that need to construct values from MORK bytes.
+    /// like `match_space` that need to construct values.
     pub fn new(factory: F) -> Self {
-        // Create the shared mapping for MORK symbol interning.
-        let shared_mapping = SharedMapping::new();
-
-        // Warm up SharedMapping to pre-initialize all 128 internal PathMap
-        // buckets (to_symbol). PathMap::ensure_root() uses UnsafeCell without
-        // synchronization — a TOCTOU race where concurrent threads both enter
-        // do_init_root() causes data races on the trie root. Pre-inserting one
-        // byte per bucket (0..128 = MAX_WRITER_THREADS) forces eager root
-        // allocation while we have exclusive write permission, eliminating the
-        // race window before any multi-threaded access occurs.
-        if let Ok(permit) = shared_mapping.try_aquire_permission() {
-            for i in 0..128u8 {
-                let _ = permit.get_sym_or_insert(&[i]);
-            }
-        }
-
         let shared = Arc::new(GenericEnvironmentShared {
             // Unified atom storage
-            atom_space: super::atom_space::AtomSpace::new(shared_mapping.clone(), 10000),
+            atom_space: super::atom_space::AtomSpace::new(10000),
 
             // Mutable state
             states: RwLock::new(HashMap::with_hasher(IdentityU64BuildHasher)),
@@ -396,9 +301,6 @@ where
             tokenizer: Arc::new(RwLock::new(crate::backend::modules::GenericTokenizer::<V>::new())),
             grounded_registry: Arc::new(RwLock::new(GroundedRegistry::new())),
             generic_grounded_registry: GenericGroundedRegistry::with_standard_ops(),
-            pattern_cache: RwLock::new(LruCache::new(
-                NonZeroUsize::new(1000).expect("1000 is non-zero"),
-            )),
             type_index: RwLock::new(None),
             type_index_dirty: AtomicBool::new(true),
             fuzzy_matcher: Arc::new(RwLock::new(FuzzyMatcher::new())),
@@ -411,19 +313,12 @@ where
         // Register as GC root provider (no-op if V != MettaValue)
         try_register_env_roots(&shared);
 
-        // Use the AtomSpace's epoch — it was already allocated from next_mork_epoch()
-        // during AtomSpace::new(). Reusing it ensures env and atom_space share the
-        // same epoch for the same SharedMapping, preventing cache mismatches.
-        let mork_cache_epoch = shared.atom_space.mork_cache_epoch;
-
         GenericEnvironment {
             shared,
             factory,
-            shared_mapping,
             owns_data: true,
             modified: AtomicBool::new(false),
             current_module_path: None,
-            mork_cache_epoch,
         }
     }
 
@@ -431,34 +326,6 @@ where
     #[inline]
     pub fn factory(&self) -> &F {
         &self.factory
-    }
-
-    /// Get the monotonic epoch for MORK symbol cache invalidation.
-    #[inline]
-    pub fn mork_cache_epoch(&self) -> u64 {
-        self.mork_cache_epoch
-    }
-
-    /// Compute the MORK byte prefix for rules: `[Arity(3)] + "=" symbol bytes`.
-    ///
-    /// This is computed on-the-fly from the current `SharedMapping` state rather than
-    /// cached, because the MORK symbol ID for "=" can differ across thread-local cache
-    /// invalidation boundaries. Used only by fallback trie-navigation paths
-    /// (`get_matching_rules_for_expr`, `collect_wildcard_rules`), not the hot path.
-    pub(crate) fn compute_rule_prefix(&self) -> Vec<u8> {
-        let eq_atom = self.factory.atom("=");
-        crate::backend::mork_convert::with_mork_bytes(
-            &eq_atom,
-            &self.shared_mapping,
-            self.mork_cache_epoch,
-            |eq_bytes| {
-                let mut prefix = Vec::with_capacity(1 + eq_bytes.len());
-                prefix.push(0x03); // Arity(3) for (= lhs rhs)
-                prefix.extend_from_slice(eq_bytes);
-                prefix
-            },
-        )
-        .unwrap_or_else(|_| vec![0x03])
     }
 
     /// Mark this environment as modified.
@@ -483,8 +350,6 @@ where
                 let forked = self.shared.atom_space.fork();
                 // Extract values before constructing (avoid borrow-of-moved issues)
                 let forked_btm = forked.btm.read().clone();
-                let forked_mapping = forked.shared_mapping.clone();
-                let forked_wide = forked.wide_btm.read().clone();
                 let forked_count = forked.total_atoms.load(Ordering::Acquire);
                 let forked_var_atoms = forked.variable_atoms.read().clone();
                 let forked_type_btm = forked.type_btm.read().clone();
@@ -493,10 +358,9 @@ where
                 // Deep-clone bloom filter into a new Arc for exclusive mutation
                 super::atom_space::AtomSpace {
                     btm: RwLock::new(forked_btm),
-                    wide_btm: RwLock::new(forked_wide),
                     type_btm: RwLock::new(forked_type_btm),
                     subtype_btm: RwLock::new(forked_subtype_btm),
-                    // Phase 10.1: deep-clone inferred type PathMap and bloom for exclusive mutation
+                    // Phase 10.1: deep-clone inferred type MettaTrie and bloom for exclusive mutation
                     inferred_type_btm: RwLock::new(forked_inferred_type_btm),
                     inferred_type_bloom: std::sync::Arc::new(
                         self.shared.atom_space.inferred_type_bloom.snapshot(),
@@ -508,7 +372,6 @@ where
                     fixpoint_generation: AtomicU64::new(
                         self.shared.atom_space.fixpoint_generation.load(Ordering::Acquire),
                     ),
-                    shared_mapping: forked_mapping,
                     head_arity_bloom: std::sync::Arc::new(RwLock::new(
                         self.shared.atom_space.head_arity_bloom.read().clone(),
                     )),
@@ -517,8 +380,6 @@ where
                     )),
                     total_atoms: AtomicUsize::new(forked_count),
                     variable_atoms: RwLock::new(forked_var_atoms),
-                    // Same symbol mapping → same epoch (cache entries remain valid)
-                    mork_cache_epoch: self.shared.atom_space.mork_cache_epoch,
                 }
             },
             // RwLock<HashMap> - read lock + clone
@@ -545,7 +406,6 @@ where
             grounded_registry: Arc::new(RwLock::new(self.shared.grounded_registry.read().clone())),
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
-            pattern_cache: RwLock::new(self.shared.pattern_cache.read().clone()),
             type_index: RwLock::new(self.shared.type_index.read().clone()),
             type_index_dirty: AtomicBool::new(
                 self.shared.type_index_dirty.load(Ordering::Acquire),
@@ -571,12 +431,12 @@ where
 
     /// Create a forked environment for nondeterministic branch isolation.
     ///
-    /// Uses O(1) PathMap CoW clone for fork isolation.
+    /// Uses O(1) MettaTrie CoW clone for fork isolation.
     pub fn fork_for_nondeterminism(&self) -> Self {
         trace!(target: "mettatron::generic_environment::fork", "Forking environment for nondeterminism");
 
         let new_shared = Arc::new(GenericEnvironmentShared {
-            // Fork atom storage (PathMap CoW + bloom Arc::clone)
+            // Fork atom storage (MettaTrie CoW + bloom Arc::clone)
             atom_space: self.shared.atom_space.fork(),
 
             states: RwLock::new(self.shared.states.read().clone()),
@@ -601,10 +461,6 @@ where
             grounded_registry: Arc::clone(&self.shared.grounded_registry),
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
-            // Clear pattern cache instead of copying
-            pattern_cache: RwLock::new(LruCache::new(
-                NonZeroUsize::new(1000).expect("1000 is non-zero"),
-            )),
             type_index: RwLock::new(self.shared.type_index.read().clone()),
             type_index_dirty: AtomicBool::new(
                 self.shared.type_index_dirty.load(Ordering::Acquire),
@@ -625,12 +481,9 @@ where
         GenericEnvironment {
             shared: new_shared,
             factory: self.factory.clone(),
-            shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
-
-            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -642,7 +495,7 @@ where
     /// 1. **Fast path**: If both share the same underlying Arc, return a shared clone.
     /// 2. **Fast path**: If neither was modified, share self's state.
     /// 3. **Merge path**: Actually merge state from both environments:
-    ///    - PathMap facts: take max multiplicity for each path
+    ///    - MettaTrie facts: take max multiplicity for each path via merge_max()
     ///    - Rules: combine and deduplicate by structural equality
     ///    - Bindings/Types: combine (other's values take precedence on conflict)
     ///    - States: combine by ID (other's values take precedence)
@@ -658,12 +511,9 @@ where
             return GenericEnvironment {
                 shared: Arc::clone(&self.shared),
                 factory: self.factory.clone(),
-                shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-    
-                mork_cache_epoch: self.mork_cache_epoch,
             };
         }
 
@@ -675,12 +525,9 @@ where
             return GenericEnvironment {
                 shared: Arc::clone(&self.shared),
                 factory: self.factory.clone(),
-                shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-    
-                mork_cache_epoch: self.mork_cache_epoch,
             };
         }
 
@@ -689,12 +536,9 @@ where
             return GenericEnvironment {
                 shared: Arc::clone(&self.shared),
                 factory: self.factory.clone(),
-                shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-    
-                mork_cache_epoch: self.mork_cache_epoch,
             };
         }
 
@@ -703,38 +547,29 @@ where
             return GenericEnvironment {
                 shared: Arc::clone(&other.shared),
                 factory: self.factory.clone(),
-                shared_mapping: other.shared_mapping.clone(),
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: other.current_module_path.clone(),
-    
-                mork_cache_epoch: other.mork_cache_epoch,
             };
         }
 
         // Both modified: perform actual merge
         trace!(target: "mettatron::generic_environment::union", "Both environments modified, performing merge");
 
-        // Merge PathMaps by taking max multiplicity
+        // Merge MettaTries by taking max multiplicity
         let merged_btm = {
             let self_btm = self.shared.atom_space.btm.read();
             let other_btm = other.shared.atom_space.btm.read();
-            merge_pathmaps_max(&self_btm, &other_btm)
+            self_btm.merge_max(&other_btm)
         };
 
-        // Calculate total atoms from merged PathMap
-        let merged_total_atoms = {
-            let mut rz = merged_btm.read_zipper();
-            let mut total = 0usize;
-            while rz.to_next_val() {
-                if let Some(mult) = rz.val() {
-                    total += mult.count() as usize;
-                }
-            }
-            total
-        };
+        // Calculate total atoms from merged MettaTrie
+        let merged_total_atoms: usize = merged_btm
+            .iter()
+            .map(|(_, m)| m.count() as usize)
+            .sum();
 
-        // Rules are stored as (= lhs rhs) MORK bytes in PathMap — merged via merge_pathmaps_max above.
+        // Rules are stored as (= lhs rhs) in MettaTrie — merged via merge_max above.
 
         // Merge bindings (other takes precedence)
         let merged_bindings: HashMap<String, V> = {
@@ -819,28 +654,22 @@ where
         let new_shared = Arc::new(GenericEnvironmentShared {
             atom_space: super::atom_space::AtomSpace {
                 btm: RwLock::new(merged_btm),
-                shared_mapping: self.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
                 type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
-                // Merge wide_btm using same lattice algebra as btm
-                wide_btm: RwLock::new(merge_pathmaps_max(
-                    &self.shared.atom_space.wide_btm.read(),
-                    &other.shared.atom_space.wide_btm.read(),
-                )),
-                // Merge type and subtype PathMaps
-                type_btm: RwLock::new(merge_pathmaps_max(
-                    &self.shared.atom_space.type_btm.read(),
-                    &other.shared.atom_space.type_btm.read(),
-                )),
-                subtype_btm: RwLock::new(merge_pathmaps_max(
-                    &self.shared.atom_space.subtype_btm.read(),
-                    &other.shared.atom_space.subtype_btm.read(),
-                )),
-                // Phase 10.1: merge inferred type PathMaps
-                inferred_type_btm: RwLock::new(merge_pathmaps_max(
-                    &self.shared.atom_space.inferred_type_btm.read(),
-                    &other.shared.atom_space.inferred_type_btm.read(),
-                )),
+                // Merge type and subtype MettaTries
+                type_btm: RwLock::new(
+                    self.shared.atom_space.type_btm.read()
+                        .merge_max(&other.shared.atom_space.type_btm.read()),
+                ),
+                subtype_btm: RwLock::new(
+                    self.shared.atom_space.subtype_btm.read()
+                        .merge_max(&other.shared.atom_space.subtype_btm.read()),
+                ),
+                // Phase 10.1: merge inferred type MettaTries
+                inferred_type_btm: RwLock::new(
+                    self.shared.atom_space.inferred_type_btm.read()
+                        .merge_max(&other.shared.atom_space.inferred_type_btm.read()),
+                ),
                 // Phase 10.1: merge inferred type bloom via bitwise OR
                 inferred_type_bloom: {
                     let merged = std::sync::Arc::new(
@@ -861,8 +690,6 @@ where
                 ),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
-                // Same SharedMapping as self → same epoch (cache entries remain valid)
-                mork_cache_epoch: self.mork_cache_epoch,
             },
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
@@ -881,11 +708,8 @@ where
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
 
-            // Clear/reset caches after merge
-            pattern_cache: RwLock::new(LruCache::new(
-                NonZeroUsize::new(1000).expect("1000 is non-zero"),
-            )),
-            type_index: RwLock::new(None), // Invalidate
+            // Invalidate type index after merge
+            type_index: RwLock::new(None),
             type_index_dirty: AtomicBool::new(true),
 
             fuzzy_matcher: Arc::new(RwLock::new(merged_fuzzy)),
@@ -935,12 +759,9 @@ where
         GenericEnvironment {
             shared: new_shared,
             factory: self.factory.clone(),
-            shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
             modified: AtomicBool::new(true),
             current_module_path: other.current_module_path.clone().or_else(|| self.current_module_path.clone()),
-
-            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -1041,12 +862,9 @@ where
         GenericEnvironment {
             shared: Arc::clone(&self.shared),
             factory: self.factory.clone(),
-            shared_mapping: self.shared_mapping.clone(),
             owns_data: false,
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
-
-            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -1062,35 +880,29 @@ where
         let base = if include_self { self } else { others[0] };
         let merge_start_idx = if include_self { 0 } else { 1 };
 
-        // Merge PathMaps by taking max multiplicity
+        // Merge MettaTries by taking max multiplicity
         let merged_btm = {
             let mut result = base.shared.atom_space.btm.read().clone();
             for other in &others[merge_start_idx..] {
                 let other_btm = other.shared.atom_space.btm.read();
-                result = merge_pathmaps_max(&result, &other_btm);
+                result = result.merge_max(&other_btm);
             }
             // If we started from self and include_self is true, we already have self's data
             // Otherwise merge self's data too
             if !include_self {
                 let self_btm = self.shared.atom_space.btm.read();
-                result = merge_pathmaps_max(&result, &self_btm);
+                result = result.merge_max(&self_btm);
             }
             result
         };
 
-        // Calculate total atoms from merged PathMap
-        let merged_total_atoms = {
-            let mut rz = merged_btm.read_zipper();
-            let mut total = 0usize;
-            while rz.to_next_val() {
-                if let Some(mult) = rz.val() {
-                    total += mult.count() as usize;
-                }
-            }
-            total
-        };
+        // Calculate total atoms from merged MettaTrie
+        let merged_total_atoms: usize = merged_btm
+            .iter()
+            .map(|(_, m)| m.count() as usize)
+            .sum();
 
-        // Rules are stored as (= lhs rhs) MORK bytes in PathMap — merged via merge_pathmaps_max above.
+        // Rules are stored as (= lhs rhs) in MettaTrie — merged via merge_max above.
 
         // Merge bindings (later environments take precedence)
         let merged_bindings: HashMap<String, V> = {
@@ -1194,38 +1006,29 @@ where
         let new_shared = Arc::new(GenericEnvironmentShared {
             atom_space: super::atom_space::AtomSpace {
                 btm: RwLock::new(merged_btm),
-                shared_mapping: self.shared.atom_space.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
                 type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
-                // Merge wide_btm from all environments using same lattice algebra as btm
-                wide_btm: RwLock::new({
-                    let mut merged_wide = self.shared.atom_space.wide_btm.read().clone();
-                    for other_env in others.iter() {
-                        merged_wide = merge_pathmaps_max(&merged_wide, &other_env.shared.atom_space.wide_btm.read());
-                    }
-                    merged_wide
-                }),
-                // Merge type PathMaps from all environments
+                // Merge type MettaTries from all environments
                 type_btm: RwLock::new({
-                    let mut merged_types = self.shared.atom_space.type_btm.read().clone();
+                    let mut merged_types_trie = self.shared.atom_space.type_btm.read().clone();
                     for other_env in others.iter() {
-                        merged_types = merge_pathmaps_max(&merged_types, &other_env.shared.atom_space.type_btm.read());
+                        merged_types_trie = merged_types_trie.merge_max(&other_env.shared.atom_space.type_btm.read());
                     }
-                    merged_types
+                    merged_types_trie
                 }),
-                // Merge subtype PathMaps from all environments
+                // Merge subtype MettaTries from all environments
                 subtype_btm: RwLock::new({
                     let mut merged_subs = self.shared.atom_space.subtype_btm.read().clone();
                     for other_env in others.iter() {
-                        merged_subs = merge_pathmaps_max(&merged_subs, &other_env.shared.atom_space.subtype_btm.read());
+                        merged_subs = merged_subs.merge_max(&other_env.shared.atom_space.subtype_btm.read());
                     }
                     merged_subs
                 }),
-                // Phase 10.1: merge inferred type PathMaps from all environments
+                // Phase 10.1: merge inferred type MettaTries from all environments
                 inferred_type_btm: RwLock::new({
                     let mut merged_inf = self.shared.atom_space.inferred_type_btm.read().clone();
                     for other_env in others.iter() {
-                        merged_inf = merge_pathmaps_max(&merged_inf, &other_env.shared.atom_space.inferred_type_btm.read());
+                        merged_inf = merged_inf.merge_max(&other_env.shared.atom_space.inferred_type_btm.read());
                     }
                     merged_inf
                 }),
@@ -1256,8 +1059,6 @@ where
                 }),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
-                // Same SharedMapping as self → same epoch (cache entries remain valid)
-                mork_cache_epoch: self.mork_cache_epoch,
             },
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
@@ -1276,11 +1077,8 @@ where
 
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
 
-            // Clear/reset caches after merge
-            pattern_cache: RwLock::new(LruCache::new(
-                NonZeroUsize::new(1000).expect("1000 is non-zero"),
-            )),
-            type_index: RwLock::new(None), // Invalidate
+            // Invalidate type index after merge
+            type_index: RwLock::new(None),
             type_index_dirty: AtomicBool::new(true),
 
             fuzzy_matcher: Arc::new(RwLock::new(merged_fuzzy)),
@@ -1334,12 +1132,9 @@ where
         GenericEnvironment {
             shared: new_shared,
             factory: self.factory.clone(),
-            shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
             modified: AtomicBool::new(true),
             current_module_path: last_env.current_module_path.clone().or_else(|| self.current_module_path.clone()),
-
-            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 
@@ -1372,9 +1167,8 @@ where
     /// - `types`: All type assertion values
     /// - `states`: All mutable state cell values
     ///
-    /// Note: Rules are stored as MORK bytes in `btm` (PathMap), not as `V` values.
-    /// They hold no slab pointers and thus are NOT GC roots.
-    /// `wide_btm` stores only byte keys + Multiplicity — no V references, no GC tracing needed.
+    /// Note: MettaTrie stores original expressions at leaves — these are collected
+    /// via `atom_space.collect_gc_roots()`.
     pub fn gc_roots(&self, roots: &mut Vec<V>) {
         // Named spaces: collect all atoms
         {
@@ -1415,12 +1209,9 @@ where
         GenericEnvironment {
             shared: Arc::clone(&self.shared),
             factory: self.factory.clone(),
-            shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: clones do not own data initially
             modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
-
-            mork_cache_epoch: self.mork_cache_epoch,
         }
     }
 }
@@ -1452,7 +1243,6 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
                 + self.bindings.read().len()
                 + self.types.read().len()
                 + self.states.read().len()
-                + self.pattern_cache.read().len()
                 + self.rule_index.read().len() * 2 // lhs + rhs per entry
                 + 64; // buffer for tokenizer + variable_atoms
             roots.reserve(estimated);
@@ -1486,16 +1276,7 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
             roots.extend(states.values().copied());
         }
 
-        // Pattern cache keys: LruCache<MettaValue, Vec<u8>>
-        // The keys are MettaValues whose inner pointers reference slab slots.
-        // Without collecting these, GC could free slots still referenced by
-        // cached keys, causing use-after-free on next cache lookup (Hash/Eq).
-        {
-            let cache = self.pattern_cache.read();
-            roots.extend(cache.iter().map(|(key, _)| *key));
-        }
-
-        // AtomSpace GC roots: variable atoms + large expression PathMap values.
+        // AtomSpace GC roots: variable atoms + MettaTrie leaf values.
         // These hold slab-allocated MettaValues that must be kept alive by GC.
         self.atom_space.collect_gc_roots(roots);
 
@@ -1532,12 +1313,8 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
 }
 
 
-
-
-
-
 // ============================================================================
-// MORK Space Access Methods
+// Space Access Methods
 // ============================================================================
 
 impl<V, F> GenericEnvironment<V, F>
@@ -1545,26 +1322,6 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
-    /// Create a thread-local Space for operations.
-    /// Following the Rholang LSP pattern: cheap clone via structural sharing.
-    pub fn create_space(&self) -> Space<Multiplicity> {
-        let btm = self.shared.atom_space.btm.read().clone();
-        Space {
-            btm,
-            sm: self.shared_mapping.clone(),
-            mmaps: std::collections::HashMap::new(),
-        }
-    }
-
-    /// Update PathMap and shared mapping after Space modifications (write operations).
-    /// This updates both the PathMap (btm) and the SharedMappingHandle (sm).
-    pub(crate) fn update_pathmap(&mut self, space: Space<Multiplicity>) {
-        self.make_owned(); // CoW: ensure we own data before modifying
-        *self.shared.atom_space.btm.write() = space.btm;
-        self.shared_mapping = space.sm;
-        self.mark_modified(); // CoW: mark as modified
-    }
-
     /// Get the total atom count (O(1)).
     pub fn total_atoms(&self) -> usize {
         self.shared.atom_space.total_atoms.load(Ordering::Acquire)
@@ -1588,34 +1345,30 @@ where
 }
 
 // ============================================================================
-// Generic Space Operations via MORK - Zero-Conversion Architecture
+// Generic Space Operations via MettaTrie - Zero-Conversion Architecture
 // ============================================================================
 //
-// These methods use the generic MORK conversion functions that work directly
-// with any V: MettaValueTrait, avoiding intermediate MettaValue conversions.
+// These methods use MettaTrie decomposition functions that work directly
+// with any V: MettaValueTrait, avoiding intermediate conversions.
 //
 // Data flow:
-//   V → value_to_mork_bytes_generic() → MORK bytes → PathMap storage
-//   PathMap → MORK bytes → mork_bytes_to_generic_value() → V
-//
-// Pattern matching and binding application also use generic versions:
-//   pattern_match_generic() - works directly on V
-//   apply_bindings_generic() - works directly on V
-// ============================================================================
+//   V → decompose_literal() → TrieKey sequence → MettaTrie storage
+//   MettaTrie::iter() → (&V, &Multiplicity) directly — no deserialization needed
+//   MettaTrie::query() → QueryMatch { expr, value, bindings } — direct V access
 
 impl<V, F> GenericEnvironment<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
-    /// Add a fact to the MORK Space for pattern matching.
+    /// Add a fact to the MettaTrie Space for pattern matching.
     ///
     /// ## Unified Routing
     ///
     /// Automatically detects and routes special atom types:
-    /// - Rules `(= lhs rhs)` → `add_rule()` for PathMap (De Bruijn) + RuleIndex population
-    /// - Type assertions `(: name type)` → literal PathMap + types HashMap registration
-    /// - All other atoms → literal PathMap encoding
+    /// - Rules `(= lhs rhs)` → `add_rule()` for RuleIndex + MettaTrie population
+    /// - Type assertions `(: name type)` → MettaTrie + types HashMap registration
+    /// - All other atoms → literal MettaTrie encoding
     ///
     /// ## Multiplicity Tracking
     ///
@@ -1624,7 +1377,7 @@ where
         self.make_owned();
 
         // Check if this is a rule (= lhs rhs) — route through add_rule() which handles
-        // BOTH PathMap insertion (De Bruijn) AND RuleIndex population.
+        // BOTH MettaTrie insertion AND RuleIndex population.
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
             self.add_rule(lhs, rhs);
             // add_rule() inserts the LHS head/arity into the bloom filter (for match_rules_native),
@@ -1637,9 +1390,9 @@ where
             return;
         }
 
-        // Check if this is a type assertion (: name type) or subtype declaration (:<  sub super)
+        // Check if this is a type assertion (: name type) or subtype declaration (:< sub super)
         // — also register in the types/subtypes HashMap for fast lookup.
-        // Track whether this is a type or subtype atom for incremental PathMap updates.
+        // Track whether this is a type or subtype atom for incremental MettaTrie updates.
         let mut is_type_atom = false;
         let mut is_subtype_atom = false;
         let mut type_atom_name: Option<String> = None;
@@ -1678,61 +1431,44 @@ where
             }
         }
 
-        // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
+        // Decompose value to TrieKey sequence for literal storage
+        let keys = decompose_literal(value);
+
+        {
             let mut btm = self.shared.atom_space.btm.write();
-            add_atom(&mut btm, mork_bytes);
-            drop(btm);
+            trie_add_atom(&mut btm, &keys, value.clone());
+        }
 
-            // Incrementally update type/subtype dedicated PathMaps + type bloom filter
-            if is_type_atom {
-                let mut type_btm = self.shared.atom_space.type_btm.write();
-                add_atom(&mut type_btm, mork_bytes);
-                // Insert atom name into type bloom filter for O(1) early rejection
-                if let Some(ref name) = type_atom_name {
-                    self.shared.atom_space.type_bloom.write().insert(name.as_bytes());
-                }
-            } else if is_subtype_atom {
-                let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
-                add_atom(&mut subtype_btm, mork_bytes);
+        // Incrementally update type/subtype dedicated MettaTries + type bloom filter
+        if is_type_atom {
+            let mut type_btm = self.shared.atom_space.type_btm.write();
+            trie_add_atom(&mut type_btm, &keys, value.clone());
+            // Insert atom name into type bloom filter for O(1) early rejection
+            if let Some(ref name) = type_atom_name {
+                self.shared.atom_space.type_bloom.write().insert(name.as_bytes());
             }
+        } else if is_subtype_atom {
+            let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
+            trie_add_atom(&mut subtype_btm, &keys, value.clone());
+        }
 
-            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+        self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
 
-            // Use trait method for head symbol extraction
-            if let Some(head) = value.get_head_symbol() {
-                let arity = value.get_arity() as u8;
-                self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
-            }
-        }) {
-            Ok(()) => {}
-            Err(_) => {
-                // Fallback for large expressions (arity >= 64): Wide MORK encoding
-                let mut wide_key = Vec::new();
-                encode_wide_storage(value, &mut wide_key);
-                {
-                    let mut wbtm = self.shared.atom_space.wide_btm.write();
-                    add_atom(&mut wbtm, &wide_key);
-                }
-
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
-
-                if let Some(head) = value.get_head_symbol() {
-                    let arity = value.get_arity() as u8;
-                    self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
-                }
-            }
+        // Use trait method for head symbol extraction
+        if let Some(head) = value.get_head_symbol() {
+            let arity = value.get_arity() as u8;
+            self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
         }
     }
 
-    /// Remove a fact from MORK Space by exact match.
+    /// Remove a fact from MettaTrie Space by exact match.
     ///
     /// ## Unified Routing
     ///
     /// Automatically detects and routes special atom types:
-    /// - Rules `(= lhs rhs)` → De Bruijn PathMap removal + RuleIndex sync
-    /// - Type assertions `(: name type)` → literal PathMap removal + types HashMap removal
-    /// - All other atoms → literal PathMap removal
+    /// - Rules `(= lhs rhs)` → MettaTrie removal + RuleIndex sync
+    /// - Type assertions `(: name type)` → MettaTrie removal + types HashMap removal
+    /// - All other atoms → literal MettaTrie removal
     ///
     /// ## Multiplicity Tracking
     ///
@@ -1742,7 +1478,7 @@ where
 
         // Check if this is a type assertion (: name type) or subtype declaration (:< sub super)
         // — remove from the types/subtypes HashMap so queries stay consistent.
-        // Track for incremental PathMap updates.
+        // Track for incremental MettaTrie updates.
         let mut is_type_removal = false;
         let mut is_subtype_removal = false;
         if let Some(items) = value.as_sexpr() {
@@ -1783,83 +1519,44 @@ where
             }
         }
 
-        // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
-        if let Some((lhs, rhs)) = extract_rule_parts(value) {
-            // Rule removal: use De Bruijn encoding to match PathMap entry
-            let sm = self.shared_mapping.clone();
-            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
-                let mut btm = self.shared.atom_space.btm.write();
+        // Decompose value to TrieKey sequence for storage lookup
+        let keys = decompose_literal(value);
 
-                let current_count = get_multiplicity(&btm, mork_bytes);
+        // Check if this is a rule (= lhs rhs)
+        if let Some((lhs, rhs)) = extract_rule_parts(value) {
+            // Rule removal: use literal encoding to match MettaTrie entry
+            {
+                let mut btm = self.shared.atom_space.btm.write();
+                let current_count = trie_get_multiplicity(&btm, &keys);
                 if current_count == 0 {
-                    if !btm.contains(mork_bytes) {
-                        return;
-                    }
-                    btm.remove(mork_bytes);
-                    drop(btm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                    // Not found — nothing to remove
                     return;
                 }
 
-                let new_count = remove_atom(&mut btm, mork_bytes);
+                let new_count = trie_remove_atom(&mut btm, &keys);
 
                 if new_count == 0 {
                     self.shared.atom_space.head_arity_bloom.write().note_deletion();
                 }
-
-                drop(btm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-            }) {
-                Ok(()) => {
-                    // Sync RuleIndex: decrement or remove the rule entry
-                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
-                }
-                Err(_) => {
-                    // Fallback for large expressions (arity >= 64): Wide MORK encoding
-                    let mut wide_key = Vec::new();
-                    encode_wide_storage(value, &mut wide_key);
-                    let mut wbtm = self.shared.atom_space.wide_btm.write();
-                    let count = get_multiplicity(&wbtm, &wide_key);
-                    if count <= 1 {
-                        wbtm.remove(&wide_key);
-                    } else {
-                        remove_atom(&mut wbtm, &wide_key);
-                    }
-                    drop(wbtm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
-                }
             }
+
+            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+
+            // Sync RuleIndex: decrement or remove the rule entry
+            self.shared.rule_index.write().remove_rule(&lhs, &rhs);
             return;
         }
 
-        // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
+        // Non-rule: use literal encoding
+        {
             let mut btm = self.shared.atom_space.btm.write();
-
-            let current_count = get_multiplicity(&btm, mork_bytes);
+            let current_count = trie_get_multiplicity(&btm, &keys);
             if current_count == 0 {
-                if !btm.contains(mork_bytes) {
-                    return;
-                }
-                btm.remove(mork_bytes);
-                drop(btm);
-
-                // Incrementally remove from type/subtype dedicated PathMaps
-                if is_type_removal {
-                    self.shared.atom_space.type_btm.write().remove(mork_bytes);
-                    self.shared.atom_space.type_bloom.write().note_deletion();
-                } else if is_subtype_removal {
-                    self.shared.atom_space.subtype_btm.write().remove(mork_bytes);
-                }
-
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                // Not found — nothing to remove
                 return;
             }
 
-            let new_count = remove_atom(&mut btm, mork_bytes);
+            let new_count = trie_remove_atom(&mut btm, &keys);
 
             if new_count == 0 {
                 self.shared.atom_space.head_arity_bloom.write().note_deletion();
@@ -1867,36 +1564,19 @@ where
 
             drop(btm);
 
-            // Incrementally update type/subtype dedicated PathMaps
+            // Incrementally update type/subtype dedicated MettaTries
             if is_type_removal {
                 let mut type_btm = self.shared.atom_space.type_btm.write();
-                remove_atom(&mut type_btm, mork_bytes);
+                trie_remove_atom(&mut type_btm, &keys);
                 drop(type_btm);
                 self.shared.atom_space.type_bloom.write().note_deletion();
             } else if is_subtype_removal {
                 let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
-                remove_atom(&mut subtype_btm, mork_bytes);
-            }
-
-            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-        }) {
-            Ok(()) => {}
-            Err(_) => {
-                // Fallback for large expressions (arity >= 64): Wide MORK encoding
-                let mut wide_key = Vec::new();
-                encode_wide_storage(value, &mut wide_key);
-                let mut wbtm = self.shared.atom_space.wide_btm.write();
-                let count = get_multiplicity(&wbtm, &wide_key);
-                if count <= 1 {
-                    wbtm.remove(&wide_key);
-                } else {
-                    remove_atom(&mut wbtm, &wide_key);
-                }
-                drop(wbtm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                trie_remove_atom(&mut subtype_btm, &keys);
             }
         }
+
+        self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
 
         // Invalidate eval memo and match result caches — removed rules/facts change evaluation results
         crate::backend::eval::trampoline::invalidate_normal_form_memo();
@@ -1932,7 +1612,7 @@ where
         self.make_owned();
     }
 
-    /// Add a fact to MORK Space using interior mutability (no CoW copy).
+    /// Add a fact to MettaTrie Space using interior mutability (no CoW copy).
     ///
     /// This method uses `&self` (not `&mut self`) and operates directly on the
     /// shared state via interior mutability. This is critical for arena mode
@@ -1940,7 +1620,7 @@ where
     ///
     /// # Thread Safety
     ///
-    /// Uses `RwLock::write()` for PathMap access and atomic operations for counters.
+    /// Uses `RwLock::write()` for MettaTrie access and atomic operations for counters.
     /// Safe to call from multiple clones of the same environment.
     ///
     /// # When to Use
@@ -1949,178 +1629,97 @@ where
     /// - In loops where calling `add_to_space()` would trigger repeated CoW copies
     /// - In arena mode evaluation where state must persist across cloned environments
     pub fn add_to_space_shared(&self, value: &V) {
-        // Check if this is a rule (= lhs rhs) — rules must use De Bruijn encoding
-        // to be consistent with add_rule() which stores in RuleIndex + PathMap with De Bruijn.
-        if let Some((_lhs, _rhs)) = extract_rule_parts(value) {
-            let sm = self.shared_mapping.clone();
-            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
+        // Decompose value to TrieKey sequence for literal storage
+        let keys = decompose_literal(value);
+
+        // Check if this is a rule (= lhs rhs) — rules must use literal encoding
+        // to be consistent with add_rule() which stores in RuleIndex + MettaTrie.
+        if extract_rule_parts(value).is_some() {
+            {
                 let mut btm = self.shared.atom_space.btm.write();
-                add_atom(&mut btm, mork_bytes);
-                drop(btm);
-
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
-
-                if let Some(head) = value.get_head_symbol() {
-                    let arity = value.get_arity() as u8;
-                    self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
-                }
-            }) {
-                Ok(()) => {}
-                Err(_) => {
-                    // Fallback for large expressions (arity >= 64): Wide MORK encoding
-                    let mut wide_key = Vec::new();
-                    encode_wide_storage(value, &mut wide_key);
-                    {
-                        let mut wbtm = self.shared.atom_space.wide_btm.write();
-                        add_atom(&mut wbtm, &wide_key);
-                    }
-                    self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
-                }
+                trie_add_atom(&mut btm, &keys, value.clone());
             }
-            self.mark_modified();
-            return;
-        }
-
-        // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-            let mut btm = self.shared.atom_space.btm.write();
-            add_atom(&mut btm, mork_bytes);
-            drop(btm);
 
             self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
 
-            // Use trait method for head symbol extraction
             if let Some(head) = value.get_head_symbol() {
                 let arity = value.get_arity() as u8;
                 self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
             }
-        }) {
-            Ok(()) => {}
-            Err(_) => {
-                // Fallback for large expressions (arity >= 64): Wide MORK encoding
-                let mut wide_key = Vec::new();
-                encode_wide_storage(value, &mut wide_key);
-                {
-                    let mut wbtm = self.shared.atom_space.wide_btm.write();
-                    add_atom(&mut wbtm, &wide_key);
-                }
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
 
-                if let Some(head) = value.get_head_symbol() {
-                    let arity = value.get_arity() as u8;
-                    self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
-                }
-            }
+            self.mark_modified();
+            return;
+        }
+
+        // Non-rule: use literal encoding
+        {
+            let mut btm = self.shared.atom_space.btm.write();
+            trie_add_atom(&mut btm, &keys, value.clone());
+        }
+
+        self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+        // Use trait method for head symbol extraction
+        if let Some(head) = value.get_head_symbol() {
+            let arity = value.get_arity() as u8;
+            self.shared.atom_space.head_arity_bloom.write().insert(head.as_bytes(), arity);
         }
 
         // Mark as modified for union() fast-path detection
         self.mark_modified();
     }
 
-    /// Remove a fact from MORK Space using interior mutability (no CoW copy).
+    /// Remove a fact from MettaTrie Space using interior mutability (no CoW copy).
     ///
     /// This method uses `&self` (not `&mut self`) and operates directly on the
     /// shared state via interior mutability.
     ///
     /// # Thread Safety
     ///
-    /// Uses `RwLock::write()` for PathMap access and atomic operations for counters.
+    /// Uses `RwLock::write()` for MettaTrie access and atomic operations for counters.
     /// Safe to call from multiple clones of the same environment.
     pub fn remove_from_space_shared(&self, value: &V) {
-        // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
-        if let Some((lhs, rhs)) = extract_rule_parts(value) {
-            let sm = self.shared_mapping.clone();
-            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
-                let mut btm = self.shared.atom_space.btm.write();
+        // Decompose value to TrieKey sequence for storage lookup
+        let keys = decompose_literal(value);
 
-                let current_count = get_multiplicity(&btm, mork_bytes);
+        // Check if this is a rule (= lhs rhs)
+        if let Some((lhs, rhs)) = extract_rule_parts(value) {
+            {
+                let mut btm = self.shared.atom_space.btm.write();
+                let current_count = trie_get_multiplicity(&btm, &keys);
                 if current_count == 0 {
-                    if !btm.contains(mork_bytes) {
-                        return;
-                    }
-                    btm.remove(mork_bytes);
-                    drop(btm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
-                    self.mark_modified();
                     return;
                 }
 
-                let new_count = remove_atom(&mut btm, mork_bytes);
+                let new_count = trie_remove_atom(&mut btm, &keys);
 
                 if new_count == 0 {
                     self.shared.atom_space.head_arity_bloom.write().note_deletion();
                 }
-
-                drop(btm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-            }) {
-                Ok(()) => {
-                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
-                }
-                Err(_) => {
-                    // Fallback for large expressions (arity >= 64): Wide MORK encoding
-                    let mut wide_key = Vec::new();
-                    encode_wide_storage(value, &mut wide_key);
-                    let mut wbtm = self.shared.atom_space.wide_btm.write();
-                    let count = get_multiplicity(&wbtm, &wide_key);
-                    if count <= 1 {
-                        wbtm.remove(&wide_key);
-                    } else {
-                        remove_atom(&mut wbtm, &wide_key);
-                    }
-                    drop(wbtm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
-                }
             }
+
+            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            self.shared.rule_index.write().remove_rule(&lhs, &rhs);
             self.mark_modified();
             return;
         }
 
-        // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
+        // Non-rule: use literal encoding
+        {
             let mut btm = self.shared.atom_space.btm.write();
-
-            let current_count = get_multiplicity(&btm, mork_bytes);
+            let current_count = trie_get_multiplicity(&btm, &keys);
             if current_count == 0 {
-                if !btm.contains(mork_bytes) {
-                    return;
-                }
-                btm.remove(mork_bytes);
-                drop(btm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
-                self.mark_modified();
                 return;
             }
 
-            let new_count = remove_atom(&mut btm, mork_bytes);
+            let new_count = trie_remove_atom(&mut btm, &keys);
 
             if new_count == 0 {
                 self.shared.atom_space.head_arity_bloom.write().note_deletion();
             }
-
-            drop(btm);
-            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-        }) {
-            Ok(()) => {}
-            Err(_) => {
-                // Fallback for large expressions (arity >= 64): Wide MORK encoding
-                let mut wide_key = Vec::new();
-                encode_wide_storage(value, &mut wide_key);
-                let mut wbtm = self.shared.atom_space.wide_btm.write();
-                let count = get_multiplicity(&wbtm, &wide_key);
-                if count <= 1 {
-                    wbtm.remove(&wide_key);
-                } else {
-                    remove_atom(&mut wbtm, &wide_key);
-                }
-                drop(wbtm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
-            }
         }
+
+        self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
 
         // Invalidate eval memo and match result caches — removed rules/facts change evaluation results
         crate::backend::eval::trampoline::invalidate_normal_form_memo();
@@ -2139,12 +1738,10 @@ where
     ///
     /// ## Zero-Conversion Architecture
     ///
-    /// Uses generic functions that operate directly on V:
-    /// - `mork_bytes_to_generic_value()` - MORK bytes → V
-    /// - `pattern_match_generic()` - pattern matching on V
-    /// - `apply_bindings_generic()` - template instantiation on V
+    /// MettaTrie stores original expressions at leaves — iteration yields `(&V, &Multiplicity)`
+    /// directly with no deserialization. Pattern matching and template instantiation operate
+    /// directly on V with no intermediate conversions.
     ///
-    /// No intermediate `MettaValue` conversions occur in the hot path.
     /// Check if there may be rules with the given head symbol and arity.
     /// Uses bloom filter: O(1), no false negatives. False positives cause
     /// harmless extra evaluation (data constructors evaluate to themselves).
@@ -2168,44 +1765,26 @@ where
             }
         }
 
-        let space = self.create_space();
-        let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
-        // Iterate through MORK PathMap
-        while rz.to_next_val() {
-            let path_bytes = rz.path();
-            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
-
-            // Direct MORK bytes → V conversion (no MettaValue intermediate)
-            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path_bytes,
-                &space,
-                &self.factory,
-            ) {
-                // Direct pattern matching on V (no conversion)
-                if let Some(bindings) = pattern_match_generic(pattern, &atom) {
-                    // Direct template instantiation on V (no conversion)
-                    let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
-                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
-                }
+        // Query MettaTrie with decomposed pattern keys (Variable positions act as wildcards)
+        let pattern_keys = decompose(pattern);
+        let btm = self.shared.atom_space.btm.read();
+        for qm in btm.query(&pattern_keys) {
+            // qm.expr is the stored expression, qm.value is the Multiplicity
+            if let Some(bindings) = pattern_match_generic(pattern, &qm.expr) {
+                let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
+                results.push(MultiplicityMatch::new(instantiated, qm.value.count() as usize));
             }
         }
 
-        drop(space);
-
-        // Check wide expression PathMap (arity >= 64, Wide MORK keys)
+        // Also check variable atoms (bidirectional matching)
         {
-            let wbtm = self.shared.atom_space.wide_btm.read();
-            let mut rz = wbtm.read_zipper();
-            while rz.to_next_val() {
-                let path_bytes = rz.path();
-                let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
-                if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
-                    if let Some(bindings) = pattern_match_generic(pattern, &atom) {
-                        let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
-                        results.push(MultiplicityMatch::new(instantiated, multiplicity));
-                    }
+            let var_atoms = self.shared.atom_space.variable_atoms.read();
+            for (atom, multiplicity) in var_atoms.iter() {
+                if let Some(bindings) = pattern_match_generic(pattern, atom) {
+                    let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
+                    results.push(MultiplicityMatch::new(instantiated, *multiplicity));
                 }
             }
         }
@@ -2220,9 +1799,8 @@ where
     ///
     /// ## Zero-Conversion Architecture
     ///
-    /// Uses generic functions that operate directly on V:
-    /// - `mork_bytes_to_generic_value()` - MORK bytes → V
-    /// - `pattern_match_generic()` - pattern matching on V
+    /// MettaTrie stores original expressions at leaves — query yields them directly.
+    /// Pattern matching operates directly on V with no conversion.
     pub fn match_space_exists(&self, pattern: &V) -> bool {
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
@@ -2234,37 +1812,21 @@ where
             }
         }
 
-        let space = self.create_space();
-        let mut rz = space.btm.read_zipper();
-
-        while rz.to_next_val() {
-            let path_bytes = rz.path();
-
-            // Direct MORK bytes → V conversion (no MettaValue intermediate)
-            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path_bytes,
-                &space,
-                &self.factory,
-            ) {
-                // Direct pattern matching on V (no conversion)
-                if pattern_match_generic(pattern, &atom).is_some() {
-                    return true;
-                }
+        // Query MettaTrie with decomposed pattern keys
+        let pattern_keys = decompose(pattern);
+        let btm = self.shared.atom_space.btm.read();
+        for qm in btm.query(&pattern_keys) {
+            if pattern_match_generic(pattern, &qm.expr).is_some() {
+                return true;
             }
         }
 
-        drop(space);
-
-        // Check wide expression PathMap (arity ≥ 64, Wide MORK encoding)
+        // Check variable atoms (bidirectional matching)
         {
-            let wbtm = self.shared.atom_space.wide_btm.read();
-            let mut wrz = wbtm.read_zipper();
-            while wrz.to_next_val() {
-                let path_bytes = wrz.path();
-                if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
-                    if pattern_match_generic(pattern, &atom).is_some() {
-                        return true;
-                    }
+            let var_atoms = self.shared.atom_space.variable_atoms.read();
+            for (atom, _multiplicity) in var_atoms.iter() {
+                if pattern_match_generic(pattern, atom).is_some() {
+                    return true;
                 }
             }
         }
@@ -2272,43 +1834,29 @@ where
         false
     }
 
-    /// Get all atoms from the Space (MORK PathMap + Wide MORK PathMap).
+    /// Get all atoms from the Space (MettaTrie iteration).
     ///
     /// This iterates the same data as `match_space()` but without pattern filtering,
     /// returning every stored atom as-is.
     ///
     /// ## Zero-Conversion Architecture
     ///
-    /// Uses `mork_bytes_to_generic_value()` for MORK bytes → V conversion,
-    /// and `wide_bytes_to_generic_value()` for Wide MORK bytes → V conversion.
+    /// MettaTrie stores original expressions at leaves — iteration yields `(&V, &Multiplicity)`
+    /// directly with no deserialization.
     pub fn get_all_atoms(&self) -> Vec<V> {
-        let space = self.create_space();
-        let mut rz = space.btm.read_zipper();
-        let mut atoms = Vec::new();
+        let btm = self.shared.atom_space.btm.read();
+        let mut atoms = Vec::with_capacity(btm.val_count());
 
-        // Iterate through MORK PathMap
-        while rz.to_next_val() {
-            let path_bytes = rz.path();
-            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path_bytes,
-                &space,
-                &self.factory,
-            ) {
-                atoms.push(atom);
-            }
+        // Iterate through MettaTrie — yields (&V, &Multiplicity) directly
+        for (expr, _mult) in btm.iter() {
+            atoms.push(expr.clone());
         }
 
-        drop(space);
-
-        // Include wide expression PathMap (arity ≥ 64, Wide MORK encoding)
+        // Include variable atoms
         {
-            let wbtm = self.shared.atom_space.wide_btm.read();
-            let mut wrz = wbtm.read_zipper();
-            while wrz.to_next_val() {
-                let path_bytes = wrz.path();
-                if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
-                    atoms.push(atom);
-                }
+            let var_atoms = self.shared.atom_space.variable_atoms.read();
+            for (atom, _multiplicity) in var_atoms.iter() {
+                atoms.push(atom.clone());
             }
         }
 

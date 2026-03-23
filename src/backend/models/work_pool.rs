@@ -563,6 +563,57 @@ impl WorkPool {
         }
     }
 
+    /// Spawn a WFST-classified eval task.
+    ///
+    /// Like `spawn_eval`, but the task carries a WFST cost class and descriptor
+    /// for automata-based scheduling. The transducer-assigned priority overrides
+    /// the base priority in the scoring function, and the descriptor enables
+    /// per-expression weight tracking on completion.
+    pub fn spawn_eval_classified<F>(
+        &self,
+        f: F,
+        task_type: TaskTypeId,
+        priority: u32,
+        cost_class: crate::backend::scheduler::CostClass,
+        descriptor: crate::backend::scheduler::TaskDescriptor,
+    ) where
+        F: FnOnce() + Send + 'static,
+    {
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+        let task = PriorityTask::new_classified(
+            Box::new(f),
+            priority,
+            task_type,
+            sequence,
+            cost_class,
+            descriptor,
+        );
+        self.queue.push(task);
+
+        #[cfg(feature = "eval-trace")]
+        {
+            let queue_depth = self.queue.len() as u32;
+            let active_workers = self.active_workers() as u32;
+            let max_workers = self.max_threads() as u32;
+            with_work_pool_trace(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::WorkPoolTaskEnqueued {
+                        task_kind: format!("eval[{}]", cost_class),
+                        priority,
+                        queue_depth,
+                        active_workers,
+                        max_workers,
+                    },
+                );
+            });
+        }
+    }
+
     /// Spawn a compile task (priority = BACKGROUND_COMPILE).
     ///
     /// Compile tasks are speculative. If the queue is full (`>= MAX_QUEUE_SIZE`),
@@ -1074,11 +1125,17 @@ fn overflow_worker_loop(
             Some(task) => {
                 consecutive_idle = 0;
                 let task_type = task.task_type();
+                let wfst_descriptor = task.wfst_descriptor();
 
                 let outer_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let runtime_nanos = task.execute();
                     if runtime_nanos > 0 {
                         runtime_tracker.record_runtime(task_type, runtime_nanos);
+                        // WFST weight update: feed actual runtime to scheduler automaton
+                        if let Some(descriptor) = wfst_descriptor {
+                            crate::backend::scheduler::global_scheduler()
+                                .update_weight(descriptor, runtime_nanos);
+                        }
                     }
                     cpu_state.publish();
 
@@ -1233,6 +1290,7 @@ fn work_pool_worker_loop(
         match queue.pop_timeout(&shutdown, Duration::from_millis(500)) {
             Some(task) => {
                 let task_type = task.task_type();
+                let wfst_descriptor = task.wfst_descriptor();
 
                 // Outer catch_unwind: defense in depth. The inner catch_unwind
                 // in PriorityTask::execute() handles task panics. This outer
@@ -1245,6 +1303,11 @@ fn work_pool_worker_loop(
                     // Only record runtime if task didn't panic (runtime > 0)
                     if runtime_nanos > 0 {
                         runtime_tracker.record_runtime(task_type, runtime_nanos);
+                        // WFST weight update: feed actual runtime to scheduler automaton
+                        if let Some(descriptor) = wfst_descriptor {
+                            crate::backend::scheduler::global_scheduler()
+                                .update_weight(descriptor, runtime_nanos);
+                        }
                     }
 
                     // Publish CPU time + heartbeat for blocked-worker detection.

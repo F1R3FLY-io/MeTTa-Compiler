@@ -166,6 +166,7 @@ mod tests {
             ground_expressions: HashSet::new(),
             memo_candidates: HashSet::new(),
             parallel_candidates: HashSet::new(),
+            scheduler_hints: Vec::new(),
         }
     }
 

@@ -20,6 +20,7 @@ pub mod models;
 pub mod modules;
 pub mod mork_convert;
 pub mod priority_scheduler;
+pub mod scheduler;
 pub mod symbol;
 pub mod varint_encoding;
 pub mod wide_mork;

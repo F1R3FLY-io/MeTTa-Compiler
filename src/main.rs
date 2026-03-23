@@ -458,6 +458,24 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         );
         mettatron::backend::eval::cesk::continuation_compression::install_rule_filter(rule_filter);
 
+        // Build and install the WFST/WPDS scheduler automaton from analysis results.
+        // This provides automata-based scheduling with expression-aware priority,
+        // context-dependent weight refinement, and wavefront parallelism.
+        let scheduler_automaton = mettatron::backend::scheduler::aam_builder::build_scheduler_automaton(
+            &derived,
+            Some(mettatron::backend::models::work_pool::global_eval_pool().runtime_tracker()),
+        );
+        let scheduler_hints_count = derived.scheduler_hints.len();
+        match mettatron::backend::scheduler::install_scheduler(scheduler_automaton) {
+            Ok(()) => {
+                eprintln!("[analysis] WFST scheduler automaton installed ({} expression hints)",
+                    scheduler_hints_count);
+            }
+            Err(_) => {
+                eprintln!("[analysis] WFST scheduler automaton already installed (using existing)");
+            }
+        }
+
         timings.mark("analysis");
     }
 

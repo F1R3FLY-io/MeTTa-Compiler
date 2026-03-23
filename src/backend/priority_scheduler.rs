@@ -387,6 +387,14 @@ pub struct PriorityTask {
 
     /// Unique sequence number for stable ordering
     sequence: u64,
+
+    /// WFST-assigned cost class (if the expression was classified).
+    /// When `Some`, the transducer-assigned priority overrides `base_priority`
+    /// in the scoring function.
+    wfst_cost_class: Option<super::scheduler::CostClass>,
+
+    /// WFST-assigned task descriptor (for weight update on completion).
+    wfst_descriptor: Option<super::scheduler::TaskDescriptor>,
 }
 
 impl PriorityTask {
@@ -402,18 +410,63 @@ impl PriorityTask {
             task_type,
             enqueued_at: Instant::now(),
             sequence,
+            wfst_cost_class: None,
+            wfst_descriptor: None,
+        }
+    }
+
+    /// Create a WFST-classified task.
+    ///
+    /// The cost class and descriptor are used by the scoring function to
+    /// override the base priority with the transducer-assigned priority,
+    /// and by the weight update on completion.
+    pub fn new_classified(
+        task: Box<dyn FnOnce() + Send + 'static>,
+        base_priority: u32,
+        task_type: TaskTypeId,
+        sequence: u64,
+        cost_class: super::scheduler::CostClass,
+        descriptor: super::scheduler::TaskDescriptor,
+    ) -> Self {
+        Self {
+            task,
+            base_priority,
+            task_type,
+            enqueued_at: Instant::now(),
+            sequence,
+            wfst_cost_class: Some(cost_class),
+            wfst_descriptor: Some(descriptor),
         }
     }
 
     /// Calculate the effective priority score.
     ///
-    /// score = base_priority + (estimated_runtime * runtime_weight) - (age * decay_rate)
+    /// When WFST classification is available:
+    ///   score = wfst_priority + (ema_runtime * runtime_weight) - (age * decay_rate)
+    /// Otherwise (fallback to P²):
+    ///   score = base_priority + (p2_runtime * runtime_weight) - (age * decay_rate)
+    ///
     /// Lower score = scheduled first (min-heap)
     pub fn score(&self, runtime_tracker: &RuntimeTracker, config: &SchedulerConfig) -> f64 {
-        let base = self.base_priority as f64;
+        // Use WFST-assigned priority when available, otherwise base_priority
+        let base = if let Some(cost_class) = self.wfst_cost_class {
+            let automaton = super::scheduler::global_scheduler();
+            let action = automaton.transduce(cost_class);
+            action.priority_class as f64
+        } else {
+            self.base_priority as f64
+        };
 
-        // Estimated runtime component (normalized to seconds)
-        let estimated_runtime = runtime_tracker.estimated_runtime(self.task_type);
+        // Use WFST EMA runtime estimate when available, otherwise P² estimate
+        let estimated_runtime = if let Some(descriptor) = self.wfst_descriptor {
+            let automaton = super::scheduler::global_scheduler();
+            automaton
+                .estimated_runtime(descriptor)
+                .unwrap_or_else(|| runtime_tracker.estimated_runtime(self.task_type))
+        } else {
+            runtime_tracker.estimated_runtime(self.task_type)
+        };
+
         let runtime_component = (estimated_runtime / 1_000_000_000.0) * config.runtime_weight;
 
         // Age component (time decay to prevent starvation)
@@ -448,6 +501,16 @@ impl PriorityTask {
     /// Get task type for runtime tracking
     pub fn task_type(&self) -> TaskTypeId {
         self.task_type
+    }
+
+    /// Get the WFST cost class (if classified).
+    pub fn wfst_cost_class(&self) -> Option<super::scheduler::CostClass> {
+        self.wfst_cost_class
+    }
+
+    /// Get the WFST task descriptor (if classified).
+    pub fn wfst_descriptor(&self) -> Option<super::scheduler::TaskDescriptor> {
+        self.wfst_descriptor
     }
 }
 

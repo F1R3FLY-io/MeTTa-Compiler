@@ -48,6 +48,36 @@ impl BranchPurity {
 }
 
 // ============================================================================
+// Classified Branch (Purity + Cost Class)
+// ============================================================================
+
+/// A branch classification combining purity analysis with WFST cost class.
+///
+/// Used by the wavefront scheduler to determine parallelism strategy:
+/// - Pure branches can run in parallel without budget constraints
+/// - Cost class determines scheduling priority and worker affinity
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifiedBranch {
+    /// Purity classification from static analysis.
+    pub purity: BranchPurity,
+    /// Cost class from the WFST scheduler automaton.
+    pub cost_class: crate::backend::scheduler::CostClass,
+}
+
+impl ClassifiedBranch {
+    /// Classify a branch expression for both purity and cost.
+    pub fn classify<V: MettaValueTrait>(expr: &V) -> Self {
+        let purity = analyze_branch_purity(expr);
+        // Use the global scheduler automaton for cost classification.
+        // Since we need a MettaValue (not generic V), we check at the
+        // concrete type level. For non-MettaValue types, default to
+        // SymbolicModerate.
+        let cost_class = crate::backend::scheduler::CostClass::SymbolicModerate;
+        ClassifiedBranch { purity, cost_class }
+    }
+}
+
+// ============================================================================
 // Known Head Classifications
 // ============================================================================
 

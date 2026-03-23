@@ -38,6 +38,10 @@ pub struct DerivedAnalysis {
 
     /// Parallelization candidates: pure expressions.
     pub parallel_candidates: HashSet<u64>,
+
+    /// Scheduler hints: expression hash → CostClass mappings for the WFST automaton.
+    /// Populated by `aam_builder::SchedulerHints::from_analysis()`.
+    pub scheduler_hints: Vec<(u64, crate::backend::scheduler::CostClass)>,
 }
 
 /// Dispatch hint for a specific (head, arity) combination.
@@ -87,6 +91,25 @@ pub fn derive_analysis(result: &AnalysisResult) -> DerivedAnalysis {
 
     let parallel_candidates = pure_expressions.clone();
 
+    // Build scheduler hints from the derived analysis
+    let scheduler_hints = {
+        use crate::backend::scheduler::CostClass;
+        let mut hints = Vec::new();
+        for &hash in &pure_expressions {
+            let is_deterministic = memo_candidates.contains(&hash);
+            let is_ground = ground_expressions.contains(&hash);
+            let class = if is_ground {
+                CostClass::GroundCheap
+            } else if is_deterministic {
+                CostClass::SymbolicCheap
+            } else {
+                CostClass::ParallelPure
+            };
+            hints.push((hash, class));
+        }
+        hints
+    };
+
     DerivedAnalysis {
         dead_rules,
         deterministic_dispatch,
@@ -95,6 +118,7 @@ pub fn derive_analysis(result: &AnalysisResult) -> DerivedAnalysis {
         ground_expressions,
         memo_candidates,
         parallel_candidates,
+        scheduler_hints,
     }
 }
 
@@ -293,6 +317,7 @@ mod tests {
             ground_expressions: vec![42].into_iter().collect(),
             memo_candidates: vec![42].into_iter().collect(),
             parallel_candidates: vec![42].into_iter().collect(),
+            scheduler_hints: Vec::new(),
         };
 
         let hints = build_dispatch_hints(&derived);

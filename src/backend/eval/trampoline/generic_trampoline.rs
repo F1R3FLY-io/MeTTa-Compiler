@@ -74,6 +74,77 @@ use super::generic_engine::{try_deterministic_chain, try_match_rules_with_bindin
 use super::dispatch_hints::REDUCIBLE_HEADS;
 
 // =============================================================================
+// WPDS Context Hashing (Layer 3)
+// =============================================================================
+//
+// Maps the top-k continuation frames to SchedulerStackSymbol values for
+// context-aware weight refinement via the WPDS precomputed weight table.
+
+/// Map a continuation discriminant to a SchedulerStackSymbol for WPDS context hashing.
+///
+/// Only inspects the variant tag (O(1)), not the contained data.
+fn continuation_to_stack_symbol<V: MettaValueTrait, E: Clone>(
+    cont: &GenericContinuation<V, E>,
+) -> crate::backend::scheduler::wpds::SchedulerStackSymbol {
+    use crate::backend::scheduler::wpds::SchedulerStackSymbol;
+
+    match cont {
+        GenericContinuation::Done => SchedulerStackSymbol::Root,
+        GenericContinuation::ProcessRuleMatches { .. }
+        | GenericContinuation::ProcessRuleMatchesLazy { .. } => {
+            SchedulerStackSymbol::RuleMatch {
+                head_hash: 0,
+                arity: 0,
+            }
+        }
+        GenericContinuation::ProcessGroundedOp { .. } => SchedulerStackSymbol::GroundedOp,
+        GenericContinuation::ProcessCombinations { .. } => SchedulerStackSymbol::Combinations,
+        GenericContinuation::ProcessLet { .. }
+        | GenericContinuation::ProcessLetStar { .. } => {
+            SchedulerStackSymbol::LetChain { depth: 0 }
+        }
+        GenericContinuation::CollectSExpr { .. }
+        | GenericContinuation::CollectGroundedArg { .. } => {
+            SchedulerStackSymbol::ArgEval { position: 0 }
+        }
+        GenericContinuation::ProcessIfCondition { .. } => {
+            SchedulerStackSymbol::Conditional { branch: 0 }
+        }
+        GenericContinuation::ProcessCaseAtom { .. }
+        | GenericContinuation::ProcessCaseEvalScrutineeResults { .. } => {
+            SchedulerStackSymbol::CaseSwitch
+        }
+        GenericContinuation::ProcessCollapseEvalResults { .. } => {
+            SchedulerStackSymbol::Collapse
+        }
+        GenericContinuation::MemoizeResult { .. }
+        | GenericContinuation::CompleteSubgoal { .. }
+        | GenericContinuation::CompleteThunk { .. } => {
+            SchedulerStackSymbol::Memoize
+        }
+        _ => SchedulerStackSymbol::Root,
+    }
+}
+
+/// Hash the top-3 continuation frames for WPDS context weight lookup.
+///
+/// Returns a 64-bit context hash suitable for the SchedulerAutomaton's
+/// context_weight() method.
+fn hash_continuation_context<V: MettaValueTrait, E: Clone>(
+    continuations: &[GenericContinuation<V, E>],
+) -> u64 {
+    let len = continuations.len();
+    let limit = len.min(3);
+    let mut packed = [0u32; 3];
+    for i in 0..limit {
+        // Top of stack is last element
+        let idx = len - 1 - i;
+        packed[i] = continuation_to_stack_symbol(&continuations[idx]).pack();
+    }
+    crate::backend::scheduler::wpds::hash_context_packed(&packed[..limit])
+}
+
+// =============================================================================
 // Parallel Nondeterministic Branching
 // =============================================================================
 //
@@ -355,14 +426,26 @@ where
         crate::backend::eval::cesk::analyze_branch_purity(rhs).is_safe_to_parallelize()
     });
 
+    // Wavefront analysis: for nondeterministic rule matches, all branches
+    // are independent (MeTTa HE semantics: unordered set). This produces
+    // a single wavefront → full parallelism without depth budget constraints
+    // when all branches are pure.
+    let wavefront_parallel = if matches.len() >= 2 && all_pure {
+        // All pure nondeterministic branches: single wavefront, bypass depth budget
+        let schedule = crate::backend::scheduler::wavefront::single_wave(matches.len());
+        schedule.is_fully_parallel()
+    } else {
+        false
+    };
+
     let budget = if matches.len() >= 2
         && std::any::TypeId::of::<C::Value>()
             == std::any::TypeId::of::<crate::backend::models::MettaValue>()
         && current_depth < max_parallel_depth()
         && global_eval_pool().active_workers() > 0
     {
-        if all_pure {
-            // Pure branches parallelize freely — no budget consumed
+        if all_pure || wavefront_parallel {
+            // Pure branches or wavefront-parallel: bypass depth budget
             (matches.len() - 1) as u32
         } else {
             try_acquire_budget((matches.len() - 1) as u32, current_depth)
@@ -430,6 +513,11 @@ where
 
         // I-7: When all_pure, budget was not acquired from quotas — pass 0 to avoid leak
         let actual_budget_acquired = if all_pure { 0 } else { budget };
+
+        // WPDS Layer 3: compute continuation context hash for context-aware scheduling
+        let ctx_hash = hash_continuation_context(continuations);
+        CONTINUATION_CONTEXT_HASH.with(|h| h.set(ctx_hash));
+
         let results = parallel_branch_eval(branches, metta_env, actual_budget_acquired, current_depth);
 
         // SAFETY: MettaValue and C::Value are the same type (TypeId checked).
@@ -571,6 +659,11 @@ where
 // available parallelism.
 thread_local! {
     static PARALLEL_BRANCH_DEPTH: Cell<u32> = const { Cell::new(0) };
+
+    /// WPDS continuation context hash for the current parallel dispatch point.
+    /// Set by `dispatch_rule_matches` before calling `parallel_branch_eval`,
+    /// read by `parallel_branch_eval` to compute context-aware effective priority.
+    static CONTINUATION_CONTEXT_HASH: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Evaluate nondeterministic branches in parallel via the work pool.
@@ -619,37 +712,70 @@ fn parallel_branch_eval(
         let remaining = Arc::clone(&remaining);
         let done_pair = Arc::clone(&done_pair);
 
-        pool.spawn_eval(
-            move || {
-                // Set depth for nested parallel branching. At depth >= MAX_PARALLEL_DEPTH,
-                // the gate falls through to sequential. Budget is scaled by 4^(-depth).
-                PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-
-                // I-8: Enter thread-local allocation region for contention-free allocation
-                let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
-
-                // Track this parallel eval as active (prevents GC during evaluation)
-                let _guard = EvalGuard::enter();
-                let ctx = ParallelBranchContext::get();
-                let (eval_results, _new_env) =
-                    eval_trampoline_generic(branch_expr, env, &ctx);
-
-                // Store result in pre-allocated slot (no contention per slot)
-                {
-                    let mut guard = results.lock().expect("results mutex poisoned");
-                    guard[slot] = Some(eval_results.into_vec());
+        // WFST classification: classify the branch expression for
+        // automata-based scheduling priority and weight tracking.
+        let scheduler = crate::backend::scheduler::global_scheduler();
+        let (cost_class, _action) = scheduler.classify_and_transduce(&branch_expr);
+        let head_str = match branch_expr.view() {
+            crate::backend::models::metta_value::ValueView::SExpr(items) if !items.is_empty() => {
+                match items[0].view() {
+                    crate::backend::models::metta_value::ValueView::Atom(s) => s,
+                    _ => "",
                 }
+            }
+            _ => "",
+        };
+        let head_hash = crate::backend::scheduler::TaskDescriptor::hash_head_symbol(head_str);
+        let arity = match branch_expr.view() {
+            crate::backend::models::metta_value::ValueView::SExpr(items) if items.len() > 1 => {
+                (items.len() - 1).min(15) as u8
+            }
+            _ => 0u8,
+        };
+        let depth_bucket = crate::backend::scheduler::TaskDescriptor::depth_to_bucket(child_depth);
+        let descriptor = crate::backend::scheduler::TaskDescriptor::pack(
+            head_hash, arity, depth_bucket, 0,
+        );
 
-                // Decrement barrier; if last task, notify waiter
-                if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                    let (lock, cvar) = &*done_pair;
-                    let mut done = lock.lock().expect("done mutex poisoned");
-                    *done = true;
-                    cvar.notify_one();
-                }
-            },
+        // WPDS Layer 3: compute effective priority using continuation context
+        let ctx_hash = CONTINUATION_CONTEXT_HASH.with(|h| h.get());
+        let effective_pri = scheduler.effective_priority(cost_class, ctx_hash);
+
+        let closure = move || {
+            // Set depth for nested parallel branching. At depth >= MAX_PARALLEL_DEPTH,
+            // the gate falls through to sequential. Budget is scaled by 4^(-depth).
+            PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+
+            // I-8: Enter thread-local allocation region for contention-free allocation
+            let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
+
+            // Track this parallel eval as active (prevents GC during evaluation)
+            let _guard = EvalGuard::enter();
+            let ctx = ParallelBranchContext::get();
+            let (eval_results, _new_env) =
+                eval_trampoline_generic(branch_expr, env, &ctx);
+
+            // Store result in pre-allocated slot (no contention per slot)
+            {
+                let mut guard = results.lock().expect("results mutex poisoned");
+                guard[slot] = Some(eval_results.into_vec());
+            }
+
+            // Decrement barrier; if last task, notify waiter
+            if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                let (lock, cvar) = &*done_pair;
+                let mut done = lock.lock().expect("done mutex poisoned");
+                *done = true;
+                cvar.notify_one();
+            }
+        };
+
+        pool.spawn_eval_classified(
+            closure,
             TaskTypeId::Eval(0),
-            priority_levels::NORMAL,
+            effective_pri,
+            cost_class,
+            descriptor,
         );
     }
 
@@ -815,34 +941,62 @@ fn parallel_collapse_eval(
         let remaining = Arc::clone(&remaining);
         let done_pair = Arc::clone(&done_pair);
 
-        pool.spawn_eval(
-            move || {
-                PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-
-                // I-8: Enter thread-local allocation region
-                let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
-
-                let _guard = EvalGuard::enter();
-                let ctx = ParallelBranchContext::get();
-                let (eval_results, _new_env) =
-                    eval_trampoline_generic(item_expr, env, &ctx);
-
-                // Store result in pre-allocated slot
-                {
-                    let mut guard = results.lock().expect("results mutex poisoned");
-                    guard[slot] = Some(eval_results.into_vec());
+        // WFST classification for collapse items
+        let scheduler = crate::backend::scheduler::global_scheduler();
+        let (cost_class, _action) = scheduler.classify_and_transduce(&item_expr);
+        let head_str = match item_expr.view() {
+            crate::backend::models::metta_value::ValueView::SExpr(items) if !items.is_empty() => {
+                match items[0].view() {
+                    crate::backend::models::metta_value::ValueView::Atom(s) => s,
+                    _ => "",
                 }
+            }
+            _ => "",
+        };
+        let head_hash = crate::backend::scheduler::TaskDescriptor::hash_head_symbol(head_str);
+        let arity = match item_expr.view() {
+            crate::backend::models::metta_value::ValueView::SExpr(items) if items.len() > 1 => {
+                (items.len() - 1).min(15) as u8
+            }
+            _ => 0u8,
+        };
+        let depth_bucket = crate::backend::scheduler::TaskDescriptor::depth_to_bucket(child_depth);
+        let descriptor = crate::backend::scheduler::TaskDescriptor::pack(
+            head_hash, arity, depth_bucket, 0,
+        );
 
-                // Decrement barrier; if last task, notify waiter
-                if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                    let (lock, cvar) = &*done_pair;
-                    let mut done = lock.lock().expect("done mutex poisoned");
-                    *done = true;
-                    cvar.notify_one();
-                }
-            },
+        let closure = move || {
+            PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+
+            // I-8: Enter thread-local allocation region
+            let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
+
+            let _guard = EvalGuard::enter();
+            let ctx = ParallelBranchContext::get();
+            let (eval_results, _new_env) =
+                eval_trampoline_generic(item_expr, env, &ctx);
+
+            // Store result in pre-allocated slot
+            {
+                let mut guard = results.lock().expect("results mutex poisoned");
+                guard[slot] = Some(eval_results.into_vec());
+            }
+
+            // Decrement barrier; if last task, notify waiter
+            if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                let (lock, cvar) = &*done_pair;
+                let mut done = lock.lock().expect("done mutex poisoned");
+                *done = true;
+                cvar.notify_one();
+            }
+        };
+
+        pool.spawn_eval_classified(
+            closure,
             TaskTypeId::Eval(0),
             priority_levels::NORMAL,
+            cost_class,
+            descriptor,
         );
     }
 

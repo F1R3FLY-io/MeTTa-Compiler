@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "metta-trie"]
+members = [".", "metta-trie", "tools/trace-analyzer", "tools/gc-root-audit"]
 resolver = "2"
 
 [package]

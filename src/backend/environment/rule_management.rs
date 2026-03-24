@@ -109,6 +109,9 @@ pub struct RuleMatchResult<V: MettaValueTrait + Clone> {
     /// Whether the RHS template contains variables, computed once at rule insertion time.
     /// When `false`, `apply_bindings_generic` can be skipped entirely (O(1) clone).
     pub rhs_has_variables: bool,
+    /// Pre-compiled bytecode for the RHS body, if available.
+    /// Type-erased; downcasted in op_dispatch_rules.
+    pub compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// A single rule entry in the RuleIndex.
@@ -157,6 +160,10 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub rule_index_in_group: u32,
     /// I-12: Global monotonic rule index (for CompressedRuleFilter dead-rule filtering).
     pub global_rule_index: u32,
+    /// Pre-compiled bytecode for the RHS body (compile-on-add).
+    /// Type-erased to avoid propagating Send+Sync+'static bounds through RuleEntry<V>.
+    /// Downcasted to `Arc<GenericBytecodeChunk<V>>` in `op_dispatch_rules` via TypeId check.
+    pub compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
@@ -1304,19 +1311,38 @@ where
         } else {
             None
         };
+        // Compile-on-add: pre-compile RHS body to bytecode.
+        // Variables become PushVariable opcodes that resolve via the VM's binding frame.
+        let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+            if std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
+                // SAFETY: TypeId check guarantees V == MettaValue
+                let metta_rhs: &crate::backend::models::MettaValue =
+                    unsafe { &*(&rhs as *const V as *const crate::backend::models::MettaValue) };
+                if crate::backend::bytecode::can_compile_with_env(metta_rhs) {
+                    crate::backend::bytecode::compile_bytecode_arc("rule_rhs", metta_rhs)
+                        .ok()
+                        .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         let entry = RuleEntry {
             lhs: lhs.clone(),
             rhs_has_variables: rhs.contains_variables(),
             rhs: rhs.clone(),
-            lhs_debruijn: vec![], // No longer used — structural/enhanced matchers handle matching
+            lhs_debruijn: vec![],
             var_names,
             wildcard_indices,
             multiplicity: 1,
             rhs_type: rhs_type.clone(),
             structural_matcher,
             enhanced_matcher,
-            rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
-            global_rule_index: 0, // Assigned by RuleIndex::add_rule
+            rule_index_in_group: 0,
+            global_rule_index: 0,
+            compiled_rhs,
         };
         // Phase 4a: Pre-seed tiered cache so first RHS evaluation
         // immediately triggers bytecode compilation (no warmup delay)
@@ -1533,6 +1559,7 @@ where
                                         multiplicity,
                                         rhs_type: entry.rhs_type.clone(),
                                         rhs_has_variables: entry.rhs_has_variables,
+                                        compiled_rhs: entry.compiled_rhs.clone(),
                                     });
                                 }
                             }
@@ -1587,6 +1614,7 @@ where
                         multiplicity: 1,
                         rhs_type: entry.rhs_type.clone(),
                         rhs_has_variables: entry.rhs_has_variables,
+                        compiled_rhs: entry.compiled_rhs.clone(),
                     });
                 } else {
                     for _ in 0..multiplicity {
@@ -1597,6 +1625,7 @@ where
                             multiplicity,
                             rhs_type: entry.rhs_type.clone(),
                             rhs_has_variables: entry.rhs_has_variables,
+                            compiled_rhs: entry.compiled_rhs.clone(),
                         });
                     }
                 }
@@ -1847,11 +1876,19 @@ impl MettaEnvironment {
                 } else {
                     None
                 };
+                // Compile-on-add for bulk path (concrete MettaValue — no TypeId needed)
+                let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+                    if crate::backend::bytecode::can_compile_with_env(&rhs) {
+                        crate::backend::bytecode::compile_bytecode_arc("rule_rhs", &rhs)
+                            .ok()
+                            .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                    } else { None };
+
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
                     rhs_has_variables: rhs.contains_variables(),
                     rhs: rhs.clone(),
-                    lhs_debruijn: vec![], // No longer used
+                    lhs_debruijn: vec![],
                     var_names,
                     wildcard_indices,
                     multiplicity,
@@ -1859,7 +1896,8 @@ impl MettaEnvironment {
                     structural_matcher,
                     enhanced_matcher,
                     rule_index_in_group: 0,
-                    global_rule_index: 0, // Assigned by RuleIndex::add_rule
+                    global_rule_index: 0,
+                    compiled_rhs,
                 };
 
                 // Phase 4a: Pre-seed tiered cache for bulk path

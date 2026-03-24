@@ -1474,12 +1474,17 @@ where
         {
             // I-10: Parallel speculative matching — head matching is pure read-only.
             // Only for MettaValue (GcFactory is Send+Sync).
+            // Cap speculative threads to prevent contention with eval work pool.
+            // Use at most half the available parallelism, capped at 8.
+            const MAX_SPECULATIVE_THREADS: usize = 8;
             let chunks = crate::backend::eval::cesk::chunk_candidates(
                 candidates.len(),
                 std::thread::available_parallelism()
-                    .map(|n| n.get())
+                    .map(|n| n.get() / 2)
                     .unwrap_or(4)
-                    .min(candidates.len()),
+                    .min(MAX_SPECULATIVE_THREADS)
+                    .min(candidates.len())
+                    .max(2),
             );
 
             // SAFETY: V is MettaValue (TypeId checked above). GcFactory is Send+Sync.

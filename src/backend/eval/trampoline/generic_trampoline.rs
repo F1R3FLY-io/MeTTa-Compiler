@@ -2408,9 +2408,23 @@ where
                             // MeTTa evaluation is pure (read-only env during eval),
                             // so alternatives are independent. Budget + depth decay +
                             // queue pressure backoff prevent over-parallelization.
-                            let par_budget = if alternatives.len() >= 2
-                                && std::any::TypeId::of::<C::Value>()
-                                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                            // WFST classification: only parallelize when branches
+                            // justify the dispatch overhead.
+                            let is_metta_amb = std::any::TypeId::of::<C::Value>()
+                                == std::any::TypeId::of::<crate::backend::models::MettaValue>();
+                            let wfst_allows = if is_metta_amb && alternatives.len() >= 2 {
+                                let scheduler = crate::backend::scheduler::global_scheduler();
+                                alternatives.iter().any(|alt| {
+                                    let metta_alt: &crate::backend::models::MettaValue =
+                                        unsafe { &*(alt as *const C::Value as *const crate::backend::models::MettaValue) };
+                                    let (_, action) = scheduler.classify_and_transduce(metta_alt);
+                                    action.parallelism_degree > 1
+                                })
+                            } else {
+                                false
+                            };
+
+                            let par_budget = if wfst_allows
                                 && current_depth < max_parallel_depth()
                                 && global_eval_pool().active_workers() > 0
                             {
@@ -3394,7 +3408,7 @@ fn process_continuation_generic<C: EvalContext>(
         GenericContinuation::ProcessRuleMatches {
             mut remaining_matches,
             mut results,
-            env: _,
+            env,
             depth,
             #[cfg(feature = "eval-trace")]
             branch_span_id,
@@ -3408,7 +3422,7 @@ fn process_continuation_generic<C: EvalContext>(
             #[cfg(feature = "eval-trace")]
             let result_count = result.0.len() as u32;
             results.extend(result.0);
-            let env = result.1;
+            let result_env = result.1;
 
             // Trace: BranchEnd for the branch that just completed
             #[cfg(feature = "eval-trace")]
@@ -3435,7 +3449,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if remaining_matches.len() == 0 {
                 work_stack.push(GenericWorkItem::Resume {
-                    result: (SmallVec::from_vec(results), env),
+                    result: (SmallVec::from_vec(results), result_env),
                 });
             } else {
                 // remaining_matches is already in generic type (V, GenericBindings<V>)
@@ -3895,9 +3909,24 @@ fn process_continuation_generic<C: EvalContext>(
                     // When multiple values match, their body evaluations are
                     // independent (read-only env, no side effects). Dispatch to
                     // work pool for parallel evaluation.
+                    // WFST classification: only parallelize when branches
+                    // justify the dispatch overhead.
                     let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
-                    let par_budget = if std::any::TypeId::of::<C::Value>()
-                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                    let is_metta_match = std::any::TypeId::of::<C::Value>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>();
+                    let wfst_allows_match = if is_metta_match && instantiated_bodies.len() >= 2 {
+                        let scheduler = crate::backend::scheduler::global_scheduler();
+                        instantiated_bodies.iter().any(|body| {
+                            let metta_body: &crate::backend::models::MettaValue =
+                                unsafe { &*(body as *const C::Value as *const crate::backend::models::MettaValue) };
+                            let (_, action) = scheduler.classify_and_transduce(metta_body);
+                            action.parallelism_degree > 1
+                        })
+                    } else {
+                        false
+                    };
+
+                    let par_budget = if wfst_allows_match
                         && current_depth < max_parallel_depth()
                         && global_eval_pool().active_workers() > 0
                     {
@@ -6486,23 +6515,26 @@ fn process_continuation_generic<C: EvalContext>(
         GenericContinuation::ProcessAmb {
             mut remaining_alts,
             mut results,
-            env: _,
+            env,
             depth,
         } => {
             let (alt_results, result_env) = result;
             results.extend(alt_results);
 
             if let Some(next_alt) = remaining_alts.next() {
+                // Use the ORIGINAL env for each alternative (not result_env).
+                // Parallel path gives all branches the same pre-fork env;
+                // sequential must do the same to preserve semantics.
                 continuations.push(GenericContinuation::ProcessAmb {
                     remaining_alts,
                     results,
-                    env: result_env.clone(),
+                    env: env.clone(),
                     depth,
                 });
 
                 work_stack.push(GenericWorkItem::Eval {
                     value: next_alt,
-                    env: result_env,
+                    env,
                     depth: depth + 1,
                     is_tail_call: false,
                     expected_type: None,
@@ -6510,7 +6542,6 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 work_stack.push(GenericWorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
-
                 });
             }
         }

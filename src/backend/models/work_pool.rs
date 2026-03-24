@@ -1375,17 +1375,15 @@ static GLOBAL_EVAL_POOL: LazyLock<WorkPool> = LazyLock::new(WorkPool::new);
 static WORK_POOL_INIT: OnceLock<()> = OnceLock::new();
 
 impl WorkPool {
-    /// Kick off background worker spawning (idempotent).
+    /// Spawn all workers synchronously (idempotent).
     ///
-    /// Spawns a dedicated `work-pool-init` thread that calls
-    /// `spawn_all_workers()`. Requires `&'static self` (only valid
-    /// for the global singleton via `GLOBAL_EVAL_POOL`).
-    fn start_async_init(&'static self) {
+    /// Ensures `active_workers() > 0` by the time the first evaluation
+    /// reaches a parallel gate. Workers are spawned in parallel via
+    /// `thread::scope` when max_threads > 4, so wall-clock time is
+    /// ~1 thread-creation time regardless of pool size.
+    fn start_init(&'static self) {
         WORK_POOL_INIT.get_or_init(|| {
-            thread::Builder::new()
-                .name("work-pool-init".into())
-                .spawn(move || self.spawn_all_workers())
-                .expect("failed to spawn work pool init thread");
+            self.spawn_all_workers();
         });
     }
 }
@@ -1396,7 +1394,7 @@ impl WorkPool {
 /// async background worker spawning, and starts the scaling monitor.
 pub fn global_eval_pool() -> &'static WorkPool {
     let pool = &*GLOBAL_EVAL_POOL;
-    pool.start_async_init();
+    pool.start_init();
     // Start the scaling monitor (idempotent — only runs once)
     start_work_scaling_monitor();
     pool

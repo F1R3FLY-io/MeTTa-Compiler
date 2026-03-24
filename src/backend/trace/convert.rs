@@ -256,7 +256,18 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
 ///
 /// For the hot path with concrete `MettaValue`, prefer `trace_value()` which
 /// uses the optimized iterative trampoline with thread-local stacks.
-pub fn trace_value_generic<V: crate::backend::models::MettaValueTrait>(v: &V) -> TraceValue {
+pub fn trace_value_generic<V: crate::backend::models::MettaValueTrait + 'static>(v: &V) -> TraceValue {
+    // Fast path: when V is MettaValue (always true in practice — all EvalContext
+    // impls use Value = MettaValue), delegate to the iterative trace_value()
+    // which uses thread-local work/continuation stacks and cannot overflow.
+    if std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
+        // SAFETY: TypeId equality guarantees V == MettaValue.
+        let mv: &crate::backend::models::MettaValue =
+            unsafe { &*(v as *const V as *const crate::backend::models::MettaValue) };
+        return trace_value(mv);
+    }
+
+    // Fallback: recursive implementation for non-MettaValue types (unreachable in practice)
     if let Some(s) = v.as_atom() {
         TraceValue::Atom(s.to_string())
     } else if let Some(b) = v.as_bool() {

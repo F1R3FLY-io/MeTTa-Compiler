@@ -78,6 +78,40 @@ fn is_pure_head(head: &str) -> bool {
     PURE_HEADS.iter().any(|&op| op == head)
 }
 
+/// Check if a head symbol is known (pure, impure, or arithmetic).
+#[inline]
+fn is_known_head(head: &str) -> bool {
+    is_pure_head(head) || is_impure_head(head) || is_arithmetic_head(head)
+}
+
+/// Recursively check if an expression's children contain calls to unknown
+/// user-defined functions (heads not in any known-head list). Bounded to
+/// `max_depth` levels to prevent O(n) blowup on deep expressions.
+///
+/// Returns `true` if any child S-expression has an unknown head, indicating
+/// the expression will trigger user-defined rule matching (potentially expensive).
+fn has_expensive_children(items: &[MettaValue], max_depth: u32) -> bool {
+    if max_depth == 0 {
+        return false;
+    }
+    for child in &items[1..] {
+        if let Some(child_items) = child.as_sexpr() {
+            if !child_items.is_empty() {
+                if let Some(head) = child_items[0].as_atom() {
+                    if !is_known_head(head) {
+                        return true; // Unknown user function → expensive
+                    }
+                }
+                // Recurse into children of known-head expressions
+                if has_expensive_children(child_items, max_depth - 1) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // L2 Entry — sparse per-head classification
 // ══════════════════════════════════════════════════════════════════════════════
@@ -280,7 +314,19 @@ impl SchedulerAutomaton {
         }
 
         // Heuristic fallback
-        self.classify_heuristic(head_str, arity, flags)
+        let class = self.classify_heuristic(head_str, arity, flags);
+
+        // Deep inspection: if the heuristic says SymbolicCheap but children
+        // contain calls to unknown user-defined functions, escalate to
+        // SymbolicModerate. Pure control flow heads (let*, if, case, etc.)
+        // can contain arbitrarily expensive nested computation.
+        if class == CostClass::SymbolicCheap && is_pure_head(head_str) {
+            if has_expensive_children(items, 3) {
+                return CostClass::SymbolicModerate;
+            }
+        }
+
+        class
     }
 
     /// Heuristic classification when table lookup misses.

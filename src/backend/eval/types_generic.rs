@@ -882,7 +882,7 @@ where
 ///
 /// Handles type variables, `%Undefined%` universal match, and structural equality.
 /// HE parity: `%Undefined%` matches any type on either side.
-pub fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool {
+pub fn types_match_generic<V: MettaValueTrait + 'static>(actual: &V, expected: &V) -> bool {
     let (result, _reason) = types_match_generic_inner(actual, expected);
 
     // Emit TypeMatch trace event
@@ -912,7 +912,7 @@ pub fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool
 ///
 /// The `reason` string identifies which matching rule decided the outcome,
 /// for eval-trace instrumentation.
-fn types_match_generic_inner<V: MettaValueTrait>(actual: &V, expected: &V) -> (bool, &'static str) {
+fn types_match_generic_inner<V: MettaValueTrait + 'static>(actual: &V, expected: &V) -> (bool, &'static str) {
     // %Undefined% matches anything (HE parity)
     if let Some(name) = expected.as_atom() {
         if name == "%Undefined%" {
@@ -1095,7 +1095,7 @@ pub fn is_meta_type(name: &str) -> bool {
 /// - Consistency: if `$t` is already bound to `Number`, it only matches `Number`
 /// - Meta-types: `Atom` accepts any type, `Symbol`/`Variable`/`Expression`/`Grounded`
 ///   accept their respective syntactic categories (conservative: always accept at type level)
-pub fn match_types_with_bindings<V: MettaValueTrait + Clone>(
+pub fn match_types_with_bindings<V: MettaValueTrait + Clone + 'static>(
     pattern: &V,
     actual: &V,
     bindings: &mut HashMap<String, V>,

@@ -284,6 +284,11 @@ impl SchedulerAutomaton {
     }
 
     /// Heuristic classification when table lookup misses.
+    ///
+    /// Unknown user-defined functions default to SymbolicCheap (sequential,
+    /// degree=1). Only escalate to SymbolicModerate when the L2 table has
+    /// evidence of multi-rule matching. This prevents over-parallelization
+    /// of trivial recursive functions like PLN's BestCandidate, TupleConcat, etc.
     fn classify_heuristic(&self, head: &str, _arity: u8, flags: u8) -> CostClass {
         if is_arithmetic_head(head) {
             if flags & descriptor_flags::GROUND != 0 {
@@ -294,14 +299,11 @@ impl SchedulerAutomaton {
         } else if is_impure_head(head) {
             CostClass::ImpureSequential
         } else if is_pure_head(head) {
-            if flags & descriptor_flags::PURE != 0 {
-                CostClass::ParallelPure
-            } else {
-                CostClass::SymbolicCheap
-            }
+            CostClass::SymbolicCheap
         } else {
-            // Unknown user-defined function → conservative
-            CostClass::SymbolicModerate
+            // Unknown user-defined function → assume cheap (sequential).
+            // The L2 table overrides this for known expensive patterns.
+            CostClass::SymbolicCheap
         }
     }
 
@@ -544,13 +546,14 @@ mod tests {
         let class = automaton.classify_heuristic("add-atom", 2, 0);
         assert_eq!(class, CostClass::ImpureSequential);
 
-        // Pure control flow
+        // Pure control flow — classified as SymbolicCheap (sequential)
+        // to avoid over-parallelizing trivial branches
         let class = automaton.classify_heuristic("if", 3, descriptor_flags::PURE);
-        assert_eq!(class, CostClass::ParallelPure);
+        assert_eq!(class, CostClass::SymbolicCheap);
 
-        // Unknown user function
+        // Unknown user function — assumed cheap until L2 table proves otherwise
         let class = automaton.classify_heuristic("my-custom-fn", 2, 0);
-        assert_eq!(class, CostClass::SymbolicModerate);
+        assert_eq!(class, CostClass::SymbolicCheap);
     }
 
     #[test]

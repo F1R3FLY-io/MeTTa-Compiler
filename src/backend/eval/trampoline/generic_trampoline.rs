@@ -420,36 +420,34 @@ where
     }
 
     // ── Parallel nondeterministic branching gate ──
-    // I-7: Check branch purity — pure branches bypass budget entirely.
+    // Uses the WFST transduction table's parallelism_degree to decide whether
+    // branches justify parallel dispatch. Cheap branches (GroundCheap,
+    // SymbolicCheap, etc.) have degree=1 and evaluate sequentially inline.
+    // Only SymbolicModerate (degree=4) and ParallelPure (degree=8) get dispatched.
+    // All forks go through try_acquire_budget — no unconditional bypass.
     let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
-    let all_pure = matches.len() >= 2 && matches.iter().all(|(rhs, _)| {
-        crate::backend::eval::cesk::analyze_branch_purity(rhs).is_safe_to_parallelize()
-    });
 
-    // Wavefront analysis: for nondeterministic rule matches, all branches
-    // are independent (MeTTa HE semantics: unordered set). This produces
-    // a single wavefront → full parallelism without depth budget constraints
-    // when all branches are pure.
-    let wavefront_parallel = if matches.len() >= 2 && all_pure {
-        // All pure nondeterministic branches: single wavefront, bypass depth budget
-        let schedule = crate::backend::scheduler::wavefront::single_wave(matches.len());
-        schedule.is_fully_parallel()
+    let is_metta = std::any::TypeId::of::<C::Value>()
+        == std::any::TypeId::of::<crate::backend::models::MettaValue>();
+
+    let wfst_allows_parallel = if is_metta && matches.len() >= 2 {
+        let scheduler = crate::backend::scheduler::global_scheduler();
+        matches.iter().any(|(rhs, _)| {
+            // SAFETY: C::Value is MettaValue (TypeId checked above).
+            let metta_rhs: &crate::backend::models::MettaValue =
+                unsafe { &*(rhs as *const C::Value as *const crate::backend::models::MettaValue) };
+            let (_, action) = scheduler.classify_and_transduce(metta_rhs);
+            action.parallelism_degree > 1
+        })
     } else {
         false
     };
 
-    let budget = if matches.len() >= 2
-        && std::any::TypeId::of::<C::Value>()
-            == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+    let budget = if wfst_allows_parallel
         && current_depth < max_parallel_depth()
         && global_eval_pool().active_workers() > 0
     {
-        if all_pure || wavefront_parallel {
-            // Pure branches or wavefront-parallel: bypass depth budget
-            (matches.len() - 1) as u32
-        } else {
-            try_acquire_budget((matches.len() - 1) as u32, current_depth)
-        }
+        try_acquire_budget((matches.len() - 1) as u32, current_depth)
     } else {
         0
     };
@@ -511,8 +509,9 @@ where
             }
         }
 
-        // I-7: When all_pure, budget was not acquired from quotas — pass 0 to avoid leak
-        let actual_budget_acquired = if all_pure { 0 } else { budget };
+        // Budget was acquired from try_acquire_budget — pass it to parallel_branch_eval
+        // for release on completion.
+        let actual_budget_acquired = budget;
 
         // WPDS Layer 3: compute continuation context hash for context-aware scheduling
         let ctx_hash = hash_continuation_context(continuations);

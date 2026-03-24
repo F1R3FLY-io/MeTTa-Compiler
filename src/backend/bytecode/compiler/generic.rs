@@ -517,6 +517,18 @@ where
                 Ok(Some(()))
             }
 
+            // Case dispatch
+            "case" => {
+                if args.len() < 2 { return Ok(None); }
+                // Compile the scrutinee (first arg)
+                self.compile(&args[0])?;
+                // Store the case branches as a constant — the VM handles pattern matching
+                let case_branches = self.factory.sexpr(args[1..].to_vec());
+                let case_idx = self.builder.add_constant(case_branches);
+                self.builder.emit_u16(Opcode::EvalCase, case_idx);
+                return Ok(Some(()));
+            }
+
             // Nondeterminism
             "superpose" => {
                 self.compile_superpose(args)?;

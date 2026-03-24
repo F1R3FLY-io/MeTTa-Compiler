@@ -464,13 +464,13 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // Fall through to TreeWalker for correct handling.
                     "if-reducible" | "if-equal" => false,
                     "match" | "match-or" | "unify" => false,
-                    "collapse" | "collapse-bind" => false,
-                    "superpose" | "amb" => false,
+                    "collapse-bind" => false,
+                    "amb" => false,
                     "sealed" | "atom-subst" => false,
                     "add-atom" | "remove-atom" | "get-atoms" => false,
                     "new-space" | "new-state" | "get-state" | "change-state!" => false,
                     "import!" | "include" | "bind!" | "pragma!" => false,
-                    "println!" | "trace!" | "nop" => false,
+                    "println!" | "nop" => false,
                     "mod-space!" | "print-mods!" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.

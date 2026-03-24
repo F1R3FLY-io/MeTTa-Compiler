@@ -1357,6 +1357,10 @@ where
             Opcode::EvalQuote => self.op_eval_quote()?,
             Opcode::EvalUnquote => self.op_eval_unquote()?,
 
+            // === Case & Collapse (trampoline fallback) ===
+            Opcode::EvalCase => self.op_eval_case()?,
+            Opcode::EvalCollapse => self.op_eval_collapse()?,
+
             // === Debug ===
             Opcode::Breakpoint => self.op_breakpoint()?,
             Opcode::Trace => self.op_trace()?,
@@ -2456,6 +2460,50 @@ where
     }
 
     // === Set Operations & Alpha-Equivalence ===
+
+    /// case: pattern-matching dispatch.
+    /// Stack: [scrutinee], constant pool: case branches -> [result]
+    /// Delegates to trampoline via eval_sub_expr_vm.
+    fn op_eval_case(&mut self) -> VmResult<()> {
+        let case_branches_idx = self.read_u16()?;
+        let scrutinee = self.pop()?;
+
+        let case_branches = self.chunk.get_constant(case_branches_idx).cloned()
+            .ok_or(VmError::InvalidConstant(case_branches_idx))?;
+
+        // Reconstruct (case scrutinee branches...) and delegate to trampoline
+        let mut items = vec![self.factory.atom("case"), scrutinee];
+        if let Some(branch_items) = case_branches.as_sexpr() {
+            items.extend(branch_items.iter().cloned());
+        } else {
+            items.push(case_branches);
+        }
+        let sexpr = self.factory.sexpr(items);
+        let env = self.env.clone().ok_or_else(|| {
+            VmError::Runtime("case: no environment available".to_string())
+        })?;
+        let result = self.eval_sub_expr_vm(sexpr, env)?;
+        self.push(result);
+        Ok(())
+    }
+
+    /// collapse: collect nondeterministic results.
+    /// Stack: [expr] -> [result tuple]
+    /// Delegates to trampoline via eval_sub_expr_vm for correct nondeterministic handling.
+    fn op_eval_collapse(&mut self) -> VmResult<()> {
+        let expr = self.pop()?;
+
+        let sexpr = self.factory.sexpr(vec![
+            self.factory.atom("collapse"),
+            expr,
+        ]);
+        let env = self.env.clone().ok_or_else(|| {
+            VmError::Runtime("collapse: no environment available".to_string())
+        })?;
+        let result = self.eval_sub_expr_vm(sexpr, env)?;
+        self.push(result);
+        Ok(())
+    }
 
     /// if-equal: alpha-equivalence conditional
     /// Stack: [pred1, pred2, then_val, else_val] -> [result]

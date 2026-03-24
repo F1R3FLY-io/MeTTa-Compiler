@@ -310,6 +310,13 @@ debug = 2            # Full debug info for GDB (level 2 = maximum)
 strip = false        # Keep symbols for debugging
 debug-assertions = true
 
+[profile.release-traced]
+inherits = "release"
+# Pure release optimizations with eval-trace instrumentation.
+# Cargo cannot auto-enable features per profile, so pass --features:
+#   cargo build --profile release-traced --features eval-trace
+# Binary: target/release-traced/mettatron
+
 # Debian package metadata
 [package.metadata.deb]
 maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"

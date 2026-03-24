@@ -149,7 +149,7 @@ impl<'a, E, V> ReadZipper<'a, E, V> {
         // Initialize DFS stack on first call
         if !self.dfs_initialized {
             self.dfs_stack.clear();
-            let child_keys: Vec<&'a TrieKey> = self.current.children.keys().collect();
+            let child_keys: Vec<&'a TrieKey> = self.current.children.key_refs();
             self.dfs_stack.push((self.current, child_keys, 0));
             self.dfs_initialized = true;
 
@@ -169,7 +169,7 @@ impl<'a, E, V> ReadZipper<'a, E, V> {
 
                 if let Some(child) = node.children.get(key) {
                     let child_ref: &'a MettaTrieNode<E, V> = child;
-                    let grandchild_keys: Vec<&'a TrieKey> = child_ref.children.keys().collect();
+                    let grandchild_keys: Vec<&'a TrieKey> = child_ref.children.key_refs();
                     self.dfs_stack.push((child_ref, grandchild_keys, 0));
 
                     if child_ref.has_entry() {
@@ -243,11 +243,10 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
         }
 
         // Copy children recursively
-        for (key, src_child) in &source.children {
+        for (key, src_child) in source.children.iter() {
             let tgt_child = target
                 .children
-                .entry(key.clone())
-                .or_insert_with(|| Arc::new(MettaTrieNode::new()));
+                .entry_or_insert(key.clone(), || Arc::new(MettaTrieNode::new()));
             Self::graft_recursive(Arc::make_mut(tgt_child), src_child, added);
         }
     }

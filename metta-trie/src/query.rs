@@ -99,7 +99,7 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
                 let this_var_idx = *var_index;
                 *var_index += 1;
 
-                for (child_key, child_node) in &node.children {
+                for (child_key, child_node) in node.children.iter() {
                     if matches!(child_key, TrieKey::Arity(_)) {
                         // Variable matches an entire S-expression subtree.
                         // We need to find all leaves of this subtree (the "end"
@@ -180,7 +180,7 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
         // Each child in the trie is either:
         // - An atomic key (Atom, Long, Bool, etc.) → consumes 1 child
         // - An Arity(m) key → consumes 1 child but adds m grandchildren to descend
-        for (_child_key, child_node) in &node.children {
+        for (_child_key, child_node) in node.children.iter() {
             match _child_key {
                 TrieKey::Arity(m) => {
                     // This child is itself an S-expression with m children.

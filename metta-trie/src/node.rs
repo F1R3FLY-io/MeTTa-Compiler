@@ -23,8 +23,203 @@ use std::fmt;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::keys::TrieKey;
+
+/// Threshold for promoting SmallVec children to FxHashMap.
+/// Linear scan on ≤ this many children is faster than hash lookup due to cache locality.
+const SMALL_CHILDREN_THRESHOLD: usize = 8;
+
+/// Adaptive children storage: inline SmallVec for low-fanout nodes (common case),
+/// FxHashMap for high-fanout nodes.
+///
+/// Most trie nodes have 1-5 children. SmallVec keeps them contiguous in the
+/// struct (no heap allocation for ≤8), giving better cache locality than HashMap.
+#[derive(Clone)]
+pub(crate) enum Children<E, V> {
+    Small(SmallVec<[(TrieKey, Arc<MettaTrieNode<E, V>>); SMALL_CHILDREN_THRESHOLD]>),
+    Large(FxHashMap<TrieKey, Arc<MettaTrieNode<E, V>>>),
+}
+
+impl<E, V> Children<E, V> {
+    #[inline]
+    fn new() -> Self {
+        Children::Small(SmallVec::new())
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Children::Small(v) => v.is_empty(),
+            Children::Large(m) => m.is_empty(),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Children::Small(v) => v.len(),
+            Children::Large(m) => m.len(),
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, key: &TrieKey) -> Option<&Arc<MettaTrieNode<E, V>>> {
+        match self {
+            Children::Small(v) => v.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            Children::Large(m) => m.get(key),
+        }
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, key: &TrieKey) -> Option<&mut Arc<MettaTrieNode<E, V>>> {
+        match self {
+            Children::Small(v) => v.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v),
+            Children::Large(m) => m.get_mut(key),
+        }
+    }
+
+    pub fn insert(&mut self, key: TrieKey, value: Arc<MettaTrieNode<E, V>>) {
+        match self {
+            Children::Small(v) => {
+                // Check for existing key
+                if let Some(pos) = v.iter().position(|(k, _)| k == &key) {
+                    v[pos].1 = value;
+                    return;
+                }
+                if v.len() < SMALL_CHILDREN_THRESHOLD {
+                    v.push((key, value));
+                } else {
+                    // Promote to Large
+                    let mut map = FxHashMap::with_capacity_and_hasher(
+                        v.len() + 1,
+                        Default::default(),
+                    );
+                    for (k, child) in v.drain(..) {
+                        map.insert(k, child);
+                    }
+                    map.insert(key, value);
+                    *self = Children::Large(map);
+                }
+            }
+            Children::Large(m) => {
+                m.insert(key, value);
+            }
+        }
+    }
+
+    pub fn remove(&mut self, key: &TrieKey) -> Option<Arc<MettaTrieNode<E, V>>> {
+        match self {
+            Children::Small(v) => {
+                if let Some(pos) = v.iter().position(|(k, _)| k == key) {
+                    Some(v.swap_remove(pos).1)
+                } else {
+                    None
+                }
+            }
+            Children::Large(m) => m.remove(key),
+        }
+    }
+
+    /// Get or insert a child, returning a mutable reference.
+    /// Used by navigate_to_mut for CoW trie traversal.
+    pub fn entry_or_insert(
+        &mut self,
+        key: TrieKey,
+        default: impl FnOnce() -> Arc<MettaTrieNode<E, V>>,
+    ) -> &mut Arc<MettaTrieNode<E, V>> {
+        // For Large, delegate directly to HashMap::entry
+        if let Children::Large(m) = self {
+            return m.entry(key).or_insert_with(default);
+        }
+
+        // Small path: check existence, insert or promote
+        let pos = match self {
+            Children::Small(v) => v.iter().position(|(k, _)| k == &key),
+            _ => unreachable!(),
+        };
+
+        if let Some(pos) = pos {
+            match self {
+                Children::Small(v) => return &mut v[pos].1,
+                _ => unreachable!(),
+            }
+        }
+
+        // Insert: either push to SmallVec or promote to Large
+        self.insert(key.clone(), default());
+        self.get_mut(&key).expect("just inserted")
+    }
+
+    pub fn get_key_value(&self, key: &TrieKey) -> Option<(&TrieKey, &Arc<MettaTrieNode<E, V>>)> {
+        match self {
+            Children::Small(v) => v.iter().find(|(k, _)| k == key).map(|(k, v)| (k, v)),
+            Children::Large(m) => m.get_key_value(key),
+        }
+    }
+
+    pub fn keys(&self) -> Vec<TrieKey> {
+        match self {
+            Children::Small(v) => v.iter().map(|(k, _)| k.clone()).collect(),
+            Children::Large(m) => m.keys().cloned().collect(),
+        }
+    }
+
+    /// Return references to keys (for zipper navigation without cloning).
+    pub fn key_refs(&self) -> Vec<&TrieKey> {
+        match self {
+            Children::Small(v) => v.iter().map(|(k, _)| k).collect(),
+            Children::Large(m) => m.keys().collect(),
+        }
+    }
+
+    pub fn values(&self) -> ChildValues<'_, E, V> {
+        match self {
+            Children::Small(v) => ChildValues::Small(v.iter()),
+            Children::Large(m) => ChildValues::Large(m.values()),
+        }
+    }
+
+    pub fn iter(&self) -> ChildIter<'_, E, V> {
+        match self {
+            Children::Small(v) => ChildIter::Small(v.iter()),
+            Children::Large(m) => ChildIter::Large(m.iter()),
+        }
+    }
+}
+
+/// Iterator over child values.
+pub(crate) enum ChildValues<'a, E, V> {
+    Small(std::slice::Iter<'a, (TrieKey, Arc<MettaTrieNode<E, V>>)>),
+    Large(std::collections::hash_map::Values<'a, TrieKey, Arc<MettaTrieNode<E, V>>>),
+}
+
+impl<'a, E, V> Iterator for ChildValues<'a, E, V> {
+    type Item = &'a Arc<MettaTrieNode<E, V>>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ChildValues::Small(it) => it.next().map(|(_, v)| v),
+            ChildValues::Large(it) => it.next(),
+        }
+    }
+}
+
+/// Iterator over (key, child) pairs.
+pub(crate) enum ChildIter<'a, E, V> {
+    Small(std::slice::Iter<'a, (TrieKey, Arc<MettaTrieNode<E, V>>)>),
+    Large(std::collections::hash_map::Iter<'a, TrieKey, Arc<MettaTrieNode<E, V>>>),
+}
+
+impl<'a, E, V> Iterator for ChildIter<'a, E, V> {
+    type Item = (&'a TrieKey, &'a Arc<MettaTrieNode<E, V>>);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ChildIter::Small(it) => it.next().map(|(k, v)| (k, v)),
+            ChildIter::Large(it) => it.next(),
+        }
+    }
+}
 
 /// A node in the MettaTrie.
 ///
@@ -39,16 +234,16 @@ pub struct MettaTrieNode<E, V> {
     pub(crate) entry: Option<(E, V)>,
 
     /// Children indexed by discrimination key.
-    /// Uses FxHashMap (multiply-shift hash) instead of SipHash for ~2-3x faster
-    /// lookups on small keys like TrieKey.
-    pub(crate) children: FxHashMap<TrieKey, Arc<MettaTrieNode<E, V>>>,
+    /// Uses adaptive storage: SmallVec for ≤8 children (cache-friendly linear scan),
+    /// FxHashMap for larger fanout (O(1) hash lookup).
+    pub(crate) children: Children<E, V>,
 }
 
 impl<E: Clone, V: Clone> Clone for MettaTrieNode<E, V> {
     fn clone(&self) -> Self {
         Self {
             entry: self.entry.clone(),
-            children: self.children.clone(), // Arc children are cheap to clone
+            children: self.children.clone(),
         }
     }
 }
@@ -65,7 +260,7 @@ impl<E, V> MettaTrieNode<E, V> {
     pub fn new() -> Self {
         Self {
             entry: None,
-            children: FxHashMap::default(),
+            children: Children::new(),
         }
     }
 
@@ -181,8 +376,7 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
         for key in keys {
             let child = current
                 .children
-                .entry(key.clone())
-                .or_insert_with(|| Arc::new(MettaTrieNode::new()));
+                .entry_or_insert(key.clone(), || Arc::new(MettaTrieNode::new()));
             current = Arc::make_mut(child);
         }
         current
@@ -376,11 +570,10 @@ impl<E: Clone, V: Clone + crate::algebra::Lattice> MettaTrie<E, V> {
         }
 
         // Merge children
-        for (key, src_child) in &source.children {
+        for (key, src_child) in source.children.iter() {
             let tgt_child = target
                 .children
-                .entry(key.clone())
-                .or_insert_with(|| Arc::new(MettaTrieNode::new()));
+                .entry_or_insert(key.clone(), || Arc::new(MettaTrieNode::new()));
             Self::join_nodes(Arc::make_mut(tgt_child), src_child, count);
         }
     }
@@ -406,7 +599,7 @@ impl<E: Clone, V: Clone + crate::algebra::Lattice> MettaTrie<E, V> {
         }
 
         // Recurse into shared children
-        for (key, a_child) in &a.children {
+        for (key, a_child) in a.children.iter() {
             if let Some(b_child) = b.children.get(key) {
                 let mut result_child = MettaTrieNode::new();
                 Self::meet_nodes(a_child, b_child, &mut result_child, count);
@@ -448,11 +641,10 @@ impl<E: Clone, V: Clone + crate::algebra::Lattice> MettaTrie<E, V> {
             }
         }
 
-        for (key, src_child) in &source.children {
+        for (key, src_child) in source.children.iter() {
             let tgt_child = target
                 .children
-                .entry(key.clone())
-                .or_insert_with(|| Arc::new(MettaTrieNode::new()));
+                .entry_or_insert(key.clone(), || Arc::new(MettaTrieNode::new()));
             Self::merge_max_nodes(Arc::make_mut(tgt_child), src_child, count);
         }
     }
@@ -465,7 +657,7 @@ impl<E: Clone, V: Clone + crate::algebra::Lattice> MettaTrie<E, V> {
         }
 
         // Recurse into shared children
-        for (key, a_child) in &a.children {
+        for (key, a_child) in a.children.iter() {
             if let Some(b_child) = b.children.get(key) {
                 let mut result_child = MettaTrieNode::new();
                 Self::restrict_nodes(a_child, b_child, &mut result_child, count);
@@ -509,7 +701,7 @@ impl<E: Clone, V: Clone + crate::algebra::DistributiveLattice> MettaTrie<E, V> {
         }
 
         // Recurse into shared children
-        let keys_to_check: Vec<_> = source.children.keys().cloned().collect();
+        let keys_to_check: Vec<_> = source.children.keys();
         for key in keys_to_check {
             if let Some(src_child) = source.children.get(&key) {
                 if let Some(tgt_child) = target.children.get_mut(&key) {

@@ -3633,14 +3633,45 @@ where
                 });
             }
 
-            // Set up bindings in the current binding frame
+            // Attempt compiled RHS direct execution (compile-on-add).
+            // If the rule has a pre-compiled RHS chunk, execute it in-VM
+            // via call frame switching — no trampoline round-trip.
+            if let Some(compiled_arc) = result.compiled_rhs {
+                // Downcast from Arc<dyn Any + Send + Sync> to Arc<GenericBytecodeChunk<V>>
+                if let Ok(rhs_chunk) = compiled_arc.downcast::<GenericBytecodeChunk<V>>() {
+                    // Push call frame to save current execution state
+                    self.call_stack.push(GenericCallFrame {
+                        return_ip: self.ip,
+                        return_chunk: Arc::clone(&self.chunk),
+                        base_ptr: self.value_stack.len(),
+                        bindings_base: self.bindings_stack.len().saturating_sub(1),
+                    });
+
+                    // Push new binding frame with match bindings.
+                    // PushVariable opcodes in the compiled chunk resolve through
+                    // this frame (searching innermost to outermost).
+                    let depth = self.bindings_stack.len() as u32;
+                    let mut frame = GenericBindingFrame::new(depth);
+                    for (name, value) in result.bindings.iter() {
+                        frame.set(name.to_string(), value.clone());
+                    }
+                    self.bindings_stack.push(frame);
+
+                    // Switch to compiled RHS chunk — VM loop continues here.
+                    // Return opcode will pop the call frame and restore caller state.
+                    self.chunk = rhs_chunk;
+                    self.ip = 0;
+                    return Ok(());
+                }
+                // Downcast failed — fall through to instantiated_rhs path
+            }
+
+            // Fallback: set up bindings in current frame and push instantiated_rhs
             if let Some(frame) = self.bindings_stack.last_mut() {
                 for (name, value) in result.bindings.iter() {
                     frame.set(name.to_string(), value.clone());
                 }
             }
-
-            // Push the instantiated body - caller will continue evaluation
             self.push(result.instantiated_rhs);
             return Ok(());
         }

@@ -1467,8 +1467,11 @@ where
             );
         }
 
-        // I-10: Parallel speculative matching for large candidate sets
+        // I-10: Parallel speculative matching for large candidate sets.
+        // Skip when head is empty (all-rules fallback) — these queries rarely match
+        // and the 102+ candidates are all false positives for thread spawning.
         if all_structural
+            && !head.is_empty()
             && crate::backend::eval::cesk::should_speculate(candidates.len())
             && std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>()
         {

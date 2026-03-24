@@ -1770,6 +1770,11 @@ impl MettaValueTrait for MettaValue {
     }
 
     #[inline]
+    fn identity_eq(&self, other: &Self) -> bool {
+        self.tagged == other.tagged // O(1) pointer/tag comparison
+    }
+
+    #[inline]
     unsafe fn from_inner_ptr(ptr: *const MettaValueInner) -> Self {
         // SAFETY: The pointer is slab-allocated with 'static lifetime (managed by GC).
         MettaValue::from_inner(&*ptr)

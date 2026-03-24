@@ -350,6 +350,23 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
         self.contains_variables()
     }
 
+    /// O(1) identity check: same pointer/tagged value, no structural comparison.
+    ///
+    /// Unlike `PartialEq` which may fall through to O(n) structural comparison,
+    /// this only checks if two values are the exact same allocation (pointer equality).
+    /// Used by `apply_bindings_generic` to detect when substitution didn't change
+    /// a child, enabling structural sharing (returning the original S-expression).
+    ///
+    /// Default implementation falls back to `PartialEq`. Concrete types with
+    /// tagged pointers (e.g., `MettaValue`) should override for true O(1).
+    #[inline]
+    fn identity_eq(&self, other: &Self) -> bool
+    where
+        Self: PartialEq,
+    {
+        self == other
+    }
+
     /// Collect the set of free variable names referenced in this value.
     ///
     /// Returns the names of all variables (`$x`, `&y`, `'z`) that appear in

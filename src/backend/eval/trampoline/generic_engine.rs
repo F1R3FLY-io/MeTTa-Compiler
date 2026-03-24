@@ -132,8 +132,16 @@ where
         let new_items: SmallVec<[V; 8]> = items
             .iter()
             .map(|item| {
+                // Per-child fast path: skip recursion for ground children.
+                // Avoids function call overhead (Spanned check, atom check, etc.)
+                // for children that cannot be affected by bindings.
+                if !item.has_variables_fast() {
+                    return item.clone();
+                }
                 let result = apply_bindings_generic(item, bindings, factory);
-                if !any_changed && result != *item {
+                // O(1) identity check via tagged pointer comparison.
+                // Avoids O(n) structural PartialEq fallthrough.
+                if !any_changed && !result.identity_eq(item) {
                     any_changed = true;
                 }
                 result
@@ -151,8 +159,11 @@ where
         let new_goals: SmallVec<[V; 8]> = goals
             .iter()
             .map(|goal| {
+                if !goal.has_variables_fast() {
+                    return goal.clone();
+                }
                 let result = apply_bindings_generic(goal, bindings, factory);
-                if !any_changed && result != *goal {
+                if !any_changed && !result.identity_eq(goal) {
                     any_changed = true;
                 }
                 result
@@ -164,9 +175,12 @@ where
         return factory.conjunction(new_goals.into_vec());
     }
 
-    // Handle errors
+    // Handle errors - identity short-circuit
     if let Some((msg, details)) = value.as_error() {
         let new_details = apply_bindings_generic(details, bindings, factory);
+        if new_details.identity_eq(details) {
+            return value.clone();
+        }
         return factory.error(msg, new_details);
     }
 

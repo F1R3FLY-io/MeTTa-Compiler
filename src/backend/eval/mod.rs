@@ -304,15 +304,26 @@ fn eval_inner_with_trace(
         );
 
         match eval_bytecode_arena_with_env(&value, env.clone()) {
-            Ok((results, new_env, unreduced)) => {
-                if unreduced {
-                    // Bytecode couldn't reduce — fall through to tree-walker
+            Ok((results, new_env, unreduced, has_choices)) => {
+                if unreduced || has_choices {
+                    // Bytecode couldn't reduce or has unexplored nondeterministic
+                    // alternatives — fall through to tree-walker for correct handling
                 } else {
                     #[cfg(feature = "track-stats")]
                     global_tiered_cache()
                         .record_tier_execution(ExecutionTier::Bytecode);
+                    // Complete evaluation via trampoline (see eval_inner for rationale)
+                    let mut final_results = SmallVec::with_capacity(results.len());
+                    let mut final_env = new_env;
+                    for result in results {
+                        clear_thread_trace_collector();
+                        let (sub_results, sub_env) =
+                            trampoline::eval_trampoline_with_trace(result, final_env, state, collector.clone());
+                        final_results.extend(sub_results);
+                        final_env = sub_env;
+                    }
                     clear_thread_trace_collector();
-                    return (SmallVec::from_vec(results), new_env);
+                    return (final_results, final_env);
                 }
             }
             Err(_) => {}
@@ -422,14 +433,28 @@ fn eval_inner(
     // Try environment-aware bytecode for expressions that need rule dispatch.
     if can_compile_with_env(&value) {
         match eval_bytecode_arena_with_env(&value, env.clone()) {
-            Ok((results, new_env, unreduced)) => {
-                if unreduced {
-                    // Bytecode couldn't reduce — fall through to tree-walker
+            Ok((results, new_env, unreduced, has_choices)) => {
+                if unreduced || has_choices {
+                    // Bytecode couldn't reduce or has unexplored nondeterministic
+                    // alternatives — fall through to tree-walker for correct handling
                 } else {
                     #[cfg(feature = "track-stats")]
                     global_tiered_cache()
                         .record_tier_execution(ExecutionTier::Bytecode);
-                    return (SmallVec::from_vec(results), new_env);
+                    // Complete evaluation: the bytecode VM performs one-step
+                    // rule dispatch, returning instantiated RHS expressions
+                    // like (+ 5 1) that need further reduction to 6.
+                    // The trampoline returns immediately for normal forms
+                    // (O(1) bloom filter check), so this is free for
+                    // already-reduced values.
+                    let mut final_results = SmallVec::with_capacity(results.len());
+                    let mut final_env = new_env;
+                    for result in results {
+                        let (sub_results, sub_env) = eval_trampoline(result, final_env, state);
+                        final_results.extend(sub_results);
+                        final_env = sub_env;
+                    }
+                    return (final_results, final_env);
                 }
             }
             Err(_) => {

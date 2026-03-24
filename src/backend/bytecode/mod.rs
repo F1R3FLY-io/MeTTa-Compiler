@@ -459,7 +459,23 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "case" => true,
                     "error" | "is-error" | "catch" => true,
                     "get-type" => true,
-                    _ => false,
+                    // Special forms with lazy argument semantics must NOT be
+                    // compiled as Call (which eagerly evaluates args).
+                    // Fall through to TreeWalker for correct handling.
+                    "if-reducible" | "if-equal" => false,
+                    "match" | "match-or" | "unify" => false,
+                    "collapse" | "collapse-bind" => false,
+                    "superpose" | "amb" => false,
+                    "sealed" | "atom-subst" => false,
+                    "add-atom" | "remove-atom" | "get-atoms" => false,
+                    "new-space" | "new-state" | "get-state" | "change-state!" => false,
+                    "import!" | "include" | "bind!" | "pragma!" => false,
+                    "println!" | "trace!" | "nop" => false,
+                    "mod-space!" | "print-mods!" => false,
+                    // User-defined functions: compiled as Call opcodes.
+                    // The VM dispatches via op_dispatch_rules → match_rules_native.
+                    // eval_inner completes evaluation via trampoline re-eval.
+                    _ => true,
                 };
 
                 if !head_ok {
@@ -865,7 +881,7 @@ pub fn execute_arena(
 pub fn eval_bytecode_arena_with_env(
     expr: &MettaValue,
     env: MettaEnvironment,
-) -> VmResult<(Vec<MettaValue>, MettaEnvironment, bool)> {
+) -> VmResult<(Vec<MettaValue>, MettaEnvironment, bool, bool)> {
     // Compile the expression to bytecode
     let chunk = compile_bytecode_arc("arena_with_env", expr)
         .map_err(|_| VmError::CompileError)?;
@@ -875,9 +891,10 @@ pub fn eval_bytecode_arena_with_env(
     let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     let (results, env_opt) = vm.run_with_env()?;
     let unreduced = vm.unreduced;
+    let has_unexplored_choices = vm.choice_points_len() > 0;
 
     let final_env = env_opt.unwrap_or_else(|| MettaEnvironment::new(factory));
-    Ok((results, final_env, unreduced))
+    Ok((results, final_env, unreduced, has_unexplored_choices))
 }
 
 /// Execute bytecode with generic value type and environment.

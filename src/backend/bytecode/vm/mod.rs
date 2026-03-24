@@ -4183,8 +4183,9 @@ where
         self.results.push(value);
     }
 
-    /// Get the number of choice points (for testing).
-    #[cfg(test)]
+    /// Get the number of unexplored choice points.
+    /// Used by eval_inner to detect nondeterministic dispatch that needs
+    /// TreeWalker fallback.
     pub fn choice_points_len(&self) -> usize {
         self.choice_points.len()
     }

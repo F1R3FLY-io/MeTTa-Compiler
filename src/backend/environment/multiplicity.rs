@@ -35,17 +35,15 @@ pub fn trie_get_multiplicity<V: Clone>(btm: &MettaTrie<V, Multiplicity>, keys: &
 
 /// Add atom with multiplicity 1, or increment if exists.
 /// Stores the original expression at the leaf for later retrieval.
+/// Uses single-traversal upsert to avoid navigating the trie twice.
 #[inline]
 pub fn trie_add_atom<V: Clone>(btm: &mut MettaTrie<V, Multiplicity>, keys: &[TrieKey], expr: V) {
-    match btm.get_at(keys) {
-        Some(m) => {
-            let new_count = Multiplicity::new(m.count().saturating_add(1));
-            btm.insert_at(keys, expr, new_count);
-        }
-        None => {
-            btm.insert_at(keys, expr, Multiplicity::new(1));
-        }
-    }
+    btm.upsert_at(
+        keys,
+        expr,
+        Multiplicity::new(1),
+        |m| Multiplicity::new(m.count().saturating_add(1)),
+    );
 }
 
 /// Decrement multiplicity. Entry is auto-removed when count reaches 0.

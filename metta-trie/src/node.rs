@@ -19,9 +19,10 @@
 //! Storing the original expression avoids costly reconstruction from the
 //! trie path during iteration.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+
+use rustc_hash::FxHashMap;
 
 use crate::keys::TrieKey;
 
@@ -38,8 +39,9 @@ pub struct MettaTrieNode<E, V> {
     pub(crate) entry: Option<(E, V)>,
 
     /// Children indexed by discrimination key.
-    /// Empty HashMap for leaf nodes.
-    pub(crate) children: HashMap<TrieKey, Arc<MettaTrieNode<E, V>>>,
+    /// Uses FxHashMap (multiply-shift hash) instead of SipHash for ~2-3x faster
+    /// lookups on small keys like TrieKey.
+    pub(crate) children: FxHashMap<TrieKey, Arc<MettaTrieNode<E, V>>>,
 }
 
 impl<E: Clone, V: Clone> Clone for MettaTrieNode<E, V> {
@@ -63,7 +65,7 @@ impl<E, V> MettaTrieNode<E, V> {
     pub fn new() -> Self {
         Self {
             entry: None,
-            children: HashMap::new(),
+            children: FxHashMap::default(),
         }
     }
 
@@ -210,6 +212,30 @@ impl<E: Clone, V: Clone> MettaTrie<E, V> {
             self.val_count += 1;
         }
         old
+    }
+
+    /// Insert or update an entry at the given key path in a single traversal.
+    ///
+    /// If no entry exists, inserts `(expr, default_value)`.
+    /// If an entry exists, calls `update` with the existing value to produce the new value.
+    /// Returns `true` if a new entry was created, `false` if updated.
+    pub fn upsert_at(
+        &mut self,
+        keys: &[TrieKey],
+        expr: E,
+        default_value: V,
+        update: impl FnOnce(&V) -> V,
+    ) -> bool {
+        let node = self.navigate_to_mut(keys);
+        if let Some((ref mut existing_expr, ref mut existing_val)) = node.entry {
+            *existing_val = update(existing_val);
+            *existing_expr = expr;
+            false
+        } else {
+            node.entry = Some((expr, default_value));
+            self.val_count += 1;
+            true
+        }
     }
 
     /// Check if an entry exists at the given key path.

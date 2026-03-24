@@ -15,6 +15,9 @@ smallvec = "1.11"
 # xxHash - Fast hashing for Merkle compaction and content-addressed deduplication
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
+# FxHash - Fast non-cryptographic hashing for trie node children
+rustc-hash = "2"
+
 [dev-dependencies]
 # Property-based testing
 proptest = "1.9"

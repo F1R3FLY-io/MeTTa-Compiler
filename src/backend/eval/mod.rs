@@ -431,34 +431,61 @@ fn eval_inner(
     }
 
     // Try environment-aware bytecode for expressions that need rule dispatch.
+    // Cache compiled chunks in TieredCache to avoid recompilation on every call.
     if can_compile_with_env(&value) {
-        match eval_bytecode_arena_with_env(&value, env.clone()) {
-            Ok((results, new_env, unreduced, has_choices)) => {
-                if unreduced || has_choices {
-                    // Bytecode couldn't reduce or has unexplored nondeterministic
-                    // alternatives — fall through to tree-walker for correct handling
-                } else {
-                    #[cfg(feature = "track-stats")]
-                    global_tiered_cache()
-                        .record_tier_execution(ExecutionTier::Bytecode);
-                    // Complete evaluation: the bytecode VM performs one-step
-                    // rule dispatch, returning instantiated RHS expressions
-                    // like (+ 5 1) that need further reduction to 6.
-                    // The trampoline returns immediately for normal forms
-                    // (O(1) bloom filter check), so this is free for
-                    // already-reduced values.
-                    let mut final_results = SmallVec::with_capacity(results.len());
-                    let mut final_env = new_env;
-                    for result in results {
-                        let (sub_results, sub_env) = eval_trampoline(result, final_env, state);
-                        final_results.extend(sub_results);
-                        final_env = sub_env;
+        // Check TieredCache for cached compiled chunk
+        let compilation_state_env = global_tiered_cache().record_execution(&value);
+        let cached_chunk = compilation_state_env.bytecode_chunk();
+
+        let vm_result = if let Some(chunk) = cached_chunk {
+            // Cache hit — execute cached chunk directly (no recompilation)
+            let factory = env.factory().clone();
+            let mut vm = crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
+                chunk, env.clone(), factory.clone(),
+            );
+            vm.run_with_env()
+                .map(|(results, env_opt)| {
+                    let unreduced = vm.unreduced;
+                    let has_choices = vm.choice_points_len() > 0;
+                    let final_env = env_opt.unwrap_or_else(|| {
+                        crate::backend::environment::generic::MettaEnvironment::new(factory)
+                    });
+                    (results, final_env, unreduced, has_choices)
+                })
+                .ok()
+        } else {
+            // Cache miss — compile, cache, and execute
+            match eval_bytecode_arena_with_env(&value, env.clone()) {
+                Ok((results, new_env, unreduced, has_choices)) => {
+                    // Cache the compiled chunk for future reuse
+                    if compilation_state_env.try_start_bytecode_compile() {
+                        if let Ok(chunk) = crate::backend::bytecode::compile_bytecode_arc(
+                            "cached_env", &value,
+                        ) {
+                            compilation_state_env.set_bytecode_ready(chunk);
+                        }
                     }
-                    return (final_results, final_env);
+                    Some((results, new_env, unreduced, has_choices))
                 }
+                Err(_) => None,
             }
-            Err(_) => {
-                // Bytecode compilation/execution failed, fall through to tree-walker
+        };
+
+        if let Some((results, new_env, unreduced, has_choices)) = vm_result {
+            if !unreduced && !has_choices {
+                #[cfg(feature = "track-stats")]
+                global_tiered_cache()
+                    .record_tier_execution(ExecutionTier::Bytecode);
+                // Complete evaluation via trampoline (returns immediately for
+                // normal forms via O(1) bloom filter check).
+                let mut final_results = SmallVec::with_capacity(results.len());
+                let mut final_env = new_env;
+                for result in results {
+                    let (sub_results, sub_env) = eval_trampoline(result, final_env, state);
+                    final_results.extend(sub_results);
+                    final_env = sub_env;
+                }
+                return (final_results, final_env);
             }
         }
     }

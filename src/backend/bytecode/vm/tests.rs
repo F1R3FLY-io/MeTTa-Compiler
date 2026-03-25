@@ -2467,6 +2467,7 @@ fn test_vm_alternative_index() {
         ip: alt_offset, // Will be used when we backtrack
         chunk: chunk_for_cp,
         alternatives: vec![Alternative::Index(alt_offset)],
+        saved_unreduced: false,
     });
 
     let results = vm.run().expect("VM should succeed");
@@ -2776,9 +2777,9 @@ mod generic_vm_tests {
         assert_eq!(results[0].as_atom(), Some("$y"));
     }
 
-    /// Test DeconAtom returns (head, tail) pair.
+    /// Test DeconsAtom returns (head, tail) pair.
     #[test]
-    fn test_generic_vm_decon_atom() {
+    fn test_generic_vm_decons_atom() {
         let f = factory();
         let mut builder = GenericChunkBuilder::with_factory("test_decon", f.clone());
 
@@ -2786,7 +2787,7 @@ mod generic_vm_tests {
         let expr = f.sexpr(vec![f.atom("a"), f.atom("b"), f.atom("c")]);
         let idx = builder.add_constant(expr);
         builder.emit_u16(Opcode::PushConstant, idx);
-        builder.emit(Opcode::DeconAtom);
+        builder.emit(Opcode::DeconsAtom);
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
@@ -4121,12 +4122,12 @@ fn test_vm_max_atom_no_numbers() {
 // Note: test_vm_get_arity_non_sexpr already exists at line 3467
 
 #[test]
-fn test_vm_decon_atom_empty_phase3d() {
-    // DeconAtom on empty S-expression
+fn test_vm_decons_atom_empty_phase3d() {
+    // DeconsAtom on empty S-expression
     let mut builder = ChunkBuilder::new("test");
     let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
-    builder.emit(Opcode::DeconAtom);
+    builder.emit(Opcode::DeconsAtom);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
@@ -4137,11 +4138,11 @@ fn test_vm_decon_atom_empty_phase3d() {
 }
 
 #[test]
-fn test_vm_decon_atom_non_sexpr() {
-    // DeconAtom on non-S-expression
+fn test_vm_decons_atom_non_sexpr() {
+    // DeconsAtom on non-S-expression
     let mut builder = ChunkBuilder::new("test");
     builder.emit_byte(Opcode::PushLongSmall, 42);
-    builder.emit(Opcode::DeconAtom);
+    builder.emit(Opcode::DeconsAtom);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
@@ -5865,10 +5866,10 @@ fn test_vm_get_element_out_of_bounds() {
     assert!(result.is_err());
 }
 
-/// Test DeconAtom with non-empty S-expression.
+/// Test DeconsAtom with non-empty S-expression.
 #[test]
-fn test_vm_decon_atom_success() {
-    let mut builder = ChunkBuilder::new("test_decon_atom");
+fn test_vm_decons_atom_success() {
+    let mut builder = ChunkBuilder::new("test_decons_atom");
 
     let sexpr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("head"),
@@ -5876,7 +5877,7 @@ fn test_vm_decon_atom_success() {
         MettaValue::Long(2),
     ]));
     builder.emit_u16(Opcode::PushConstant, sexpr);
-    builder.emit(Opcode::DeconAtom);
+    builder.emit(Opcode::DeconsAtom);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
@@ -5899,14 +5900,14 @@ fn test_vm_decon_atom_success() {
     }
 }
 
-/// Test DeconAtom with empty S-expression fails.
+/// Test DeconsAtom with empty S-expression fails.
 #[test]
-fn test_vm_decon_atom_empty() {
-    let mut builder = ChunkBuilder::new("test_decon_atom_empty");
+fn test_vm_decons_atom_empty() {
+    let mut builder = ChunkBuilder::new("test_decons_atom_empty");
 
     let empty = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty);
-    builder.emit(Opcode::DeconAtom);
+    builder.emit(Opcode::DeconsAtom);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();

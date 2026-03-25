@@ -28,7 +28,7 @@
 use smallvec::SmallVec;
 use std::sync::Arc;
 
-use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::bytecode::chunk::{BytecodeChunk, GenericBytecodeChunk};
 use crate::backend::models::{GenericBindings, MettaValue, MettaValueTrait};
 
 /// Result of VM execution
@@ -273,6 +273,10 @@ pub struct GenericCallFrame<C> {
     pub base_ptr: usize,
     /// Base pointer into bindings stack
     pub bindings_base: usize,
+    /// When true, returning from this frame yields the result to `self.results`
+    /// and backtracks via `op_fail` instead of continuing to the calling chunk.
+    /// Used for outermost nondeterministic dispatch (multi-match DispatchRules).
+    pub yield_on_return: bool,
 }
 
 /// Generic choice point for nondeterminism.
@@ -300,6 +304,9 @@ where
     pub chunk: Arc<C>,
     /// Remaining alternatives to try
     pub alternatives: Vec<GenericAlternative<V, C>>,
+    /// Saved `unreduced` flag — prevents inner dispatches from polluting
+    /// the outer unreduced state during nondeterministic backtracking.
+    pub saved_unreduced: bool,
 }
 
 // ============================================================================
@@ -314,6 +321,27 @@ pub type Alternative = GenericAlternative<MettaValue, BytecodeChunk>;
 
 /// Choice point for nondeterminism (concrete type alias).
 pub type ChoicePoint = GenericChoicePoint<MettaValue, BytecodeChunk>;
+
+/// Collapse frame for nondeterminism sandboxing.
+///
+/// Saves the outer nondeterministic context when entering a `(collapse ...)` scope.
+/// Backtracking within the collapse body cannot escape past the barrier.
+#[derive(Debug, Clone)]
+pub struct GenericCollapseFrame<V: MettaValueTrait + Clone + Send + Sync + 'static> {
+    /// Saved outer results vector (swapped out during collapse body)
+    pub saved_results: Vec<V>,
+    /// Choice point stack height at collapse entry — backtracking barrier
+    pub choice_point_base: usize,
+    /// Value stack height at collapse entry (for cleanup)
+    pub value_stack_height: usize,
+    /// IP to resume at after collapse completes (instruction after CollapseEnd)
+    pub continuation_ip: usize,
+    /// Chunk to resume in (may differ from current chunk after backtracking)
+    pub continuation_chunk: Arc<GenericBytecodeChunk<V>>,
+}
+
+/// Collapse frame (concrete type alias).
+pub type CollapseFrame = GenericCollapseFrame<MettaValue>;
 
 /// Call frame on the call stack (concrete type alias).
 pub type CallFrame = GenericCallFrame<BytecodeChunk>;

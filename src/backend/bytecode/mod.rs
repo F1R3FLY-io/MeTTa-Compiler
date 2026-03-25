@@ -96,6 +96,7 @@
 //! This hybrid approach keeps MORK's O(k) pattern matching while
 //! gaining bytecode's execution efficiency.
 
+pub mod builtin_chunks;
 pub mod cache;
 pub mod chunk;
 pub mod compiler;
@@ -420,25 +421,18 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
         ValueView::String(_) => true,
 
         // Atoms: variables, known constants, AND unknown atoms (for rule dispatch)
-        ValueView::Atom(name) => {
-            if name.starts_with('$') {
-                return true;
-            }
-            if name.starts_with('&') {
-                return false;
-            }
-            match name {
-                "True" | "False" | "Nil" | "Unit" | "_" => true,
-                _ => true,
-            }
-        }
+        // Atoms: variables ($x), space references (&self), known constants — all compilable.
+        // The compiler emits PushAtom for all non-variable atoms; the VM resolves
+        // space references at runtime via the environment.
+        ValueView::Atom(_name) => true,
 
         // S-expressions - check head AND all operands recursively
         ValueView::SExpr(items) if items.is_empty() => true,
         ValueView::SExpr(items) => {
             if let ValueView::Atom(head) = items[0].view() {
                 let head_ok = match head {
-                    "=" => false,
+                    // Rule definitions: compiler quotes both LHS and RHS (data form)
+                    "=" => true,
                     "!" => true,
                     "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
                     "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
@@ -459,18 +453,30 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "case" => true,
                     "error" | "is-error" | "catch" => true,
                     "get-type" => true,
-                    // Special forms with lazy argument semantics must NOT be
-                    // compiled as Call (which eagerly evaluates args).
-                    // Fall through to TreeWalker for correct handling.
-                    "if-reducible" | "if-equal" => false,
-                    "match" | "match-or" | "unify" => false,
+                    // if-reducible: native VM handling — compile(expr) + JumpIfIdentical
+                    // compares result to original, branches without trampoline.
+                    "if-reducible" => true,
+                    // if-equal: VM's op_eval_if_equal does alpha-equiv natively.
+                    // Returns unevaluated branch; eval_inner trampoline pass reduces it.
+                    "if-equal" => true,
+                    // match/match-or with &self: native MatchSelf opcode calls
+                    // env.match_space() directly. Non-&self stays in tree-walker.
+                    "match" => items.len() >= 4
+                        && items[1].as_atom() == Some("&self"),
+                    "match-or" => items.len() >= 5
+                        && items[1].as_atom() == Some("&self"),
+                    "unify" => false,
                     "collapse-bind" => false,
                     "amb" => false,
                     "sealed" | "atom-subst" => false,
-                    "add-atom" | "remove-atom" | "get-atoms" => false,
-                    "new-space" | "new-state" | "get-state" | "change-state!" => false,
+                    "remove-atom" | "get-atoms" => true,
+                    "add-atom" => true,
+                    // State/space operations: compiler emits opcodes with
+                    // VM handlers (op_new_state, op_get_state, etc.)
+                    "new-space" | "new-state" | "get-state" | "change-state!" => true,
                     "import!" | "include" | "bind!" | "pragma!" => false,
-                    "println!" | "nop" => false,
+                    // println! builds S-expr for trampoline; nop emits PushUnit
+                    "println!" | "nop" => true,
                     "mod-space!" | "print-mods!" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
@@ -886,14 +892,16 @@ pub fn eval_bytecode_arena_with_env(
     let chunk = compile_bytecode_arc("arena_with_env", expr)
         .map_err(|_| VmError::CompileError)?;
 
-    // Execute via GenericBytecodeVM with environment (same as execute_arena)
+    // Execute via GenericBytecodeVM with environment.
+    // yield_on_top_return exhausts all nondeterministic alternatives within run().
     let factory = env.factory().clone();
     let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
-    let (results, env_opt) = vm.run_with_env()?;
+    vm.yield_on_top_return = true;
+    let results = vm.run()?;
     let unreduced = vm.unreduced;
     let has_unexplored_choices = vm.choice_points_len() > 0;
 
-    let final_env = env_opt.unwrap_or_else(|| MettaEnvironment::new(factory));
+    let final_env = vm.env.take().unwrap_or_else(|| MettaEnvironment::new(factory));
     Ok((results, final_env, unreduced, has_unexplored_choices))
 }
 

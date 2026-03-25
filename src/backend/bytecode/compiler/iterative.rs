@@ -1488,7 +1488,7 @@ impl Compiler {
             "decons-atom" => {
                 self.check_arity("decons-atom", args.len(), 1)?;
                 work_stack.push(CompileWork::CompileUnaryOp {
-                    op: UnaryOp::DeconAtom,
+                    op: UnaryOp::DeconsAtom,
                     arg: args[0].clone(),
                     folded: None,
                     cont_id,

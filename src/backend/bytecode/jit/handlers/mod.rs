@@ -135,7 +135,7 @@ pub use globals::{
     GlobalsHandlerContext,
 };
 
-pub use atom_ops::{compile_decon_atom, compile_repr, AtomOpsHandlerContext};
+pub use atom_ops::{compile_decons_atom, compile_repr, AtomOpsHandlerContext};
 
 pub use higher_order_ops::{
     compile_filter_atom, compile_foldl_atom, compile_map_atom, HigherOrderOpsHandlerContext,

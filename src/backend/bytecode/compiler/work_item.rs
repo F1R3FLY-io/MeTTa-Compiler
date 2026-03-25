@@ -348,7 +348,7 @@ pub enum UnaryOp {
     GetHead,
     GetTail,
     GetArity,
-    DeconAtom,
+    DeconsAtom,
     MinAtom,
     MaxAtom,
 
@@ -404,7 +404,7 @@ impl UnaryOp {
             UnaryOp::GetHead => Opcode::GetHead,
             UnaryOp::GetTail => Opcode::GetTail,
             UnaryOp::GetArity => Opcode::GetArity,
-            UnaryOp::DeconAtom => Opcode::DeconAtom,
+            UnaryOp::DeconsAtom => Opcode::DeconsAtom,
             UnaryOp::MinAtom => Opcode::MinAtom,
             UnaryOp::MaxAtom => Opcode::MaxAtom,
             UnaryOp::GetType => Opcode::GetType,

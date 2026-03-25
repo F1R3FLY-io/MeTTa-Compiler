@@ -4,7 +4,7 @@
 //! - map_atom - Map a function over S-expression elements
 //! - filter_atom - Filter S-expression elements by predicate
 //! - foldl_atom - Left fold over S-expression elements
-//! - decon_atom - Deconstruct an S-expression into (head, tail) pair
+//! - decons_atom - Deconstruct an S-expression into (head, tail) pair
 //! - repr - Convert value to string representation
 
 use super::helpers::metta_to_jit;
@@ -15,7 +15,7 @@ use crate::backend::models::{MettaValue, ValueView};
 use std::sync::Arc;
 
 // =============================================================================
-// Phase 1.7: S-Expression Operations - DeconAtom, Repr
+// Phase 1.7: S-Expression Operations - DeconsAtom, Repr
 // =============================================================================
 
 /// Phase 1.7: Deconstruct an S-expression into (head, tail) pair
@@ -29,13 +29,13 @@ use std::sync::Arc;
 /// # Returns
 /// NaN-boxed S-expression `(head tail)`, or Nil for non-S-expressions
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_decon_atom(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
+pub unsafe extern "C" fn jit_runtime_decons_atom(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
 
     // Validate value has valid tag
     debug_assert!(
         jit_val.is_valid_tag(),
-        "jit_runtime_decon_atom: Invalid JitValue: raw={:#018x}, tag={:#06x}",
+        "jit_runtime_decons_atom: Invalid JitValue: raw={:#018x}, tag={:#06x}",
         val,
         (val >> 48) as u16
     );

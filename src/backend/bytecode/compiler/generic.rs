@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use super::context::CompileContext;
 use super::error::{CompileError, CompileResult};
-use crate::backend::bytecode::chunk::{GenericBytecodeChunk, GenericChunkBuilder};
+use crate::backend::bytecode::chunk::{GenericBytecodeChunk, GenericChunkBuilder, JumpLabel};
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
@@ -35,6 +35,10 @@ where
     current_line: u32,
     /// Whether we're compiling in tail position (for TCO)
     pub(crate) in_tail_position: bool,
+    /// Whether we're compiling inside a `(collapse ...)` body.
+    /// When true, `compile_superpose` omits `Yield` — `CollapseEnd`
+    /// drives backtracking via `op_fail_within_collapse` instead.
+    pub(crate) in_collapse_scope: bool,
 }
 
 impl<V, F> GenericCompiler<V, F>
@@ -52,6 +56,7 @@ where
             factory,
             current_line: 1,
             in_tail_position: true,
+            in_collapse_scope: false,
         }
     }
 
@@ -65,6 +70,7 @@ where
             factory,
             current_line: 1,
             in_tail_position: true,
+            in_collapse_scope: false,
         }
     }
 
@@ -415,20 +421,92 @@ where
             }
             "if-reducible" => {
                 self.check_arity("if-reducible", args.len(), 3)?;
-                // Push all 3 args, then EvalIfReducible opcode
-                self.compile(&args[0])?; // expr
-                self.compile(&args[1])?; // then
-                self.compile(&args[2])?; // else
-                self.builder.emit(Opcode::EvalIfReducible);
+                // Native if-reducible: compile expr, compare result to original,
+                // branch to then (reduced) or else (irreducible).
+                // No trampoline delegation — the VM does everything inline.
+
+                // Save original expression as constant (for comparison after eval)
+                let original_idx = self.builder.add_constant(args[0].clone());
+
+                // Compile the expression — generates evaluation bytecode
+                let saved_tail = self.in_tail_position;
+                self.in_tail_position = false;
+                self.compile(&args[0])?;
+                self.in_tail_position = saved_tail;
+
+                // Push unevaluated original for comparison
+                self.builder.emit_u16(Opcode::PushConstant, original_idx);
+
+                // JumpIfIdentical: pops both values, jumps if result == original
+                // (irreducible → else branch)
+                let else_jump = self.builder.emit_jump(Opcode::JumpIfIdentical);
+
+                // Then branch (expression reduced)
+                self.compile(&args[1])?;
+                let end_jump = self.builder.emit_jump(Opcode::Jump);
+
+                // Else branch (expression irreducible)
+                self.builder.patch_jump(else_jump);
+                self.compile(&args[2])?;
+                self.builder.patch_jump(end_jump);
+
+                Ok(Some(()))
+            }
+            "if-equal" => {
+                self.check_arity("if-equal", args.len(), 4)?;
+                // Push all 4 args as unevaluated constants.
+                // VM's op_eval_if_equal does alpha-equiv on raw values.
+                for arg in args {
+                    let idx = self.builder.add_constant(arg.clone());
+                    self.builder.emit_u16(Opcode::PushConstant, idx);
+                }
+                self.builder.emit(Opcode::EvalIfEqual);
+                Ok(Some(()))
+            }
+            "match" => {
+                if !(args.len() == 3 || args.len() == 4) {
+                    return Err(CompileError::InvalidArityRange {
+                        op: "match".to_string(),
+                        min: 3,
+                        max: 4,
+                        got: args.len(),
+                    });
+                }
+                // Native path for &self: MatchSelf opcode calls env.match_space() directly
+                if args[0].as_atom() == Some("&self") {
+                    let pattern_idx = self.builder.add_constant(args[1].clone());
+                    self.builder.emit_u16(Opcode::PushConstant, pattern_idx);
+                    let template_idx = self.builder.add_constant(args[2].clone());
+                    self.builder.emit_u16(Opcode::PushConstant, template_idx);
+                    self.builder.emit(Opcode::MatchSelf);
+                    return Ok(Some(()));
+                }
+                // Non-self space: push all args as constants, delegate via EvalMatch
+                for arg in args {
+                    let idx = self.builder.add_constant(arg.clone());
+                    self.builder.emit_u16(Opcode::PushConstant, idx);
+                }
+                self.builder.emit(Opcode::EvalMatch);
                 Ok(Some(()))
             }
             "match-or" => {
                 self.check_arity("match-or", args.len(), 4)?;
-                // Push all 4 args, then EvalMatchOr opcode
-                self.compile(&args[0])?; // space
-                self.compile(&args[1])?; // pattern
-                self.compile(&args[2])?; // default
-                self.compile(&args[3])?; // template
+                // Native path for &self: MatchSelfOr with default fallback
+                if args[0].as_atom() == Some("&self") {
+                    let pattern_idx = self.builder.add_constant(args[1].clone());
+                    self.builder.emit_u16(Opcode::PushConstant, pattern_idx);
+                    let default_idx = self.builder.add_constant(args[2].clone());
+                    self.builder.emit_u16(Opcode::PushConstant, default_idx);
+                    let template_idx = self.builder.add_constant(args[3].clone());
+                    self.builder.emit_u16(Opcode::PushConstant, template_idx);
+                    self.builder.emit(Opcode::MatchSelfOr);
+                    return Ok(Some(()));
+                }
+                // Non-self space: delegate via EvalMatchOr
+                for arg in args {
+                    let idx = self.builder.add_constant(arg.clone());
+                    self.builder.emit_u16(Opcode::PushConstant, idx);
+                }
                 self.builder.emit(Opcode::EvalMatchOr);
                 Ok(Some(()))
             }
@@ -517,15 +595,9 @@ where
                 Ok(Some(()))
             }
 
-            // Case dispatch
+            // Case dispatch — jump-based inline pattern matching
             "case" => {
-                if args.len() < 2 { return Ok(None); }
-                // Compile the scrutinee (first arg)
-                self.compile(&args[0])?;
-                // Store the case branches as a constant — the VM handles pattern matching
-                let case_branches = self.factory.sexpr(args[1..].to_vec());
-                let case_idx = self.builder.add_constant(case_branches);
-                self.builder.emit_u16(Opcode::EvalCase, case_idx);
+                self.compile_case(args)?;
                 return Ok(Some(()));
             }
 
@@ -536,8 +608,19 @@ where
             }
             "collapse" => {
                 self.check_arity("collapse", args.len(), 1)?;
+                // Native collapse: CollapseBegin saves nondeterministic context,
+                // body compiles with in_collapse_scope (superpose omits Yield),
+                // CollapseEnd collects results and drives backtracking.
+                let collapse_jump = self.builder.emit_jump(Opcode::CollapseBegin);
+                let saved_collapse = self.in_collapse_scope;
+                let saved_tail = self.in_tail_position;
+                self.in_collapse_scope = true;
+                self.in_tail_position = false;
                 self.compile(&args[0])?;
-                self.builder.emit(Opcode::EvalCollapse);
+                self.in_collapse_scope = saved_collapse;
+                self.in_tail_position = saved_tail;
+                self.builder.emit(Opcode::CollapseEnd);
+                self.builder.patch_jump(collapse_jump);
                 Ok(Some(()))
             }
 
@@ -575,7 +658,7 @@ where
             "decons-atom" => {
                 self.check_arity("decons-atom", args.len(), 1)?;
                 self.compile(&args[0])?;
-                self.builder.emit(Opcode::DeconAtom);
+                self.builder.emit(Opcode::DeconsAtom);
                 Ok(Some(()))
             }
             "repr" => {
@@ -1122,6 +1205,150 @@ where
         Ok(())
     }
 
+    /// Compile a case expression using jump-based inline dispatch.
+    ///
+    /// MeTTa syntax: `(case scrutinee ((pattern1 body1) (pattern2 body2) ...))`
+    ///
+    /// Each arm emits:
+    /// ```text
+    /// Dup                       ; copy scrutinee for matching
+    /// PushConstant(pattern)     ; push quoted pattern (preserves $vars)
+    /// MatchBind                 ; pop pattern+copy, push bool, set bindings on match
+    /// JumpIfFalse → next_arm    ; skip on mismatch (pops bool)
+    /// Pop                       ; remove scrutinee (match succeeded)
+    /// <compile body>            ; in tail position if case is in tail position
+    /// Jump → end                ; skip remaining arms
+    /// next_arm:
+    /// ```
+    /// After the last arm, a no-match fallback emits `Pop; PushEmpty`.
+    fn compile_case(&mut self, args: &[V]) -> CompileResult<()> {
+        if args.len() < 2 {
+            return Err(CompileError::InvalidArity {
+                op: "case".to_string(),
+                expected: 2,
+                got: args.len(),
+            });
+        }
+
+        let scrutinee = &args[0];
+        let branches = &args[1];
+
+        // Extract (pattern, body) pairs from the branches S-expression
+        let pairs: Vec<(&V, &V)> = if let Some(items) = branches.as_sexpr() {
+            let mut pairs = Vec::with_capacity(items.len());
+            for item in items {
+                if let Some(pair) = item.as_sexpr() {
+                    if pair.len() == 2 {
+                        pairs.push((&pair[0], &pair[1]));
+                    } else {
+                        // Non-pair branch — fall back to EvalCase for safety
+                        return self.compile_case_fallback(args);
+                    }
+                } else {
+                    // Non-S-expression branch — fall back to EvalCase
+                    return self.compile_case_fallback(args);
+                }
+            }
+            pairs
+        } else {
+            // Branches is not an S-expression — fall back to EvalCase
+            return self.compile_case_fallback(args);
+        };
+
+        // Compile scrutinee (not in tail position — it's an input)
+        let saved_tail = self.in_tail_position;
+        self.in_tail_position = false;
+        self.compile(scrutinee)?;
+        self.in_tail_position = saved_tail;
+
+        if pairs.is_empty() {
+            // No arms: pop scrutinee, push empty
+            self.builder.emit(Opcode::Pop);
+            self.builder.emit(Opcode::PushEmpty);
+            return Ok(());
+        }
+
+        let mut end_jumps: Vec<JumpLabel> = Vec::with_capacity(pairs.len());
+
+        for (i, (pattern, body)) in pairs.iter().enumerate() {
+            let is_last_arm = i == pairs.len() - 1;
+            let is_catch_all = self.is_catch_all_pattern(pattern);
+
+            if is_catch_all && is_last_arm {
+                // Last arm with catch-all: no need for JumpIfFalse
+                if pattern.is_variable() {
+                    // Bind the variable (MatchBind always succeeds for $var)
+                    self.builder.emit(Opcode::Dup);
+                    self.compile_quoted(pattern)?;
+                    self.builder.emit(Opcode::MatchBind);
+                    self.builder.emit(Opcode::Pop); // pop the `true` bool
+                }
+                // Pop scrutinee, compile body
+                self.builder.emit(Opcode::Pop);
+                self.in_tail_position = saved_tail;
+                self.compile(body)?;
+            } else {
+                // Standard arm: Dup, PushConstant(pattern), MatchBind, JumpIfFalse
+                self.builder.emit(Opcode::Dup);
+                self.compile_quoted(pattern)?;
+                self.builder.emit(Opcode::MatchBind);
+                let next_arm = self.builder.emit_jump(Opcode::JumpIfFalse);
+
+                // Match succeeded: pop scrutinee, compile body
+                self.builder.emit(Opcode::Pop);
+                self.in_tail_position = saved_tail;
+                self.compile(body)?;
+
+                if !is_last_arm {
+                    // Jump to end (skip remaining arms)
+                    let end_jump = self.builder.emit_jump(Opcode::Jump);
+                    end_jumps.push(end_jump);
+                }
+
+                // Patch JumpIfFalse to here (next arm or fallback)
+                self.builder.patch_jump(next_arm);
+            }
+        }
+
+        // If the last arm was NOT a catch-all, emit no-match fallback
+        let last_is_catch_all = self.is_catch_all_pattern(pairs.last().expect("non-empty").0);
+        if !last_is_catch_all {
+            self.builder.emit(Opcode::Pop);
+            self.builder.emit(Opcode::PushEmpty);
+        }
+
+        // Patch all end jumps to here
+        for jump in end_jumps {
+            self.builder.patch_jump(jump);
+        }
+
+        Ok(())
+    }
+
+    /// Fallback: compile case using EvalCase opcode (for malformed branches).
+    fn compile_case_fallback(&mut self, args: &[V]) -> CompileResult<()> {
+        let saved_tail = self.in_tail_position;
+        self.in_tail_position = false;
+        self.compile(&args[0])?;
+        self.in_tail_position = saved_tail;
+        let case_branches = self.factory.sexpr(args[1..].to_vec());
+        let case_idx = self.builder.add_constant(case_branches);
+        self.builder.emit_u16(Opcode::EvalCase, case_idx);
+        Ok(())
+    }
+
+    /// Check if a pattern is a catch-all (always matches).
+    /// Catch-all patterns: wildcard `_`, bare variable `$x`, `&var`, `'var`.
+    fn is_catch_all_pattern(&self, pattern: &V) -> bool {
+        if let Some(name) = pattern.as_atom() {
+            name == "_" || name.starts_with('$') || name.starts_with('\'')
+                || (name.starts_with('&') && name != "&" && name != "&self"
+                    && name != "&kb" && name != "&stack")
+        } else {
+            false
+        }
+    }
+
     /// Compile a quoted expression (no evaluation)
     fn compile_quoted(&mut self, expr: &V) -> CompileResult<()> {
         // Push the value as-is without evaluation
@@ -1137,13 +1364,22 @@ where
         let list = &args[0];
         // Unit is the normalized form of SExpr([]) - treat as empty superpose
         if list.is_unit() {
-            self.builder.emit(Opcode::Fail);
+            if self.in_collapse_scope {
+                // Inside collapse: push Unit so CollapseEnd collects nothing
+                // (it filters Unit values). Fail would escape the collapse barrier.
+                self.builder.emit(Opcode::PushUnit);
+            } else {
+                self.builder.emit(Opcode::Fail);
+            }
             return Ok(());
         }
         if let Some(items) = list.as_sexpr() {
             if items.is_empty() {
-                // Empty superpose = fail
-                self.builder.emit(Opcode::Fail);
+                if self.in_collapse_scope {
+                    self.builder.emit(Opcode::PushUnit);
+                } else {
+                    self.builder.emit(Opcode::Fail);
+                }
                 return Ok(());
             }
 
@@ -1168,9 +1404,12 @@ where
                 self.builder.emit_raw(&idx.to_be_bytes());
             }
 
-            // Yield saves the current top-of-stack to results, then backtracks
-            // via op_fail to the choice point created by Fork, exploring all alternatives.
-            self.builder.emit(Opcode::Yield);
+            // Inside collapse scope: omit Yield. CollapseEnd drives backtracking
+            // via op_fail_within_collapse. Fork's resume_ip will point to CollapseEnd.
+            // Outside collapse scope: Yield saves result and backtracks normally.
+            if !self.in_collapse_scope {
+                self.builder.emit(Opcode::Yield);
+            }
         } else {
             // Not a list - compile the list expression and it will be dynamically superposed
             self.compile(list)?;

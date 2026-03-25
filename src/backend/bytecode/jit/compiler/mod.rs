@@ -2319,19 +2319,19 @@ impl JitCompiler {
             // =====================================================================
             // Phase 1.7: Atom Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::DeconAtom => {
+            Opcode::DeconsAtom => {
                 let mut ctx = handlers::AtomOpsHandlerContext {
                     module: &mut self.module,
-                    decon_atom_func_id: self.higher_order.decon_atom_func_id,
+                    decons_atom_func_id: self.higher_order.decons_atom_func_id,
                     repr_func_id: self.higher_order.repr_func_id,
                 };
-                return handlers::compile_decon_atom(&mut ctx, codegen, offset);
+                return handlers::compile_decons_atom(&mut ctx, codegen, offset);
             }
 
             Opcode::Repr => {
                 let mut ctx = handlers::AtomOpsHandlerContext {
                     module: &mut self.module,
-                    decon_atom_func_id: self.higher_order.decon_atom_func_id,
+                    decons_atom_func_id: self.higher_order.decons_atom_func_id,
                     repr_func_id: self.higher_order.repr_func_id,
                 };
                 return handlers::compile_repr(&mut ctx, codegen, offset);
@@ -2407,9 +2407,10 @@ impl JitCompiler {
                 ));
             }
 
-            Opcode::EvalIfReducible | Opcode::EvalMatchOr => {
+            Opcode::EvalIfReducible | Opcode::EvalMatchOr
+            | Opcode::JumpIfIdentical | Opcode::MatchSelf | Opcode::MatchSelfOr => {
                 return Err(JitError::NotCompilable(
-                    format!("Opcode {:?} requires trampoline fallback (not yet JIT-compiled)", op),
+                    format!("Opcode {:?} not yet JIT-compiled — falls back to bytecode VM", op),
                 ));
             }
 
@@ -2425,7 +2426,9 @@ impl JitCompiler {
             | Opcode::FlattenAtom
             | Opcode::ZipAtom
             | Opcode::TakeAtom
-            | Opcode::DropAtom => {
+            | Opcode::DropAtom
+            | Opcode::CollapseBegin
+            | Opcode::CollapseEnd => {
                 return Err(JitError::NotCompilable(
                     format!("Opcode {:?} not yet JIT-compiled, falling back to VM interpreter", op),
                 ));

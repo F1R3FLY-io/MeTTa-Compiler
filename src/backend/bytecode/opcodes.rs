@@ -192,7 +192,7 @@ pub enum Opcode {
     /// Get S-expression element by index
     GetElement = 0x7D,
     /// Deconstruct S-expression: [expr] -> [(head tail)]
-    DeconAtom = 0x7E,
+    DeconsAtom = 0x7E,
     /// String representation: [value] -> [string]
     Repr = 0x7F,
     /// Map over atoms: [list] -> [mapped_list] (chunk index follows)
@@ -299,6 +299,24 @@ pub enum Opcode {
     /// Match-or: match with default fallback
     /// [space, pattern, default, template] -> [result]
     EvalMatchOr = 0xB9,
+    /// Begin collapse scope: saves nondeterministic context (results, choice point height)
+    /// Operand: i16 relative offset to instruction after CollapseEnd (continuation IP).
+    CollapseBegin = 0xBA,
+    /// End collapse scope: collects results, restores outer context, pushes S-expression
+    /// No operands. Returns ControlFlow (like Yield/Fail).
+    CollapseEnd = 0xBB,
+
+    /// Jump if TOS-1 == TOS via PartialEq (pops both values).
+    /// Used for `if-reducible`: compares evaluated result to original expression.
+    /// Operand: i16 relative offset.
+    JumpIfIdentical = 0xBC,
+    /// Native match against &self space.
+    /// Stack: [pattern, template] → [result]
+    /// Calls env.match_space() directly. Multiple results create choice points.
+    MatchSelf = 0xBD,
+    /// Native match-or against &self space with default.
+    /// Stack: [pattern, default, template] → [result]
+    MatchSelfOr = 0xBE,
 
     // === Grounded Arithmetic (0xC0-0xCF) ===
     /// Addition: [a, b] -> [a + b]
@@ -476,7 +494,7 @@ impl Opcode {
             | Self::GetHead
             | Self::GetTail
             | Self::GetArity
-            | Self::DeconAtom
+            | Self::DeconsAtom
             | Self::Repr
             | Self::GetMetaType
             | Self::ValidateAtom
@@ -573,6 +591,9 @@ impl Opcode {
             | Self::SubtractionAtom
             | Self::EvalIfReducible
             | Self::EvalMatchOr
+            | Self::CollapseEnd
+            | Self::MatchSelf
+            | Self::MatchSelfOr
             | Self::MorkLookup
             | Self::MorkMatch
             | Self::MorkInsert
@@ -643,7 +664,9 @@ impl Opcode {
             | Self::FilterAtom
             | Self::FoldlAtom
             | Self::Fork
-            | Self::Collect => 2,
+            | Self::Collect
+            | Self::CollapseBegin
+            | Self::JumpIfIdentical => 2,
 
             // 3-byte immediate (2-byte head_index + 1-byte arity)
             Self::Call
@@ -740,7 +763,7 @@ impl Opcode {
             Self::GetTail => "get_tail",
             Self::GetArity => "get_arity",
             Self::GetElement => "get_element",
-            Self::DeconAtom => "decon_atom",
+            Self::DeconsAtom => "decons_atom",
             Self::Repr => "repr",
             Self::MapAtom => "map_atom",
             Self::FilterAtom => "filter_atom",
@@ -791,6 +814,11 @@ impl Opcode {
             Self::SubtractionAtom => "subtraction_atom",
             Self::EvalIfReducible => "eval_if_reducible",
             Self::EvalMatchOr => "eval_match_or",
+            Self::CollapseBegin => "collapse_begin",
+            Self::CollapseEnd => "collapse_end",
+            Self::JumpIfIdentical => "jump_if_identical",
+            Self::MatchSelf => "match_self",
+            Self::MatchSelfOr => "match_self_or",
             Self::Add => "add",
             Self::Sub => "sub",
             Self::Mul => "mul",
@@ -868,6 +896,8 @@ impl Opcode {
                 | Self::JumpShort
                 | Self::JumpIfFalseShort
                 | Self::JumpIfTrueShort
+                | Self::CollapseBegin
+                | Self::JumpIfIdentical
         )
     }
 
@@ -1001,7 +1031,7 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x7B] = Some(Opcode::GetTail);
     table[0x7C] = Some(Opcode::GetArity);
     table[0x7D] = Some(Opcode::GetElement);
-    table[0x7E] = Some(Opcode::DeconAtom);
+    table[0x7E] = Some(Opcode::DeconsAtom);
     table[0x7F] = Some(Opcode::Repr);
     table[0x80] = Some(Opcode::MapAtom);
     table[0x81] = Some(Opcode::FilterAtom);
@@ -1056,6 +1086,11 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xB7] = Some(Opcode::SubtractionAtom);
     table[0xB8] = Some(Opcode::EvalIfReducible);
     table[0xB9] = Some(Opcode::EvalMatchOr);
+    table[0xBA] = Some(Opcode::CollapseBegin);
+    table[0xBB] = Some(Opcode::CollapseEnd);
+    table[0xBC] = Some(Opcode::JumpIfIdentical);
+    table[0xBD] = Some(Opcode::MatchSelf);
+    table[0xBE] = Some(Opcode::MatchSelfOr);
 
     // Grounded arithmetic
     table[0xC0] = Some(Opcode::Add);

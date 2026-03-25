@@ -1,7 +1,7 @@
 //! Higher-order operations function initialization for JIT compiler
 //!
 //! Handles symbol registration and function declaration for higher-order
-//! runtime functions: map_atom, filter_atom, foldl_atom, decon_atom, repr.
+//! runtime functions: map_atom, filter_atom, foldl_atom, decons_atom, repr.
 
 use cranelift::prelude::*;
 use cranelift_jit::JITBuilder;
@@ -19,7 +19,7 @@ pub struct HigherOrderFuncIds {
     /// Left fold over list
     pub foldl_atom_func_id: FuncId,
     /// Deconstruct atom to (head, tail)
-    pub decon_atom_func_id: FuncId,
+    pub decons_atom_func_id: FuncId,
     /// Get string representation
     pub repr_func_id: FuncId,
 }
@@ -48,8 +48,8 @@ impl<T> HigherOrderInit for T {
             runtime::jit_runtime_foldl_atom as *const u8,
         );
         builder.symbol(
-            "jit_runtime_decon_atom",
-            runtime::jit_runtime_decon_atom as *const u8,
+            "jit_runtime_decons_atom",
+            runtime::jit_runtime_decons_atom as *const u8,
         );
         builder.symbol("jit_runtime_repr", runtime::jit_runtime_repr as *const u8);
     }
@@ -106,18 +106,18 @@ impl<T> HigherOrderInit for T {
                 ))
             })?;
 
-        // decon_atom: fn(ctx, value, ip) -> (head, tail) pair
-        let mut decon_atom_sig = module.make_signature();
-        decon_atom_sig.params.push(AbiParam::new(types::I64)); // ctx
-        decon_atom_sig.params.push(AbiParam::new(types::I64)); // value
-        decon_atom_sig.params.push(AbiParam::new(types::I64)); // ip
-        decon_atom_sig.returns.push(AbiParam::new(types::I64)); // result
+        // decons_atom: fn(ctx, value, ip) -> (head, tail) pair
+        let mut decons_atom_sig = module.make_signature();
+        decons_atom_sig.params.push(AbiParam::new(types::I64)); // ctx
+        decons_atom_sig.params.push(AbiParam::new(types::I64)); // value
+        decons_atom_sig.params.push(AbiParam::new(types::I64)); // ip
+        decons_atom_sig.returns.push(AbiParam::new(types::I64)); // result
 
-        let decon_atom_func_id = module
-            .declare_function("jit_runtime_decon_atom", Linkage::Import, &decon_atom_sig)
+        let decons_atom_func_id = module
+            .declare_function("jit_runtime_decons_atom", Linkage::Import, &decons_atom_sig)
             .map_err(|e| {
                 JitError::CompilationError(format!(
-                    "Failed to declare jit_runtime_decon_atom: {}",
+                    "Failed to declare jit_runtime_decons_atom: {}",
                     e
                 ))
             })?;
@@ -139,7 +139,7 @@ impl<T> HigherOrderInit for T {
             map_atom_func_id,
             filter_atom_func_id,
             foldl_atom_func_id,
-            decon_atom_func_id,
+            decons_atom_func_id,
             repr_func_id,
         })
     }

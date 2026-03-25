@@ -318,7 +318,7 @@ fn eval_inner_with_trace(
                     for result in results {
                         clear_thread_trace_collector();
                         let (sub_results, sub_env) =
-                            trampoline::eval_trampoline_with_trace(result, final_env, state, collector.clone());
+                            trampoline::eval_trampoline_with_trace(result, final_env, state, &collector);
                         final_results.extend(sub_results);
                         final_env = sub_env;
                     }
@@ -430,24 +430,73 @@ fn eval_inner(
         }
     }
 
+    // Check pre-compiled built-in registry — zero compilation overhead for
+    // common operations like (+, -, *, /, car-atom, etc.)
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
+            let arity = (items.len() - 1) as u8;
+            if let Some(builtin_chunk) = crate::backend::bytecode::builtin_chunks::get_builtin_chunk(head_atom, arity) {
+                // Evaluate arguments first (they may need reduction)
+                let mut arg_values = SmallVec::<[MettaValue; 4]>::with_capacity(arity as usize);
+                let mut current_env = env.clone();
+                let mut all_single = true;
+                for arg in &items[1..] {
+                    let (results, new_env) = eval_trampoline(arg.clone(), current_env, state);
+                    current_env = new_env;
+                    if results.len() == 1 {
+                        arg_values.push(results.into_iter().next().expect("len checked"));
+                    } else {
+                        all_single = false;
+                        break;
+                    }
+                }
+                if all_single {
+                    let factory = current_env.factory().clone();
+                    let mut vm = crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
+                        builtin_chunk, current_env.clone(), factory.clone(),
+                    );
+                    for arg in arg_values {
+                        vm.value_stack.push(arg);
+                    }
+                    if let Ok((results, _env_opt)) = vm.run_with_env() {
+                        if !results.is_empty() {
+                            return (SmallVec::from_vec(results), current_env);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Try environment-aware bytecode for expressions that need rule dispatch.
     // Cache compiled chunks in TieredCache to avoid recompilation on every call.
-    if can_compile_with_env(&value) {
-        // Check TieredCache for cached compiled chunk
-        let compilation_state_env = global_tiered_cache().record_execution(&value);
+    // Use cached compilability check to avoid redundant recursive tree walks.
+    let compilable_with_env = compilation_state.cached_compilable_with_env()
+        .unwrap_or_else(|| {
+            let result = can_compile_with_env(&value);
+            compilation_state.set_compilable_with_env(result);
+            result
+        });
+    if compilable_with_env {
+        // Reuse compilation_state from the record_execution at line 371 —
+        // same expression hash, avoids redundant DashMap lookup + hash computation.
+        let compilation_state_env = &compilation_state;
         let cached_chunk = compilation_state_env.bytecode_chunk();
 
         let vm_result = if let Some(chunk) = cached_chunk {
-            // Cache hit — execute cached chunk directly (no recompilation)
+            // Cache hit — execute cached chunk directly (no recompilation).
+            // yield_on_top_return exhausts all nondeterministic alternatives
+            // within a single run() call, eliminating tree-walker fallback.
             let factory = env.factory().clone();
             let mut vm = crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
                 chunk, env.clone(), factory.clone(),
             );
-            vm.run_with_env()
-                .map(|(results, env_opt)| {
+            vm.yield_on_top_return = true;
+            vm.run()
+                .map(|results| {
                     let unreduced = vm.unreduced;
                     let has_choices = vm.choice_points_len() > 0;
-                    let final_env = env_opt.unwrap_or_else(|| {
+                    let final_env = vm.env.take().unwrap_or_else(|| {
                         crate::backend::environment::generic::MettaEnvironment::new(factory)
                     });
                     (results, final_env, unreduced, has_choices)

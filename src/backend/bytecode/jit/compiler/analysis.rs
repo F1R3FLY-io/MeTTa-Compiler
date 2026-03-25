@@ -201,7 +201,9 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::EvalPragma
             | Opcode::EvalFunction
             | Opcode::EvalLambda
-            | Opcode::EvalApply => {}
+            | Opcode::EvalApply
+            | Opcode::CollapseBegin
+            | Opcode::CollapseEnd => {}
 
             // Advanced nondeterminism
             Opcode::Cut
@@ -246,7 +248,7 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             Opcode::LoadUpvalue => {}
 
             // Atom operations
-            Opcode::DeconAtom
+            Opcode::DeconsAtom
             | Opcode::Repr => {}
 
             // Higher-order operations
@@ -492,7 +494,9 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             | Opcode::EvalPragma    // Phase E: pragma directive [directive] -> [Unit]
             | Opcode::EvalFunction  // Phase E: function definition [name, params, body] -> [Unit]
             | Opcode::EvalLambda    // Phase E: lambda expression [params, body] -> [closure]
-            | Opcode::EvalApply => {} // Phase E: apply closure [closure, args] -> [result]
+            | Opcode::EvalApply     // Phase E: apply closure [closure, args] -> [result]
+            | Opcode::CollapseBegin // Native collapse: nondeterminism sandboxing
+            | Opcode::CollapseEnd => {} // Native collapse: collect results
 
             // Phase G: Advanced Nondeterminism (via runtime calls)
             Opcode::Cut               // Phase G: prune search space
@@ -537,7 +541,7 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             Opcode::LoadUpvalue => {} // Phase 1.6: load from enclosing scope [depth, index] -> [value]
 
             // Phase 1.7: Atom Operations (via runtime calls)
-            Opcode::DeconAtom       // Phase 1.7: deconstruct S-expr [expr] -> [(head, tail)]
+            Opcode::DeconsAtom       // Phase 1.7: deconstruct S-expr [expr] -> [(head, tail)]
             | Opcode::Repr => {}    // Phase 1.7: string representation [value] -> [string]
 
             // Phase 1.8: Higher-Order Operations (via runtime calls, may bailout)

@@ -246,11 +246,14 @@ impl<V: MettaValueTrait + Clone> Default for ThunkTable<V> {
 
 thread_local! {
     static THREAD_THUNKS: RefCell<ThunkTable<MettaValue>> = RefCell::new(ThunkTable::new());
+    /// Dirty flag: only clear the table when entries have been added since last clear.
+    static THUNK_DIRTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Access the thread-local thunk table.
 #[inline]
 pub fn with_thunk_table<R>(f: impl FnOnce(&mut ThunkTable<MettaValue>) -> R) -> R {
+    THUNK_DIRTY.with(|d| d.set(true));
     THREAD_THUNKS.with(|cell| {
         let mut table = cell.borrow_mut();
         f(&mut table)
@@ -258,10 +261,16 @@ pub fn with_thunk_table<R>(f: impl FnOnce(&mut ThunkTable<MettaValue>) -> R) -> 
 }
 
 /// Clear the thread-local thunk table.
+/// Skips the clear if no entries have been added since the last clear.
 #[inline]
 pub fn clear_thunk_table() {
-    THREAD_THUNKS.with(|cell| {
-        cell.borrow_mut().clear();
+    THUNK_DIRTY.with(|d| {
+        if d.get() {
+            THREAD_THUNKS.with(|cell| {
+                cell.borrow_mut().clear();
+            });
+            d.set(false);
+        }
     });
 }
 

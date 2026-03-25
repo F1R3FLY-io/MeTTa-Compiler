@@ -376,6 +376,11 @@ pub struct ExprCompilationState {
     /// V8 equivalent: FeedbackVector (per-function IC slot array).
     /// HotSpot equivalent: MethodData (MDO).
     pub runtime_profile: std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>,
+
+    /// Cached result of `can_compile_with_env()` (0=unknown, 1=true, 2=false).
+    /// Write-once, lock-free reads. Eliminates ~922K recursive tree walks for
+    /// repeated expressions in the PLN benchmark.
+    compilable_with_env: AtomicU8,
 }
 
 impl ExprCompilationState {
@@ -394,6 +399,7 @@ impl ExprCompilationState {
             runtime_profile: std::sync::Arc::new(parking_lot::Mutex::new(
                 super::runtime_profile::RuntimeTypeProfile::new(),
             )),
+            compilable_with_env: AtomicU8::new(0),
         }
     }
 
@@ -431,6 +437,25 @@ impl ExprCompilationState {
     #[inline]
     pub fn bytecode_status(&self) -> TierStatusKind {
         TierStatusKind::from(self.bytecode_status.load(Ordering::Acquire))
+    }
+
+    /// Check cached `can_compile_with_env` result. Returns `None` if not yet computed.
+    #[inline]
+    pub fn cached_compilable_with_env(&self) -> Option<bool> {
+        match self.compilable_with_env.load(Ordering::Relaxed) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Store `can_compile_with_env` result (idempotent, first write wins).
+    #[inline]
+    pub fn set_compilable_with_env(&self, compilable: bool) {
+        let val = if compilable { 1u8 } else { 2u8 };
+        let _ = self.compilable_with_env.compare_exchange(
+            0, val, Ordering::Relaxed, Ordering::Relaxed,
+        );
     }
 
     /// Get bytecode chunk if ready (lock-free read via OnceLock)

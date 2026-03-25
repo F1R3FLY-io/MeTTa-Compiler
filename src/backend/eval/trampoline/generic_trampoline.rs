@@ -28,6 +28,7 @@ use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
 use super::context::{ContextEnv, EvalContext};
+use crate::backend::models::gc_allocator::RootProvider;
 use super::generic_engine::{
     apply_bindings_generic, eval_switch_generic, is_boolean_check_pattern, pattern_match_generic,
     try_match_all_rules_generic, try_deferred_deterministic_chain, DeferredChainResult,
@@ -1284,6 +1285,15 @@ where
         crate::backend::eval::cesk::clear_thunk_table();
     }
 
+    // Deferred environment drops: hold Arc clones to dying environments' shared
+    // state, deferring the expensive cascading Arc::drop_slow out of the hot path.
+    // At each GC safepoint, we call collect_roots() on each deferred env to add
+    // their MettaValues to the root_set (so the GC doesn't sweep them), then
+    // clear the Vec AFTER the safepoint completes.
+    let mut deferred_shared_drops: Vec<std::sync::Arc<
+        crate::backend::environment::GenericEnvironmentShared<C::Value>,
+    >> = Vec::new();
+
     // Main trampoline loop
     while let Some(work) = work_stack.pop() {
         // Periodic GC safepoint check (every 4096 trampoline iterations)
@@ -1321,6 +1331,19 @@ where
                     unsafe { &mut *(root_set.as_mut_vec() as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 collect_eval_memo_roots(concrete_roots);
                 collect_match_result_roots(concrete_roots);
+
+                // Collect GC roots from deferred environment drops.
+                // These environments' MettaValues must be visible to the GC
+                // so it doesn't sweep values only reachable through them.
+                for deferred_env in &deferred_shared_drops {
+                    // SAFETY: TypeId check above guarantees C::Value == MettaValue.
+                    // GenericEnvironmentShared<C::Value> and GenericEnvironmentShared<MettaValue>
+                    // have identical layout.
+                    let concrete_env: &crate::backend::environment::GenericEnvironmentShared<crate::backend::models::MettaValue> =
+                        unsafe { &*(deferred_env.as_ref() as *const crate::backend::environment::GenericEnvironmentShared<C::Value>
+                            as *const crate::backend::environment::GenericEnvironmentShared<crate::backend::models::MettaValue>) };
+                    concrete_env.collect_roots(concrete_roots);
+                }
             }
 
             // Phase 2.2: Incremental nursery collection (thread-local, no quiescence needed).
@@ -1369,6 +1392,12 @@ where
             // Drain roots into a Vec for the GC. The RootSet retains its
             // allocated capacity for reuse at the next safepoint.
             ctx.perform_safepoint(root_set.drain_into_vec());
+
+            // Clear deferred environment drops AFTER safepoint completes.
+            // Their roots were collected into root_set above, so the GC saw them.
+            // Now it's safe to drop them — the GC won't sweep their values.
+            deferred_shared_drops.clear();
+
             // Trace: GcSafepoint with measured pause duration
             #[cfg(feature = "eval-trace")]
             {
@@ -2142,22 +2171,34 @@ where
 
                     // Evaluate if condition
                     GenericEvalStep::EvalIfCondition { condition, then_branch, else_branch, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessIfCondition {
-                            then_branch,
-                            else_branch,
-                            outer_bindings: None,
-                            env: env.clone(),
-                            depth,
-                        });
+                        // Fast path: literal Bool condition — skip continuation + work item
+                        if let Some(is_true) = condition.as_bool() {
+                            let branch = if is_true { then_branch } else { else_branch };
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: branch,
+                                env,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                            });
+                        } else {
+                            continuations.push(GenericContinuation::ProcessIfCondition {
+                                then_branch,
+                                else_branch,
+                                outer_bindings: None,
+                                env: env.clone(),
+                                depth,
+                            });
 
-                        // 8.7: if-condition always expects Bool — prune non-Bool branches
-                        work_stack.push(GenericWorkItem::Eval {
-                            value: condition,
-                            env,
-                            depth: depth + 1,
-                            is_tail_call: false,
-                            expected_type: Some(ctx.factory().atom("Bool")),
-                        });
+                            // 8.7: if-condition always expects Bool — prune non-Bool branches
+                            work_stack.push(GenericWorkItem::Eval {
+                                value: condition,
+                                env,
+                                depth: depth + 1,
+                                is_tail_call: false,
+                                expected_type: Some(ctx.factory().atom("Bool")),
+                            });
+                        }
                     }
 
                     // Evaluate case atom
@@ -3035,6 +3076,20 @@ where
                     if resolved_head_atom == Some("if") && items.len() == 4 {
                         let condition = apply_bindings_generic(&items[1], &bindings, ctx.factory());
 
+                        // Fast path: literal Bool after binding substitution
+                        if let Some(is_true) = condition.as_bool() {
+                            let branch_raw = if is_true { &items[2] } else { &items[3] };
+                            work_stack.push(GenericWorkItem::EvalWithBindings {
+                                template: branch_raw.clone(),
+                                bindings,
+                                env,
+                                depth,
+                                is_tail_call,
+                                expected_type,
+                            });
+                            continue;
+                        }
+
                         continuations.push(GenericContinuation::ProcessIfCondition {
                             then_branch: items[2].clone(), // RAW — not materialized
                             else_branch: items[3].clone(), // RAW — not materialized
@@ -3276,6 +3331,7 @@ where
                     &mut continuations,
                     &mut final_result,
                     ctx,
+                    &mut deferred_shared_drops,
                 );
             }
         }
@@ -3324,6 +3380,9 @@ fn process_continuation_generic<C: EvalContext>(
     continuations: &mut Vec<GenericContinuation<C::Value, ContextEnv<C>>>,
     final_result: &mut Option<GenericEvalResult<C::Value, ContextEnv<C>>>,
     ctx: &C,
+    deferred_shared_drops: &mut Vec<std::sync::Arc<
+        crate::backend::environment::GenericEnvironmentShared<C::Value>,
+    >>,
 ) where
     C::Value: Clone,
 {
@@ -3448,6 +3507,10 @@ fn process_continuation_generic<C: EvalContext>(
             }
 
             if remaining_matches.len() == 0 {
+                // Defer the branch environment's deep drop. Its MettaValues
+                // are collected into root_set at the next GC safepoint via
+                // collect_roots(), then the Vec is cleared after perform_safepoint.
+                deferred_shared_drops.push(std::sync::Arc::clone(&env.shared));
                 work_stack.push(GenericWorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
                 });

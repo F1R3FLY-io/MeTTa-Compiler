@@ -38,8 +38,8 @@ use super::opcodes::Opcode;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::eval::bindings_generic::apply_bindings_generic;
 use crate::backend::models::{
-    numeric_equal_generic, MettaValue, MettaValueFactory, MettaValueTrait,
-    SpaceHandle, ValueView,
+    numeric_equal_generic, GenericBindings, MettaValue, MettaValueFactory,
+    MettaValueTrait, SpaceHandle, ValueView,
 };
 
 // === Submodules ===
@@ -58,7 +58,8 @@ pub use types::{VmConfig, VmError, VmResult};
 // Generic types
 pub use types::{
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
-    Alternative, BindingFrame, CallFrame, ChoicePoint,
+    GenericCollapseFrame,
+    Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseFrame,
 };
 
 // ============================================================================
@@ -209,6 +210,17 @@ where
     /// the expression was returned unchanged. Callers use this O(1) flag instead
     /// of an O(expression_size) structural comparison (`results[0] == expr`).
     pub unreduced: bool,
+
+    /// When `true`, top-level Return/chunk-end yields results and backtracks
+    /// via `op_fail` instead of breaking, exhausting all nondeterministic
+    /// alternatives within a single `run()` call. Set by `eval_inner`.
+    /// Only affects top-level returns (no call frame); sub-chunk returns via
+    /// call frames are never affected.
+    pub(crate) yield_on_top_return: bool,
+
+    /// Collapse frames for nondeterminism sandboxing.
+    /// Each `(collapse ...)` pushes a frame; backtracking cannot escape past the barrier.
+    pub(crate) collapse_frames: Vec<GenericCollapseFrame<V>>,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
@@ -259,6 +271,8 @@ where
             expected_type: None,
             runtime_profile: None,
             unreduced: false,
+            yield_on_top_return: false,
+            collapse_frames: Vec::new(),
         }
     }
 
@@ -285,6 +299,8 @@ where
             expected_type: None,
             runtime_profile: None,
             unreduced: false,
+            yield_on_top_return: false,
+            collapse_frames: Vec::new(),
         }
     }
 
@@ -314,6 +330,8 @@ where
             expected_type: None,
             runtime_profile: None,
             unreduced: false,
+            yield_on_top_return: false,
+            collapse_frames: Vec::new(),
         }
     }
 
@@ -664,6 +682,30 @@ where
         Ok((results, env))
     }
 
+    /// Exhaust all remaining choice points by repeatedly backtracking and
+    /// re-running the VM. Each alternative is executed through the full
+    /// chunk instruction sequence, producing one result set per alternative.
+    ///
+    /// Called from `eval_inner` when `choice_points_len() > 0` after the
+    /// initial `run()` completes, to handle nondeterministic rule dispatch
+    /// entirely within the bytecode VM.
+    pub fn resume_alternatives(&mut self) -> VmResult<Vec<V>> {
+        let mut all_results = Vec::new();
+        while !self.choice_points.is_empty() {
+            match self.op_fail()? {
+                ControlFlow::Continue(()) => {
+                    let results = self.run()?;
+                    all_results.extend(results);
+                }
+                ControlFlow::Break(final_results) => {
+                    all_results.extend(final_results);
+                    break;
+                }
+            }
+        }
+        Ok(all_results)
+    }
+
     /// Execute a single instruction.
     pub fn step(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         // Bounds check
@@ -831,6 +873,16 @@ where
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
                 if matches!(cond.view(), ValueView::Bool(true)) {
+                    self.ip = (self.ip as isize + offset as isize) as usize;
+                }
+            }
+            // JumpIfIdentical: pops two values, jumps if they are PartialEq equal.
+            // Used for native if-reducible: compares evaluated result to original.
+            Opcode::JumpIfIdentical => {
+                let offset = self.read_i16()?;
+                let b = self.pop()?; // original (unevaluated)
+                let a = self.pop()?; // result (evaluated)
+                if a == b { // PartialEq — exact match including variable names
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1272,7 +1324,7 @@ where
                     });
                 }
             }
-            Opcode::DeconAtom => self.op_decon_atom()?,
+            Opcode::DeconsAtom => self.op_decons_atom()?,
             Opcode::Repr => self.op_repr()?,
             Opcode::GetMetaType => self.op_get_metatype()?,
             // validate-atom and get-type-space require full type inference with
@@ -1330,9 +1382,13 @@ where
             Opcode::GetState => self.op_get_state()?,
             Opcode::ChangeState => self.op_change_state()?,
 
-            // === If-Reducible & Match-Or (trampoline fallback) ===
+            // === If-Reducible, Match, Match-Or (trampoline fallback) ===
             Opcode::EvalIfReducible => self.op_eval_if_reducible()?,
+            Opcode::EvalMatch => self.op_eval_match()?,
             Opcode::EvalMatchOr => self.op_eval_match_or()?,
+            // Native match against &self — calls env.match_space() directly
+            Opcode::MatchSelf => self.op_match_self()?,
+            Opcode::MatchSelfOr => self.op_match_self_or()?,
 
             // === Set Operations & Alpha-Equivalence ===
             Opcode::EvalIfEqual => self.op_eval_if_equal()?,
@@ -1360,6 +1416,10 @@ where
             // === Case & Collapse (trampoline fallback) ===
             Opcode::EvalCase => self.op_eval_case()?,
             Opcode::EvalCollapse => self.op_eval_collapse()?,
+
+            // === Native Collapse (nondeterminism sandboxing) ===
+            Opcode::CollapseBegin => self.op_collapse_begin()?,
+            Opcode::CollapseEnd => return self.op_collapse_end(),
 
             // === Debug ===
             Opcode::Breakpoint => self.op_breakpoint()?,
@@ -1399,8 +1459,9 @@ where
     /// Handle reaching the end of a bytecode chunk.
     fn handle_chunk_end(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         if let Some(frame) = self.call_stack.pop() {
-            // Return to caller
             let value = self.pop().unwrap_or_else(|_| self.make_unit());
+
+            // Return to caller
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
@@ -1417,6 +1478,13 @@ where
             // End of top-level
             if !self.value_stack.is_empty() {
                 self.results.extend(self.value_stack.drain(..));
+            }
+            // yield_on_top_return: exhaust remaining alternatives
+            if self.yield_on_top_return && !self.choice_points.is_empty() {
+                if !self.collapse_frames.is_empty() {
+                    return self.op_fail_within_collapse();
+                }
+                return self.op_fail();
             }
             Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
         }
@@ -1798,6 +1866,14 @@ where
         } else {
             // Return from top-level
             self.results.push(value);
+            // yield_on_top_return: exhaust all nondeterministic alternatives
+            // within this single run() call — no VM exit/re-enter overhead.
+            if self.yield_on_top_return && !self.choice_points.is_empty() {
+                if !self.collapse_frames.is_empty() {
+                    return self.op_fail_within_collapse();
+                }
+                return self.op_fail();
+            }
             Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
         }
     }
@@ -1986,7 +2062,7 @@ where
         Ok(())
     }
 
-    fn op_decon_atom(&mut self) -> VmResult<()> {
+    fn op_decons_atom(&mut self) -> VmResult<()> {
         let value = self.pop()?;
         if let Some(items) = value.as_sexpr() {
             if items.is_empty() {
@@ -2434,6 +2510,29 @@ where
         Ok(())
     }
 
+    /// match: pattern matching against a space.
+    /// Falls back to full trampoline evaluation since this requires space matching.
+    /// Stack: [space, pattern, template] -> [result]
+    fn op_eval_match(&mut self) -> VmResult<()> {
+        let template = self.pop()?;
+        let pattern = self.pop()?;
+        let space = self.pop()?;
+
+        // Construct (match space pattern template) and delegate to trampoline
+        let sexpr = self.factory.sexpr(vec![
+            self.factory.atom("match"),
+            space,
+            pattern,
+            template,
+        ]);
+        let env = self.env.clone().ok_or_else(|| {
+            VmError::Runtime("match: no environment available".to_string())
+        })?;
+        let result = self.eval_sub_expr_vm(sexpr, env)?;
+        self.push(result);
+        Ok(())
+    }
+
     /// match-or: match with default fallback.
     /// Falls back to full trampoline evaluation since this requires space matching.
     /// Stack: [space, pattern, default, template] -> [result]
@@ -2456,6 +2555,97 @@ where
         })?;
         let result = self.eval_sub_expr_vm(sexpr, env)?;
         self.push(result);
+        Ok(())
+    }
+
+    // === Native Match (no trampoline delegation) ===
+
+    /// Native match against &self space.
+    /// Stack: [pattern, template] → [result]
+    /// Calls `env.match_space()` directly. Multiple results create choice points.
+    fn op_match_self(&mut self) -> VmResult<()> {
+        let template = self.pop()?;
+        let pattern = self.pop()?;
+
+        let env = self.env.as_ref().ok_or_else(|| {
+            VmError::Runtime("match: no environment available".to_string())
+        })?;
+
+        let matches = env.match_space(&pattern, &template);
+
+        // Expand multiplicities into flat results
+        let flat: Vec<V> = matches
+            .into_iter()
+            .flat_map(|m| std::iter::repeat(m.value).take(m.count))
+            .collect();
+
+        if flat.is_empty() {
+            // No matches — return empty (same as tree-walker: empty result set).
+            // Signal unreduced so eval_inner falls through to tree-walker which
+            // returns empty results.
+            self.unreduced = true;
+            self.push(self.make_sexpr(vec![]));
+        } else if flat.len() == 1 {
+            self.push(flat.into_iter().next().expect("flat is non-empty"));
+        } else {
+            // Multiple matches — Fork-style choice points
+            let mut iter = flat.into_iter();
+            let first = iter.next().expect("flat is non-empty");
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                iter.map(GenericAlternative::Value).collect();
+            self.choice_points.push(GenericChoicePoint {
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                alternatives,
+                saved_unreduced: self.unreduced,
+            });
+            self.push(first);
+        }
+        Ok(())
+    }
+
+    /// Native match-or against &self space with default fallback.
+    /// Stack: [pattern, default, template] → [result]
+    fn op_match_self_or(&mut self) -> VmResult<()> {
+        let template = self.pop()?;
+        let default = self.pop()?;
+        let pattern = self.pop()?;
+
+        let env = self.env.as_ref().ok_or_else(|| {
+            VmError::Runtime("match-or: no environment available".to_string())
+        })?;
+
+        let matches = env.match_space(&pattern, &template);
+
+        let flat: Vec<V> = matches
+            .into_iter()
+            .flat_map(|m| std::iter::repeat(m.value).take(m.count))
+            .collect();
+
+        if flat.is_empty() {
+            // No matches — use default
+            self.push(default);
+        } else if flat.len() == 1 {
+            self.push(flat.into_iter().next().expect("flat is non-empty"));
+        } else {
+            let mut iter = flat.into_iter();
+            let first = iter.next().expect("flat is non-empty");
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                iter.map(GenericAlternative::Value).collect();
+            self.choice_points.push(GenericChoicePoint {
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                alternatives,
+                saved_unreduced: self.unreduced,
+            });
+            self.push(first);
+        }
         Ok(())
     }
 
@@ -2503,6 +2693,168 @@ where
         let result = self.eval_sub_expr_vm(sexpr, env)?;
         self.push(result);
         Ok(())
+    }
+
+    // === Native Collapse (nondeterminism sandboxing) ===
+
+    /// Begin a collapse scope: saves the current nondeterministic context
+    /// (results vector and choice point stack height) so that backtracking
+    /// within the collapse body cannot escape past this barrier.
+    fn op_collapse_begin(&mut self) -> VmResult<()> {
+        // Read the i16 relative offset to the instruction after CollapseEnd
+        let offset = self.read_u16()? as i16;
+        let jump_from = self.ip; // IP is now past the operand bytes
+        let continuation_ip = (jump_from as isize + offset as isize) as usize;
+
+        let frame = GenericCollapseFrame {
+            saved_results: std::mem::take(&mut self.results),
+            choice_point_base: self.choice_points.len(),
+            value_stack_height: self.value_stack.len(),
+            continuation_ip,
+            continuation_chunk: Arc::clone(&self.chunk),
+        };
+        self.collapse_frames.push(frame);
+        Ok(())
+    }
+
+    /// End a collapse scope: collects all results from the body, restores
+    /// the outer nondeterministic context, and pushes the collected results
+    /// as an S-expression.
+    ///
+    /// This opcode is reached in two ways:
+    /// 1. Sequential flow — the body produced a single value (no nondeterminism)
+    /// 2. After backtracking exhausted all choice points within the collapse
+    ///    scope — `op_fail` detected the barrier and jumped here
+    ///
+    /// Returns `ControlFlow` because it may need to trigger backtracking
+    /// within the collapse scope to collect more results.
+    fn op_collapse_end(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        // Extract barrier values before mutable operations
+        let (value_stack_height, choice_point_base) = {
+            let frame = self.collapse_frames.last().ok_or_else(|| {
+                VmError::Runtime("CollapseEnd without matching CollapseBegin".to_string())
+            })?;
+            (frame.value_stack_height, frame.choice_point_base)
+        };
+
+        // Collect the current value from the stack (one result from the body)
+        if self.value_stack.len() > value_stack_height {
+            let value = self.pop()?;
+            if !value.is_unit() {
+                self.results.push(value);
+            }
+        }
+
+        // Check if there are more choice points to exhaust within this scope
+        if self.choice_points.len() > choice_point_base {
+            // More alternatives exist — backtrack within scope to try them.
+            // op_fail_within_collapse restores state from the choice point and
+            // returns Continue. The restored IP points to the Fork's resume
+            // point, which eventually reaches CollapseEnd again.
+            return self.op_fail_within_collapse();
+        }
+
+        // All alternatives exhausted — finalize collapse
+        let frame = self.collapse_frames.pop().expect("checked above");
+        let collected: Vec<V> = std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|v| !v.is_unit())
+            .collect();
+
+        // Restore outer results
+        self.results = frame.saved_results;
+
+        // Push collected results as S-expression
+        self.push(self.make_sexpr(collected));
+
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// Backtrack within a collapse scope, respecting the barrier.
+    /// Same logic as `op_fail` but stops at the collapse frame's `choice_point_base`.
+    fn op_fail_within_collapse(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        let collapse_base = self.collapse_frames.last()
+            .map(|f| f.choice_point_base)
+            .unwrap_or(0);
+
+        while let Some(mut cp) = self.choice_points.pop() {
+            // Restore state
+            self.value_stack.truncate(cp.value_stack_height);
+            self.call_stack.truncate(cp.call_stack_height);
+            self.bindings_stack.truncate(cp.bindings_stack_height);
+            self.unreduced = cp.saved_unreduced;
+
+            if cp.alternatives.is_empty() {
+                // No more alternatives at this choice point — continue popping
+                // but don't go below the barrier
+                if self.choice_points.len() < collapse_base {
+                    break;
+                }
+                continue;
+            }
+
+            // Try next alternative
+            let alt = cp.alternatives.remove(0);
+
+            // Restore instruction pointer and chunk
+            self.ip = cp.ip;
+            self.chunk = Arc::clone(&cp.chunk);
+
+            // Put choice point back if more alternatives remain
+            if !cp.alternatives.is_empty() {
+                self.choice_points.push(cp);
+            }
+
+            // Process alternative
+            match alt {
+                GenericAlternative::Value(v) => self.push(v),
+                GenericAlternative::Chunk(chunk) => {
+                    self.chunk = chunk;
+                    self.ip = 0;
+                }
+                GenericAlternative::Index(offset) => {
+                    self.ip = offset;
+                }
+                GenericAlternative::RuleMatch { chunk, bindings } => {
+                    // Push call frame for compiled RHS (mirrors op_fail logic)
+                    self.call_stack.push(GenericCallFrame {
+                        return_ip: self.ip,
+                        return_chunk: Arc::clone(&self.chunk),
+                        base_ptr: self.value_stack.len(),
+                        bindings_base: self.bindings_stack.len().saturating_sub(1),
+                        yield_on_return: false,
+                    });
+                    let depth = self.bindings_stack.len() as u32;
+                    let mut frame = GenericBindingFrame::new(depth);
+                    for (name, val) in bindings.iter() {
+                        frame.set(name.to_string(), val.clone());
+                    }
+                    self.bindings_stack.push(frame);
+                    self.chunk = chunk;
+                    self.ip = 0;
+                }
+            }
+
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        // No more choice points above barrier — all exhausted.
+        // Finalize the collapse and jump to the continuation IP.
+        let frame = self.collapse_frames.pop().ok_or_else(|| {
+            VmError::Runtime("collapse barrier lost during backtracking".to_string())
+        })?;
+        let collected: Vec<V> = std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|v| !v.is_unit())
+            .collect();
+        self.results = frame.saved_results;
+        self.value_stack.truncate(frame.value_stack_height);
+        self.push(self.make_sexpr(collected));
+        // Resume execution after CollapseEnd
+        self.ip = frame.continuation_ip;
+        self.chunk = frame.continuation_chunk;
+
+        Ok(ControlFlow::Continue(()))
     }
 
     /// if-equal: alpha-equivalence conditional
@@ -3048,6 +3400,7 @@ where
                 ip: resume_ip,
                 chunk: Arc::clone(&self.chunk),
                 alternatives: alternatives[1..].to_vec(),
+                saved_unreduced: self.unreduced,
             };
             self.choice_points.push(cp);
         }
@@ -3068,6 +3421,7 @@ where
             self.value_stack.truncate(cp.value_stack_height);
             self.call_stack.truncate(cp.call_stack_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
+            self.unreduced = cp.saved_unreduced;
 
             if cp.alternatives.is_empty() {
                 // No more alternatives at this choice point
@@ -3098,10 +3452,22 @@ where
                     self.ip = offset;
                 }
                 GenericAlternative::RuleMatch { chunk, bindings } => {
-                    // Apply bindings
+                    // Push call frame for compiled RHS execution.
+                    // The RHS returns normally and the calling chunk continues.
+                    self.call_stack.push(GenericCallFrame {
+                        return_ip: self.ip,
+                        return_chunk: Arc::clone(&self.chunk),
+                        base_ptr: self.value_stack.len(),
+                        bindings_base: self.bindings_stack.len().saturating_sub(1),
+                        yield_on_return: false,
+                    });
+                    // Push new binding frame (don't pollute existing frames)
+                    let depth = self.bindings_stack.len() as u32;
+                    let mut frame = GenericBindingFrame::new(depth);
                     for (name, val) in bindings.iter() {
-                        self.set_binding(name.to_string(), val.clone());
+                        frame.set(name.to_string(), val.clone());
                     }
+                    self.bindings_stack.push(frame);
                     self.chunk = chunk;
                     self.ip = 0;
                 }
@@ -3212,6 +3578,7 @@ where
             call_stack_height: self.call_stack.len(),
             bindings_stack_height: self.bindings_stack.len(),
             alternatives,
+            saved_unreduced: self.unreduced,
         });
 
         // Push first alternative
@@ -3693,6 +4060,7 @@ where
                         return_chunk: Arc::clone(&self.chunk),
                         base_ptr: self.value_stack.len(),
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
+                        yield_on_return: false,
                     });
 
                     // Push new binding frame with match bindings.
@@ -3763,6 +4131,7 @@ where
             call_stack_height: self.call_stack.len(),
             bindings_stack_height: self.bindings_stack.len(),
             alternatives,
+            saved_unreduced: self.unreduced,
         });
 
         // Execute first match

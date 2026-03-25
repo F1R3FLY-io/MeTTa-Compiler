@@ -221,7 +221,10 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// Reads (during type inference) are high-frequency; writes (at add_rule)
     /// are low-frequency. DashMap avoids writer-blocks-readers stalls.
     /// Fork: iterate + clone into new DashMap (infrequent operation).
-    pub(crate) inferred_fn_types: DashMap<String, Vec<V>>,
+    /// Arc-wrapped for O(1) fork in `fork_for_nondeterminism()`.
+    /// Safe to share because `inferred_fn_types` is only written during
+    /// rule addition (setup), never during nondeterministic evaluation.
+    pub(crate) inferred_fn_types: Arc<DashMap<String, Vec<V>>>,
 }
 
 /// Generic environment parameterized over value type and factory.
@@ -307,7 +310,7 @@ where
             scope_tracker: Arc::new(RwLock::new(ScopeTracker::new())),
             rule_index: Arc::new(RwLock::new(super::rule_management::RuleIndex::new())),
             // Phase 10.1: Inferred function return types (initially empty)
-            inferred_fn_types: DashMap::new(),
+            inferred_fn_types: Arc::new(DashMap::new()),
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
@@ -416,9 +419,9 @@ where
             // Deep-clone into new Arc so this owned env has an exclusive copy
             rule_index: Arc::new(RwLock::new(self.shared.rule_index.read().clone())),
             // Phase 10.1: deep-clone DashMap into independent copy for exclusive mutation
-            inferred_fn_types: DashMap::from_iter(
+            inferred_fn_types: Arc::new(DashMap::from_iter(
                 self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
-            ),
+            )),
         });
 
         // Register new shared state as GC root provider
@@ -469,10 +472,9 @@ where
             fuzzy_matcher: Arc::clone(&self.shared.fuzzy_matcher),
             scope_tracker: Arc::clone(&self.shared.scope_tracker),
             rule_index: Arc::clone(&self.shared.rule_index),
-            // Phase 10.1: clone DashMap into independent copy (fork isolation)
-            inferred_fn_types: DashMap::from_iter(
-                self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
-            ),
+            // O(1) Arc::clone — inferred_fn_types is only written during
+            // rule addition (setup), never during nondeterministic evaluation.
+            inferred_fn_types: Arc::clone(&self.shared.inferred_fn_types),
         });
 
         // Register forked shared state as GC root provider
@@ -728,7 +730,10 @@ where
                 Arc::new(RwLock::new(merged))
             },
             // Phase 10.1: merge inferred function types (DashMap union with dedup)
-            inferred_fn_types: {
+            inferred_fn_types: if Arc::ptr_eq(&self.shared.inferred_fn_types, &other.shared.inferred_fn_types) {
+                // Both forks share the same DashMap — O(1) clone
+                Arc::clone(&self.shared.inferred_fn_types)
+            } else {
                 let merged: DashMap<String, Vec<V>> = DashMap::from_iter(
                     self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
                 );
@@ -740,7 +745,7 @@ where
                         }
                     }
                 }
-                merged
+                Arc::new(merged)
             },
         });
 
@@ -1100,20 +1105,26 @@ where
             },
             // Phase 10.1: merge inferred function types from all environments
             inferred_fn_types: {
-                let merged: DashMap<String, Vec<V>> = DashMap::from_iter(
-                    self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
-                );
-                for other_env in others {
-                    for entry in other_env.shared.inferred_fn_types.iter() {
-                        let mut vec = merged.entry(entry.key().clone()).or_default();
-                        for t in entry.value() {
-                            if !vec.contains(t) {
-                                vec.push(t.clone());
+                // Fast path: if all environments share the same DashMap, just Arc::clone
+                let all_same = others.iter().all(|o| Arc::ptr_eq(&self.shared.inferred_fn_types, &o.shared.inferred_fn_types));
+                if all_same {
+                    Arc::clone(&self.shared.inferred_fn_types)
+                } else {
+                    let merged: DashMap<String, Vec<V>> = DashMap::from_iter(
+                        self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+                    );
+                    for other_env in others {
+                        for entry in other_env.shared.inferred_fn_types.iter() {
+                            let mut vec = merged.entry(entry.key().clone()).or_default();
+                            for t in entry.value() {
+                                if !vec.contains(t) {
+                                    vec.push(t.clone());
+                                }
                             }
                         }
                     }
+                    Arc::new(merged)
                 }
-                merged
             },
         });
 

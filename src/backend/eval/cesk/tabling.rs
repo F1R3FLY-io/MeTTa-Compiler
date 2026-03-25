@@ -339,11 +339,14 @@ impl std::fmt::Display for TableStats {
 thread_local! {
     /// Thread-local subgoal table for the tree-walker evaluation.
     static THREAD_TABLE: RefCell<SubgoalTable<MettaValue>> = RefCell::new(SubgoalTable::new());
+    /// Dirty flag: only clear the table when entries have been added since last clear.
+    static SUBGOAL_DIRTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Access the thread-local subgoal table.
 #[inline]
 pub fn with_subgoal_table<R>(f: impl FnOnce(&mut SubgoalTable<MettaValue>) -> R) -> R {
+    SUBGOAL_DIRTY.with(|d| d.set(true));
     THREAD_TABLE.with(|cell| {
         let mut table = cell.borrow_mut();
         f(&mut table)
@@ -353,10 +356,16 @@ pub fn with_subgoal_table<R>(f: impl FnOnce(&mut SubgoalTable<MettaValue>) -> R)
 /// Clear the thread-local subgoal table.
 ///
 /// Called between top-level evaluations or after space mutations.
+/// Skips the clear if no entries have been added since the last clear.
 #[inline]
 pub fn clear_subgoal_table() {
-    THREAD_TABLE.with(|cell| {
-        cell.borrow_mut().clear();
+    SUBGOAL_DIRTY.with(|d| {
+        if d.get() {
+            THREAD_TABLE.with(|cell| {
+                cell.borrow_mut().clear();
+            });
+            d.set(false);
+        }
     });
 }
 

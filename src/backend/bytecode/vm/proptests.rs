@@ -1664,12 +1664,12 @@ proptest! {
 
     /// decon-atom on non-empty S-expression succeeds
     #[test]
-    fn prop_decon_atom_succeeds(items in prop::collection::vec(arb_simple_value(), 1..5)) {
+    fn prop_decons_atom_succeeds(items in prop::collection::vec(arb_simple_value(), 1..5)) {
         let mut builder = ChunkBuilder::new("test");
         let sexpr = MettaValue::SExpr(items.clone());
         let idx = builder.add_constant(sexpr);
         builder.emit_u16(Opcode::PushConstant, idx);
-        builder.emit(Opcode::DeconAtom);
+        builder.emit(Opcode::DeconsAtom);
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
@@ -1687,12 +1687,12 @@ proptest! {
 
     /// decon-atom on empty S-expression fails
     #[test]
-    fn prop_decon_atom_empty_fails(_unit: ()) {
+    fn prop_decons_atom_empty_fails(_unit: ()) {
         let mut builder = ChunkBuilder::new("test");
         let sexpr = MettaValue::SExpr(vec![]);
         let idx = builder.add_constant(sexpr);
         builder.emit_u16(Opcode::PushConstant, idx);
-        builder.emit(Opcode::DeconAtom);
+        builder.emit(Opcode::DeconsAtom);
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();

@@ -243,7 +243,7 @@ pub use global_ops::{
 
 // Higher-order operations
 pub use higher_order::{
-    jit_runtime_decon_atom, jit_runtime_filter_atom, jit_runtime_foldl_atom, jit_runtime_map_atom,
+    jit_runtime_decons_atom, jit_runtime_filter_atom, jit_runtime_foldl_atom, jit_runtime_map_atom,
     jit_runtime_repr,
 };
 

@@ -1507,19 +1507,32 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
             tokenizer.collect_gc_values_into(roots);
         }
 
-        // RuleIndex: cached LHS/RHS/rhs_type MettaValues for rule matching.
+        // RuleIndex: cached LHS/RHS/rhs_type MettaValues for rule matching,
+        // plus compiled_rhs bytecode chunk constant pools.
         // Without collecting these, GC frees slab slots still referenced by
         // RuleEntry fields, causing use-after-free when match_rules_native()
-        // applies bindings to the RHS template or branch pruning reads rhs_type.
+        // applies bindings to the RHS template or the VM executes PushConstant
+        // opcodes from the pre-compiled RHS chunk.
         {
             let rule_index = self.rule_index.read();
-            roots.extend(rule_index.get_all_rules().flat_map(|e| {
-                let mut vals = vec![e.lhs, e.rhs];
+            for e in rule_index.get_all_rules() {
+                roots.push(e.lhs);
+                roots.push(e.rhs);
                 if let Some(rt) = &e.rhs_type {
-                    vals.push(rt.clone());
+                    roots.push(rt.clone());
                 }
-                vals
-            }));
+                // Collect constants from pre-compiled bytecode chunks.
+                // compiled_rhs holds Arc<GenericBytecodeChunk<MettaValue>> type-erased
+                // as dyn Any. Its constants: Vec<MettaValue> pool contains slab-allocated
+                // values that must be traced as GC roots.
+                if let Some(ref compiled) = e.compiled_rhs {
+                    if let Some(chunk) = compiled.downcast_ref::<
+                        crate::backend::bytecode::chunk::BytecodeChunk
+                    >() {
+                        crate::backend::bytecode::cache::collect_chunk_constants(chunk, roots);
+                    }
+                }
+            }
         }
 
         // Inferred function types: Phase 10.1 caches return types from rule RHS analysis.

@@ -3307,6 +3307,41 @@ pub fn collect_all_roots() -> Vec<MettaValue> {
     roots
 }
 
+/// Read-only variant of `collect_all_roots()` that does NOT prune dead Weak refs.
+///
+/// Uses `ROOT_REGISTRY.read()` instead of `write()`, skipping dead entries
+/// without removing them. This prevents a race where a transiently dead Weak
+/// (from an environment Arc dropped by `deferred_shared_drops.clear()`) is
+/// pruned before the new environment's root provider registers, causing values
+/// to be missed by `trace_surviving_set()` during session release.
+///
+/// Dead entries accumulate until the next `collect_all_roots()` call (during
+/// regular GC cycles), which prunes them under write lock.
+fn collect_all_roots_readonly() -> Vec<MettaValue> {
+    // Phase 1: Snapshot providers under read lock (no pruning).
+    let providers: Vec<Arc<dyn RootProvider>> = {
+        let registry = root_registry().read();
+        let mut live = Vec::with_capacity(registry.len());
+        for weak in registry.iter() {
+            if let Some(strong) = weak.upgrade() {
+                live.push(strong);
+            }
+        }
+        live
+        // Read lock released here
+    };
+
+    // Phase 2: Collect roots from each provider WITHOUT holding ROOT_REGISTRY.
+    let mut roots = Vec::with_capacity(providers.len() * 64);
+    for provider in &providers {
+        provider.collect_roots(&mut roots);
+    }
+
+    // Also collect safepoint roots from trampoline state
+    collect_safepoint_roots(&mut roots);
+    roots
+}
+
 // ============================================================================
 // Safepoint Root Registry — Temporary Roots for Intra-Evaluation GC
 // ============================================================================
@@ -4635,7 +4670,11 @@ impl SlabAllocator {
     /// multiple session releases with a single root trace.
     pub fn trace_surviving_set(&self) -> PtrHashSet {
         let trace = gc_trace_enabled();
-        let roots = collect_all_roots();
+        // Use read-only root collection to avoid pruning transiently dead
+        // Weak refs from ROOT_REGISTRY. This prevents a race where an
+        // environment's root provider is pruned before its clone registers,
+        // causing values to be missed and freed while still reachable.
+        let roots = collect_all_roots_readonly();
         if trace {
             eprintln!("[GC-TRACE] trace_surviving_set: {} root values collected", roots.len());
         }

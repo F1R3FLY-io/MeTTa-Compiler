@@ -3392,11 +3392,43 @@ fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
     }
 }
 
+/// Collect roots from all registered providers using a read lock (no pruning).
+///
+/// Unlike `collect_all_roots()` which uses `ROOT_REGISTRY.write()` to prune
+/// dead Weak entries, this uses `ROOT_REGISTRY.read()` and skips dead entries
+/// without removing them. Avoids write-lock contention with concurrent
+/// `register_root_provider()` calls from evaluator threads creating environments.
+///
+/// Returns `Some(roots)` on success, `None` if lock contention prevents collection.
+fn collect_provider_roots_readonly() -> Option<Vec<MettaValue>> {
+    let registry = root_registry();
+
+    // Phase 1: Snapshot providers under read lock (no pruning).
+    let providers: Vec<Arc<dyn RootProvider>> = {
+        let guard = registry.try_read_for(std::time::Duration::from_millis(5))?;
+        let mut live = Vec::with_capacity(guard.len());
+        for weak in guard.iter() {
+            if let Some(strong) = weak.upgrade() {
+                live.push(strong);
+            }
+        }
+        live
+        // Read lock released here
+    };
+
+    // Phase 2: Collect roots from each provider WITHOUT holding ROOT_REGISTRY.
+    let mut roots = Vec::with_capacity(providers.len() * 64);
+    for provider in &providers {
+        provider.collect_roots(&mut roots);
+    }
+    Some(roots)
+}
+
 /// Build the transitive closure of all currently registered safepoint roots.
 ///
-/// Returns `Some(HashSet)` if safepoint roots exist (i.e., at least one
-/// evaluator is paused at a safepoint with registered temporary roots).
-/// Returns `None` if no safepoint roots are registered (fast path — no
+/// Returns `(Some(HashSet), env_complete)` where env_complete indicates whether
+/// environment roots were successfully included.
+/// Returns `(None, true)` if no safepoint roots are registered (fast path — no
 /// filtering needed).
 ///
 /// This is used by `process_gc_response()` to guard against freeing values
@@ -3415,13 +3447,16 @@ fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
 /// The DFS traversal matches `trace_surviving_set()` but operates only on
 /// safepoint roots (not all environment roots), keeping cost proportional
 /// to the trampoline's working set rather than the entire live heap.
-fn trace_safepoint_live_set() -> Option<PtrHashSet> {
-    let registry_ref = SAFEPOINT_ROOTS.get()?;
+fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
+    let registry_ref = match SAFEPOINT_ROOTS.get() {
+        Some(r) => r,
+        None => return (None, true),
+    };
     let safepoint_roots: Vec<MettaValue> = {
         let guard = registry_ref.lock();
         let total: usize = guard.iter().map(|s| s.len()).sum();
         if total == 0 {
-            return None;
+            return (None, true);
         }
         let mut roots = Vec::with_capacity(total);
         for root_set in guard.iter() {
@@ -3430,12 +3465,29 @@ fn trace_safepoint_live_set() -> Option<PtrHashSet> {
         roots
     };
 
-    let mut live_set = PtrHashSet::with_capacity_and_hasher(safepoint_roots.len() * 2, PtrBuildHasher);
-    let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(safepoint_roots.len());
+    // Also collect environment roots (rules, bindings, types, spaces).
+    // Values dead per a previous GC cycle may now be live through the
+    // environment (e.g., added as a rule RHS between cycles).
+    let (env_roots, env_complete) = match collect_provider_roots_readonly() {
+        Some(roots) => (roots, true),
+        None => (Vec::new(), false),
+    };
+
+    let total_roots = safepoint_roots.len() + env_roots.len();
+    let mut live_set = PtrHashSet::with_capacity_and_hasher(total_roots * 2, PtrBuildHasher);
+    let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(total_roots);
 
     // Seed worklist with safepoint root inner pointers.
     // Skip inline NaN-boxed values (null inner_ptr) — they have no slab allocation.
     for root in &safepoint_roots {
+        let ptr = root.inner_ptr();
+        if !ptr.is_null() && live_set.insert(ptr as *const u8) {
+            worklist.push(ptr);
+        }
+    }
+
+    // Seed worklist with environment root inner pointers.
+    for root in &env_roots {
         let ptr = root.inner_ptr();
         if !ptr.is_null() && live_set.insert(ptr as *const u8) {
             worklist.push(ptr);
@@ -3506,13 +3558,15 @@ fn trace_safepoint_live_set() -> Option<PtrHashSet> {
 
     if gc_trace_enabled() {
         eprintln!(
-            "[GC-SAFEPOINT-LIVE] traced {} safepoint root values → {} transitive live pointers",
+            "[GC-SAFEPOINT-LIVE] traced {} safepoint + {} env root values → {} transitive live pointers (env_complete={})",
             safepoint_roots.len(),
+            env_roots.len(),
             live_set.len(),
+            env_complete,
         );
     }
 
-    Some(live_set)
+    (Some(live_set), env_complete)
 }
 
 // ============================================================================
@@ -4045,7 +4099,7 @@ impl SlabAllocator {
         // The epoch filter (Phase 1) catches values allocated AFTER the snapshot,
         // but not values that became reachable through DIFFERENT root sets between
         // GC cycles. This safepoint filter is the safety net for that case.
-        let safepoint_live = trace_safepoint_live_set();
+        let (safepoint_live, env_roots_complete) = trace_safepoint_live_set();
 
         // Single read lock across Phases 1-3. Safe because:
         // - No pages added (alloc_new_page takes write lock)
@@ -4058,8 +4112,8 @@ impl SlabAllocator {
 
             // === Phase 1: Epoch + safepoint filtering — O(D log P) ===
             // Separate dead values into filtered (re-allocated after snapshot OR
-            // currently reachable from safepoint roots) and non-filtered (genuinely
-            // dead, safe to reclaim).
+            // currently reachable from safepoint/environment roots) and non-filtered
+            // (genuinely dead, safe to reclaim).
             let mut safepoint_rescued = 0u64;
             for &ptr in &response.dead_values {
                 if let Some((page_idx, slot_idx)) = page_index.find(
@@ -4067,11 +4121,16 @@ impl SlabAllocator {
                 ) {
                     if pages[page_idx].slot_epoch(slot_idx) > response.snapshot_epoch {
                         // Slot re-allocated after snapshot — skip (not genuinely dead)
+                    } else if !env_roots_complete && safepoint_live.is_some() {
+                        // Environment roots couldn't be collected (lock contention).
+                        // Cannot determine if value is reachable from environment.
+                        // Conservatively rescue to prevent use-after-poison.
+                        safepoint_rescued += 1;
                     } else if safepoint_live.as_ref()
                         .is_some_and(|live| live.contains(&(ptr as *const u8)))
                     {
                         // Value is dead per previous cycle but live in current
-                        // safepoint roots — skip to prevent use-after-poison.
+                        // safepoint/environment roots — skip to prevent use-after-poison.
                         safepoint_rescued += 1;
                     } else {
                         non_filtered_dead.push(ResolvedDead { ptr, page_idx, slot_idx });

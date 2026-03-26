@@ -198,7 +198,7 @@ unsafe fn mork_expr_len(ptr: *const u8) -> usize {
 ///
 /// This is the safe, slice-based counterpart to `mork_expr_len(ptr)`.
 #[inline]
-pub(crate) fn mork_expr_byte_len(bytes: &[u8]) -> usize {
+pub(crate) fn mork_expr_byte_len(bytes: &[u8]) -> Option<usize> {
     let mut offset = 0usize;
     let mut depth = 1u32; // One expression to consume
 
@@ -206,7 +206,7 @@ pub(crate) fn mork_expr_byte_len(bytes: &[u8]) -> usize {
         let byte = bytes[offset];
         let tag = match maybe_byte_item(byte) {
             Ok(t) => t,
-            Err(_) => return offset + 1, // Reserved byte — include it and stop
+            Err(_) => return None, // Reserved byte — invalid MORK encoding
         };
         offset += 1;
         depth -= 1;
@@ -214,14 +214,22 @@ pub(crate) fn mork_expr_byte_len(bytes: &[u8]) -> usize {
         match tag {
             Tag::NewVar | Tag::VarRef(_) => {}
             Tag::SymbolSize(size) => {
-                offset += size as usize;
+                let sym_end = offset + size as usize;
+                if sym_end > bytes.len() {
+                    return None; // Symbol data extends past buffer
+                }
+                offset = sym_end;
             }
             Tag::Arity(arity) => {
                 depth += arity as u32;
             }
         }
     }
-    offset
+    if depth > 0 {
+        None // Incomplete — children still expected
+    } else {
+        Some(offset)
+    }
 }
 
 /// Convert MORK bytes directly to a generic value V without Expr wrapper.

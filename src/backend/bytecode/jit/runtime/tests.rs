@@ -2152,6 +2152,8 @@ mod tests {
 
     #[test]
     fn test_jit_space_get_atoms() {
+        use crate::backend::bytecode::jit::types::JitChoicePoint;
+
         let space = SpaceHandle::new(4, "test_space".to_string());
         space.add_atom(MettaValue::Long(1));
         space.add_atom(MettaValue::Long(2));
@@ -2159,25 +2161,41 @@ mod tests {
 
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![unsafe { std::mem::zeroed() }; 4];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
-            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+            JitContext::with_nondet(
+                stack.as_mut_ptr(), stack.len(),
+                constants.as_ptr(), constants.len(),
+                choice_points.as_mut_ptr(), choice_points.len(),
+                results.as_mut_ptr(), results.len(),
+            )
         };
 
         let space_jit = metta_to_jit(&MettaValue::Space(space));
 
+        // get_atoms returns first atom directly, with choice points for the rest
         let result = unsafe { jit_runtime_space_get_atoms(&mut ctx, space_jit.to_bits(), 0) };
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
+        let first = unsafe { JitValue::from_raw(result).to_metta() };
 
-        if let MettaValueInner::SExpr(atoms) = metta.inner() {
-            assert_eq!(atoms.len(), 3);
-            assert!(atoms.contains(&MettaValue::Long(1)));
-            assert!(atoms.contains(&MettaValue::Long(2)));
-            assert!(atoms.contains(&MettaValue::sym("foo")));
-        } else {
-            panic!("Expected SExpr");
+        // Collect remaining atoms from choice points
+        let mut all_atoms = vec![first];
+        assert_eq!(ctx.choice_point_count, 1, "Expected 1 choice point for 3 atoms");
+        unsafe {
+            let cp = &*ctx.choice_points.add(0);
+            assert_eq!(cp.alt_count, 2, "Expected 2 alternatives in choice point");
+            for i in 0..cp.alt_count as usize {
+                let alt = &cp.alternatives_inline[i];
+                let alt_metta = JitValue::from_raw(alt.payload).to_metta();
+                all_atoms.push(alt_metta);
+            }
         }
+
+        assert_eq!(all_atoms.len(), 3, "Expected 3 atoms total");
+        assert!(all_atoms.contains(&MettaValue::Long(1)));
+        assert!(all_atoms.contains(&MettaValue::Long(2)));
+        assert!(all_atoms.contains(&MettaValue::sym("foo")));
     }
 
     #[test]

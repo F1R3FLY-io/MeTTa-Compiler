@@ -1184,12 +1184,9 @@ impl<V: MettaValueTrait + Clone, E: Clone> GenericContinuation<V, E> {
                 collect_bindings_values(accumulated_bindings, out);
             }
 
-            Self::ProcessRuleMatchesLazy { coroutine: _, results, .. } => {
+            Self::ProcessRuleMatchesLazy { coroutine, results, .. } => {
+                coroutine.collect_values(out);
                 out.extend(results.iter().cloned());
-                // Coroutine remaining branches contain (V, GenericBindings<V>) pairs
-                // The V values (rhs templates) must be rooted
-                // Access is limited since BranchCoroutine fields are private;
-                // results vec is the primary root source.
             }
 
             Self::CompleteSubgoal { .. } => {

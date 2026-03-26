@@ -1331,6 +1331,8 @@ where
                     unsafe { &mut *(root_set.as_mut_vec() as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
                 collect_eval_memo_roots(concrete_roots);
                 collect_match_result_roots(concrete_roots);
+                crate::backend::eval::cesk::tabling::collect_subgoal_roots(concrete_roots);
+                crate::backend::eval::cesk::thunk::collect_thunk_roots(concrete_roots);
 
                 // Collect GC roots from deferred environment drops.
                 // These environments' MettaValues must be visible to the GC
@@ -1369,7 +1371,8 @@ where
             // Clear thread-local MORK serialization caches before GC runs.
             // After GC, slab slots may be reused (ABA), so cached pointer keys
             // would alias different values. Clear BEFORE perform_safepoint.
-            // MORK byte caches removed — MettaTrie stores expressions directly.
+            crate::backend::environment::rule_management::clear_mork_bytes_cache();
+            crate::backend::mork_convert::clear_ground_fragment_cache();
 
             // Clear value hash cache — pointer-keyed, same ABA concern.
             crate::backend::models::metta_value::clear_value_hash_cache();

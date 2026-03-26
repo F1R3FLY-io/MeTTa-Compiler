@@ -1,7 +1,7 @@
 //! Environment module for MeTTa evaluation.
 //!
 //! The Environment contains the fact database, type assertions, rules, and
-//! various registries for MeTTa evaluation. Uses MettaTrie for efficient
+//! various registries for MeTTa evaluation. Uses MORK/PathMap for efficient
 //! trie-based storage with pattern matching support.
 //!
 //! # Architecture
@@ -30,7 +30,7 @@ mod fact_storage;
 pub(crate) mod generic;
 mod grounded_ops;
 mod module_ops;
-// mork_encoding module removed -- MORK byte encoding replaced by MettaTrie decomposition
+pub(crate) mod mork_encoding;
 pub(crate) mod multiplicity;
 mod mutable_state;
 mod named_spaces;

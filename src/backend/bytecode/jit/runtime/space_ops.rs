@@ -119,26 +119,107 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
 /// NaN-boxed SExpr containing all atoms in the space
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_get_atoms(
-    _ctx: *mut JitContext,
+    ctx: *mut JitContext,
     space: u64,
-    _ip: u64,
+    ip: u64,
 ) -> u64 {
     let space_val = JitValue::from_raw(space);
     let space_metta = space_val.to_metta();
 
-    match space_metta.view() {
-        ValueView::Space(handle) => {
-            let atoms = handle.collapse();
-            metta_to_jit(&MettaValue::SExpr(atoms)).to_bits()
+    let atoms: Vec<MettaValue> = match space_metta.view() {
+        ValueView::Space(handle) => handle.collapse(),
+        ValueView::Atom(name) => {
+            // Named space (e.g., &kb) → resolve through environment tokenizer
+            if name == "&self" {
+                if let Some(ctx_ref) = ctx.as_ref() {
+                    if !ctx_ref.env_ptr.is_null() {
+                        let env = &*(ctx_ref.env_ptr as *const crate::backend::environment::MettaEnvironment);
+                        env.get_all_atoms()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else if let Some(ctx_ref) = ctx.as_ref() {
+                if !ctx_ref.env_ptr.is_null() {
+                    let env = &*(ctx_ref.env_ptr as *const crate::backend::environment::MettaEnvironment);
+                    let factory = crate::backend::models::GcFactory::default();
+                    if let Some(resolved) = env.lookup_token_generic(name, &factory) {
+                        if let Some(handle) = resolved.as_space() {
+                            handle.collapse()
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
-            // Type error - return empty S-expression
-            metta_to_jit(&MettaValue::SExpr(vec![])).to_bits()
-        }
+        _ => Vec::new(),
+    };
+
+    // Nondeterministic return via JIT choice points
+    // (same pattern as jit_runtime_superpose in special_forms.rs)
+    if atoms.is_empty() {
+        return TAG_UNIT;
     }
+
+    let first_jit = metta_to_jit(&atoms[0]);
+
+    if atoms.len() == 1 {
+        return first_jit.to_bits();
+    }
+
+    // 2+ atoms: return first, create Value choice points for the rest
+    let ctx_ref = match ctx.as_mut() {
+        Some(c) => c,
+        None => return first_jit.to_bits(),
+    };
+
+    let alt_count = atoms.len() - 1;
+
+    // Check choice point capacity
+    if ctx_ref.choice_points.is_null() || ctx_ref.choice_point_count >= ctx_ref.choice_point_cap {
+        ctx_ref.bailout = true;
+        ctx_ref.bailout_reason = JitBailoutReason::NonDeterminism;
+        ctx_ref.bailout_ip = ip as usize;
+        return first_jit.to_bits();
+    }
+
+    if alt_count > MAX_ALTERNATIVES_INLINE {
+        ctx_ref.bailout = true;
+        ctx_ref.bailout_reason = JitBailoutReason::NonDeterminism;
+        ctx_ref.bailout_ip = ip as usize;
+        return first_jit.to_bits();
+    }
+
+    // Create choice point with Value alternatives
+    let cp = &mut *ctx_ref.choice_points.add(ctx_ref.choice_point_count);
+    cp.saved_sp = ctx_ref.sp as u64;
+    cp.saved_ip = ip;
+    cp.saved_chunk = ctx_ref.current_chunk;
+    cp.saved_stack_pool_idx = -1;
+    cp.saved_stack_count = 0;
+    cp.alt_count = alt_count as u64;
+    cp.current_index = 0;
+    cp.fork_depth = ctx_ref.fork_depth;
+    cp.saved_binding_frames_count = ctx_ref.binding_frames_count;
+    cp.is_collect_boundary = false;
+
+    for (i, atom) in atoms[1..].iter().enumerate() {
+        cp.alternatives_inline[i] = JitAlternative::value(metta_to_jit(atom));
+    }
+
+    ctx_ref.choice_point_count += 1;
+    ctx_ref.in_nondet_mode = true;
+
+    first_jit.to_bits()
 }
 
 /// Match a pattern against all atoms in a space

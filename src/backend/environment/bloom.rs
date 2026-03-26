@@ -108,7 +108,7 @@ impl HeadArityBloomFilter {
 /// Bloom filter for atom names that have type declarations.
 ///
 /// Enables O(1) rejection in `get_type()`/`get_types_generic()` when an atom
-/// name definitely has no type declared. Avoids HashMap lookup and MettaTrie
+/// name definitely has no type declared. Avoids HashMap lookup and MORK
 /// traversal for the common case of untyped atoms.
 ///
 /// # Design Notes

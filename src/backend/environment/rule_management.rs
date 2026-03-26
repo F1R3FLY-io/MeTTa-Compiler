@@ -1,12 +1,12 @@
 //! Rule management operations for Environment.
 //!
 //! Provides methods for adding, indexing, and querying rules.
-//! Rules are stored as (= lhs rhs) in MettaTrie via TrieKey decomposition.
+//! Rules are stored as (= lhs rhs) in MORK PathMap as De Bruijn-encoded MORK bytes.
 //!
 //! # Multiplicity Tracking
 //!
 //! Rules can be defined multiple times, and we track multiplicities efficiently
-//! using MettaTrie<V, Multiplicity> — each TrieKey path maps to its multiplicity count.
+//! using PathMap<Multiplicity> — each MORK byte key maps to its multiplicity count.
 //!
 //! # Rule Discovery
 //!
@@ -14,13 +14,16 @@
 //!
 //! 1. **Bloom filter** — O(1) rejection for non-matching head/arity combinations
 //! 2. **RuleIndex** — HashMap-backed `(head, arity) → Vec<RuleEntry>` for O(1) candidate lookup
-//! 3. **StructuralMatcher / EnhancedMatcher** — direct MettaValue pattern matching per candidate
+//! 3. **MORK `extract_data()`** — O(n) byte-level structural pattern matching per candidate
 //! 4. **MettaValue binding application** — `apply_bindings_generic()` on cached RHS template
 //!
-//! Rules are stored in MettaTrie with literal decomposition (via `decompose_literal()`).
-//! The RuleIndex caches metadata at insertion time for zero-deserialization matching.
+//! Rules are stored in PathMap with De Bruijn encoding (via `with_mork_query_bytes`).
+//! The RuleIndex caches De Bruijn bytes and metadata at insertion time for zero-deserialization
+//! matching. Only the final matched result is deserialized to MettaValue.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Gate for I-13/I-14 hot-path analysis tracking.
@@ -41,9 +44,13 @@ pub fn is_analysis_active() -> bool {
     ANALYSIS_ACTIVE.load(Ordering::Relaxed)
 }
 
+use lru::LruCache;
+
 /// I-12: Global monotonic counter for assigning unique global rule indices.
 /// Used by CompressedRuleFilter to identify dead rules across all groups.
 static GLOBAL_RULE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+use crate::backend::hash_utils::FxBuildHasher;
 
 /// Global epoch counter for rule/type mutations.
 ///
@@ -61,13 +68,66 @@ pub fn increment_rule_epoch() {
     RULE_EPOCH.fetch_add(1, Ordering::Release);
 }
 
+use mork::space::Space;
+use mork_expr::{maybe_byte_item, Expr, ExprZipper, Tag};
+// Disabled: PathMap no longer directly constructed in this module — add_rules_bulk now
+// delegates to add_rule() for consistent De Bruijn encoding.
+// use pathmap::PathMap;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use smallvec::SmallVec;
 use tracing::trace;
 
+thread_local! {
+    /// Reusable buffer for MORK-serialized expressions in `match_rules_native`.
+    /// Grows as needed but is never freed — amortized zero allocation after warmup.
+    static MATCH_EXPR_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(256));
+
+    /// Reusable ExprZipper for `extract_data()` calls in `match_rules_native`.
+    /// The `trace` Vec capacity grows monotonically — `reset()` uses `set_len(0)` to
+    /// clear without deallocating, so after warmup all match attempts are zero-alloc.
+    /// Pre-allocated with capacity 16 for typical PLN expression depths (6-8).
+    static MATCH_ZIPPER: RefCell<ExprZipper> = RefCell::new({
+        let trace = Vec::with_capacity(16);
+        // ExprZipper::new() would push a Breadcrumb based on the root's first byte,
+        // but with a null root, we skip that and just set up the capacity.
+        // The actual root and trace initialization happen via reset() before each use.
+        ExprZipper { root: Expr { ptr: std::ptr::null_mut() }, loc: 0, trace }
+    });
+
+    /// Thread-local MORK serialization cache for `match_rules_native`.
+    ///
+    /// Content-hash keyed: `u64` (xxh3 content hash of MettaValue). This survives GC
+    /// safepoints (no pointer ABA issue) and shares entries across structurally-identical
+    /// expressions at different slab addresses. Value includes the arity for cheap
+    /// collision validation.
+    ///
+    /// 8192 entries × ~64 bytes avg = ~512 KB per thread. LRU eviction bounds memory.
+    /// Increased from 2048 to improve hit rate for PLN's working set (>2048 distinct exprs).
+    static MORK_BYTES_CACHE: RefCell<LruCache<u64, (Vec<u8>, usize), FxBuildHasher>> =
+        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(8192).expect("non-zero"), FxBuildHasher));
+}
+
+/// Clear the thread-local MORK serialization cache.
+///
+/// With content-hash keying, this is only needed when the SharedMapping changes
+/// (different symbol table = different interned IDs for same bytes). GC safepoints
+/// no longer require clearing since keys are content hashes, not pointers.
+pub fn clear_mork_bytes_cache() {
+    MORK_BYTES_CACHE.with(|c| c.borrow_mut().clear());
+}
+
 use super::generic::GenericEnvironment;
-use super::multiplicity;
+use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
+// Disabled: mork_expr_to_generic_value no longer used directly — deserialization happens via
+// mork_bytes_to_generic_value for individual binding bytes.
+// use super::mork_encoding::mork_expr_to_generic_value;
+use super::multiplicity::{
+    decrement_multiplicity, get_multiplicity, increment_multiplicity,
+    Multiplicity,
+};
 use super::{MettaEnvironment, MettaValue};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait, ValueView};
+use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
 
 /// Extract (lhs, rhs) from a deserialized rule value `(= lhs rhs)`.
 ///
@@ -86,7 +146,7 @@ pub(crate) fn extract_rule_parts<V: MettaValueTrait + Clone>(value: &V) -> Optio
 }
 
 // ============================================================================
-// RuleIndex — In-memory index for O(1) rule lookup + structural matching
+// RuleIndex — In-memory index for O(1) rule lookup + byte-level matching
 // ============================================================================
 
 /// Result of a native rule match via `match_rules_native()`.
@@ -116,8 +176,8 @@ pub struct RuleMatchResult<V: MettaValueTrait + Clone> {
 
 /// A single rule entry in the RuleIndex.
 ///
-/// Caches both the original MettaValues (for display, debugging, bytecode VM) and
-/// metadata for structural pattern matching.
+/// Caches both the original MettaValues (for display, debugging, bytecode VM) and the
+/// De Bruijn-encoded bytes (for MORK `extract_data()` byte-level matching).
 #[derive(Debug, Clone)]
 pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     // --- Cached MettaValues (original variable names) ---
@@ -126,10 +186,15 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// RHS template with original variable names (for bytecode compilation/caching)
     pub rhs: V,
 
-    // --- Legacy field (kept for ABI compatibility, always empty) ---
-    /// Formerly held De Bruijn encoded bytes. Now always empty `vec![]`.
-    /// The StructuralMatcher and EnhancedMatcher handle matching without these.
+    // --- De Bruijn bytes (for extract_data matching) ---
+    /// LHS with NewVar/VarRef De Bruijn encoding (extracted from PathMap key).
+    /// Empty for wide rules (arity ≥ 64) — use `lhs_wide_debruijn` instead.
     pub lhs_debruijn: Vec<u8>,
+
+    /// LHS with Wide MORK De Bruijn encoding (tag-byte + LEB128, no arity limit).
+    /// Empty for narrow rules (arity < 64) — use `lhs_debruijn` instead.
+    /// Populated when MORK encoding fails due to arity ≥ 64.
+    pub lhs_wide_debruijn: Vec<u8>,
 
     // --- Metadata ---
     /// De Bruijn index → original variable name (e.g., "$x", "$y")
@@ -140,7 +205,10 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub wildcard_indices: SmallVec<[u8; 4]>,
     // NOTE: The old `specificity` field (count of NewVar tags) was removed.
     // MeTTa HE has NO specificity filter — all matching rules fire nondeterministically.
-    /// How many times this rule was added (synced with MettaTrie multiplicity)
+    // The old filter dropped structurally-more-specific rules when a variable-only rule
+    // happened to have fewer NewVar tags (e.g. `(f ($c $tv) $y)` with 3 vars beat
+    // `(f ((Implication $A $B) $TV) $Y)` with 4 vars despite the latter being more specific).
+    /// How many times this rule was added (synced with PathMap multiplicity)
     pub multiplicity: u64,
     /// Cached return type of the RHS, computed once at insertion time.
     /// Used by Phase 8 optimizations for rule pre-filtering by expected type.
@@ -151,7 +219,7 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub rhs_has_variables: bool,
     /// Compiled structural matcher for direct MettaValue pattern matching.
     /// `Some` for rules with structurally-matchable LHS (>95% of rules).
-    /// `None` for rules too complex for structural matching — falls back to pattern_match_generic.
+    /// `None` for rules too complex for structural matching — falls back to MORK.
     pub structural_matcher: Option<StructuralMatcher>,
     /// Enhanced matcher for deep patterns (depth > 8) that StructuralMatcher rejects (I-2).
     /// Provides indexed binding slots and no depth limit.
@@ -162,7 +230,6 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub global_rule_index: u32,
     /// Pre-compiled bytecode for the RHS body (compile-on-add).
     /// Type-erased to avoid propagating Send+Sync+'static bounds through RuleEntry<V>.
-    /// Downcasted to `Arc<GenericBytecodeChunk<V>>` in `op_dispatch_rules` via TypeId check.
     pub compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
@@ -186,7 +253,7 @@ pub(crate) fn get_first_arg_head<V: MettaValueTrait>(value: &V) -> Option<&str> 
 ///
 /// Partitions rules by the first argument's head symbol for O(1) candidate
 /// narrowing. For PLN, many rules share the same head (e.g., `init-sentence`,
-/// `|-`); this reduces the inner match loop by 3-10x.
+/// `|-`); this reduces the inner MORK `extract_data` loop by 3-10x.
 ///
 /// ## Layout
 ///
@@ -347,10 +414,10 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for RuleGroupIter<'a, V> {
     }
 }
 
-/// Lightweight in-memory index for O(1) rule lookup + structural matching.
+/// Lightweight in-memory index for O(1) rule lookup + MORK byte-level matching.
 ///
 /// Populated at `add_rule()` time. Authoritative source for rule queries.
-/// MettaTrie remains the storage-of-record (for `match_space`, serialization).
+/// PathMap remains the storage-of-record (for `match_space`, serialization).
 ///
 /// ## Indexing Strategy
 ///
@@ -484,8 +551,8 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     /// Returns an iterator over matching rules chained with wildcard rules.
     /// When `first_arg_head` is `Some`, the candidate set is narrowed to rules
     /// whose LHS first argument has the same head symbol, plus rules with
-    /// variable/wildcard first arguments. This reduces match attempts by 3-10x
-    /// for PLN workloads.
+    /// variable/wildcard first arguments. This reduces MORK `extract_data()`
+    /// invocations by 3-10x for PLN workloads.
     pub fn get_candidates(
         &self,
         head: &str,
@@ -547,7 +614,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GroupOrEmpty<'a, V> {
 }
 
 // ============================================================================
-// Structural Matcher — Direct MettaValue pattern matching
+// Structural Matcher — Direct MettaValue pattern matching (MORK bypass)
 // ============================================================================
 
 /// Path from root to a node in the expression tree.
@@ -679,10 +746,6 @@ enum StructuralCheck {
         path: MatchPath,
         expected: &'static str,
     },
-    /// Check that the node at `path` is Unit (empty tuple `()`).
-    IsUnit {
-        path: MatchPath,
-    },
 }
 
 /// Variable binding operation, executed after all structural checks pass.
@@ -704,7 +767,8 @@ enum VarOp {
 
 /// Compiled structural matcher for direct MettaValue pattern matching.
 ///
-/// Eliminates serialization overhead by performing structural comparison
+/// Eliminates MORK serialization (`encode_wide_storage_inner`, 2% CPU) and
+/// MORK trie traversal (`gnext`, 3.3% CPU) by performing structural comparison
 /// directly on the in-memory MettaValue representation.
 ///
 /// Created at `add_rule()` time by analyzing the LHS pattern. Each rule's LHS
@@ -726,7 +790,12 @@ enum VarOp {
 ///
 /// For a typical PLN rule with 4 structural checks + 4 variable bindings:
 /// - Structural matcher: ~60-100 ns (pointer derefs + comparisons)
-/// - Speedup: ~4-6x per candidate match vs serialization-based approaches
+/// - MORK path: ~300-500 ns (serialize + trie traverse + extract bindings)
+/// - Speedup: ~4-6x per candidate match
+///
+/// When ALL candidates in a `(head, arity)` group have structural matchers,
+/// the MORK byte serialization step is skipped entirely — eliminating the
+/// amortized ~200 ns serialization cost.
 #[derive(Debug, Clone)]
 pub(crate) struct StructuralMatcher {
     /// Structural checks (arity + concrete value equality) — executed first, fail-fast.
@@ -746,7 +815,7 @@ impl StructuralMatcher {
     /// - Quoted nodes in patterns
     /// - Any other non-standard value types
     ///
-    /// These unsupported patterns fall back to `pattern_match_generic`.
+    /// These unsupported patterns fall back to MORK byte-level matching.
     pub fn analyze<V: MettaValueTrait + Clone>(lhs: &V) -> Option<Self> {
         let mut checks = SmallVec::new();
         let mut var_ops = SmallVec::new();
@@ -773,7 +842,7 @@ impl StructuralMatcher {
         // S-expression: check arity, recurse into children
         if let Some(items) = value.as_sexpr() {
             if path.len >= 8 {
-                return false; // Depth overflow — bail to pattern_match_generic
+                return false; // Depth overflow — bail to MORK
             }
             checks.push(StructuralCheck::Arity {
                 path,
@@ -853,15 +922,8 @@ impl StructuralMatcher {
             return true;
         }
 
-        // Unit — must match Unit exactly (empty tuple `()`)
-        // GcFactory::sexpr(vec![]) converts to Unit, so () in patterns is Unit.
-        if value.is_unit() || value.is_empty() {
-            checks.push(StructuralCheck::IsUnit { path });
-            return true;
-        }
-
         // Unsupported node type (Type, Conjunction, Error, Quoted, etc.)
-        // Fall back to pattern_match_generic
+        // Fall back to MORK matching
         false
     }
 
@@ -916,12 +978,6 @@ impl StructuralMatcher {
                     let val = path.navigate(expr)?;
                     let s = val.as_string()?;
                     if s != *expected {
-                        return None;
-                    }
-                }
-                StructuralCheck::IsUnit { path } => {
-                    let val = path.navigate(expr)?;
-                    if !val.is_unit() && !val.is_empty() {
                         return None;
                     }
                 }
@@ -1018,12 +1074,6 @@ impl StructuralMatcher {
                         return None;
                     }
                 }
-                StructuralCheck::IsUnit { path } => {
-                    let val = path.navigate_resolving(template, outer_bindings)?;
-                    if !val.is_unit() && !val.is_empty() {
-                        return None;
-                    }
-                }
             }
         }
 
@@ -1052,60 +1102,348 @@ impl StructuralMatcher {
     }
 }
 
-/// Build a list of original variable names from the LHS pattern,
+/// Validate that ALL tag bytes in a MORK expression are valid (no reserved bytes 0x40-0x7F).
+///
+/// Uses the same traversal logic as `mork_expr_byte_len()`. Returns `Ok(len)` if all
+/// bytes are valid MORK tags, or `Err((offset, byte))` for the first reserved byte found.
+///
+/// This is used as a diagnostic tool to catch byte misalignment issues before they
+/// cause panics in `ExprZipper::new()` or `ExprZipper::tag()` (which call `byte_item()`).
+#[cfg(any(debug_assertions, test))]
+pub(crate) fn validate_mork_bytes(bytes: &[u8]) -> Result<usize, (usize, u8)> {
+    let mut offset = 0usize;
+    let mut depth = 1u32;
+
+    while depth > 0 && offset < bytes.len() {
+        let byte = bytes[offset];
+        let tag = match maybe_byte_item(byte) {
+            Ok(t) => t,
+            Err(reserved) => return Err((offset, reserved)),
+        };
+        offset += 1;
+        depth -= 1;
+
+        match tag {
+            Tag::NewVar | Tag::VarRef(_) => {}
+            Tag::SymbolSize(size) => {
+                let end = offset + size as usize;
+                if end > bytes.len() {
+                    // Symbol data extends past the buffer — truncated expression
+                    return Err((offset - 1, byte));
+                }
+                offset = end;
+            }
+            Tag::Arity(arity) => {
+                depth += arity as u32;
+            }
+        }
+    }
+
+    if depth > 0 {
+        // Expression is incomplete — ran out of bytes before all children were consumed
+        return Err((offset, 0xFF));
+    }
+
+    Ok(offset)
+}
+
+/// Count the number of NewVar tags in MORK bytes (used for specificity computation).
+///
+/// Each NewVar tag (0xC0) introduces a new variable binding position.
+/// Fewer NewVar tags = more specific pattern (more concrete structure).
+///
+/// Uses `maybe_byte_item()` to validate the first byte before creating an `ExprZipper`.
+/// Returns 0 if the bytes are empty or start with a reserved byte.
+fn count_newvar_tags(bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
+        return 0;
+    }
+    // Validate first byte is a valid MORK tag before calling ExprZipper::new()
+    // (which uses byte_item() and panics on reserved bytes 0x40-0x7F)
+    if let Err(reserved) = maybe_byte_item(bytes[0]) {
+        tracing::warn!(
+            target: "mettatron::count_newvar_tags",
+            "LHS De Bruijn bytes start with reserved byte 0x{:02x}, skipping",
+            reserved
+        );
+        return 0;
+    }
+    let mut count = 0;
+    let expr = Expr { ptr: bytes.as_ptr().cast_mut() };
+    let mut ez = ExprZipper::new(expr);
+    loop {
+        if ez.tag() == Tag::NewVar {
+            count += 1;
+        }
+        if !ez.next() {
+            break;
+        }
+    }
+    count
+}
+
+/// Build a list of original variable names from the ConversionContext,
 /// identifying wildcard indices (anonymous variables from `_`).
 ///
 /// Returns `(var_names, wildcard_indices)` where:
-/// - `var_names[i]` is the full variable name including `$` prefix
+/// - `var_names[i]` is the full variable name including `$` prefix for De Bruijn index `i`
 /// - `wildcard_indices` contains indices of anonymous wildcard variables
-fn build_var_names_from_lhs<V: MettaValueTrait>(
-    lhs: &V,
+fn build_var_names_and_wildcards(
+    ctx_var_names: &[String],
+    lhs_var_count: usize,
 ) -> (Vec<&'static str>, SmallVec<[u8; 4]>) {
     use crate::backend::models::gc_allocator::global_allocator;
 
     let alloc = global_allocator();
-    let mut var_names = Vec::new();
+    let mut var_names = Vec::with_capacity(lhs_var_count);
     let mut wildcard_indices = SmallVec::new();
 
-    collect_vars_recursive(lhs, &mut var_names, &mut wildcard_indices, alloc);
+    for (i, name) in ctx_var_names.iter().enumerate() {
+        if i >= lhs_var_count {
+            break;
+        }
+        if name.starts_with("__anon") {
+            // Wildcard _ was encoded as __anonN
+            var_names.push("_");
+            wildcard_indices.push(i as u8);
+        } else {
+            // Regular variable — restore the $ prefix, intern via slab allocator
+            let interned = alloc.alloc_str(&format!("${}", name));
+            var_names.push(interned);
+        }
+    }
 
     (var_names, wildcard_indices)
 }
 
-/// Recursively collect variable names from a pattern expression.
-fn collect_vars_recursive<V: MettaValueTrait>(
-    value: &V,
-    var_names: &mut Vec<&'static str>,
-    wildcard_indices: &mut SmallVec<[u8; 4]>,
-    alloc: &crate::backend::models::gc_allocator::SlabAllocator,
-) {
-    if let Some(items) = value.as_sexpr() {
-        for child in items {
-            collect_vars_recursive(child, var_names, wildcard_indices, alloc);
-        }
-        return;
-    }
+/// Extract bindings by walking De Bruijn bytes and the original expression in parallel.
+///
+/// Since `extract_data` already confirmed the structural match, we can skip all
+/// matching logic and just navigate to NewVar positions to capture sub-expressions
+/// from the original value. This preserves runtime types (SpaceHandle, State, etc.)
+/// that can't survive a MORK serialize→deserialize round trip.
+///
+/// O(pattern_size) time — same as extract_data, but operates on MettaValues.
+fn extract_bindings_from_expr<V>(
+    lhs_debruijn: &[u8],
+    expr: &V,
+    var_names: &[&'static str],
+    wildcard_indices: &SmallVec<[u8; 4]>,
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+{
+    let mut bindings = GenericBindings::new();
+    let mut offset = 0usize;
+    let mut newvar_idx = 0u8;
+    let mut expr_stack: Vec<&V> = vec![expr];
+    // Exclude padding byte (0x00) appended for ExprZipper read-past-end safety
+    let end = lhs_debruijn.len().saturating_sub(1);
 
-    if let Some(atom) = value.as_atom() {
-        if atom == "_" {
-            wildcard_indices.push(var_names.len() as u8);
-            var_names.push("_");
-        } else if atom.len() > 1
-            && (atom.starts_with('$')
-                || atom.starts_with('\'')
-                || (atom.starts_with('&')
-                    && atom != "&"
-                    && atom != "&self"
-                    && atom != "&kb"
-                    && atom != "&stack"))
-        {
-            // Check for duplicate variable (repeated occurrence)
-            if !var_names.contains(&atom) {
-                let interned = alloc.alloc_str(atom);
-                var_names.push(interned);
+    while offset < end && !expr_stack.is_empty() {
+        let tag = match maybe_byte_item(lhs_debruijn[offset]) {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+        offset += 1;
+
+        match tag {
+            Tag::NewVar => {
+                let value = match expr_stack.pop() {
+                    Some(v) => v,
+                    None => break,
+                };
+                if !wildcard_indices.contains(&newvar_idx)
+                    && (newvar_idx as usize) < var_names.len()
+                {
+                    bindings.insert(var_names[newvar_idx as usize], value.clone());
+                }
+                newvar_idx += 1;
+            }
+            Tag::VarRef(_) => {
+                expr_stack.pop(); // Consume without binding
+            }
+            Tag::SymbolSize(size) => {
+                offset += size as usize; // Skip symbol bytes
+                expr_stack.pop(); // Consume the corresponding atom/leaf
+            }
+            Tag::Arity(n) => {
+                if n == 0 {
+                    expr_stack.pop(); // Unit / empty S-expression
+                } else if let Some(parent) = expr_stack.pop() {
+                    // Push children in reverse order so first child is on top
+                    if let Some(items) = parent.as_sexpr() {
+                        for child in items.iter().rev() {
+                            expr_stack.push(child);
+                        }
+                    } else if let Some(goals) = parent.as_conjunction() {
+                        // Conjunction: MORK writes Arity(goals+1) with comma as first child.
+                        // Push goals in reverse, then a placeholder for the comma
+                        // (the comma's SymbolSize tag will pop and discard it).
+                        for goal in goals.iter().rev() {
+                            expr_stack.push(goal);
+                        }
+                        expr_stack.push(parent); // Placeholder consumed by SymbolSize(",")
+                    } else if let Some((_msg, details)) = parent.as_error() {
+                        // Error: MORK writes Arity(3) with "error", "msg", details.
+                        // Push details, then placeholders for msg and "error".
+                        expr_stack.push(details);
+                        expr_stack.push(parent); // Placeholder consumed by SymbolSize("\"msg\"")
+                        expr_stack.push(parent); // Placeholder consumed by SymbolSize("error")
+                    } else {
+                        // Other compound types (Space, State serialized as S-expr in MORK).
+                        // These shouldn't appear as Arity match targets in LHS patterns
+                        // (they're opaque types matched by NewVar), but if they do,
+                        // we can't drill into them — stop extraction.
+                        break;
+                    }
+                }
             }
         }
     }
+
+    bindings
+}
+
+/// Extract bindings by walking Wide MORK De Bruijn bytes and the original expression in parallel.
+///
+/// Same algorithm as `extract_bindings_from_expr` but for Wide MORK tag format
+/// (tag-byte + LEB128 instead of MORK's 2-bit tag + 6-bit payload).
+///
+/// Since `wide_extract_data` already confirmed the structural match, we can skip all
+/// matching logic and just navigate to NewVar positions to capture sub-expressions.
+fn extract_bindings_from_wide_expr<V>(
+    lhs_wide_debruijn: &[u8],
+    expr: &V,
+    var_names: &[&'static str],
+    wildcard_indices: &SmallVec<[u8; 4]>,
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+{
+    use crate::backend::wide_mork::encoding::{
+        WideTag, decode_leb128,
+    };
+
+    let mut bindings = GenericBindings::new();
+    let mut offset = 0usize;
+    let mut newvar_idx = 0u8;
+    let mut expr_stack: Vec<&V> = vec![expr];
+    let end = lhs_wide_debruijn.len();
+
+    while offset < end && !expr_stack.is_empty() {
+        let tag = match WideTag::from_byte(lhs_wide_debruijn[offset]) {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+        offset += 1;
+
+        match tag {
+            WideTag::NewVar => {
+                let value = match expr_stack.pop() {
+                    Some(v) => v,
+                    None => break,
+                };
+                if !wildcard_indices.contains(&newvar_idx)
+                    && (newvar_idx as usize) < var_names.len()
+                {
+                    bindings.insert(var_names[newvar_idx as usize], value.clone());
+                }
+                newvar_idx += 1;
+            }
+            WideTag::VarRef => {
+                // Consume the LEB128 index and the corresponding expression
+                if let Some((_idx, consumed)) = decode_leb128(&lhs_wide_debruijn[offset..]) {
+                    offset += consumed;
+                } else {
+                    break;
+                }
+                expr_stack.pop(); // Consume without binding
+            }
+            WideTag::SymbolSize => {
+                // Skip the LEB128 size and the symbol bytes
+                if let Some((size, consumed)) = decode_leb128(&lhs_wide_debruijn[offset..]) {
+                    offset += consumed + size as usize;
+                } else {
+                    break;
+                }
+                expr_stack.pop(); // Consume the corresponding atom/leaf
+            }
+            WideTag::Arity => {
+                if let Some((n, consumed)) = decode_leb128(&lhs_wide_debruijn[offset..]) {
+                    offset += consumed;
+                    if n == 0 {
+                        expr_stack.pop(); // Unit / empty S-expression
+                    } else if let Some(parent) = expr_stack.pop() {
+                        // Push children in reverse order so first child is on top
+                        if let Some(items) = parent.as_sexpr() {
+                            for child in items.iter().rev() {
+                                expr_stack.push(child);
+                            }
+                        } else if let Some(goals) = parent.as_conjunction() {
+                            for goal in goals.iter().rev() {
+                                expr_stack.push(goal);
+                            }
+                            expr_stack.push(parent); // Placeholder for comma
+                        } else if let Some((_msg, details)) = parent.as_error() {
+                            expr_stack.push(details);
+                            expr_stack.push(parent); // Placeholder for msg
+                            expr_stack.push(parent); // Placeholder for "error"
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    bindings
+}
+
+/// Build the head+arity MORK byte prefix for targeted rule lookup.
+///
+/// **NOTE**: Superseded by `RuleIndex` for the primary hot path. Retained for
+/// `get_matching_rules_for_expr()` fallback used in tests and `match_space` compatibility.
+///
+/// Extends the cached rule prefix with `[Arity(arity+1)] + [head symbol MORK bytes]`.
+/// The MORK arity includes the head element, so MeTTa arity (excludes head) needs `+1`.
+///
+/// Returns `None` if the head is empty, arity exceeds the MORK 6-bit limit (63),
+/// or MORK serialization fails.
+fn build_head_arity_prefix<V, F>(
+    rule_prefix: &[u8],
+    head: &str,
+    arity: usize,
+    factory: &F,
+    sm: &mork_interning::SharedMappingHandle,
+    cache_epoch: u64,
+) -> Option<Vec<u8>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if head.is_empty() {
+        return None;
+    }
+    let mork_arity = (arity + 1) as u8; // MORK arity includes head
+    if mork_arity >= 64 {
+        return None; // MORK arity limit (6 bits)
+    }
+
+    // Serialize head symbol to get its MORK bytes (SymbolSize tag + interned key)
+    let head_atom = factory.atom(head);
+    with_mork_bytes(&head_atom, sm, cache_epoch, |head_bytes| {
+        let mut prefix = Vec::with_capacity(rule_prefix.len() + 1 + head_bytes.len());
+        prefix.extend_from_slice(rule_prefix);
+        // Arity tag: upper 2 bits = 00, lower 6 bits = arity value
+        prefix.push(mork_arity);
+        prefix.extend_from_slice(head_bytes);
+        prefix
+    })
+    .ok()
 }
 
 /// Iterator over rule heads with their arities and counts.
@@ -1148,9 +1486,9 @@ where
 {
     /// Add a rule to the environment.
     ///
-    /// The rule is stored as `(= lhs rhs)` in the MettaTrie using literal decomposition
-    /// (via `decompose_literal`). The RuleIndex is populated with cached MettaValues
-    /// and metadata for O(1) lookup + structural matching.
+    /// The rule is stored as `(= lhs rhs)` in the MORK PathMap using De Bruijn encoding
+    /// (via `with_mork_query_bytes`). The RuleIndex is populated with cached MettaValues,
+    /// De Bruijn bytes, and metadata for O(1) lookup + byte-level matching.
     ///
     /// Bloom filter is updated for O(1) rejection in match_space().
     ///
@@ -1289,72 +1627,218 @@ where
             rhs.clone(),
         ]);
 
-        // Decompose and insert into MettaTrie
-        let keys = crate::backend::decompose::decompose_literal(&rule_sexpr);
-        {
-            let mut btm = self.shared.atom_space.btm.write();
-            multiplicity::trie_add_atom(&mut btm, &keys, rule_sexpr.clone());
-        }
-        self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+        // Convert to De Bruijn bytes and insert into PathMap + RuleIndex
+        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
+        let result = with_mork_query_bytes(
+            &rule_sexpr,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |debruijn_bytes, ctx| {
+                // 1. Insert De Bruijn bytes into PathMap (increment multiplicity)
+                {
+                    let mut btm = self.shared.atom_space.btm.write();
+                    super::multiplicity::add_atom(&mut btm, debruijn_bytes);
+                }
+                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
 
-        // Compute metadata from LHS pattern
-        let (var_names, wildcard_indices) = build_var_names_from_lhs(&lhs);
+                // 2. Split De Bruijn bytes into LHS and RHS ranges
+                // Layout: [Arity(3)] ["=" symbol bytes] [LHS bytes] [RHS bytes]
+                //         |---------- rule_prefix_len --|
+                if debruijn_bytes.len() <= rule_prefix_len {
+                    return; // Shouldn't happen for valid rules
+                }
 
-        // Populate RuleIndex with second-level first-arg indexing
-        let alloc = crate::backend::models::gc_allocator::global_allocator();
-        let first_arg_head_interned: Option<&'static str> =
-            get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
-        let structural_matcher = StructuralMatcher::analyze(&lhs);
-        // I-2: If StructuralMatcher fails (e.g., depth > 8), try EnhancedMatcher
-        let enhanced_matcher = if structural_matcher.is_none() {
-            crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
-        } else {
-            None
-        };
-        // Compile-on-add: pre-compile RHS body to bytecode.
-        // Variables become PushVariable opcodes that resolve via the VM's binding frame.
-        let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
-            if std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
-                // SAFETY: TypeId check guarantees V == MettaValue
-                let metta_rhs: &crate::backend::models::MettaValue =
-                    unsafe { &*(&rhs as *const V as *const crate::backend::models::MettaValue) };
-                if crate::backend::bytecode::can_compile_with_env(metta_rhs) {
-                    crate::backend::bytecode::compile_bytecode_arc("rule_rhs", metta_rhs)
-                        .ok()
-                        .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                // Verify structural invariant: rules start with Arity(3) byte
+                #[cfg(debug_assertions)]
+                {
+                    assert_eq!(
+                        debruijn_bytes[0], 0x03,
+                        "Rule debruijn_bytes does not start with Arity(3): first byte is 0x{:02x}",
+                        debruijn_bytes[0]
+                    );
+                }
+
+                let lhs_start = rule_prefix_len;
+                let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
+
+                // Validate LHS byte range, first byte, and ALL bytes
+                #[cfg(debug_assertions)]
+                {
+                    if lhs_start + lhs_byte_len > debruijn_bytes.len() {
+                        panic!(
+                            "LHS byte range {}..{} exceeds debruijn_bytes len {}",
+                            lhs_start, lhs_start + lhs_byte_len, debruijn_bytes.len()
+                        );
+                    }
+                    let first_lhs_byte = debruijn_bytes[lhs_start];
+                    if let Err(reserved) = maybe_byte_item(first_lhs_byte) {
+                        panic!(
+                            "LHS starts with reserved byte 0x{:02x} at offset {} in {:02x?}",
+                            reserved, lhs_start, &debruijn_bytes[..debruijn_bytes.len().min(32)]
+                        );
+                    }
+                }
+
+                // Extract LHS De Bruijn bytes with one extra zero byte of padding.
+                // See the comment on expr_bytes_owned in match_rules_native() for why
+                // padding is needed (ExprZipper::gnext reads one byte past the end).
+                let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
+                lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
+                lhs_debruijn.push(0x00); // Padding byte for ExprZipper read-past-end safety
+
+                // Validate ALL bytes in lhs_debruijn are valid MORK (no reserved 0x40-0x7F)
+                #[cfg(debug_assertions)]
+                {
+                    if let Err((off, byte)) = validate_mork_bytes(&lhs_debruijn) {
+                        panic!(
+                            "lhs_debruijn has invalid byte 0x{:02x} at offset {} (len={}).\n\
+                             lhs_debruijn: {:02x?}\n\
+                             full debruijn_bytes (first 64): {:02x?}\n\
+                             rule_prefix_len: {}, lhs_start: {}, lhs_byte_len: {}",
+                            byte, off, lhs_debruijn.len(),
+                            &lhs_debruijn[..lhs_debruijn.len().min(32)],
+                            &debruijn_bytes[..debruijn_bytes.len().min(64)],
+                            rule_prefix_len, lhs_start, lhs_byte_len
+                        );
+                    }
+                }
+
+                // 3. Compute metadata from De Bruijn encoding
+                let lhs_var_count = count_newvar_tags(&lhs_debruijn);
+                let (var_names, wildcard_indices) =
+                    build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
+
+                // 4. Populate RuleIndex with second-level first-arg indexing
+                let alloc = crate::backend::models::gc_allocator::global_allocator();
+                let first_arg_head_interned: Option<&'static str> =
+                    get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
+                let structural_matcher = StructuralMatcher::analyze(&lhs);
+                // I-2: If StructuralMatcher fails (e.g., depth > 8), try EnhancedMatcher
+                let enhanced_matcher = if structural_matcher.is_none() {
+                    crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
                 } else {
                     None
-                }
+                };
+                let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+                    if std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
+                        let metta_rhs: &crate::backend::models::MettaValue =
+                            unsafe { &*(&rhs as *const V as *const crate::backend::models::MettaValue) };
+                        if crate::backend::bytecode::can_compile_with_env(metta_rhs) {
+                            crate::backend::bytecode::compile_bytecode_arc("rule_rhs", metta_rhs)
+                                .ok()
+                                .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                let entry = RuleEntry {
+                    lhs: lhs.clone(),
+                    rhs_has_variables: rhs.contains_variables(),
+                    rhs: rhs.clone(),
+                    lhs_debruijn,
+                    lhs_wide_debruijn: Vec::new(), // Narrow path — MORK encoding succeeded
+                    var_names,
+                    wildcard_indices,
+                    multiplicity: 1,
+                    rhs_type: rhs_type.clone(),
+                    structural_matcher,
+                    enhanced_matcher,
+                    rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
+                    global_rule_index: 0, // Assigned by RuleIndex::add_rule
+                    compiled_rhs,
+                };
+                // Phase 4a: Pre-seed tiered cache so first RHS evaluation
+                // immediately triggers bytecode compilation (no warmup delay)
+                crate::backend::bytecode::tiered_cache::global_tiered_cache()
+                    .preseed_for_immediate_compile(rhs.hash_value());
+
+                self.shared.rule_index.write().add_rule(
+                    head_owned.as_deref(),
+                    arity,
+                    first_arg_head_interned,
+                    entry,
+                );
+            },
+        );
+
+        // Fallback for expressions that can't be MORK-encoded (arity >= 64).
+        // Use Wide MORK encoding for proper byte-level pattern matching.
+        // Store in wide_btm (PathMap<Multiplicity>) — same type as btm.
+        if result.is_err() {
+            let mut wide_key = Vec::new();
+            crate::backend::wide_mork::encoding::encode_wide_storage(&rule_sexpr, &mut wide_key);
+
+            {
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                super::multiplicity::add_atom(&mut wbtm, &wide_key);
+            }
+
+            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+            // Encode the LHS with Wide MORK De Bruijn encoding for byte-level matching.
+            // This replaces the old structural fallback with O(n) byte-level matching.
+            let mut wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut lhs_wide_debruijn = Vec::new();
+            crate::backend::wide_mork::encoding::encode_wide_debruijn(
+                &lhs, &mut wide_ctx, &mut lhs_wide_debruijn,
+            );
+
+            let lhs_var_count = crate::backend::wide_mork::encoding::count_wide_newvar_tags(&lhs_wide_debruijn);
+            let (var_names, wildcard_indices) =
+                build_var_names_and_wildcards(&wide_ctx.var_names, lhs_var_count);
+
+            let alloc = crate::backend::models::gc_allocator::global_allocator();
+            let first_arg_head_interned: Option<&'static str> =
+                get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
+            let structural_matcher = StructuralMatcher::analyze(&lhs);
+            let enhanced_matcher = if structural_matcher.is_none() {
+                crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
             } else {
                 None
             };
+            let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+                if std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
+                    let metta_rhs: &crate::backend::models::MettaValue =
+                        unsafe { &*(&rhs as *const V as *const crate::backend::models::MettaValue) };
+                    if crate::backend::bytecode::can_compile_with_env(metta_rhs) {
+                        crate::backend::bytecode::compile_bytecode_arc("rule_rhs", metta_rhs)
+                            .ok()
+                            .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            let entry = RuleEntry {
+                lhs: lhs.clone(),
+                rhs_has_variables: rhs.contains_variables(),
+                rhs: rhs.clone(),
+                lhs_debruijn: Vec::new(), // Empty — this is a wide rule
+                lhs_wide_debruijn,
+                var_names,
+                wildcard_indices,
+                multiplicity: 1,
+                rhs_type, // Phase 8.1: computed before closure, last use — no clone needed
+                structural_matcher,
+                enhanced_matcher,
+                rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
+                global_rule_index: 0, // Assigned by RuleIndex::add_rule
+                compiled_rhs,
+            };
+            // Phase 4a: Pre-seed tiered cache for wide MORK path
+            crate::backend::bytecode::tiered_cache::global_tiered_cache()
+                .preseed_for_immediate_compile(rhs.hash_value());
 
-        let entry = RuleEntry {
-            lhs: lhs.clone(),
-            rhs_has_variables: rhs.contains_variables(),
-            rhs: rhs.clone(),
-            lhs_debruijn: vec![],
-            var_names,
-            wildcard_indices,
-            multiplicity: 1,
-            rhs_type: rhs_type.clone(),
-            structural_matcher,
-            enhanced_matcher,
-            rule_index_in_group: 0,
-            global_rule_index: 0,
-            compiled_rhs,
-        };
-        // Phase 4a: Pre-seed tiered cache so first RHS evaluation
-        // immediately triggers bytecode compilation (no warmup delay)
-        crate::backend::bytecode::tiered_cache::global_tiered_cache()
-            .preseed_for_immediate_compile(rhs.hash_value());
-
-        self.shared.rule_index.write().add_rule(
-            head_owned.as_deref(),
-            arity,
-            first_arg_head_interned,
-            entry,
-        );
+            self.shared.rule_index.write().add_rule(
+                head_owned.as_deref(),
+                arity,
+                first_arg_head_interned,
+                entry,
+            );
+        }
 
         // Update bloom filter with (head, arity) for O(1) match_space() rejection
         if let Some(ref head) = head_owned {
@@ -1365,32 +1849,36 @@ where
                 .insert(head, arity_u8);
         }
 
-        // Also insert the rule s-expression's head/arity ("=", arity=2) so that
-        // match_space() queries for (= $a $b) patterns aren't rejected by
-        // the bloom filter. get_arity() returns items.len()-1 (excludes head),
-        // so (= lhs rhs) has arity 2. Without this, direct add_rule() callers
-        // (= special form eval, module loading) miss the bloom filter entry.
-        self.shared
-            .atom_space.head_arity_bloom
-            .write()
-            .insert("=", 2);
-
         self.modified.store(true, Ordering::Release);
     }
 
-    /// Match rules natively using structural matchers for pattern matching.
+    /// Match rules natively using MORK byte-level `extract_data()` for pattern matching.
     ///
-    /// Pipeline:
+    /// This replaces the old pipeline of:
+    /// 1. `get_matching_rules_for_expr()` → trie traversal + LHS/RHS deserialization
+    /// 2. `pattern_match_generic()` → MettaValue-level structural comparison
+    /// 3. `apply_bindings_generic()` → MettaValue-level binding substitution
+    ///
+    /// New pipeline:
     /// 1. **Bloom filter** — O(1) rejection by (head, arity)
     /// 2. **RuleIndex lookup** — O(1) HashMap lookup for `(head, arity) → Vec<RuleEntry>`
-    /// 3. **StructuralMatcher / EnhancedMatcher** — direct MettaValue pattern matching per candidate
-    /// 4. **Extract bindings** — Only for successful matches (all matching rules fire nondeterministically)
-    /// 5. **`apply_bindings_generic()`** — Apply bindings to cached RHS MettaValue
+    /// 3. **Serialize expr ONCE** — `with_mork_bytes(expr)` → expr_bytes
+    /// 4. **`extract_data()`** — O(n) byte-level pattern matching per candidate (no deserialization)
+    /// 5. **Extract bindings** — Only for successful matches (all matching rules fire nondeterministically)
+    /// 6. **`apply_bindings_generic()`** — Apply bindings to cached RHS MettaValue
     ///
-    /// ## Fallback
+    /// ## Performance
     ///
-    /// For rules where neither StructuralMatcher nor EnhancedMatcher could be built,
-    /// falls back to `pattern_match_generic()` for direct MettaValue-level matching.
+    /// Eliminates LHS deserialization per candidate (~27% of old wall time),
+    /// trie traversal page faults (~23%), and MettaValue-level pattern matching (~15%).
+    ///
+    /// ## Structural Matcher Fast Path
+    ///
+    /// When all candidate rules have compiled structural matchers (>95% of the time
+    /// for typical PLN workloads), MORK serialization is bypassed entirely.
+    /// The structural matcher performs direct MettaValue comparison at ~4-6x the speed
+    /// of MORK byte-level matching, eliminating `encode_wide_storage_inner` (2% CPU)
+    /// and `ExprZipper::gnext` (3.3% CPU) from the hot path.
     pub fn match_rules_native(
         &self,
         expr: &V,
@@ -1401,7 +1889,7 @@ where
         // Phase 3: Extract first argument's head symbol for second-level index narrowing
         let first_arg_head = get_first_arg_head(expr);
 
-        // Bloom filter O(1) rejection: skip entirely when
+        // Bloom filter O(1) rejection: skip MORK serialization entirely when
         // the bloom filter says no head-specific rules exist for this head+arity
         // AND there are no wildcard rules (which match any head).
         if !head.is_empty() {
@@ -1415,144 +1903,335 @@ where
             }
         }
 
-        let rule_index = self.shared.rule_index.read();
-
-        // Collect candidates into a SmallVec (stack-allocated for ≤16 entries).
-        let candidates: SmallVec<[&RuleEntry<V>; 16]> = if !head.is_empty() {
-            rule_index.get_candidates(head, arity, first_arg_head).collect()
-        } else {
-            rule_index.get_all_rules().collect()
-        };
-
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        // I-12: Filter out dead rules via CompressedRuleFilter (from AAM analysis).
-        let candidates: SmallVec<[&RuleEntry<V>; 16]> = candidates
-            .into_iter()
-            .filter(|e| crate::backend::eval::cesk::continuation_compression::is_rule_live(e.global_rule_index))
-            .collect();
-
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        // I-14: Record query pattern for adaptive indexing.
-        // I-13: Record consulted (head, arity) group for incremental invalidation.
-        // Both are gated behind ANALYSIS_ACTIVE — a single branch-predicted
-        // Relaxed load when analysis is not enabled (the common case).
-        if is_analysis_active() && !head.is_empty() {
-            // I-14: Tracks which argument positions are queried most frequently,
-            // enabling runtime rebalancing of the second-level index.
-            let head_hash = {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                head.hash(&mut h);
-                h.finish()
-            };
-            let arg_heads: SmallVec<[Option<&str>; 4]> = if let Some(items) = expr.as_sexpr() {
-                items.iter().skip(1).map(|item| item.get_head_symbol()).collect()
-            } else {
-                SmallVec::new()
-            };
-            crate::backend::eval::cesk::with_adaptive_registry(|r| {
-                r.record_query(head_hash, arity, &arg_heads);
-            });
-
-            // I-13: On space mutation, only subgoals that consulted the affected group
-            // are selectively invalidated (instead of blanket invalidation).
-            let expr_hash = expr.hash_value();
-            let head_static: &'static str = crate::backend::models::gc_allocator::global_allocator().alloc_str(head);
-            crate::backend::eval::cesk::with_incremental_index(|idx| {
-                idx.record_dependency(crate::backend::eval::cesk::rete_incremental::SubgoalDependency {
-                    subgoal_hash: expr_hash,
-                    consulted_groups: smallvec::smallvec![(head_static, arity)],
-                    matched_rules: smallvec::SmallVec::new(), // Populated after matching
-                    transitive_deps: smallvec::SmallVec::new(),
-                });
-            });
-        }
-
-        // Check if ALL candidates have structural matchers
-        let all_structural = candidates.iter().all(|e| e.structural_matcher.is_some());
-
-        // Phase E: Populate operator inline cache with metadata about this
-        // (head, arity) — the caller can use this to skip hash_value()
-        // computation on subsequent calls.
-        if !head.is_empty() {
-            let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
-            crate::backend::eval::trampoline::dispatch_hints::operator_cache_put(
-                head,
-                arity,
-                crate::backend::eval::trampoline::dispatch_hints::OperatorCacheEntry {
-                    rule_epoch: current_epoch,
-                    all_structural,
-                    candidate_count: candidates.len(),
-                },
-            );
-        }
-
-        // I-10: Parallel speculative matching for large candidate sets.
-        // Skip when head is empty (all-rules fallback) — these queries rarely match
-        // and the 102+ candidates are all false positives for thread spawning.
-        if all_structural
-            && !head.is_empty()
-            && crate::backend::eval::cesk::should_speculate(candidates.len())
-            && std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+        // ── Structural Matcher Fast Path ──
+        //
+        // Try structural matchers for all candidates first. If ALL candidates have
+        // structural matchers, we bypass MORK serialization entirely — eliminating
+        // encode_wide_storage_inner (2% CPU) and gnext (3.3% CPU) from the hot path.
+        //
+        // Structural matchers perform direct MettaValue comparison: arity checks via
+        // as_sexpr().len(), atom equality via &'static str comparison, and variable
+        // extraction at known tree positions. No hashing, no serialization, no trie.
         {
-            // I-10: Parallel speculative matching — head matching is pure read-only.
-            // Only for MettaValue (GcFactory is Send+Sync).
-            // Cap speculative threads to prevent contention with eval work pool.
-            // Use at most half the available parallelism, capped at 8.
-            const MAX_SPECULATIVE_THREADS: usize = 8;
-            let chunks = crate::backend::eval::cesk::chunk_candidates(
-                candidates.len(),
-                std::thread::available_parallelism()
-                    .map(|n| n.get() / 2)
-                    .unwrap_or(4)
-                    .min(MAX_SPECULATIVE_THREADS)
-                    .min(candidates.len())
-                    .max(2),
-            );
+            let rule_index = self.shared.rule_index.read();
 
-            // SAFETY: V is MettaValue (TypeId checked above). GcFactory is Send+Sync.
-            let factory_ptr = &self.factory as *const F as *const crate::backend::models::GcFactory;
-            let gc_factory: crate::backend::models::GcFactory = unsafe { *factory_ptr };
-            let mut all_results: Vec<RuleMatchResult<V>> = Vec::new();
+            // Collect candidates into a SmallVec (stack-allocated for ≤16 entries).
+            // This avoids holding the iterator across the match loop (which would
+            // prevent us from knowing upfront whether all candidates are structural).
+            let candidates: SmallVec<[&RuleEntry<V>; 16]> = if !head.is_empty() {
+                rule_index.get_candidates(head, arity, first_arg_head).collect()
+            } else {
+                rule_index.get_all_rules().collect()
+            };
 
-            std::thread::scope(|s| {
-                let handles: Vec<_> = chunks.iter().map(|&(start, end)| {
-                    let chunk = &candidates[start..end];
-                    let fac = gc_factory;
-                    s.spawn(move || {
-                        let mut chunk_results = Vec::new();
-                        for entry in chunk {
-                            let bindings = if let Some(ref m) = entry.structural_matcher {
-                                m.try_match(expr)
-                            } else if let Some(ref m) = entry.enhanced_matcher {
-                                m.try_match(expr)
+            if candidates.is_empty() {
+                return Vec::new();
+            }
+
+            // I-12: Filter out dead rules via CompressedRuleFilter (from AAM analysis).
+            // The filter is installed on the thread-local by `install_rule_filter()`.
+            let candidates: SmallVec<[&RuleEntry<V>; 16]> = candidates
+                .into_iter()
+                .filter(|e| crate::backend::eval::cesk::continuation_compression::is_rule_live(e.global_rule_index))
+                .collect();
+
+            if candidates.is_empty() {
+                return Vec::new();
+            }
+
+            // I-14: Record query pattern for adaptive indexing.
+            // I-13: Record consulted (head, arity) group for incremental invalidation.
+            // Both are gated behind ANALYSIS_ACTIVE — a single branch-predicted
+            // Relaxed load when analysis is not enabled (the common case).
+            if is_analysis_active() && !head.is_empty() {
+                // I-14: Tracks which argument positions are queried most frequently,
+                // enabling runtime rebalancing of the second-level index.
+                let head_hash = {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    head.hash(&mut h);
+                    h.finish()
+                };
+                let arg_heads: SmallVec<[Option<&str>; 4]> = if let Some(items) = expr.as_sexpr() {
+                    items.iter().skip(1).map(|item| item.get_head_symbol()).collect()
+                } else {
+                    SmallVec::new()
+                };
+                crate::backend::eval::cesk::with_adaptive_registry(|r| {
+                    r.record_query(head_hash, arity, &arg_heads);
+                });
+
+                // I-13: On space mutation, only subgoals that consulted the affected group
+                // are selectively invalidated (instead of blanket invalidation).
+                let expr_hash = expr.hash_value();
+                // Intern head as &'static str for the dependency record.
+                // Atom strings from MeTTa values are already slab-allocated ('static),
+                // but get_head_symbol() returns &str; re-intern is O(1) for existing strings.
+                let head_static: &'static str = crate::backend::models::gc_allocator::global_allocator().alloc_str(head);
+                crate::backend::eval::cesk::with_incremental_index(|idx| {
+                    idx.record_dependency(crate::backend::eval::cesk::rete_incremental::SubgoalDependency {
+                        subgoal_hash: expr_hash,
+                        consulted_groups: smallvec::smallvec![(head_static, arity)],
+                        matched_rules: smallvec::SmallVec::new(), // Populated after matching
+                        transitive_deps: smallvec::SmallVec::new(),
+                    });
+                });
+            }
+
+            // Check if ALL candidates have structural matchers
+            let all_structural = candidates.iter().all(|e| e.structural_matcher.is_some());
+
+            // Phase E: Populate operator inline cache with metadata about this
+            // (head, arity) — the caller can use this to skip hash_value()
+            // computation on subsequent calls.
+            if !head.is_empty() {
+                let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
+                crate::backend::eval::trampoline::dispatch_hints::operator_cache_put(
+                    head,
+                    arity,
+                    crate::backend::eval::trampoline::dispatch_hints::OperatorCacheEntry {
+                        rule_epoch: current_epoch,
+                        all_structural,
+                        candidate_count: candidates.len(),
+                    },
+                );
+            }
+
+            if all_structural {
+                // I-10: Parallel speculative matching for large candidate sets
+                if crate::backend::eval::cesk::should_speculate(candidates.len())
+                    && std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                {
+                    // I-10: Parallel speculative matching — head matching is pure read-only.
+                    // Only for MettaValue (GcFactory is Send+Sync).
+                    let chunks = crate::backend::eval::cesk::chunk_candidates(
+                        candidates.len(),
+                        std::thread::available_parallelism()
+                            .map(|n| n.get())
+                            .unwrap_or(4)
+                            .min(candidates.len()),
+                    );
+
+                    // SAFETY: V is MettaValue (TypeId checked above). GcFactory is Send+Sync.
+                    // We need to transmute the factory to a concrete Send+Sync type for
+                    // std::thread::scope since the generic F doesn't promise Send.
+                    let factory_ptr = &self.factory as *const F as *const crate::backend::models::GcFactory;
+                    let gc_factory: crate::backend::models::GcFactory = unsafe { *factory_ptr };
+                    let mut all_results: Vec<RuleMatchResult<V>> = Vec::new();
+
+                    std::thread::scope(|s| {
+                        let handles: Vec<_> = chunks.iter().map(|&(start, end)| {
+                            let chunk = &candidates[start..end];
+                            let fac = gc_factory;
+                            s.spawn(move || {
+                                let mut chunk_results = Vec::new();
+                                for entry in chunk {
+                                    let bindings = if let Some(ref m) = entry.structural_matcher {
+                                        m.try_match(expr)
+                                    } else if let Some(ref m) = entry.enhanced_matcher {
+                                        m.try_match(expr)
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(bindings) = bindings {
+                                        let instantiated_rhs = if entry.rhs_has_variables {
+                                            // SAFETY: V is MettaValue, fac is GcFactory (TypeId checked).
+                                            let v_ref: &crate::backend::models::MettaValue =
+                                                unsafe { &*(&entry.rhs as *const V as *const crate::backend::models::MettaValue) };
+                                            let b_ref: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
+                                                unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
+                                            let result = crate::backend::eval::trampoline::apply_bindings_generic(
+                                                v_ref, b_ref, &fac,
+                                            );
+                                            // SAFETY: MettaValue and V are the same type
+                                            unsafe { std::mem::transmute_copy::<crate::backend::models::MettaValue, V>(&result) }
+                                        } else {
+                                            entry.rhs.clone()
+                                        };
+                                        let multiplicity = entry.multiplicity.max(1);
+                                        for _ in 0..multiplicity {
+                                            chunk_results.push(RuleMatchResult {
+                                                instantiated_rhs: instantiated_rhs.clone(),
+                                                rhs_template: entry.rhs.clone(),
+                                                bindings: bindings.clone(),
+                                                multiplicity,
+                                                rhs_type: entry.rhs_type.clone(),
+                                                rhs_has_variables: entry.rhs_has_variables,
+                                                compiled_rhs: entry.compiled_rhs.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                                chunk_results
+                            })
+                        }).collect();
+
+                        for handle in handles {
+                            all_results.extend(handle.join().expect("speculative match thread panicked"));
+                        }
+                    });
+
+                    return all_results;
+                }
+
+                // Sequential fast path: all candidates have structural matchers — bypass MORK
+                let mut results: Vec<RuleMatchResult<V>> = Vec::new();
+
+                // I-3: Use binding arena for O(1) rollback on failed matches
+                let mut arena = crate::backend::eval::cesk::BindingArena::<V>::new();
+                arena.push_frame();
+
+                for entry in &candidates {
+                    // I-3: Save choice point before each attempt
+                    arena.save_choice_point();
+
+                    // I-2: Try enhanced matcher if structural matcher is None
+                    let bindings = if let Some(ref matcher) = entry.structural_matcher {
+                        matcher.try_match(expr)
+                    } else if let Some(ref matcher) = entry.enhanced_matcher {
+                        matcher.try_match(expr)
+                    } else {
+                        None
+                    };
+
+                    if let Some(bindings) = bindings {
+                        // Match succeeded — commit choice point
+                        arena.commit_choice_point();
+                        let instantiated_rhs = if entry.rhs_has_variables {
+                            apply_bindings(&entry.rhs, &bindings, &self.factory)
+                        } else {
+                            entry.rhs.clone()
+                        };
+                        let multiplicity = entry.multiplicity.max(1);
+                        if multiplicity == 1 {
+                            results.push(RuleMatchResult {
+                                instantiated_rhs,
+                                rhs_template: entry.rhs.clone(),
+                                bindings,
+                                multiplicity: 1,
+                                rhs_type: entry.rhs_type.clone(),
+                                rhs_has_variables: entry.rhs_has_variables,
+                                compiled_rhs: entry.compiled_rhs.clone(),
+                            });
+                        } else {
+                            for _ in 0..multiplicity {
+                                results.push(RuleMatchResult {
+                                    instantiated_rhs: instantiated_rhs.clone(),
+                                    rhs_template: entry.rhs.clone(),
+                                    bindings: bindings.clone(),
+                                    multiplicity,
+                                    rhs_type: entry.rhs_type.clone(),
+                                    rhs_has_variables: entry.rhs_has_variables,
+                                    compiled_rhs: entry.compiled_rhs.clone(),
+                                });
+                            }
+                        }
+                    } else {
+                        // I-3: Match failed — restore choice point (O(1) rollback)
+                        arena.restore_choice_point();
+                    }
+                }
+
+                return results;
+            }
+        }
+        // ── End Structural Matcher Fast Path ──
+
+        // Slow path: at least one candidate lacks a structural matcher — need MORK.
+        //
+        // Serialize the expression to MORK bytes ONCE using a thread-local buffer.
+        // The buffer grows as needed but is never freed — amortized zero allocation.
+        //
+        // IMPORTANT: One extra zero byte is appended as padding. MORK's ExprZipper::gnext()
+        // reads one byte past the last element of any S-expression to check if the next
+        // sibling is an Arity tag. When expressions are embedded in PathMap memory, this
+        // read is harmless (it reads a byte from the parent structure). But for standalone
+        // Vec<u8> buffers, this reads past the allocation — causing UB and panics on
+        // reserved bytes (0x40-0x7F) under valgrind. A trailing 0x00 is Arity(0), which
+        // is valid and harmless (just pushes an empty breadcrumb that gets popped immediately).
+        //
+        // All three phases (byte matching, specificity filter, binding extraction) are
+        // performed inside the thread-local borrow to avoid copying the buffer out.
+        MATCH_EXPR_BUFFER.with(|buf_cell| {
+            let mut buf = buf_cell.borrow_mut();
+
+            // Check the MORK bytes cache first. Content-hash keyed: survives GC safepoints,
+            // shares entries across structurally-identical expressions at different addresses.
+            let cache_key = expr.hash_value();
+            let expr_arity = arity;
+            let cache_hit = MORK_BYTES_CACHE.with(|cache_cell| {
+                let mut cache = cache_cell.borrow_mut();
+                if let Some(entry) = cache.get(&cache_key) {
+                    // Cheap collision validation: arity must match
+                    if entry.1 == expr_arity {
+                        buf.clear();
+                        buf.reserve(entry.0.len());
+                        buf.extend_from_slice(&entry.0);
+                        return true;
+                    }
+                }
+                false
+            });
+
+            let serialize_ok = if cache_hit {
+                Ok(())
+            } else {
+                let result = with_mork_bytes(expr, &self.shared_mapping, self.mork_cache_epoch, |bytes| {
+                    buf.clear();
+                    buf.reserve(bytes.len() + 1);
+                    buf.extend_from_slice(bytes);
+                    buf.push(0x00); // Padding byte for ExprZipper read-past-end safety
+                });
+                // Cache the serialized bytes on success
+                if result.is_ok() {
+                    MORK_BYTES_CACHE.with(|cache_cell| {
+                        cache_cell.borrow_mut().put(cache_key, (buf.clone(), expr_arity));
+                    });
+                }
+                result
+            };
+
+            if serialize_ok.is_err() {
+                // MORK can't encode this expression (e.g., a child S-expression
+                // has arity >= 64). Try structural matchers first, then use Wide
+                // MORK byte-level matching for remaining candidates.
+                drop(buf);
+
+                let rule_index = self.shared.rule_index.read();
+                let candidates: Vec<&RuleEntry<V>> = if !head.is_empty() {
+                    rule_index.get_candidates(head, arity, first_arg_head).collect()
+                } else {
+                    rule_index.get_all_rules().collect()
+                };
+
+                let mut results: Vec<RuleMatchResult<V>> = Vec::new();
+
+                // Lazily-computed wide storage encoding (only allocated if needed)
+                let mut expr_wide_buf: Option<Vec<u8>> = None;
+
+                for entry in candidates {
+                    // Try structural matcher first (works regardless of MORK encoding)
+                    if let Some(ref matcher) = entry.structural_matcher {
+                        if let Some(bindings) = matcher.try_match(expr) {
+                            let instantiated_rhs = if entry.rhs_has_variables {
+                                apply_bindings(&entry.rhs, &bindings, &self.factory)
                             } else {
-                                crate::backend::eval::trampoline::pattern_match_generic(&entry.lhs, expr)
+                                entry.rhs.clone()
                             };
-                            if let Some(bindings) = bindings {
-                                let instantiated_rhs = if entry.rhs_has_variables {
-                                    // SAFETY: V is MettaValue, fac is GcFactory (TypeId checked).
-                                    let v_ref: &crate::backend::models::MettaValue =
-                                        unsafe { &*(&entry.rhs as *const V as *const crate::backend::models::MettaValue) };
-                                    let b_ref: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
-                                        unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
-                                    let result = crate::backend::eval::trampoline::apply_bindings_generic(
-                                        v_ref, b_ref, &fac,
-                                    );
-                                    // SAFETY: MettaValue and V are the same type
-                                    unsafe { std::mem::transmute_copy::<crate::backend::models::MettaValue, V>(&result) }
-                                } else {
-                                    entry.rhs.clone()
-                                };
-                                let multiplicity = entry.multiplicity.max(1);
+                            let multiplicity = entry.multiplicity.max(1);
+                            if multiplicity == 1 {
+                                results.push(RuleMatchResult {
+                                    instantiated_rhs,
+                                    rhs_template: entry.rhs.clone(),
+                                    bindings,
+                                    multiplicity: 1,
+                                    rhs_type: entry.rhs_type.clone(),
+                                    rhs_has_variables: entry.rhs_has_variables,
+                                    compiled_rhs: entry.compiled_rhs.clone(),
+                                });
+                            } else {
                                 for _ in 0..multiplicity {
-                                    chunk_results.push(RuleMatchResult {
+                                    results.push(RuleMatchResult {
                                         instantiated_rhs: instantiated_rhs.clone(),
                                         rhs_template: entry.rhs.clone(),
                                         bindings: bindings.clone(),
@@ -1564,47 +2243,220 @@ where
                                 }
                             }
                         }
-                        chunk_results
-                    })
-                }).collect();
+                        continue; // Structural matcher is authoritative
+                    }
 
-                for handle in handles {
-                    all_results.extend(handle.join().expect("speculative match thread panicked"));
+                    // Fallback: wide MORK byte-level matching or pattern_match_generic
+                    let matched_bindings = if !entry.lhs_wide_debruijn.is_empty() {
+                        let wide_data = expr_wide_buf.get_or_insert_with(|| {
+                            let mut wb = Vec::with_capacity(256);
+                            crate::backend::wide_mork::encoding::encode_wide_storage(expr, &mut wb);
+                            wb
+                        });
+                        if crate::backend::wide_mork::extract::wide_extract_data(
+                            &entry.lhs_wide_debruijn,
+                            wide_data,
+                        ).is_ok() {
+                            Some(extract_bindings_from_wide_expr(
+                                &entry.lhs_wide_debruijn,
+                                expr,
+                                &entry.var_names,
+                                &entry.wildcard_indices,
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Structural pattern match fallback for MORK-only candidates
+                        crate::backend::eval::trampoline::pattern_match_generic(&entry.lhs, expr)
+                    };
+
+                    if let Some(bindings) = matched_bindings {
+                        let instantiated_rhs = if entry.rhs_has_variables {
+                            apply_bindings(&entry.rhs, &bindings, &self.factory)
+                        } else {
+                            entry.rhs.clone()
+                        };
+                        let multiplicity = entry.multiplicity.max(1);
+                        if multiplicity == 1 {
+                            results.push(RuleMatchResult {
+                                instantiated_rhs,
+                                rhs_template: entry.rhs.clone(),
+                                bindings,
+                                multiplicity: 1,
+                                rhs_type: entry.rhs_type.clone(),
+                                rhs_has_variables: entry.rhs_has_variables,
+                                compiled_rhs: entry.compiled_rhs.clone(),
+                            });
+                        } else {
+                            for _ in 0..multiplicity {
+                                results.push(RuleMatchResult {
+                                    instantiated_rhs: instantiated_rhs.clone(),
+                                    rhs_template: entry.rhs.clone(),
+                                    bindings: bindings.clone(),
+                                    multiplicity,
+                                    rhs_type: entry.rhs_type.clone(),
+                                    rhs_has_variables: entry.rhs_has_variables,
+                                    compiled_rhs: entry.compiled_rhs.clone(),
+                                });
+                            }
+                        }
+                    }
                 }
-            });
+                return results;
+            }
 
-            return all_results;
-        }
+            // Validate expr buffer contains valid MORK bytes (no reserved 0x40-0x7F)
+            #[cfg(debug_assertions)]
+            {
+                // Validate excluding the padding byte
+                if let Err((off, byte)) = validate_mork_bytes(&buf[..buf.len() - 1]) {
+                    panic!(
+                        "expr buffer has invalid byte 0x{:02x} at offset {} (len={}).\n\
+                         expr_bytes: {:02x?}\n\
+                         expr: {:?}",
+                        byte, off, buf.len() - 1,
+                        &buf[..buf.len().min(64)],
+                        expr
+                    );
+                }
+            }
 
-        // Sequential path: structural matchers + fallback to pattern_match_generic
-        let mut results: Vec<RuleMatchResult<V>> = Vec::new();
+            // Get candidates from RuleIndex (read lock — multiple concurrent readers OK)
+            let rule_index = self.shared.rule_index.read();
 
-        // I-3: Use binding arena for O(1) rollback on failed matches
-        let mut arena = crate::backend::eval::cesk::BindingArena::<V>::new();
-        arena.push_frame();
+            // Phase 1: Byte-level pattern matching via extract_data.
+            // Store entry references directly in MatchHit, eliminating the intermediate
+            // candidates Vec allocation (which can hold 1000s of entries for large programs).
+            //
+            // In the mixed path (some candidates have structural matchers, some don't),
+            // structural matchers are tried first per-candidate. If a structural matcher
+            // matches, its pre-computed bindings are stored in the hit to avoid redundant
+            // extract_bindings_from_expr calls.
+            struct MatchHit<'a, V: MettaValueTrait + Clone> {
+                entry: &'a RuleEntry<V>,
+                is_wide: bool,  // true if matched via Wide MORK
+                /// Pre-computed bindings from structural matcher (None = use MORK extraction)
+                precomputed_bindings: Option<GenericBindings<V>>,
+            }
 
-        for entry in &candidates {
-            // I-3: Save choice point before each attempt
-            arena.save_choice_point();
+            let mut hits: Vec<MatchHit<'_, V>> = Vec::new();
 
-            // Try structural matcher first, then enhanced matcher, then generic fallback
-            let bindings = if let Some(ref matcher) = entry.structural_matcher {
-                matcher.try_match(expr)
-            } else if let Some(ref matcher) = entry.enhanced_matcher {
-                matcher.try_match(expr)
+            // Lazily-computed wide storage encoding of expr (only allocated if needed)
+            let mut expr_wide_storage: Option<Vec<u8>> = None;
+
+            // Phase 7: Borrow the thread-local ExprZipper for reuse across match candidates.
+            // reset() uses set_len(0) to clear the trace Vec without deallocating — after
+            // warmup, the capacity grows to max expression depth and all subsequent matches
+            // are zero-alloc (no jemalloc calls for Vec<Breadcrumb>).
+            MATCH_ZIPPER.with(|zipper_cell| {
+            let mut input_zipper = zipper_cell.borrow_mut();
+
+            // Inline macro to avoid duplicating the match body for both iterator paths
+            macro_rules! try_match_entry {
+                ($entry:expr) => {
+                    let entry = $entry;
+
+                    // Try structural matcher first (avoids MORK byte-level matching)
+                    if let Some(ref matcher) = entry.structural_matcher {
+                        if let Some(bindings) = matcher.try_match(expr) {
+                            hits.push(MatchHit { entry, is_wide: false, precomputed_bindings: Some(bindings) });
+                        }
+                        // Structural matcher is authoritative — skip MORK
+                    } else if !entry.lhs_debruijn.is_empty() {
+                        // MORK narrow path fallback (arity < 64)
+                        if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {
+                            tracing::warn!(
+                                target: "mettatron::match_rules_native",
+                                "RuleEntry has invalid first byte 0x{:02x} in lhs_debruijn (len={}), \
+                                 head={}, arity={}, lhs_bytes={:02x?}",
+                                reserved,
+                                entry.lhs_debruijn.len(),
+                                head,
+                                arity,
+                                &entry.lhs_debruijn[..entry.lhs_debruijn.len().min(16)]
+                            );
+                        } else {
+                            let lhs_expr = Expr { ptr: entry.lhs_debruijn.as_ptr().cast_mut() };
+                            // Reuse thread-local zipper — reset() preserves Vec capacity
+                            input_zipper.root = Expr { ptr: buf.as_ptr().cast_mut() };
+                            input_zipper.reset();
+                            if lhs_expr.extract_data(&mut input_zipper).is_ok() {
+                                hits.push(MatchHit { entry, is_wide: false, precomputed_bindings: None });
+                            }
+                        }
+                    } else if !entry.lhs_wide_debruijn.is_empty() {
+                        // Wide MORK path: encode expr to wide storage bytes (lazy) and match
+                        let wide_data = expr_wide_storage.get_or_insert_with(|| {
+                            let mut wide_buf = Vec::with_capacity(256);
+                            crate::backend::wide_mork::encoding::encode_wide_storage(expr, &mut wide_buf);
+                            wide_buf
+                        });
+                        if crate::backend::wide_mork::extract::wide_extract_data(
+                            &entry.lhs_wide_debruijn,
+                            wide_data,
+                        ).is_ok() {
+                            hits.push(MatchHit { entry, is_wide: true, precomputed_bindings: None });
+                        }
+                    }
+                    // else: both empty — skip (shouldn't happen)
+                };
+            }
+
+            if !head.is_empty() {
+                for entry in rule_index.get_candidates(head, arity, first_arg_head) {
+                    try_match_entry!(entry);
+                }
             } else {
-                // Fallback: pattern_match_generic for entries without compiled matchers
-                crate::backend::eval::trampoline::pattern_match_generic(&entry.lhs, expr)
-            };
+                for entry in rule_index.get_all_rules() {
+                    try_match_entry!(entry);
+                }
+            }
 
-            if let Some(bindings) = bindings {
-                // Match succeeded — commit choice point
-                arena.commit_choice_point();
+            }); // end MATCH_ZIPPER.with — drop zipper borrow before Phase 3
+
+            if hits.is_empty() {
+                return Vec::new();
+            }
+
+            // Phase 3: Extract bindings from original expression and build results.
+            // Uses parallel tree walk instead of MORK deserialization to preserve
+            // runtime types (SpaceHandle, State, etc.) that can't survive a round trip.
+            // Structural matcher hits already have pre-computed bindings — skip extraction.
+            let mut results: Vec<RuleMatchResult<V>> = Vec::with_capacity(hits.len());
+
+            for hit in &hits {
+                let entry = hit.entry;
+
+                // Use pre-computed bindings from structural matcher, or extract from MORK
+                let bindings = if let Some(ref precomputed) = hit.precomputed_bindings {
+                    precomputed.clone()
+                } else if hit.is_wide {
+                    extract_bindings_from_wide_expr(
+                        &entry.lhs_wide_debruijn,
+                        expr,
+                        &entry.var_names,
+                        &entry.wildcard_indices,
+                    )
+                } else {
+                    extract_bindings_from_expr(
+                        &entry.lhs_debruijn,
+                        expr,
+                        &entry.var_names,
+                        &entry.wildcard_indices,
+                    )
+                };
+
+                // Apply bindings to the cached RHS template.
+                // Phase 6: Skip apply_bindings for ground RHS (no variables).
                 let instantiated_rhs = if entry.rhs_has_variables {
                     apply_bindings(&entry.rhs, &bindings, &self.factory)
                 } else {
                     entry.rhs.clone()
                 };
+
+                // Expand by multiplicity — fast path for common case (multiplicity=1)
+                // avoids cloning bindings/instantiated_rhs when a move suffices
                 let multiplicity = entry.multiplicity.max(1);
                 if multiplicity == 1 {
                     results.push(RuleMatchResult {
@@ -1629,16 +2481,17 @@ where
                         });
                     }
                 }
-            } else {
-                // I-3: Match failed — restore choice point (O(1) rollback)
-                arena.restore_choice_point();
             }
-        }
 
-        results
+            results
+        })
     }
 
-    /// Get matching rules for an expression from MettaTrie iteration.
+    /// Get matching rules for an expression from PathMap via trie prefix navigation.
+    ///
+    /// **NOTE**: Superseded by `match_rules_native()` for the primary hot path.
+    /// Retained for `match_space` compatibility and fallback scenarios where
+    /// De Bruijn-encoded rules in PathMap need to be iterated directly.
     ///
     /// Returns `(lhs, rhs, multiplicity)` tuples for all rules whose LHS
     /// head symbol and arity match the given expression. The caller is
@@ -1661,27 +2514,168 @@ where
             }
         }
 
-        let btm = self.shared.atom_space.btm.read();
+        let space = self.create_space();
+        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
+        let rule_prefix = self.compute_rule_prefix();
         let mut rules: Vec<(V, V, u64)> = Vec::new();
 
-        for (stored_expr, mult) in btm.iter() {
-            if let Some((lhs, rhs)) = extract_rule_parts(stored_expr) {
-                // Filter by head+arity if the query has head info
-                if !head.is_empty() {
-                    let rule_head = lhs.get_head_symbol().unwrap_or("");
-                    let rule_arity = lhs.get_arity();
-                    // Include if head+arity matches, or if rule is a wildcard (no head)
-                    if rule_head.is_empty() || (rule_head == head && rule_arity == arity) {
-                        rules.push((lhs, rhs, mult.count().max(1)));
-                    }
-                } else {
-                    // No head info — collect all rules
-                    rules.push((lhs, rhs, mult.count().max(1)));
-                }
+        // 1. Head+arity-specific prefix navigation (most selective)
+        if !head.is_empty() {
+            if let Some(head_prefix) = build_head_arity_prefix::<V, F>(
+                &rule_prefix,
+                head,
+                arity,
+                &self.factory,
+                &self.shared_mapping,
+                self.mork_cache_epoch,
+            ) {
+                self.collect_rules_from_prefix(
+                    &space,
+                    &head_prefix,
+                    rule_prefix_len,
+                    &mut rules,
+                );
             }
+        } else {
+            // No head info — collect all rules under the rule prefix
+            self.collect_rules_from_prefix(
+                &space,
+                &rule_prefix,
+                rule_prefix_len,
+                &mut rules,
+            );
         }
 
+        // 2. Collect wildcard rules (LHS is atom/variable, not S-expression)
+        self.collect_wildcard_rules(&space, &rule_prefix, rule_prefix_len, head, arity, &mut rules);
+
         rules
+    }
+
+    /// Collect rules from a trie subtree rooted at `prefix`.
+    ///
+    /// **NOTE**: Superseded by `RuleIndex + extract_data()` for the primary hot path.
+    /// Retained for `get_matching_rules_for_expr()` fallback used in tests.
+    ///
+    /// Navigates the trie to `prefix`, then for each entry:
+    /// 1. Splits the MORK path bytes into LHS and RHS ranges using `mork_expr_byte_len()`
+    /// 2. Deserializes LHS and RHS independently — never constructs `(= LHS RHS)`
+    /// 3. Reads multiplicity in-place from zipper `val()`
+    fn collect_rules_from_prefix(
+        &self,
+        space: &Space<Multiplicity>,
+        prefix: &[u8],
+        rule_prefix_len: usize,
+        rules: &mut Vec<(V, V, u64)>,
+    ) {
+        let mut rz = space.btm.read_zipper();
+        let descended = rz.descend_to_existing(prefix);
+        if descended < prefix.len() {
+            return; // Prefix doesn't exist in trie
+        }
+        while rz.to_next_val() {
+            let path = rz.path();
+            if !path.starts_with(prefix) {
+                break; // Left the subtree
+            }
+            // Multiplicity directly from zipper value (no separate lookup)
+            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1).max(1);
+
+            // Split path into LHS and RHS byte ranges.
+            // path layout: [Arity(3)] ["=" bytes] [LHS bytes] [RHS bytes]
+            //              |--- rule_prefix_len --|
+            if path.len() <= rule_prefix_len {
+                continue; // Path too short to contain LHS+RHS
+            }
+            // De Bruijn encoding: NewVar is in LHS, VarRef in RHS references LHS vars.
+            // Must deserialize the FULL rule (= lhs rhs) as a single unit to share
+            // the variable context, then extract lhs and rhs from the result.
+            let full_rule = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                path,
+                space,
+                &self.factory,
+            ) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let (lhs, rhs) = match extract_rule_parts(&full_rule) {
+                Some(parts) => parts,
+                None => continue, // Not a valid rule — skip
+            };
+
+            rules.push((lhs, rhs, multiplicity));
+        }
+    }
+
+    /// Collect wildcard rules (LHS is atom/variable, not S-expression).
+    ///
+    /// **NOTE**: Superseded by `RuleIndex.wildcard` vec for the primary hot path.
+    /// Retained for `get_matching_rules_for_expr()` fallback used in tests.
+    ///
+    /// Wildcard rules like `(= $x $x)` have a non-S-expression LHS. Their LHS byte
+    /// starts with `SymbolSize` (0xC1-0xFF), `NewVar` (0xC0), or `VarRef` (0x80-0xBF),
+    /// not `Arity` (0x00-0x3F). After collecting head-specific matches, this scans
+    /// the rule prefix subtree for non-Arity LHS entries.
+    ///
+    /// Rules are filtered by head+arity to match the old behavior:
+    /// - Variable LHS (no head symbol) matches everything
+    /// - Atom LHS with a specific head matches only when head+arity agree
+    fn collect_wildcard_rules(
+        &self,
+        space: &Space<Multiplicity>,
+        rule_prefix: &[u8],
+        rule_prefix_len: usize,
+        query_head: &str,
+        query_arity: usize,
+        rules: &mut Vec<(V, V, u64)>,
+    ) {
+        let mut rz = space.btm.read_zipper();
+        let descended = rz.descend_to_existing(rule_prefix);
+        if descended < rule_prefix.len() {
+            return;
+        }
+        while rz.to_next_val() {
+            let path = rz.path();
+            if !path.starts_with(rule_prefix) {
+                break;
+            }
+            if path.len() <= rule_prefix_len {
+                continue;
+            }
+            let lhs_first_byte = path[rule_prefix_len];
+            // Arity tag (0x00-0x3F) = S-expr LHS → skip (handled by head_prefix or rule_prefix)
+            if (lhs_first_byte & 0b1100_0000) == 0b0000_0000 {
+                continue;
+            }
+
+            // Atom/variable LHS — potential wildcard rule.
+            // De Bruijn encoding: deserialize full rule as single unit for shared var context.
+            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1).max(1);
+
+            let full_rule = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                path,
+                space,
+                &self.factory,
+            ) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let (lhs, rhs) = match extract_rule_parts(&full_rule) {
+                Some(parts) => parts,
+                None => continue,
+            };
+
+            // Filter by head+arity: variable LHS (no head) matches everything,
+            // atom LHS with a specific head must match the query head+arity.
+            let rule_head = lhs.get_head_symbol().unwrap_or("");
+            if !rule_head.is_empty()
+                && (rule_head != query_head || lhs.get_arity() != query_arity)
+            {
+                continue;
+            }
+
+            rules.push((lhs, rhs, multiplicity));
+        }
     }
 }
 
@@ -1692,12 +2686,17 @@ where
 impl MettaEnvironment {
     /// Get the number of rules in the environment.
     pub fn rule_count(&self) -> usize {
-        let btm = self.shared.atom_space.btm.read();
+        let space = self.create_space();
         let mut count = 0;
 
-        for (expr, _mult) in btm.iter() {
-            if Self::is_rule_sexpr_generic(&expr) {
-                count += 1;
+        for (path_bytes, _) in space.btm.iter() {
+            let expr = Expr {
+                ptr: path_bytes.as_ptr().cast_mut(),
+            };
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                if Self::is_rule_sexpr(&value) {
+                    count += 1;
+                }
             }
         }
 
@@ -1706,14 +2705,19 @@ impl MettaEnvironment {
 
     /// Iterator over rule heads with their arities and counts.
     pub fn iter_rule_heads(&self) -> RuleHeadsIter {
-        let btm = self.shared.atom_space.btm.read();
+        let space = self.create_space();
         let mut head_map: HashMap<(String, usize), usize> = HashMap::new();
 
-        for (expr, _mult) in btm.iter() {
-            if let Some((lhs, _rhs)) = extract_rule_parts(expr) {
-                let head = lhs.get_head_symbol().unwrap_or("").to_string();
-                let arity = lhs.get_arity();
-                *head_map.entry((head, arity)).or_insert(0) += 1;
+        for (path_bytes, _) in space.btm.iter() {
+            let expr = Expr {
+                ptr: path_bytes.as_ptr().cast_mut(),
+            };
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                if let Some((lhs, _rhs)) = extract_rule_parts(&value) {
+                    let head = lhs.get_head_symbol().unwrap_or("").to_string();
+                    let arity = lhs.get_arity();
+                    *head_map.entry((head, arity)).or_insert(0) += 1;
+                }
             }
         }
 
@@ -1727,22 +2731,27 @@ impl MettaEnvironment {
 
     /// Collect all rules as (lhs, rhs) pairs.
     pub fn collect_rules(&self) -> Vec<(MettaValue, MettaValue)> {
-        let btm = self.shared.atom_space.btm.read();
+        let space = self.create_space();
         let mut rules = Vec::new();
 
-        for (expr, _mult) in btm.iter() {
-            if let Some((lhs, rhs)) = extract_rule_parts(expr) {
-                rules.push((lhs, rhs));
+        for (path_bytes, _) in space.btm.iter() {
+            let expr = Expr {
+                ptr: path_bytes.as_ptr().cast_mut(),
+            };
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                if let Some((lhs, rhs)) = extract_rule_parts(&value) {
+                    rules.push((lhs, rhs));
+                }
             }
         }
 
         rules
     }
 
-    /// Bulk add rules using MettaTrie + RuleIndex population.
+    /// Bulk add rules using De Bruijn encoding + RuleIndex population.
     ///
-    /// Each rule is inserted individually into MettaTrie + RuleIndex.
-    /// This is consistent with `add_rule()`.
+    /// Each rule is serialized with `with_mork_query_bytes` (De Bruijn) and inserted
+    /// individually into PathMap + RuleIndex. This is consistent with `add_rule()`.
     ///
     /// # Arguments
     /// * `rules` - Vec of (lhs, rhs) pairs
@@ -1754,7 +2763,7 @@ impl MettaEnvironment {
 
         self.make_owned();
 
-        // Delegate to add_rule() for each — ensures consistent encoding + RuleIndex
+        // Delegate to add_rule() for each — ensures consistent De Bruijn encoding + RuleIndex
         for (lhs, rhs) in rules {
             self.add_rule(lhs, rhs);
         }
@@ -1765,155 +2774,195 @@ impl MettaEnvironment {
 
     /// Get the number of times a rule has been defined (multiplicity).
     ///
-    /// Uses literal decomposition to match the MettaTrie entry.
+    /// Uses De Bruijn encoding to match the PathMap entry (rules are stored with De Bruijn).
     pub fn get_rule_count(&self, lhs: &MettaValue, rhs: &MettaValue) -> usize {
-        let rule_sexpr = self.factory.sexpr(vec![
-            self.factory.atom("="),
+        let rule_sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
             lhs.clone(),
             rhs.clone(),
         ]);
 
-        let keys = crate::backend::decompose::decompose_literal(&rule_sexpr);
-        let btm = self.shared.atom_space.btm.read();
-        let count = multiplicity::trie_get_multiplicity(&btm, &keys);
-        if count == 0 { 1 } else { count as usize }
+        let sm = self.shared_mapping.clone();
+        match with_mork_query_bytes(&rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
+            let btm = self.shared.atom_space.btm.read();
+            let count = get_multiplicity(&btm, mork_bytes);
+            if count == 0 { 1 } else { count as usize }
+        }) {
+            Ok(count) => count,
+            Err(_) => {
+                // Wide expression (arity >= 64) — check wide_btm
+                let mut wide_key = Vec::new();
+                crate::backend::wide_mork::encoding::encode_wide_storage(&rule_sexpr, &mut wide_key);
+                let wbtm = self.shared.atom_space.wide_btm.read();
+                let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                if count == 0 { 1 } else { count as usize }
+            }
+        }
     }
 
     /// Get the multiplicities (for serialization).
-    /// The keys are the expression's display format for serialization stability.
+    /// The keys are hex-encoded MORK bytes for serialization stability.
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
         let btm = self.shared.atom_space.btm.read();
         let mut result = HashMap::new();
 
-        for (expr, mult) in btm.iter() {
-            let count = mult.count() as usize;
+        for (path, multiplicity) in btm.iter() {
+            let count = multiplicity.count() as usize;
             let count = if count == 0 { 1 } else { count };
-            let display_key = format!("{:?}", expr);
-            result.insert(display_key, count);
+            let hex_key = hex::encode(&path);
+            result.insert(hex_key, count);
         }
 
         result
     }
 
-    /// Rebuild bloom filter, fuzzy matcher, and RuleIndex from MettaTrie.
+    /// Rebuild bloom filter, fuzzy matcher, and RuleIndex from PathMap.
     ///
-    /// This is needed after deserializing an Environment from MettaTrie data,
-    /// since the serialization only preserves the MettaTrie, not the bloom filter
+    /// This is needed after deserializing an Environment from PathMap Par,
+    /// since the serialization only preserves the PathMap, not the bloom filter
     /// or RuleIndex.
+    ///
+    /// ## De Bruijn Encoding
+    ///
+    /// PathMap stores De Bruijn-encoded bytes for rules. When deserialized, variables
+    /// get epoch-suffixed names (`$a%42` instead of original `$x`). These are
+    /// re-encoded to De Bruijn bytes (structurally identical) when rebuilding the RuleIndex.
     pub fn rebuild_bloom_filter(&mut self) {
-        trace!(target: "mettatron::environment::rebuild_bloom_filter", "Rebuilding bloom filter, fuzzy matcher, and RuleIndex from MettaTrie");
+        trace!(target: "mettatron::environment::rebuild_bloom_filter", "Rebuilding bloom filter, fuzzy matcher, and RuleIndex from PathMap");
         self.make_owned();
 
         // Clear the existing RuleIndex before rebuilding
         self.shared.rule_index.write().clear();
 
-        let btm = self.shared.atom_space.btm.read();
+        let space = self.create_space();
+        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
 
-        // Collect all rule entries from the trie
-        let entries: Vec<(MettaValue, metta_trie::Multiplicity)> = btm.iter()
-            .map(|(expr, mult)| (expr.clone(), mult.clone()))
-            .collect();
-
-        // Drop the btm read lock before processing (we may need write access later)
-        drop(btm);
-
-        for (value, multiplicity_val) in entries {
-            if let Some((lhs, rhs)) = extract_rule_parts(&value) {
-                // Update bloom filter + fuzzy matcher
-                let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());
-                let arity = lhs.get_arity();
-                if let Some(ref head) = head_owned {
-                    self.shared.fuzzy_matcher.write().insert(head);
-                    self.shared
-                        .atom_space.head_arity_bloom
-                        .write()
-                        .insert(head, arity as u8);
-                }
-
-                // Rebuild RuleIndex entry
-                let multiplicity = multiplicity_val.count().max(1);
-
-                let (var_names, wildcard_indices) = build_var_names_from_lhs(&lhs);
-
-                // Phase 8.1: Compute RHS type for branch pruning
-                let rhs_type = {
-                    use crate::backend::eval::types_generic::infer_type_generic;
-                    let inferred = infer_type_generic(&rhs, &self.factory, self);
-                    if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
-                };
-
-                // Phase 10.1: Register inferred return type (bulk path)
-                if let Some(ref rt) = rhs_type {
+        for (path_bytes, multiplicity_val) in space.btm.iter() {
+            let expr = Expr {
+                ptr: path_bytes.as_ptr().cast_mut(),
+            };
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                if let Some((lhs, rhs)) = extract_rule_parts(&value) {
+                    // Update bloom filter + fuzzy matcher
+                    let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());
+                    let arity = lhs.get_arity();
                     if let Some(ref head) = head_owned {
-                        self.register_inferred_type(head, rt);
+                        self.shared.fuzzy_matcher.write().insert(head);
+                        self.shared
+                            .atom_space.head_arity_bloom
+                            .write()
+                            .insert(head, arity as u8);
                     }
-                }
 
-                // Phase 10.4: Synthesize arrow type (bulk path)
-                if let Some(ref head) = head_owned {
-                    let has_declared_arrow = self.get_types_generic(head).iter().any(|t| {
-                        t.as_sexpr()
-                            .and_then(|items| items.first().and_then(|v| v.as_atom()))
-                            == Some("->")
-                    });
-                    if !has_declared_arrow {
-                        use crate::backend::eval::types_generic::infer_arrow_type_from_rule;
-                        if let Some(arrow) = infer_arrow_type_from_rule(
-                            &lhs,
-                            &rhs,
-                            rhs_type.as_ref(),
-                            &self.factory,
-                            self,
-                        ) {
-                            self.register_inferred_type(head, &arrow);
+                    // Rebuild RuleIndex entry from De Bruijn bytes
+                    let multiplicity = multiplicity_val.count().max(1);
+
+                    // Re-serialize the rule to get De Bruijn bytes + ConversionContext
+                    let rule_sexpr = MettaValue::SExpr(vec![
+                        MettaValue::Atom("=".to_string()),
+                        lhs.clone(),
+                        rhs.clone(),
+                    ]);
+
+                    let sm = self.shared_mapping.clone();
+                    let _ = with_mork_query_bytes(&rule_sexpr, &sm, self.mork_cache_epoch, |debruijn_bytes, ctx| {
+                        // Split De Bruijn bytes to get LHS range
+                        if debruijn_bytes.len() <= rule_prefix_len {
+                            return;
                         }
-                    }
+                        let lhs_start = rule_prefix_len;
+                        let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
+                        // Pad with 0x00 for ExprZipper read-past-end safety
+                        let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
+                        lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
+                        lhs_debruijn.push(0x00);
+
+                        let lhs_var_count = count_newvar_tags(&lhs_debruijn);
+                        let (var_names, wildcard_indices) =
+                            build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
+
+                        // Phase 8.1: Compute RHS type for branch pruning
+                        let rhs_type = {
+                            use crate::backend::eval::types_generic::infer_type_generic;
+                            let inferred = infer_type_generic(&rhs, &self.factory, self);
+                            if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
+                        };
+
+                        // Phase 10.1: Register inferred return type (bulk path)
+                        if let Some(ref rt) = rhs_type {
+                            if let Some(ref head) = head_owned {
+                                self.register_inferred_type(head, rt);
+                            }
+                        }
+
+                        // Phase 10.4: Synthesize arrow type (bulk path)
+                        if let Some(ref head) = head_owned {
+                            let has_declared_arrow = self.get_types_generic(head).iter().any(|t| {
+                                t.as_sexpr()
+                                    .and_then(|items| items.first().and_then(|v| v.as_atom()))
+                                    == Some("->")
+                            });
+                            if !has_declared_arrow {
+                                use crate::backend::eval::types_generic::infer_arrow_type_from_rule;
+                                if let Some(arrow) = infer_arrow_type_from_rule(
+                                    &lhs,
+                                    &rhs,
+                                    rhs_type.as_ref(),
+                                    &self.factory,
+                                    self,
+                                ) {
+                                    self.register_inferred_type(head, &arrow);
+                                }
+                            }
+                        }
+
+                        let structural_matcher = StructuralMatcher::analyze(&lhs);
+                        let enhanced_matcher = if structural_matcher.is_none() {
+                            crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
+                        } else {
+                            None
+                        };
+                        let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+                            if crate::backend::bytecode::can_compile_with_env(&rhs) {
+                                crate::backend::bytecode::compile_bytecode_arc("rule_rhs", &rhs)
+                                    .ok()
+                                    .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                            } else {
+                                None
+                            };
+                        let entry = RuleEntry {
+                            lhs: lhs.clone(),
+                            rhs_has_variables: rhs.contains_variables(),
+                            rhs: rhs.clone(),
+                            lhs_debruijn,
+                            lhs_wide_debruijn: Vec::new(), // Bulk path uses MORK encoding
+                            var_names,
+                            wildcard_indices,
+                            multiplicity,
+                            rhs_type,
+                            structural_matcher,
+                            enhanced_matcher,
+                            rule_index_in_group: 0,
+                            global_rule_index: 0, // Assigned by RuleIndex::add_rule
+                            compiled_rhs,
+                        };
+
+                        // Phase 4a: Pre-seed tiered cache for bulk path
+                        crate::backend::bytecode::tiered_cache::global_tiered_cache()
+                            .preseed_for_immediate_compile(rhs.hash_value());
+
+                        // Set correct multiplicity (don't let add_rule deduplicate)
+                        let alloc = crate::backend::models::gc_allocator::global_allocator();
+                        let first_arg_head_interned: Option<&'static str> =
+                            get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
+                        self.shared.rule_index.write().add_rule(
+                            head_owned.as_deref(),
+                            arity,
+                            first_arg_head_interned,
+                            entry,
+                        );
+                    });
                 }
-
-                let structural_matcher = StructuralMatcher::analyze(&lhs);
-                let enhanced_matcher = if structural_matcher.is_none() {
-                    crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
-                } else {
-                    None
-                };
-                // Compile-on-add for bulk path (concrete MettaValue — no TypeId needed)
-                let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
-                    if crate::backend::bytecode::can_compile_with_env(&rhs) {
-                        crate::backend::bytecode::compile_bytecode_arc("rule_rhs", &rhs)
-                            .ok()
-                            .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
-                    } else { None };
-
-                let entry = RuleEntry {
-                    lhs: lhs.clone(),
-                    rhs_has_variables: rhs.contains_variables(),
-                    rhs: rhs.clone(),
-                    lhs_debruijn: vec![],
-                    var_names,
-                    wildcard_indices,
-                    multiplicity,
-                    rhs_type,
-                    structural_matcher,
-                    enhanced_matcher,
-                    rule_index_in_group: 0,
-                    global_rule_index: 0,
-                    compiled_rhs,
-                };
-
-                // Phase 4a: Pre-seed tiered cache for bulk path
-                crate::backend::bytecode::tiered_cache::global_tiered_cache()
-                    .preseed_for_immediate_compile(rhs.hash_value());
-
-                // Set correct multiplicity (don't let add_rule deduplicate)
-                let alloc = crate::backend::models::gc_allocator::global_allocator();
-                let first_arg_head_interned: Option<&'static str> =
-                    get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
-                self.shared.rule_index.write().add_rule(
-                    head_owned.as_deref(),
-                    arity,
-                    first_arg_head_interned,
-                    entry,
-                );
             }
         }
 
@@ -1922,7 +2971,7 @@ impl MettaEnvironment {
 
     /// Increment the multiplicity count for a rule.
     ///
-    /// Uses literal decomposition to match the MettaTrie entry.
+    /// Uses De Bruijn encoding to match the PathMap entry (rules are stored with De Bruijn).
     /// Also syncs the RuleIndex multiplicity.
     ///
     /// # Arguments
@@ -1934,41 +2983,50 @@ impl MettaEnvironment {
         trace!(target: "mettatron::environment::increment_rule_multiplicity", ?rule_sexpr);
         self.make_owned();
 
-        let keys = crate::backend::decompose::decompose_literal(rule_sexpr);
-        let new_count = {
+        let sm = self.shared_mapping.clone();
+        match with_mork_query_bytes(rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
             let mut btm = self.shared.atom_space.btm.write();
-            multiplicity::trie_increment_multiplicity(&mut btm, &keys, rule_sexpr.clone())
-        };
+            let new_count = increment_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
 
-        self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
-        self.modified.store(true, Ordering::Release);
-
-        // Sync RuleIndex: increment the matching entry's multiplicity
-        if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
-            let mut idx = self.shared.rule_index.write();
-            let mut found = false;
-            'outer: for group in idx.by_head_arity.values_mut() {
-                for entry in group.all_entries_mut() {
-                    if entry.lhs == lhs && entry.rhs == rhs {
-                        entry.multiplicity += 1;
-                        found = true;
-                        break 'outer;
+            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => {
+                // Sync RuleIndex: increment the matching entry's multiplicity
+                if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
+                    // RuleIndex.add_rule increments multiplicity for duplicates
+                    // We need a simpler increment — just find and bump
+                    let mut idx = self.shared.rule_index.write();
+                    let mut found = false;
+                    'outer: for group in idx.by_head_arity.values_mut() {
+                        for entry in group.all_entries_mut() {
+                            if entry.lhs == lhs && entry.rhs == rhs {
+                                entry.multiplicity += 1;
+                                found = true;
+                                break 'outer;
+                            }
+                        }
+                    }
+                    if !found {
+                        if let Some(entry) = idx.wildcard.iter_mut().find(|e| e.lhs == lhs && e.rhs == rhs) {
+                            entry.multiplicity += 1;
+                        }
                     }
                 }
+                count
             }
-            if !found {
-                if let Some(entry) = idx.wildcard.iter_mut().find(|e| e.lhs == lhs && e.rhs == rhs) {
-                    entry.multiplicity += 1;
-                }
+            Err(_) => {
+                self.modified.store(true, Ordering::Release);
+                1
             }
         }
-
-        new_count as usize
     }
 
     /// Decrement the multiplicity count for a rule.
     ///
-    /// Uses literal decomposition to match the MettaTrie entry.
+    /// Uses De Bruijn encoding to match the PathMap entry (rules are stored with De Bruijn).
     /// Also syncs the RuleIndex multiplicity.
     ///
     /// # Arguments
@@ -1980,31 +3038,38 @@ impl MettaEnvironment {
         trace!(target: "mettatron::environment::decrement_rule_multiplicity", ?rule_sexpr);
         self.make_owned();
 
-        let keys = crate::backend::decompose::decompose_literal(rule_sexpr);
-        let old_count = {
-            let btm = self.shared.atom_space.btm.read();
-            multiplicity::trie_get_multiplicity(&btm, &keys)
-        };
+        let sm = self.shared_mapping.clone();
+        match with_mork_query_bytes(rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
+            let old_count = {
+                let btm = self.shared.atom_space.btm.read();
+                get_multiplicity(&btm, mork_bytes)
+            };
 
-        if old_count == 0 {
-            self.modified.store(true, Ordering::Release);
-            return 0;
-        }
+            if old_count == 0 {
+                self.modified.store(true, Ordering::Release);
+                return 0;
+            }
 
-        let new_count = {
             let mut btm = self.shared.atom_space.btm.write();
-            multiplicity::trie_decrement_multiplicity(&mut btm, &keys)
-        };
+            let new_count = decrement_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
 
-        self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-        self.modified.store(true, Ordering::Release);
-
-        // Sync RuleIndex: decrement (or remove if multiplicity reaches 0)
-        if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
-            self.shared.rule_index.write().remove_rule(&lhs, &rhs);
+            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => {
+                // Sync RuleIndex: decrement (or remove if multiplicity reaches 0)
+                if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
+                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
+                }
+                count
+            }
+            Err(_) => {
+                self.modified.store(true, Ordering::Release);
+                0
+            }
         }
-
-        new_count as usize
     }
 
     /// Check if a MettaValue is a rule s-expression (= lhs rhs)
@@ -2012,18 +3077,6 @@ impl MettaEnvironment {
         if let ValueView::SExpr(items) = value.view() {
             if items.len() == 3 {
                 if let ValueView::Atom(op) = items[0].view() {
-                    return op == "=";
-                }
-            }
-        }
-        false
-    }
-
-    /// Check if a value is a rule s-expression using the generic trait API.
-    fn is_rule_sexpr_generic(value: &MettaValue) -> bool {
-        if let Some(items) = value.as_sexpr() {
-            if items.len() == 3 {
-                if let Some(op) = items[0].as_atom() {
                     return op == "=";
                 }
             }
@@ -2039,45 +3092,128 @@ impl MettaEnvironment {
     pub fn increment_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        let keys = crate::backend::decompose::decompose_literal(value);
-        let mut btm = self.shared.atom_space.btm.write();
-        multiplicity::trie_increment_multiplicity(&mut btm, &keys, value.clone());
-        let new_count = multiplicity::trie_get_multiplicity(&btm, &keys);
-        drop(btm);
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
+            let mut btm = self.shared.atom_space.btm.write();
+            let new_count = increment_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
 
-        self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
-        self.modified.store(true, Ordering::Release);
-        new_count as usize
+            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => count,
+            Err(_) => {
+                // Wide expression (arity >= 64) — use wide_btm
+                let mut wide_key = Vec::new();
+                crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                super::multiplicity::add_atom(&mut wbtm, &wide_key);
+                let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                drop(wbtm);
+
+                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                count as usize
+            }
+        }
     }
 
     /// Decrement multiplicity for ANY atom.
     pub fn decrement_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        let keys = crate::backend::decompose::decompose_literal(value);
-        let old_count = {
-            let btm = self.shared.atom_space.btm.read();
-            multiplicity::trie_get_multiplicity(&btm, &keys)
-        };
+        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
+            let old_count = {
+                let btm = self.shared.atom_space.btm.read();
+                get_multiplicity(&btm, mork_bytes)
+            };
 
-        if old_count == 0 {
-            return 0;
+            if old_count == 0 {
+                return 0;
+            }
+
+            let mut btm = self.shared.atom_space.btm.write();
+            let new_count = decrement_multiplicity(&mut btm, mork_bytes);
+            drop(btm);
+
+            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            self.modified.store(true, Ordering::Release);
+            new_count as usize
+        }) {
+            Ok(count) => count,
+            Err(_) => {
+                // Wide expression (arity >= 64) — use wide_btm
+                let mut wide_key = Vec::new();
+                crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                let mut wbtm = self.shared.atom_space.wide_btm.write();
+                let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                if count > 0 {
+                    super::multiplicity::remove_atom(&mut wbtm, &wide_key);
+                    drop(wbtm);
+                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.modified.store(true, Ordering::Release);
+                }
+                count.saturating_sub(1) as usize
+            }
         }
-
-        let mut btm = self.shared.atom_space.btm.write();
-        let new_count = multiplicity::trie_decrement_multiplicity(&mut btm, &keys);
-        drop(btm);
-
-        self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-        self.modified.store(true, Ordering::Release);
-        new_count as usize
     }
 
     /// Get multiplicity for ANY atom.
     pub fn get_atom_multiplicity(&self, value: &MettaValue) -> usize {
-        let keys = crate::backend::decompose::decompose_literal(value);
+        // Rules are stored with De Bruijn encoding, so we must look them up the same way.
+        if extract_rule_parts(value).is_some() {
+            let sm = self.shared_mapping.clone();
+            match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
+                let btm = self.shared.atom_space.btm.read();
+                let count = get_multiplicity(&btm, mork_bytes);
+                if count == 0 { 1 } else { count as usize }
+            }) {
+                Ok(count) => count,
+                Err(_) => {
+                    // Wide expression (arity >= 64) — check wide_btm
+                    let mut wide_key = Vec::new();
+                    crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                    let wbtm = self.shared.atom_space.wide_btm.read();
+                    let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                    if count == 0 { 1 } else { count as usize }
+                }
+            }
+        } else {
+            match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
+                let btm = self.shared.atom_space.btm.read();
+                let count = get_multiplicity(&btm, mork_bytes);
+                if count == 0 { 1 } else { count as usize }
+            }) {
+                Ok(count) => count,
+                Err(_) => {
+                    // Wide expression (arity >= 64) — check wide_btm
+                    let mut wide_key = Vec::new();
+                    crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
+                    let wbtm = self.shared.atom_space.wide_btm.read();
+                    let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
+                    if count == 0 { 1 } else { count as usize }
+                }
+            }
+        }
+    }
+
+    /// Get atom multiplicity from raw MORK bytes.
+    pub fn get_multiplicity_from_mork_bytes(&self, mork_bytes: &[u8]) -> usize {
         let btm = self.shared.atom_space.btm.read();
-        let count = multiplicity::trie_get_multiplicity(&btm, &keys);
+        let count = get_multiplicity(&btm, mork_bytes);
         if count == 0 { 1 } else { count as usize }
+    }
+
+    /// Get the count of distinct wide atoms (arity >= 64) stored in wide_btm.
+    /// Returns 0 if no wide atoms exist.
+    pub fn get_wide_atom_count(&self) -> usize {
+        use pathmap::zipper::ZipperIteration;
+        let wbtm = self.shared.atom_space.wide_btm.read();
+        let mut count = 0usize;
+        let mut rz = wbtm.read_zipper();
+        while rz.to_next_val() {
+            count += 1;
+        }
+        count
     }
 }

@@ -10,7 +10,6 @@ pub mod analysis;
 pub mod builtin_signatures;
 pub mod bytecode;
 pub mod compile;
-pub mod decompose;
 pub mod diagnostics;
 pub mod environment;
 pub mod eval;
@@ -19,12 +18,12 @@ pub mod grounded;
 pub(crate) mod hash_utils;
 pub mod models;
 pub mod modules;
-// mork_convert module removed -- MORK byte conversion replaced by MettaTrie decomposition
+pub mod mork_convert;
 pub mod priority_scheduler;
 pub mod scheduler;
 pub mod symbol;
 pub mod varint_encoding;
-// wide_mork module removed -- MettaTrie handles arbitrary arity natively
+pub mod wide_mork;
 
 #[cfg(feature = "eval-trace")]
 pub mod trace;

@@ -1,10 +1,14 @@
 //! Type system operations for Environment.
 //!
 //! Provides methods for type assertions, type indexing, and type lookups.
-//! Type assertions are stored as (: name type) in MettaTrie.
+//! Type assertions are stored as (: name type) in MORK Space.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
+use mork::space::Space;
+use mork_expr::Expr;
+use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use tracing::trace;
 
 use super::generic::GenericEnvironment;
@@ -24,8 +28,8 @@ where
     ///
     /// Appends the type to the `types` HashMap Vec for the given name (with dedup).
     /// HE parity: an atom can have multiple types declared via separate `(: name type)` assertions.
-    /// For MettaValue environments that need MettaTrie persistence, use
-    /// `Environment::add_type` which also stores in MettaTrie Space.
+    /// For MettaValue environments that need MORK persistence, use
+    /// `Environment::add_type` which also stores in MORK Space.
     pub fn add_type_generic(&mut self, name: &str, typ: V) {
         trace!(target: "mettatron::environment::add_type_generic", name);
         self.make_owned();
@@ -57,7 +61,7 @@ where
     /// then `get_types_generic("a")` returns `[Dog, Animal, LivingThing]`.
     ///
     /// For MettaValue environments, prefer `Environment::get_type` which
-    /// uses the optimized MettaTrie index.
+    /// uses the optimized MORK index.
     pub fn get_types_generic(&self, name: &str) -> Vec<V> {
         // O(1) bloom filter rejection: if the name definitely has no type, skip HashMap
         if !self.shared.atom_space.type_bloom.read().may_have_type(name) {
@@ -100,7 +104,7 @@ where
     ///
     /// Used by Phase 8.4 match type-aware space pre-filtering: when the
     /// match pattern is `(: $x SomeType)`, use this as a reverse index
-    /// instead of scanning the entire MettaTrie space.
+    /// instead of scanning the entire MORK space.
     pub fn get_atoms_of_type(&self, type_name: &str) -> Vec<String> {
         self.shared.types.read()
             .iter()
@@ -115,7 +119,7 @@ where
     ///
     /// Removes the specific type from the `types` HashMap Vec. If the Vec
     /// becomes empty, removes the key entirely. Also removes the
-    /// `(: name type)` atom from the MettaTrie space for consistency.
+    /// `(: name type)` atom from the MORK space for consistency.
     /// Invalidates the type index cache.
     pub fn remove_type_generic(&mut self, name: &str, type_val: &V) {
         trace!(target: "mettatron::environment::remove_type_generic", name);
@@ -131,7 +135,7 @@ where
             }
         }
 
-        // Remove the type assertion from MettaTrie space
+        // Remove the type assertion from MORK space
         let type_assertion = self.factory.sexpr(vec![
             self.factory.atom(":"),
             self.factory.atom(name),
@@ -355,12 +359,12 @@ where
 }
 
 // ============================================================================
-// MettaValue-specific Type Operations (with MettaTrie persistence)
+// MettaValue-specific Type Operations (with MORK persistence)
 // ============================================================================
 
 impl MettaEnvironment {
     /// Add a type assertion
-    /// Type assertions are stored as (: name type) in MettaTrie Space
+    /// Type assertions are stored as (: name type) in MORK Space
     /// Invalidates the type index cache
     pub fn add_type(&mut self, name: String, typ: MettaValue) {
         trace!(target: "mettatron::environment::add_type", name, ?typ);
@@ -402,19 +406,18 @@ impl MettaEnvironment {
         self.shared.type_index_dirty.store(false, Ordering::Release);
     }
 
-    /// Get all types for an atom by querying MettaTrie Space (nondeterministic).
+    /// Get all types for an atom by querying MORK Space (nondeterministic).
     /// Searches for type assertions of the form (: name type)
     /// Returns empty Vec if no type assertion exists for the given name.
     ///
-    /// Look up all types declared for a name.
-    ///
-    /// OPTIMIZED: Uses type_btm (dedicated type trie) for efficient lookup.
-    /// Falls back to O(n) linear search if type index lookup fails.
+    /// OPTIMIZED: Uses PathMap::restrict() to create a type-only subtrie
+    /// Then navigates within that subtrie for O(p + m) lookup where m << n
+    /// Falls back to O(n) linear search if index lookup fails
     #[allow(clippy::collapsible_match)]
     pub fn get_type(&self, name: &str) -> Vec<MettaValue> {
         trace!(target: "mettatron::environment::get_type", name);
 
-        // O(1) bloom filter rejection
+        // O(1) bloom filter rejection: if the name definitely has no type, skip MORK trie
         if !self.shared.atom_space.type_bloom.read().may_have_type(name) {
             return Vec::new();
         }
@@ -422,21 +425,74 @@ impl MettaEnvironment {
         // Ensure type index is built and up-to-date
         self.ensure_type_index();
 
-        // Use the type_btm (dedicated type trie) for lookup
-        let type_btm = self.shared.atom_space.type_btm.read();
-        let mut results = Vec::new();
+        // Get the type index subtrie - parking_lot::RwLock - no .expect()
+        let type_index_guard = self.shared.type_index.read();
+        let type_index = match type_index_guard.as_ref() {
+            Some(index) => index,
+            None => {
+                // Index failed to build, fall back to linear search
+                trace!(target: "mettatron::environment::get_type", name, "Falling back to linear search");
+                drop(type_index_guard); // Release lock before fallback
+                return self.get_type_linear(name);
+            }
+        };
 
-        // Iterate type assertions and find those matching our name
-        for (expr, _mult) in type_btm.iter() {
-            if let ValueView::SExpr(items) = expr.view() {
-                if items.len() == 3 {
-                    if let (ValueView::Atom(op), ValueView::Atom(atom_name)) =
-                        (items[0].view(), items[1].view())
-                    {
-                        if op == ":" && atom_name == name {
-                            let typ = items[2].clone();
-                            if !results.contains(&typ) {
-                                results.push(typ);
+        // Fast path: Navigate within type index subtrie
+        // Build pattern: (: name) - we know the exact structure
+        let type_query = MettaValue::SExpr(vec![
+            MettaValue::Atom(":".to_string()),
+            MettaValue::Atom(name.to_string()),
+        ]);
+
+        // CRITICAL: Must use the same encoding as add_to_space() for consistency
+        let mork_str = type_query.to_mork_string();
+        let mork_bytes = mork_str.as_bytes();
+
+        // Create space for this type index subtrie
+        let space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: type_index.clone(), // O(1) clone via structural sharing
+            mmaps: HashMap::new(),
+        };
+
+        let mut rz = space.btm.read_zipper();
+
+        // Try O(p + m) lookup within type subtrie where m << n
+        // descend_to_check navigates the trie by exact byte sequence
+        let mut results = Vec::new();
+        if rz.descend_to_check(mork_bytes) {
+            // Found exact match for prefix (: name)
+            // Now extract all type assertions: (: name TYPE)
+            let expr = Expr {
+                ptr: rz.path().as_ptr().cast_mut(),
+            };
+
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                // Extract TYPE from (: name TYPE)
+                if let ValueView::SExpr(items) = value.view() {
+                    if items.len() >= 3 {
+                        // items[0] = ":", items[1] = name, items[2] = TYPE
+                        results.push(items[2].clone());
+                    }
+                }
+            }
+            // Continue scanning for additional type assertions with same prefix
+            while rz.to_next_val() {
+                let expr = Expr {
+                    ptr: rz.path().as_ptr().cast_mut(),
+                };
+                if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                    if let ValueView::SExpr(items) = value.view() {
+                        if items.len() >= 3 {
+                            if let (ValueView::Atom(op), ValueView::Atom(atom_name)) =
+                                (items[0].view(), items[1].view())
+                            {
+                                if op == ":" && atom_name == name {
+                                    let typ = items[2].clone();
+                                    if !results.contains(&typ) {
+                                        results.push(typ);
+                                    }
+                                }
                             }
                         }
                     }
@@ -448,29 +504,45 @@ impl MettaEnvironment {
             return results;
         }
 
-        // Fall back to linear search of main btm
-        trace!(target: "mettatron::environment::get_type", name, "type_btm lookup empty, using linear search");
+        // Release the type index lock before fallback
+        drop(type_index_guard);
+
+        // Slow path: O(n) linear search (fallback if exact match fails)
+        // This handles edge cases where MORK encoding might differ
+        trace!(target: "mettatron::environment::get_type", name, "Fast path failed, using linear search");
         self.get_type_linear(name)
     }
 
     /// Linear search fallback for get_type() - O(n) iteration
     /// Collects ALL type assertions for the given name (nondeterministic).
+    /// Used when exact match via descend_to_check() fails
     fn get_type_linear(&self, name: &str) -> Vec<MettaValue> {
-        let btm = self.shared.atom_space.btm.read();
+        let space = self.create_space();
+        let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
-        // Iterate through all values — no deserialization needed
-        for (value, _mult) in btm.iter() {
+        // Iterate through all values in the trie
+        while rz.to_next_val() {
+            // Get the s-expression at this position
+            let expr = Expr {
+                ptr: rz.path().as_ptr().cast_mut(),
+            };
+
+            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
+            // This avoids the "reserved byte" panic during evaluation
             #[allow(clippy::collapsible_match)]
-            if let ValueView::SExpr(items) = value.view() {
-                if items.len() == 3 {
-                    if let (ValueView::Atom(op), ValueView::Atom(atom_name)) =
-                        (items[0].view(), items[1].view())
-                    {
-                        if op == ":" && atom_name == name {
-                            let typ = items[2].clone();
-                            if !results.contains(&typ) {
-                                results.push(typ);
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                // Check if this is a type assertion: (: name type)
+                if let ValueView::SExpr(items) = value.view() {
+                    if items.len() == 3 {
+                        if let (ValueView::Atom(op), ValueView::Atom(atom_name)) =
+                            (items[0].view(), items[1].view())
+                        {
+                            if op == ":" && atom_name == name {
+                                let typ = items[2].clone();
+                                if !results.contains(&typ) {
+                                    results.push(typ);
+                                }
                             }
                         }
                     }
@@ -484,6 +556,8 @@ impl MettaEnvironment {
 
 #[cfg(test)]
 mod tests {
+    use pathmap::zipper::{ZipperIteration, ZipperValues};
+
     use crate::backend::environment::MettaEnvironment;
     use crate::backend::models::{GcFactory, MettaValueFactory, MettaValueTrait};
 
@@ -942,7 +1016,7 @@ mod tests {
         let f = factory();
         let mut e = env();
 
-        // Add type via add_to_space (exercises the MettaTrie path bloom insert)
+        // Add type via add_to_space (exercises the MORK path bloom insert)
         let type_atom = f.sexpr(vec![f.atom(":"), f.atom("y"), f.atom("Bool")]);
         e.add_to_space(&type_atom);
 
@@ -972,16 +1046,16 @@ mod tests {
         let f = factory();
         let mut e = env();
 
-        // Add type via add_to_space (populates both HashMap and MettaTrie type_btm)
+        // Add type via add_to_space (populates both HashMap and MORK type_btm)
         let type_atom = f.sexpr(vec![f.atom(":"), f.atom("z"), f.atom("String")]);
         e.add_to_space(&type_atom);
 
-        // get_type (MettaTrie path) should pass bloom filter
+        // get_type (MORK path) should pass bloom filter
         let types = e.get_type("z");
-        assert!(!types.is_empty(), "get_type('z') should find String via MettaTrie path");
+        assert!(!types.is_empty(), "get_type('z') should find String via MORK path");
         assert!(types.iter().any(|t| t.as_atom() == Some("String")));
 
-        // Untyped atom should be rejected by bloom filter before MettaTrie trie traversal
+        // Untyped atom should be rejected by bloom filter before MORK trie traversal
         let empty = e.get_type("nonexistent");
         assert!(empty.is_empty(), "bloom filter should reject nonexistent atom");
     }

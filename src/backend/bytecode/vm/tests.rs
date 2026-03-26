@@ -1038,7 +1038,9 @@ fn test_vm_space_add_get_atoms() {
     env.add_to_space(&MettaValue::sym("foo"));
 
     // Create bytecode that gets atoms from the environment
+    // Push &self atom so SpaceGetAtoms can resolve it
     let mut builder = ChunkBuilder::new("test");
+    builder.emit_constant(MettaValue::sym("&self"));
     builder.emit(Opcode::SpaceGetAtoms);
     builder.emit(Opcode::Return);
 
@@ -1046,16 +1048,16 @@ fn test_vm_space_add_get_atoms() {
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
-    assert_eq!(results.len(), 1);
-    match results[0].inner() {
-        MettaValueInner::SExpr(atoms) => {
-            assert_eq!(atoms.len(), 3);
-            assert!(atoms.contains(&MettaValue::Long(1)));
-            assert!(atoms.contains(&MettaValue::Long(2)));
-            assert!(atoms.contains(&MettaValue::sym("foo")));
-        }
-        _ => panic!("Expected S-expression of atoms"),
-    }
+    // SpaceGetAtoms uses choice points for nondeterministic results.
+    // With yield_on_top_return=true (set by eval_inner), all atoms are returned.
+    // Without it, only the first atom is returned from run().
+    // Exhaust all choice points to get all atoms:
+    let mut all_results = results;
+    all_results.extend(vm.resume_alternatives().expect("resume should succeed"));
+    assert_eq!(all_results.len(), 3, "Expected 3 atoms from &self space, got {}", all_results.len());
+    assert!(all_results.contains(&MettaValue::Long(1)));
+    assert!(all_results.contains(&MettaValue::Long(2)));
+    assert!(all_results.contains(&MettaValue::sym("foo")));
 }
 
 #[test]
@@ -2823,6 +2825,7 @@ mod generic_vm_tests {
         env.add_to_space(&f.long(42));
 
         let mut builder = GenericChunkBuilder::with_factory("test_space", f.clone());
+        builder.emit_constant(f.atom("&self"));
         builder.emit(Opcode::SpaceGetAtoms);
         builder.emit(Opcode::Return);
 
@@ -2830,14 +2833,10 @@ mod generic_vm_tests {
         let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, f);
         let results = vm.run().expect("VM should succeed");
 
-        assert_eq!(results.len(), 1);
-        // Result should be an S-expression containing the atoms
-        if let Some(items) = results[0].as_sexpr() {
-            // Should have at least the atoms we added
-            assert!(items.len() >= 2, "Expected at least 2 atoms, got {}", items.len());
-        } else {
-            panic!("Expected S-expression result from SpaceGetAtoms");
-        }
+        // SpaceGetAtoms uses choice points. Exhaust all alternatives.
+        let mut all_results = results;
+        all_results.extend(vm.resume_alternatives().expect("resume should succeed"));
+        assert!(all_results.len() >= 2, "Expected at least 2 atoms, got {}", all_results.len());
     }
 
     /// Test CallNative dispatches to the generic native registry.
@@ -5173,20 +5172,20 @@ fn test_vm_space_remove_non_space() {
 /// Test SpaceGetAtoms with non-space fails gracefully.
 #[test]
 fn test_vm_space_get_atoms_non_space() {
-    // SpaceGetAtoms reads from environment, not stack.
-    // Pushing a non-space value is irrelevant — it stays on stack.
-    // With no env, SpaceGetAtoms returns empty SExpr.
+    // SpaceGetAtoms pops a space value from the stack.
+    // Pushing a non-space value (Long) should return empty results.
     let mut builder = ChunkBuilder::new("test_space_get_atoms_non_space");
 
+    builder.emit_constant(MettaValue::Long(42)); // Not a space
     builder.emit(Opcode::SpaceGetAtoms);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let results = vm.run().expect("VM should succeed with no env");
+    let results = vm.run().expect("VM should succeed with non-space arg");
 
     assert_eq!(results.len(), 1);
-    // No environment attached, so empty list
+    // Non-space argument returns empty list
     match results[0].inner() {
         MettaValueInner::SExpr(atoms) => assert!(atoms.is_empty()),
         MettaValueInner::Unit => {} // Unit = empty expression, also valid

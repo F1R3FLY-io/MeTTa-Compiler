@@ -26,6 +26,21 @@ fn make_test_fact(value: &str) -> MettaValue {
 }
 
 // ============================================================================
+// UNIT TESTS - get_all_atoms
+// ============================================================================
+
+#[test]
+fn test_get_all_atoms_returns_added_atoms() {
+    let mut env = MettaEnvironment::default();
+    env.add_to_space(&MettaValue::Long(1));
+    env.add_to_space(&MettaValue::Long(2));
+    env.add_to_space(&MettaValue::sym("foo"));
+    let atoms = env.get_all_atoms();
+    eprintln!("get_all_atoms returned {} atoms: {:?}", atoms.len(), atoms);
+    assert_eq!(atoms.len(), 3, "Expected 3 atoms from get_all_atoms, got {}", atoms.len());
+}
+
+// ============================================================================
 // UNIT TESTS - CoW Behavior
 // ============================================================================
 

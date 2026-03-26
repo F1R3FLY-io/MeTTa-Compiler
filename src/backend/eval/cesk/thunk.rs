@@ -260,6 +260,21 @@ pub fn with_thunk_table<R>(f: impl FnOnce(&mut ThunkTable<MettaValue>) -> R) -> 
     })
 }
 
+/// Collect GC roots from the thread-local thunk table.
+///
+/// Cached evaluation results in the thunk table hold MettaValue references
+/// that must survive GC mark-sweep cycles. Without this, GC can free values
+/// that are only reachable through cached thunk results, causing
+/// use-after-poison when those results are later retrieved and serialized.
+pub fn collect_thunk_roots(out: &mut Vec<MettaValue>) {
+    THREAD_THUNKS.with(|cell| {
+        let table = cell.borrow();
+        for thunk in table.entries.values() {
+            out.extend(thunk.results.iter().cloned());
+        }
+    });
+}
+
 /// Clear the thread-local thunk table.
 /// Skips the clear if no entries have been added since the last clear.
 #[inline]

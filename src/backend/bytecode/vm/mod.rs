@@ -4329,11 +4329,58 @@ where
     /// Get all atoms from a space (collapse).
     /// Stack: [space] -> [SExpr with atoms]
     fn op_space_get_atoms(&mut self) -> VmResult<()> {
-        if let Some(env) = &self.env {
-            let atoms = env.get_all_atoms();
-            self.push(self.make_sexpr(atoms));
+        let space_val = self.pop()?;
+
+        // Resolve the space: either a direct Space handle or a named token (e.g., &kb)
+        let atoms: Vec<V> = if let Some(handle) = space_val.as_space() {
+            handle.collapse_generic(&self.factory)
+        } else if let Some(name) = space_val.as_atom() {
+            if name == "&self" {
+                if let Some(env) = &self.env {
+                    env.get_all_atoms()
+                } else {
+                    Vec::new()
+                }
+            } else if let Some(env) = &self.env {
+                // Named space (e.g., &kb) → resolve through tokenizer
+                if let Some(resolved) = env.lookup_token_generic(name, &self.factory) {
+                    if let Some(handle) = resolved.as_space() {
+                        handle.collapse_generic(&self.factory)
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
         } else {
+            Vec::new()
+        };
+
+        // Return atoms as nondeterministic superposition via choice points
+        // (same pattern as op_match_self for multi-result operations).
+        if atoms.is_empty() {
+            self.unreduced = true;
             self.push(self.make_sexpr(vec![]));
+        } else if atoms.len() == 1 {
+            self.push(atoms.into_iter().next().expect("atoms is non-empty"));
+        } else {
+            let mut iter = atoms.into_iter();
+            let first = iter.next().expect("atoms is non-empty");
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                iter.map(GenericAlternative::Value).collect();
+            self.choice_points.push(GenericChoicePoint {
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                alternatives,
+                saved_unreduced: self.unreduced,
+            });
+            self.push(first);
         }
         Ok(())
     }

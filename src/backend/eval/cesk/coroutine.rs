@@ -143,6 +143,23 @@ impl<V: MettaValueTrait + Clone> BranchCoroutine<V> {
         self.yielded
     }
 
+    /// Collect all V values reachable from this coroutine for GC root tracing.
+    ///
+    /// Includes remaining unevaluated RHS templates + their bindings (from cursor
+    /// onward) and already-yielded results. Without this, a GC safepoint during
+    /// lazy rule matching would miss these values, causing use-after-free when the
+    /// coroutine yields the next branch and MORK serialization dereferences freed
+    /// slab pointers.
+    pub fn collect_values(&self, out: &mut Vec<V>) {
+        for (rhs, bindings) in &self.remaining[self.cursor..] {
+            out.push(rhs.clone());
+            for (_name, val) in bindings.iter() {
+                out.push(val.clone());
+            }
+        }
+        out.extend(self.yielded.iter().cloned());
+    }
+
     /// Number of results yielded so far.
     #[inline]
     pub fn result_count(&self) -> usize {

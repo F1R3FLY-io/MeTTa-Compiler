@@ -6,11 +6,11 @@ pub mod backend;
 pub mod config;
 pub mod ir;
 pub mod parser;
-// Temporarily disabled: models crate (f1r3node) has rspace_plus_plus compile error.
-// Re-enable once f1r3node rspace++ is fixed.
-// pub mod pathmap_par_integration;
+#[cfg(feature = "rholang")]
+pub mod pathmap_par_integration;
 pub mod repl;
-// pub mod rholang_integration;
+#[cfg(feature = "rholang")]
+pub mod rholang_integration;
 pub mod tree_sitter_parser;
 
 /// MeTTaTron - MeTTa Evaluator Library

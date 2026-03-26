@@ -369,6 +369,21 @@ pub fn clear_subgoal_table() {
     });
 }
 
+/// Collect GC roots from the thread-local subgoal table.
+///
+/// Cached evaluation results in the subgoal table hold MettaValue references
+/// that must survive GC mark-sweep cycles. Without this, GC can free values
+/// that are only reachable through cached tabling results, causing
+/// use-after-poison when those results are later retrieved and serialized.
+pub fn collect_subgoal_roots(out: &mut Vec<MettaValue>) {
+    THREAD_TABLE.with(|cell| {
+        let table = cell.borrow();
+        for entry in table.entries.values() {
+            out.extend(entry.results.iter().copied());
+        }
+    });
+}
+
 /// Invalidate the thread-local subgoal table after space mutation.
 #[inline]
 pub fn invalidate_subgoal_table() {

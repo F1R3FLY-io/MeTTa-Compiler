@@ -1,23 +1,18 @@
-/// MettaTrie Par Integration Module
+/// PathMap Par Integration Module
 ///
-/// Provides conversion between MeTTa types and Rholang Par types.
+/// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
 /// This module enables MettaState to be represented as Rholang EPathMap structures.
-///
-/// ## Architecture
-///
-/// The AtomSpace uses `MettaTrie<V, Multiplicity>` for atom storage.
-/// Serialization iterates the MettaTrie directly (no MORK, no PathMap).
-/// Each atom is serialized as its MeTTa Display text + multiplicity.
-/// MettaTrie handles arbitrary arity natively, so no separate wide_btm is needed.
+use std::fs;
+use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use models::rhoapi::{expr::ExprInstance, EList, EPathMap, Expr, Par};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use tracing::{debug, trace};
 
-use crate::backend::compile::compile_generic;
-use crate::backend::decompose::decompose_literal;
-use crate::backend::environment::multiplicity::trie_set_multiplicity;
+use crate::backend::environment::multiplicity::Multiplicity;
 use crate::backend::environment::MettaEnvironment;
-use crate::backend::models::{MettaState, MettaValue, MettaValueInner, global_factory};
+use crate::backend::models::{MettaState, MettaValue, MettaValueInner};
 
 /// Helper function to create a Par with a string value
 fn create_string_par(s: String) -> Par {
@@ -36,7 +31,7 @@ fn create_int_par(n: i64) -> Par {
 // Magic numbers for MeTTa Environment byte arrays
 // These identify byte arrays as MeTTa-specific data for the pretty-printer
 const METTA_SPACE_MAGIC: &[u8] = b"MTTS"; // MeTTa Space
-const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (legacy, always empty)
+const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arity >= 64)
 
 /// Convert a MettaValue to a Rholang Par object
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
@@ -219,77 +214,138 @@ pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
     }])
 }
 
-/// Convert Environment to a Rholang Par tuple.
-///
-/// Serializes the AtomSpace's MettaTrie as a byte array containing
-/// MeTTa Display text representations with inline multiplicities.
-///
+/// Convert Environment to a Rholang Par tuple
+/// Serializes the Space's PathMap with inline multiplicities as byte arrays
 /// Returns an EList with two named fields:
-///   ("space", GByteArray) - MeTTa text entries with inline multiplicities
-///   ("large_exprs", GByteArray) - Always empty (MettaTrie handles any arity)
+///   ("space", GByteArray) - Raw MORK trie bytes with inline multiplicities
+///   ("large_exprs", GByteArray) - Wide MORK paths (arity >= 64) with inline multiplicities
 /// Note: Type assertions are stored within the space, not separately
 pub fn environment_to_par(env: &MettaEnvironment) -> Par {
-    trace!(target: "mettatron::rholang_integration::environment_to_par", ?env);
+    // CRITICAL FIX for "reserved 111" bug:
+    // We CANNOT use dump_all_sexpr() because it calls serialize2() which interprets
+    // bytes as MORK tags. When symbol data contains bytes in range 64-127 (like 'o'=111),
+    // serialize2() tries to interpret them as tags and panics with "reserved X".
+    //
+    // Instead, we collect RAW path bytes directly from the trie using read_zipper.
+    // This preserves bytes exactly without interpretation.
 
-    // Collect all atoms from the MettaTrie with their multiplicities.
-    // Format: [magic: 4 bytes "MTTS"][num_entries: 8 bytes BE]
-    //         [text_len: 4 bytes BE][utf8_text][multiplicity: 8 bytes BE]...
-    let mut all_entries_data = Vec::new();
+    trace!(target: "mettatron::rholang_integration::environment_to_par", ?env);
+    let space = env.create_space();
+
+    // Collect all raw path bytes from the PathMap trie
+    let mut all_paths_data = Vec::new();
+    let mut rz = space.btm.read_zipper();
+
+    // Write format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes][multiplicity1: 8 bytes]...
 
     // Write magic number to identify this as MeTTa space
-    all_entries_data.extend_from_slice(METTA_SPACE_MAGIC);
+    all_paths_data.extend_from_slice(METTA_SPACE_MAGIC);
 
-    // Reserve space for entry count
-    let count_offset = all_entries_data.len();
-    all_entries_data.extend_from_slice(&[0u8; 8]);
+    // First, serialize the symbol table to a temp file, then read it
+    let symbol_table_bytes = {
+        // Create unique temp file for symbol table (include timestamp to avoid parallel test collisions)
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp_path = std::env::temp_dir().join(format!(
+            "metta_symbols_{}_{}.bin",
+            std::process::id(),
+            timestamp
+        ));
 
-    let mut entry_count = 0u64;
-
-    {
-        let btm = env.shared.atom_space.btm.read();
-
-        for (expr, mult) in btm.iter() {
-            let multiplicity = mult.count();
-            // Serialize MettaValue as its Display text
-            let text = format!("{}", expr);
-            let text_bytes = text.as_bytes();
-
-            // Write text length (4 bytes, big-endian)
-            let len = text_bytes.len() as u32;
-            all_entries_data.extend_from_slice(&len.to_be_bytes());
-            // Write UTF-8 text bytes
-            all_entries_data.extend_from_slice(text_bytes);
-            // Write multiplicity (8 bytes, big-endian) inline with entry
-            all_entries_data.extend_from_slice(&multiplicity.to_be_bytes());
-            entry_count += 1;
+        // Backup symbols to temp file
+        if space.backup_symbols(&temp_path).is_err() {
+            // If backup fails, use empty bytes
+            Vec::new()
+        } else {
+            // Read the temp file into memory
+            let bytes = fs::read(&temp_path).unwrap_or_default();
+            // Clean up temp file
+            let _ = fs::remove_file(&temp_path);
+            bytes
         }
+    };
+    trace!(target: "mettatron::rholang_integration::environment_to_par", symbol_table_len = symbol_table_bytes.len());
+
+    // Write symbol table length and bytes
+    let sym_len = symbol_table_bytes.len() as u64;
+    all_paths_data.extend_from_slice(&sym_len.to_be_bytes());
+    all_paths_data.extend_from_slice(&symbol_table_bytes);
+
+    // Write path count (reserve space)
+    let mut path_count = 0u64;
+    let count_offset = all_paths_data.len();
+    all_paths_data.extend_from_slice(&[0u8; 8]); // Reserve space for count
+
+    // Iterate through all paths and collect their raw bytes with inline multiplicities
+    while rz.to_next_val() {
+        let path_bytes = rz.path();
+        let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1);
+        // Write path length (4 bytes, big-endian)
+        let len = path_bytes.len() as u32;
+        all_paths_data.extend_from_slice(&len.to_be_bytes());
+        // Write raw path bytes (NO INTERPRETATION!)
+        all_paths_data.extend_from_slice(path_bytes);
+        // Write multiplicity (8 bytes, big-endian) inline with path
+        all_paths_data.extend_from_slice(&multiplicity.to_be_bytes());
+        path_count += 1;
     }
+    trace!(target: "mettatron::rholang_integration::environment_to_par", path_count, space_data_len = all_paths_data.len());
 
-    trace!(
-        target: "mettatron::rholang_integration::environment_to_par",
-        entry_count, space_data_len = all_entries_data.len()
-    );
+    // Write the actual count at the beginning
+    all_paths_data[count_offset..count_offset + 8].copy_from_slice(&path_count.to_be_bytes());
 
-    // Write the actual count
-    all_entries_data[count_offset..count_offset + 8]
-        .copy_from_slice(&entry_count.to_be_bytes());
+    drop(rz);
+    drop(space);
 
     // Store the collected bytes as a single GByteArray
-    let space_epathmap = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::GByteArray(all_entries_data)),
+    let space_bytes_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(all_paths_data)),
     }]);
 
-    // Large expressions section: always empty since MettaTrie handles any arity.
-    // Format: [magic: 4 bytes "MTTL"][count: 8 bytes = 0]
-    let mut large_exprs_bytes = Vec::with_capacity(12);
+    // The space is now a single GByteArray with raw path bytes
+    let space_epathmap = space_bytes_par;
+
+    // Serialize wide expressions (arity >= 64) from wide_btm PathMap
+    // Format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes][multiplicity1: 8 bytes]...
+    // Uses Wide MORK storage encoding (tag-byte + LEB128) for expressions that exceed 63-arity limit
+    let mut large_exprs_bytes = Vec::new();
     large_exprs_bytes.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
-    large_exprs_bytes.extend_from_slice(&0u64.to_be_bytes());
+
+    {
+        use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
+
+        let wbtm = env.shared.atom_space.wide_btm.read();
+        let mut wrz = wbtm.read_zipper();
+
+        // Reserve space for count
+        let count_offset = large_exprs_bytes.len();
+        large_exprs_bytes.extend_from_slice(&[0u8; 8]);
+
+        let mut count = 0u64;
+        while wrz.to_next_val() {
+            let path_bytes = wrz.path();
+            let multiplicity = wrz.val().map(|m| m.count()).unwrap_or(1);
+            // Write Wide MORK key bytes directly (already in storage encoding)
+            let len = path_bytes.len() as u32;
+            large_exprs_bytes.extend_from_slice(&len.to_be_bytes());
+            large_exprs_bytes.extend_from_slice(path_bytes);
+            // Write multiplicity (8 bytes, big-endian) inline with path
+            large_exprs_bytes.extend_from_slice(&multiplicity.to_be_bytes());
+            count += 1;
+        }
+
+        // Write actual count
+        large_exprs_bytes[count_offset..count_offset + 8].copy_from_slice(&count.to_be_bytes());
+    }
 
     let large_exprs_par = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GByteArray(large_exprs_bytes)),
     }]);
 
     // Build EList with named field lists: [["space", ...], ["large_exprs", ...]]
+    // Multiplicities are now encoded inline with each path in MTTS/MTTL byte arrays
     let space_list = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![create_string_par("space".to_string()), space_epathmap],
@@ -501,246 +557,11 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
     }
 }
 
-/// Parse MeTTa Display text back into a MettaValue using the compiler.
-///
-/// This is the inverse of `MettaValue::Display`. It parses a single expression
-/// from the text and returns it as a MettaValue. Returns an Atom if parsing fails
-/// (graceful degradation for unusual Display formats like `<Space:name>`).
-/// Recursively strip all Spanned wrappers from a MettaValue tree.
-/// Deserialized values should be span-free to match originals.
-fn strip_spans_recursive(value: &MettaValue, factory: &crate::backend::models::GcFactory) -> MettaValue {
-    use crate::backend::models::MettaValueTrait;
-    // Strip outermost span
-    let stripped = value.strip_spans();
-    // If it's an S-expression, recursively strip children
-    if let Some(items) = stripped.as_sexpr() {
-        let stripped_children: Vec<MettaValue> = items
-            .iter()
-            .map(|child| strip_spans_recursive(child, factory))
-            .collect();
-        use crate::backend::models::MettaValueFactory;
-        factory.sexpr(stripped_children)
-    } else {
-        stripped
-    }
-}
-
-fn parse_metta_text(text: &str) -> MettaValue {
-    let factory = global_factory();
-    match compile_generic(text, &factory) {
-        Ok(values) if !values.is_empty() => {
-            // Strip span annotations recursively — deserialized values should be
-            // span-free to match the original values which had no spans.
-            let value = values.into_iter().next().expect("checked non-empty");
-            strip_spans_recursive(&value, &factory)
-        }
-        _ => {
-            // Fallback: if the text can't be parsed, treat as a plain atom.
-            // This handles edge cases like <Space:name>, <State:id>, etc.
-            MettaValue::Atom(text.to_string())
-        }
-    }
-}
-
-/// Read entry count and entries from MTTS-formatted bytes.
-///
-/// Returns a Vec of (MettaValue, multiplicity) tuples.
-/// Used by both `par_to_environment` and `decode_space_bytes_to_pars`.
-fn read_mtts_entries(space_dump_bytes: &[u8]) -> Vec<(MettaValue, u64)> {
-    let mut entries = Vec::new();
-
-    if space_dump_bytes.is_empty() {
-        return entries;
-    }
-
-    let mut offset = 0;
-
-    // Check and skip magic number if present
-    if space_dump_bytes.len() >= 4 && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC {
-        offset += 4;
-    }
-
-    // Read entry count
-    if offset + 8 > space_dump_bytes.len() {
-        return entries;
-    }
-    let entry_count = u64::from_be_bytes([
-        space_dump_bytes[offset],
-        space_dump_bytes[offset + 1],
-        space_dump_bytes[offset + 2],
-        space_dump_bytes[offset + 3],
-        space_dump_bytes[offset + 4],
-        space_dump_bytes[offset + 5],
-        space_dump_bytes[offset + 6],
-        space_dump_bytes[offset + 7],
-    ]);
-    offset += 8;
-
-    entries.reserve(entry_count as usize);
-
-    for _ in 0..entry_count {
-        if offset + 4 > space_dump_bytes.len() {
-            break;
-        }
-
-        // Read text length
-        let text_len = u32::from_be_bytes([
-            space_dump_bytes[offset],
-            space_dump_bytes[offset + 1],
-            space_dump_bytes[offset + 2],
-            space_dump_bytes[offset + 3],
-        ]) as usize;
-        offset += 4;
-
-        if offset + text_len + 8 > space_dump_bytes.len() {
-            break;
-        }
-
-        // Read UTF-8 text
-        let text_bytes = &space_dump_bytes[offset..offset + text_len];
-        offset += text_len;
-
-        // Read multiplicity (8 bytes, big-endian)
-        let multiplicity = u64::from_be_bytes([
-            space_dump_bytes[offset],
-            space_dump_bytes[offset + 1],
-            space_dump_bytes[offset + 2],
-            space_dump_bytes[offset + 3],
-            space_dump_bytes[offset + 4],
-            space_dump_bytes[offset + 5],
-            space_dump_bytes[offset + 6],
-            space_dump_bytes[offset + 7],
-        ]);
-        offset += 8;
-
-        // Parse text back to MettaValue
-        if let Ok(text) = std::str::from_utf8(text_bytes) {
-            let value = parse_metta_text(text);
-            entries.push((value, multiplicity));
-        }
-    }
-
-    entries
-}
-
-/// Read entry count and entries from MTTS-formatted bytes with LENIENT multiplicity handling.
-///
-/// When multiplicity bytes are missing or unreasonably large (> 2^32), defaults to 1.
-/// Returns a Vec of (MettaValue, multiplicity) tuples.
-fn read_mtts_entries_lenient(space_dump_bytes: &[u8]) -> Vec<(MettaValue, u64)> {
-    let mut entries = Vec::new();
-
-    if space_dump_bytes.is_empty() {
-        return entries;
-    }
-
-    let mut offset = 0;
-
-    // Check and skip magic number if present
-    if space_dump_bytes.len() >= 4 && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC {
-        offset += 4;
-    }
-
-    // Read entry count
-    if offset + 8 > space_dump_bytes.len() {
-        return entries;
-    }
-    let entry_count = u64::from_be_bytes([
-        space_dump_bytes[offset],
-        space_dump_bytes[offset + 1],
-        space_dump_bytes[offset + 2],
-        space_dump_bytes[offset + 3],
-        space_dump_bytes[offset + 4],
-        space_dump_bytes[offset + 5],
-        space_dump_bytes[offset + 6],
-        space_dump_bytes[offset + 7],
-    ]);
-    offset += 8;
-
-    entries.reserve(entry_count as usize);
-
-    for _ in 0..entry_count {
-        if offset + 4 > space_dump_bytes.len() {
-            break;
-        }
-
-        // Read text length
-        let text_len = u32::from_be_bytes([
-            space_dump_bytes[offset],
-            space_dump_bytes[offset + 1],
-            space_dump_bytes[offset + 2],
-            space_dump_bytes[offset + 3],
-        ]) as usize;
-        offset += 4;
-
-        if offset + text_len > space_dump_bytes.len() {
-            break;
-        }
-
-        // Read UTF-8 text
-        let text_bytes = &space_dump_bytes[offset..offset + text_len];
-        offset += text_len;
-
-        // LENIENT multiplicity handling
-        let multiplicity = if offset + 8 <= space_dump_bytes.len() {
-            let mult = u64::from_be_bytes([
-                space_dump_bytes[offset],
-                space_dump_bytes[offset + 1],
-                space_dump_bytes[offset + 2],
-                space_dump_bytes[offset + 3],
-                space_dump_bytes[offset + 4],
-                space_dump_bytes[offset + 5],
-                space_dump_bytes[offset + 6],
-                space_dump_bytes[offset + 7],
-            ]);
-            if mult > (1u64 << 32) {
-                // Unreasonably large -- these bytes are likely the next
-                // entry's length prefix, not a multiplicity. Don't advance.
-                1u64
-            } else {
-                offset += 8;
-                mult
-            }
-        } else {
-            // Not enough bytes for multiplicity -- default to 1
-            1u64
-        };
-
-        // Parse text back to MettaValue
-        if let Ok(text) = std::str::from_utf8(text_bytes) {
-            let value = parse_metta_text(text);
-            entries.push((value, multiplicity));
-        }
-    }
-
-    entries
-}
-
-/// Insert parsed (MettaValue, multiplicity) entries into a MettaEnvironment.
-///
-/// Uses `decompose_literal` to get TrieKeys and `trie_set_multiplicity` to
-/// insert into the MettaTrie. Updates the total_atoms counter accordingly.
-fn insert_entries_into_env(env: &mut MettaEnvironment, entries: &[(MettaValue, u64)]) {
-    let mut total_atoms_added: usize = 0;
-    {
-        let mut btm = env.shared.atom_space.btm.write();
-        for (value, multiplicity) in entries {
-            let keys = decompose_literal(value);
-            trie_set_multiplicity(&mut btm, &keys, value.clone(), *multiplicity);
-            total_atoms_added += *multiplicity as usize;
-        }
-    }
-    env.shared
-        .atom_space
-        .total_atoms
-        .fetch_add(total_atoms_added, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// Convert a Rholang Par back to Environment
-/// Deserializes the AtomSpace's MettaTrie from MeTTa text entries with inline multiplicities
+/// Deserializes the Space's PathMap with inline multiplicities from byte arrays
 /// Expects an EList with named fields:
 ///   [["space", GByteArray], ["large_exprs", GByteArray]]
-/// Multiplicities are encoded inline with each entry in MTTS byte arrays
+/// Multiplicities are encoded inline with each path in MTTS/MTTL byte arrays
 /// Note: Type assertions are stored within the space, not separately
 pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
     trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
@@ -771,7 +592,7 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                 Err("Expected list with at least 2 elements".to_string())
             };
 
-            // Extract space (element 0) - should be a single GByteArray
+            // Extract space (element 0) - should be a single GByteArray (MORK dump format)
             let space_par = extract_list_value(&tuple.ps[0])?;
             let space_dump_bytes: Vec<u8> = if let Some(expr) = space_par.exprs.first() {
                 if let Some(ExprInstance::GByteArray(bytes)) = &expr.expr_instance {
@@ -787,20 +608,229 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
             // Reconstruct Environment
             let mut env = MettaEnvironment::default();
 
-            // Parse MTTS entries and insert into MettaTrie
+            // Rebuild the Space from raw path bytes with inline multiplicities
+            // CRITICAL FIX for "reserved 111" bug:
+            // We stored raw path bytes (not text), so we insert them directly.
+            // This avoids any interpretation of bytes as MORK tags.
+            // We also restore the symbol table so symbol IDs match.
+            // Multiplicities are inline with each path — no separate MTTM field needed.
             {
-                let entries = read_mtts_entries(&space_dump_bytes);
-                insert_entries_into_env(&mut env, &entries);
+                let mut space = env.create_space();
+                if !space_dump_bytes.is_empty() {
+                    // Read format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes][multiplicity1: 8 bytes]...
+                    if space_dump_bytes.len() >= 12 {
+                        // 4 bytes magic + 8 bytes sym_table_len minimum
+                        let mut offset = 0;
+
+                        // Check and skip magic number if present
+                        if space_dump_bytes.len() >= 4
+                            && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC
+                        {
+                            offset += 4; // Skip magic number
+                        }
+
+                        // Read symbol table length
+                        let sym_len = u64::from_be_bytes([
+                            space_dump_bytes[offset],
+                            space_dump_bytes[offset + 1],
+                            space_dump_bytes[offset + 2],
+                            space_dump_bytes[offset + 3],
+                            space_dump_bytes[offset + 4],
+                            space_dump_bytes[offset + 5],
+                            space_dump_bytes[offset + 6],
+                            space_dump_bytes[offset + 7],
+                        ]) as usize;
+                        offset += 8;
+
+                        // Restore symbol table if present
+                        if sym_len > 0 && offset + sym_len <= space_dump_bytes.len() {
+                            trace!(
+                                target: "mettatron::rholang_integration::par_to_environment",
+                                sym_len, offset, "Restore symbol table"
+                            );
+
+                            let symbol_table_bytes = &space_dump_bytes[offset..offset + sym_len];
+                            offset += sym_len;
+
+                            // Write symbol table to temp file (unique name to avoid collisions)
+                            let timestamp = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
+                            let temp_path = std::env::temp_dir().join(format!(
+                                "metta_symbols_restore_{}_{}.bin",
+                                std::process::id(),
+                                timestamp
+                            ));
+                            if let Ok(mut file) = fs::File::create(&temp_path) {
+                                if file.write_all(symbol_table_bytes).is_ok() {
+                                    drop(file); // Close file before restoring
+                                                // Restore symbols from temp file
+                                    let _ = space.restore_symbols(&temp_path);
+                                    // Clean up temp file
+                                    let _ = fs::remove_file(&temp_path);
+                                }
+                            }
+                        }
+
+                        // Read path count
+                        if offset + 8 <= space_dump_bytes.len() {
+                            let path_count = u64::from_be_bytes([
+                                space_dump_bytes[offset],
+                                space_dump_bytes[offset + 1],
+                                space_dump_bytes[offset + 2],
+                                space_dump_bytes[offset + 3],
+                                space_dump_bytes[offset + 4],
+                                space_dump_bytes[offset + 5],
+                                space_dump_bytes[offset + 6],
+                                space_dump_bytes[offset + 7],
+                            ]);
+                            offset += 8;
+
+                            // Read and insert each path with its inline multiplicity
+                            let mut total_atoms_added: usize = 0;
+                            for _ in 0..path_count {
+                                if offset + 4 > space_dump_bytes.len() {
+                                    break; // Not enough data
+                                }
+
+                                // Read path length
+                                let len = u32::from_be_bytes([
+                                    space_dump_bytes[offset],
+                                    space_dump_bytes[offset + 1],
+                                    space_dump_bytes[offset + 2],
+                                    space_dump_bytes[offset + 3],
+                                ]) as usize;
+                                offset += 4;
+
+                                if offset + len + 8 > space_dump_bytes.len() {
+                                    break; // Not enough data for path + multiplicity
+                                }
+
+                                // Get raw path bytes
+                                let path_bytes = &space_dump_bytes[offset..offset + len];
+                                offset += len;
+
+                                // Read inline multiplicity (8 bytes, big-endian)
+                                let multiplicity = u64::from_be_bytes([
+                                    space_dump_bytes[offset],
+                                    space_dump_bytes[offset + 1],
+                                    space_dump_bytes[offset + 2],
+                                    space_dump_bytes[offset + 3],
+                                    space_dump_bytes[offset + 4],
+                                    space_dump_bytes[offset + 5],
+                                    space_dump_bytes[offset + 6],
+                                    space_dump_bytes[offset + 7],
+                                ]);
+                                offset += 8;
+
+                                // Insert path with correct multiplicity directly
+                                space.btm.insert(path_bytes, Multiplicity::new(multiplicity));
+                                total_atoms_added += multiplicity as usize;
+                            }
+                            // Update total_atoms counter for all paths inserted
+                            env.shared
+                                .atom_space
+                                .total_atoms
+                                .fetch_add(total_atoms_added, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+                // Update shared PathMap with modified Space
+                env.update_pathmap(space);
 
                 // Rebuild bloom filter from restored space
+                // The bloom filter is not serialized, so we need to rebuild it
+                // by iterating through all entries and extracting (head, arity) pairs
                 env.rebuild_bloom_filter_from_space();
             }
 
-            // Element 1: large_exprs -- always empty with MettaTrie (any arity supported).
-            // We still parse the field for structural compatibility, but it contains no entries.
-            // No wide_btm to restore since MettaTrie handles arbitrary arity natively.
+            // Extract and restore wide expressions (element 1) — always present
+            // These are expressions with arity >= 64 that exceed MORK's 63-arity limit
+            // Stored as Wide MORK storage bytes (tag-byte + LEB128) with inline multiplicities
+            {
+                let large_exprs_par = extract_list_value(&tuple.ps[1])?;
+                if let Some(expr) = large_exprs_par.exprs.first() {
+                    if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
+                        // Read format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes][multiplicity1: 8 bytes]...
+                        if large_bytes.len() >= 12 {
+                            let mut offset = 0;
 
-            // Rebuild bloom filter and RuleIndex from the restored MettaTrie
+                            // Check and skip magic number if present
+                            if large_bytes.len() >= 4
+                                && &large_bytes[0..4] == METTA_LARGE_EXPRS_MAGIC
+                            {
+                                offset += 4;
+                            }
+
+                            // Read count
+                            if offset + 8 <= large_bytes.len() {
+                                let count = u64::from_be_bytes([
+                                    large_bytes[offset],
+                                    large_bytes[offset + 1],
+                                    large_bytes[offset + 2],
+                                    large_bytes[offset + 3],
+                                    large_bytes[offset + 4],
+                                    large_bytes[offset + 5],
+                                    large_bytes[offset + 6],
+                                    large_bytes[offset + 7],
+                                ]);
+                                offset += 8;
+
+                                // Read and restore each wide expression with inline multiplicity
+                                for _ in 0..count {
+                                    if offset + 4 > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    // Read expression length
+                                    let len = u32::from_be_bytes([
+                                        large_bytes[offset],
+                                        large_bytes[offset + 1],
+                                        large_bytes[offset + 2],
+                                        large_bytes[offset + 3],
+                                    ]) as usize;
+                                    offset += 4;
+
+                                    if offset + len + 8 > large_bytes.len() {
+                                        break; // Not enough data for path + multiplicity
+                                    }
+
+                                    // Wide MORK bytes — insert directly into wide_btm
+                                    let wide_bytes = &large_bytes[offset..offset + len];
+                                    offset += len;
+
+                                    // Read inline multiplicity (8 bytes, big-endian)
+                                    let multiplicity = u64::from_be_bytes([
+                                        large_bytes[offset],
+                                        large_bytes[offset + 1],
+                                        large_bytes[offset + 2],
+                                        large_bytes[offset + 3],
+                                        large_bytes[offset + 4],
+                                        large_bytes[offset + 5],
+                                        large_bytes[offset + 6],
+                                        large_bytes[offset + 7],
+                                    ]);
+                                    offset += 8;
+
+                                    {
+                                        use crate::backend::environment::multiplicity as mult_mod;
+                                        let mut wbtm = env.shared.atom_space.wide_btm.write();
+                                        mult_mod::set_multiplicity(&mut wbtm, wide_bytes, multiplicity);
+                                    }
+                                    env.shared
+                                        .atom_space
+                                        .total_atoms
+                                        .fetch_add(multiplicity as usize, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Rebuild bloom filter from the restored MORK Space
+            // This is critical for rule matching to work after deserialization
             env.rebuild_bloom_filter();
 
             Ok(env)
@@ -899,7 +929,7 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                         Vec::new()
                     };
 
-                    // Pass source directly to from_parts -- no mutex contention
+                    // Pass source directly to from_parts — no mutex contention
                     // during population, and GC registration happens once with
                     // the fully-populated Vec.
                     let state = MettaState::from_parts(source, environment, output);
@@ -925,8 +955,8 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
 /// Decode a GByteArray containing MeTTa Space data (magic "MTTS") back to a
 /// vector of Rholang Pars representing the decoded MeTTa expressions.
 ///
-/// This function parses the MTTS byte format, converts each text entry back
-/// to a MettaValue, then converts each to a Rholang Par via `metta_value_to_par`.
+/// This function fully restores the MORK space (including symbol table) and
+/// converts each atom back to a Rholang Par via `metta_value_to_par`.
 pub fn decode_space_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String> {
     if bytes.len() < 4 {
         return Err("Space bytes too short".to_string());
@@ -939,19 +969,62 @@ pub fn decode_space_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String> {
         ));
     }
 
-    let entries = read_mtts_entries(bytes);
-    Ok(entries
-        .iter()
-        .map(|(value, _mult)| metta_value_to_par(value))
-        .collect())
+    // Build a Par wrapping the space bytes, then wrap in an environment-shaped
+    // tuple so `par_to_environment` can decode it. The environment tuple has
+    // the shape: (("space", GByteArray), ("large_exprs", GByteArray))
+    let space_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(bytes.to_vec())),
+    }]);
+
+    // Create empty large_exprs bytes (magic + 0 count)
+    let mut empty_large = Vec::new();
+    empty_large.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
+    empty_large.extend_from_slice(&0u64.to_be_bytes()); // count = 0
+    let large_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(empty_large)),
+    }]);
+
+    let env_list_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![
+                // ["space", space_bytes]
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
+                        ps: vec![create_string_par("space".to_string()), space_par],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                        remainder: None,
+                    })),
+                }]),
+                // ["large_exprs", empty_large_bytes]
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
+                        ps: vec![
+                            create_string_par("large_exprs".to_string()),
+                            large_par,
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                        remainder: None,
+                    })),
+                }]),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    }]);
+
+    let env = par_to_environment(&env_list_par)?;
+    let atoms = env.get_all_atoms();
+    Ok(atoms.iter().map(metta_value_to_par).collect())
 }
 
 /// Decode a GByteArray containing MeTTa large expressions (magic "MTTL") back
 /// to a vector of Rholang Pars.
 ///
-/// With MettaTrie, all arities are handled natively, so the large expressions
-/// section is always empty. This function validates the magic and returns an
-/// empty Vec for valid MTTL data.
+/// Large expressions are those with arity >= 64 that exceed MORK's 63-arity
+/// limit and are stored using Wide MORK encoding.
 pub fn decode_large_exprs_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String> {
     if bytes.len() < 4 {
         return Err("Large expression bytes too short".to_string());
@@ -964,9 +1037,56 @@ pub fn decode_large_exprs_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String
         ));
     }
 
-    // MettaTrie handles any arity natively -- no large expressions to decode.
-    // Return empty Vec for backward compatibility.
-    Ok(Vec::new())
+    // Build a synthetic environment tuple with just the large_exprs field
+    // so par_to_environment decodes it.
+    let large_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(bytes.to_vec())),
+    }]);
+
+    // Create empty space bytes (magic + 0 sym_table_len + 0 paths)
+    let mut empty_space = Vec::new();
+    empty_space.extend_from_slice(METTA_SPACE_MAGIC);
+    empty_space.extend_from_slice(&0u64.to_be_bytes()); // sym_table_len = 0
+    empty_space.extend_from_slice(&0u64.to_be_bytes()); // path_count = 0
+    let space_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(empty_space)),
+    }]);
+
+    let env_list_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![
+                // ["space", empty_space_bytes]
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
+                        ps: vec![create_string_par("space".to_string()), space_par],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                        remainder: None,
+                    })),
+                }]),
+                // ["large_exprs", large_expr_bytes]
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
+                        ps: vec![
+                            create_string_par("large_exprs".to_string()),
+                            large_par,
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                        remainder: None,
+                    })),
+                }]),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    }]);
+
+    let env = par_to_environment(&env_list_par)?;
+    // Only return the wide expressions (not the empty regular space)
+    let atoms = env.get_all_atoms();
+    Ok(atoms.iter().map(metta_value_to_par).collect())
 }
 
 /// Check whether a PathMap has the structural shape of a serialized MettaState
@@ -1055,15 +1175,196 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
 
             let mut env = MettaEnvironment::default();
 
-            // Parse MTTS entries with LENIENT multiplicity handling and insert into MettaTrie
+            // Rebuild Space from raw path bytes with LENIENT multiplicity handling
             {
-                let entries = read_mtts_entries_lenient(&space_dump_bytes);
-                insert_entries_into_env(&mut env, &entries);
+                let mut space = env.create_space();
+                if !space_dump_bytes.is_empty() && space_dump_bytes.len() >= 12 {
+                    let mut offset = 0;
+
+                    // Check and skip magic number if present
+                    if space_dump_bytes.len() >= 4
+                        && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC
+                    {
+                        offset += 4;
+                    }
+
+                    // Read symbol table length
+                    if offset + 8 > space_dump_bytes.len() {
+                        // Not enough data for sym_table_len — return empty env
+                        env.update_pathmap(space);
+                        env.rebuild_bloom_filter_from_space();
+                        return Ok(env);
+                    }
+                    let sym_len = u64::from_be_bytes([
+                        space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                        space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                        space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
+                        space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                    ]) as usize;
+                    offset += 8;
+
+                    // Restore symbol table if present
+                    if sym_len > 0 && offset + sym_len <= space_dump_bytes.len() {
+                        let symbol_table_bytes = &space_dump_bytes[offset..offset + sym_len];
+                        offset += sym_len;
+
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos();
+                        let temp_path = std::env::temp_dir().join(format!(
+                            "metta_symbols_restore_{}_{}.bin",
+                            std::process::id(),
+                            timestamp
+                        ));
+                        if let Ok(mut file) = fs::File::create(&temp_path) {
+                            if file.write_all(symbol_table_bytes).is_ok() {
+                                drop(file);
+                                let _ = space.restore_symbols(&temp_path);
+                                let _ = fs::remove_file(&temp_path);
+                            }
+                        }
+                    } else if sym_len > 0 {
+                        offset = space_dump_bytes.len(); // skip past invalid sym table
+                    }
+
+                    // Read path count
+                    if offset + 8 <= space_dump_bytes.len() {
+                        let path_count = u64::from_be_bytes([
+                            space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                            space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                            space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
+                            space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                        ]);
+                        offset += 8;
+
+                        let mut total_atoms_added: usize = 0;
+                        for _ in 0..path_count {
+                            if offset + 4 > space_dump_bytes.len() {
+                                break;
+                            }
+
+                            let len = u32::from_be_bytes([
+                                space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                                space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                            ]) as usize;
+                            offset += 4;
+
+                            if offset + len > space_dump_bytes.len() {
+                                break;
+                            }
+
+                            let path_bytes = &space_dump_bytes[offset..offset + len];
+                            offset += len;
+
+                            // LENIENT multiplicity handling
+                            let multiplicity = if offset + 8 <= space_dump_bytes.len() {
+                                let mult = u64::from_be_bytes([
+                                    space_dump_bytes[offset], space_dump_bytes[offset + 1],
+                                    space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                                    space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
+                                    space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                                ]);
+                                if mult > (1u64 << 32) {
+                                    // Unreasonably large — these bytes are likely the next
+                                    // path's length prefix, not a multiplicity. Don't advance.
+                                    1u64
+                                } else {
+                                    offset += 8;
+                                    mult
+                                }
+                            } else {
+                                // Not enough bytes for multiplicity — default to 1
+                                1u64
+                            };
+
+                            space.btm.insert(path_bytes, Multiplicity::new(multiplicity));
+                            total_atoms_added += multiplicity as usize;
+                        }
+                        env.shared
+                            .atom_space
+                            .total_atoms
+                            .fetch_add(total_atoms_added, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                env.update_pathmap(space);
                 env.rebuild_bloom_filter_from_space();
             }
 
-            // Element 1: large_exprs -- always empty with MettaTrie (any arity supported).
-            // No wide_btm to restore.
+            // Extract and restore wide expressions (element 1) with LENIENT multiplicity handling
+            {
+                let large_exprs_par = extract_list_value(&tuple.ps[1])?;
+                if let Some(expr) = large_exprs_par.exprs.first() {
+                    if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
+                        if large_bytes.len() >= 12 {
+                            let mut offset = 0;
+
+                            if large_bytes.len() >= 4
+                                && &large_bytes[0..4] == METTA_LARGE_EXPRS_MAGIC
+                            {
+                                offset += 4;
+                            }
+
+                            if offset + 8 <= large_bytes.len() {
+                                let count = u64::from_be_bytes([
+                                    large_bytes[offset], large_bytes[offset + 1],
+                                    large_bytes[offset + 2], large_bytes[offset + 3],
+                                    large_bytes[offset + 4], large_bytes[offset + 5],
+                                    large_bytes[offset + 6], large_bytes[offset + 7],
+                                ]);
+                                offset += 8;
+
+                                for _ in 0..count {
+                                    if offset + 4 > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    let len = u32::from_be_bytes([
+                                        large_bytes[offset], large_bytes[offset + 1],
+                                        large_bytes[offset + 2], large_bytes[offset + 3],
+                                    ]) as usize;
+                                    offset += 4;
+
+                                    if offset + len > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    let wide_bytes = &large_bytes[offset..offset + len];
+                                    offset += len;
+
+                                    // LENIENT multiplicity handling
+                                    let multiplicity = if offset + 8 <= large_bytes.len() {
+                                        let mult = u64::from_be_bytes([
+                                            large_bytes[offset], large_bytes[offset + 1],
+                                            large_bytes[offset + 2], large_bytes[offset + 3],
+                                            large_bytes[offset + 4], large_bytes[offset + 5],
+                                            large_bytes[offset + 6], large_bytes[offset + 7],
+                                        ]);
+                                        if mult > (1u64 << 32) {
+                                            1u64
+                                        } else {
+                                            offset += 8;
+                                            mult
+                                        }
+                                    } else {
+                                        1u64
+                                    };
+
+                                    {
+                                        use crate::backend::environment::multiplicity as mult_mod;
+                                        let mut wbtm = env.shared.atom_space.wide_btm.write();
+                                        mult_mod::set_multiplicity(&mut wbtm, wide_bytes, multiplicity);
+                                    }
+                                    env.shared
+                                        .atom_space
+                                        .total_atoms
+                                        .fetch_add(multiplicity as usize, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             env.rebuild_bloom_filter();
             Ok(env)
@@ -1098,7 +1399,7 @@ pub fn pathmap_par_to_metta_state_lenient(par: &Par) -> Result<MettaState, Strin
         }
     }
 
-    // Structure is valid -- attempt lenient deserialization
+    // Structure is valid — attempt lenient deserialization
     let pathmap = match par.exprs.first() {
         Some(Expr { expr_instance: Some(ExprInstance::EPathmapBody(pm)) }) => pm,
         _ => return Err("Par does not contain EPathMap".to_string()),
@@ -1136,7 +1437,7 @@ pub fn pathmap_par_to_metta_state_lenient(par: &Par) -> Result<MettaState, Strin
         Vec::new()
     };
 
-    // Extract environment (field 1) -- with lenient fallback
+    // Extract environment (field 1) — with lenient fallback
     let env_par = extract_list_value(&state_list.ps[1])?;
     let environment = match par_to_environment(&env_par) {
         Ok(env) => env,
@@ -1305,8 +1606,9 @@ mod tests {
             "Expected 1 rule after deserialization"
         );
 
-        // MettaTrie preserves exact variable names (unlike MORK De Bruijn indexing)
-        println!("Rule count preserved after round-trip");
+        // Note: MORK uses De Bruijn indexing which can cause variable renaming (e.g., $x -> $a)
+        // The important part is that the structure is preserved, not the exact variable names
+        println!("✓ Environment serialization/deserialization works!");
     }
 
     #[test]
@@ -1501,19 +1803,19 @@ mod tests {
         }
     }
 
-    // ========== Roundtrip Tests ==========
-    // These tests verify that MettaTrie-based serialization preserves atom data.
+    // ========== Reserved Byte Bug Tests ==========
+    // These tests ensure the "reserved 126" bug is fixed and doesn't return
 
     #[test]
     fn test_reserved_bytes_roundtrip_y_z() {
-        // Test with symbols containing 'y' (121) and 'z' (122) - previously reserved in MORK
+        // Test with symbols containing 'y' (121) and 'z' (122) - reserved bytes
         let mut env = MettaEnvironment::default();
 
-        // Add expression with previously-reserved bytes
+        // Add expression with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room_y".to_string()),
-            MettaValue::Atom("room_z".to_string()),
+            MettaValue::Atom("room_y".to_string()), // Contains 'y' = 121 (reserved)
+            MettaValue::Atom("room_z".to_string()), // Contains 'z' = 122 (reserved)
         ]));
 
         // Serialize to Par
@@ -1521,29 +1823,29 @@ mod tests {
 
         // Deserialize back
         let env2 =
-            par_to_environment(&par).expect("Round-trip with bytes 'y' and 'z' failed");
+            par_to_environment(&par).expect("Round-trip with reserved bytes 'y' and 'z' failed");
 
         // Verify Space contents are preserved
-        // MettaTrie preserves exact variable names (no De Bruijn renaming)
+        // MORK uses De Bruijn indexing so we check structure, not exact strings
         assert!(env2.has_sexpr_fact(&MettaValue::SExpr(vec![
             MettaValue::Atom("connected".to_string()),
             MettaValue::Atom("room_y".to_string()),
             MettaValue::Atom("room_z".to_string()),
         ])));
 
-        println!("Bytes 'y' (121) and 'z' (122) round-trip successfully");
+        println!("✓ Reserved bytes 'y' (121) and 'z' (122) round-trip successfully");
     }
 
     #[test]
     fn test_reserved_bytes_roundtrip_tilde() {
-        // Test with tilde '~' (126)
+        // Test with tilde '~' (126) - the specific byte mentioned in the bug report
         let mut env = MettaEnvironment::default();
 
-        // Add expression with tilde
+        // Add expression with tilde (the problematic reserved byte)
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("test".to_string()),
-            MettaValue::Atom("room~a".to_string()),
-            MettaValue::Atom("room~b".to_string()),
+            MettaValue::Atom("room~a".to_string()), // Contains '~' = 126 (RESERVED!)
+            MettaValue::Atom("room~b".to_string()), // Contains '~' = 126 (RESERVED!)
         ]));
 
         // Get initial iter count
@@ -1553,11 +1855,12 @@ mod tests {
         // Serialize to Par
         let par = environment_to_par(&env);
 
-        // Deserialize back
+        // Deserialize back - this used to panic with "reserved 126"
         let env2 =
-            par_to_environment(&par).expect("Round-trip with byte '~' (126) failed");
+            par_to_environment(&par).expect("Round-trip with reserved byte '~' (126) failed");
 
-        // The key test: it didn't panic!
+        // The key test: it didn't panic! The bug is fixed.
+        // Verify Space is not empty - exact structure may vary due to MORK normalization
         let final_count = env2.collect_rules().len();
         println!("Deserialized space has {} rules", final_count);
         assert_eq!(
@@ -1565,30 +1868,30 @@ mod tests {
             "Space contents should be preserved"
         );
 
-        println!("Byte '~' (126) round-trip successfully");
+        println!("✓ Reserved byte '~' (126) round-trip successfully - bug is FIXED!");
     }
 
     #[test]
     fn test_reserved_bytes_multiple_roundtrips() {
-        // Test multiple round-trips to ensure data is preserved exactly
+        // Test multiple round-trips to ensure bytes are preserved exactly
         let mut env = MettaEnvironment::default();
 
-        // Add multiple expressions with various characters
+        // Add multiple expressions with various reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("path".to_string()),
-            MettaValue::Atom("room_x".to_string()),
-            MettaValue::Atom("room_y".to_string()),
+            MettaValue::Atom("room_x".to_string()), // 'x' = 120
+            MettaValue::Atom("room_y".to_string()), // 'y' = 121 (reserved)
         ]));
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room~a".to_string()),
-            MettaValue::Atom("room_z".to_string()),
+            MettaValue::Atom("room~a".to_string()), // '~' = 126 (reserved)
+            MettaValue::Atom("room_z".to_string()), // 'z' = 122 (reserved)
         ]));
 
         let initial_count = env.collect_rules().len();
         println!("Initial space has {} rules", initial_count);
 
-        // First round-trip
+        // First round-trip - this used to panic
         let par1 = environment_to_par(&env);
         let env2 = par_to_environment(&par1).expect("First round-trip failed");
         let count2 = env2.collect_rules().len();
@@ -1606,28 +1909,28 @@ mod tests {
         let count4 = env4.collect_rules().len();
         println!("After 3rd round-trip: {} rules", count4);
 
-        // The key test: multiple round-trips preserve data
+        // The key test: multiple round-trips don't panic and preserve data
         assert_eq!(
             count4, initial_count,
             "Rule count should be stable across round-trips"
         );
 
-        println!("Multiple round-trips successful");
+        println!("✓ Multiple round-trips with reserved bytes successful - NO PANICS!");
     }
 
     #[test]
     fn test_reserved_bytes_with_rules() {
-        // Test rules with symbols containing various bytes
+        // Test the original bug scenario: rules with if + match containing reserved bytes
         let mut env = MettaEnvironment::default();
 
-        // Add fact
+        // Add fact with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room_y".to_string()),
-            MettaValue::Atom("room_z".to_string()),
+            MettaValue::Atom("room_y".to_string()), // 'y' = 121 (reserved)
+            MettaValue::Atom("room_z".to_string()), // 'z' = 122 (reserved)
         ]));
 
-        // Add rule that uses match
+        // Add rule that uses match (the pattern that triggered the bug)
         env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("is_connected".to_string()),
@@ -1647,12 +1950,13 @@ mod tests {
             ]),
         );
 
-        // Serialize to Par
+        // Serialize to Par (this is what happens when sending to Rholang)
         let par = environment_to_par(&env);
 
-        // Deserialize back
+        // Deserialize back (this is what happens when receiving from Rholang)
+        // This used to panic with "reserved 121" or "reserved 122"
         let env2 =
-            par_to_environment(&par).expect("Round-trip with rules failed");
+            par_to_environment(&par).expect("Round-trip with rules and reserved bytes failed");
 
         // Verify both the fact and the rule are preserved
         assert!(env2.has_sexpr_fact(&MettaValue::SExpr(vec![
@@ -1662,19 +1966,22 @@ mod tests {
         ])));
         assert_eq!(env2.rule_count(), 1);
 
-        println!("Rules with various bytes round-trip successfully");
+        println!("✓ Rules with match and reserved bytes round-trip successfully");
     }
 
     #[test]
     fn test_reserved_bytes_all_range() {
-        // Test with various ASCII characters
+        // Test all bytes in the reserved range (64-127)
+        // This ensures the fix works for ANY reserved byte, not just specific ones
         let mut env = MettaEnvironment::default();
 
+        // Add expressions with various ASCII characters in the reserved range
+        // '@' = 64, 'A' = 65, ..., 'Z' = 90, ..., 'z' = 122, '{' = 123, '~' = 126, DEL = 127
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("test".to_string()),
-            MettaValue::Atom("ABC".to_string()),
-            MettaValue::Atom("xyz".to_string()),
-            MettaValue::Atom("@~".to_string()),
+            MettaValue::Atom("ABC".to_string()), // A=65, B=66, C=67 (all reserved)
+            MettaValue::Atom("xyz".to_string()), // x=120, y=121, z=122 (last two reserved)
+            MettaValue::Atom("@~".to_string()),  // @=64, ~=126 (both reserved)
         ]));
 
         let initial_count = env.collect_rules().len();
@@ -1683,10 +1990,11 @@ mod tests {
         // Serialize to Par
         let par = environment_to_par(&env);
 
-        // Deserialize back
+        // Deserialize back - should handle ALL reserved bytes without panic
         let env2 =
-            par_to_environment(&par).expect("Round-trip with various bytes failed");
+            par_to_environment(&par).expect("Round-trip with multiple reserved bytes failed");
 
+        // The critical test: it didn't panic! All reserved bytes handled.
         let final_count = env2.collect_rules().len();
         println!("Deserialized space has {} rules", final_count);
         assert_eq!(
@@ -1694,31 +2002,33 @@ mod tests {
             "Space contents should be preserved"
         );
 
-        println!("All bytes handled correctly");
+        println!("✓ All bytes in reserved range (64-127) handled correctly - NO PANIC!");
     }
 
     #[test]
     fn test_reserved_bytes_robot_planning_regression() {
-        // REGRESSION TEST for symbols containing 'o' (byte 111)
+        // REGRESSION TEST for the "reserved 111" bug from robot_planning.rho
+        // This test specifically uses symbols containing 'o' (byte 111) which is reserved
+        // The bug occurred when dump_all_sexpr() tried to interpret 'o' as a tag byte
         let mut env = MettaEnvironment::default();
 
-        // Add facts with 'o' (111)
+        // Add facts with 'o' (111) - the specific byte that triggered the demo failure
         env.add_to_space(&MettaValue::SExpr(vec![
-            MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room_a".to_string()),
-            MettaValue::Atom("room_b".to_string()),
+            MettaValue::Atom("connected".to_string()), // 'o' = 111, 'n' = 110 (reserved bytes!)
+            MettaValue::Atom("room_a".to_string()),    // 'o' = 111 (RESERVED!)
+            MettaValue::Atom("room_b".to_string()),    // 'o' = 111, 'b' = 98 (reserved!)
         ]));
 
         env.add_to_space(&MettaValue::SExpr(vec![
-            MettaValue::Atom("object_at".to_string()),
-            MettaValue::Atom("robot".to_string()),
-            MettaValue::Atom("room_a".to_string()),
+            MettaValue::Atom("object_at".to_string()), // 'o' = 111, 'b' = 98 (RESERVED!)
+            MettaValue::Atom("robot".to_string()),     // 'o' = 111, 'b' = 98 (RESERVED!)
+            MettaValue::Atom("room_a".to_string()),    // 'o' = 111 (RESERVED!)
         ]));
 
-        // Add a rule that uses match
+        // Add a rule that uses match (pattern from robot_planning.rho)
         env.add_rule(
             MettaValue::SExpr(vec![
-                MettaValue::Atom("is_connected".to_string()),
+                MettaValue::Atom("is_connected".to_string()), // 'o' = 111, 'n' = 110 (RESERVED!)
                 MettaValue::Atom("$from".to_string()),
                 MettaValue::Atom("$to".to_string()),
             ]),
@@ -1727,7 +2037,7 @@ mod tests {
                 MettaValue::Atom("&".to_string()),
                 MettaValue::Atom("self".to_string()),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("connected".to_string()),
+                    MettaValue::Atom("connected".to_string()), // 'o' = 111, 'n' = 110 (RESERVED!)
                     MettaValue::Atom("$from".to_string()),
                     MettaValue::Atom("$to".to_string()),
                 ]),
@@ -1738,12 +2048,13 @@ mod tests {
         let initial_count = env.collect_rules().len();
         println!("Initial space has {} rules", initial_count);
 
-        // Serialize to Par
+        // THIS IS THE EXACT OPERATION THAT FAILED IN robot_planning.rho DEMO!
+        // Serialize to Par (this calls dump_all_sexpr which used to panic with "reserved 111")
         let par = environment_to_par(&env);
 
-        // Deserialize back
+        // Deserialize back (if we get here, the bug is fixed!)
         let env2 = par_to_environment(&par).expect(
-            "REGRESSION: Round-trip with 'o' (111) in symbols failed!",
+            "REGRESSION: Round-trip with 'o' (111) in symbols failed - the bug has returned!",
         );
 
         // Verify data is preserved
@@ -1755,20 +2066,21 @@ mod tests {
         );
 
         println!(
-            "REGRESSION TEST PASSED: symbols with 'o' (111) work correctly!"
+            "✓ REGRESSION TEST PASSED: robot_planning.rho symbols with 'o' (111) work correctly!"
         );
     }
 
     #[test]
     fn test_reserved_bytes_with_evaluation() {
         // Test that deserialized Environment can actually be USED for evaluation
+        // This exposes issues that simple round-trip tests miss
         let mut env = MettaEnvironment::default();
 
-        // Add facts with 'o' (111)
+        // Add facts with 'o' (111) - reserved byte
         env.add_to_space(&MettaValue::SExpr(vec![
-            MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room_a".to_string()),
-            MettaValue::Atom("room_b".to_string()),
+            MettaValue::Atom("connected".to_string()), // 'o' = 111
+            MettaValue::Atom("room_a".to_string()),    // 'o' = 111
+            MettaValue::Atom("room_b".to_string()),    // 'o' = 111
         ]));
 
         // Serialize and deserialize
@@ -1778,7 +2090,7 @@ mod tests {
         // Verify the deserialized environment contains the fact
         assert!(env2.shared.atom_space.total_atoms.load(Ordering::Relaxed) > 0, "Should find the connected fact after deserialization");
 
-        println!("Deserialized Environment can be used after roundtrip!");
+        println!("✓ Deserialized Environment can be used after reserved-byte roundtrip!");
     }
 
     #[test]
@@ -1830,7 +2142,7 @@ mod tests {
             );
         }
 
-        println!("Source field with ! expression survives roundtrip");
+        println!("✓ Source field with ! expression survives roundtrip");
     }
 
     // ==========================================================================
@@ -2072,7 +2384,7 @@ mod tests {
 
     #[test]
     fn test_par_to_metta_value_unsupported_type() {
-        // Create a Par with an unsupported expression type (e.g., EMethodBody)
+        // Create a Par with an unsupported expression type (e.g., EVarBody)
         let par = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EMethodBody(models::rhoapi::EMethod::default())),
         }]);
@@ -2300,7 +2612,7 @@ mod tests {
             "Number of multiplicity entries should match"
         );
 
-        println!("Multiplicity round-trip preserves all counts correctly!");
+        println!("✓ Multiplicity round-trip preserves all counts correctly!");
     }
 
     #[test]
@@ -2341,7 +2653,7 @@ mod tests {
         }
         assert_eq!(original_multiplicities.len(), final_multiplicities.len());
 
-        println!("Multiplicities stable across 3 round-trip cycles!");
+        println!("✓ Multiplicities stable across 3 round-trip cycles!");
     }
 
     #[test]
@@ -2363,7 +2675,7 @@ mod tests {
 
     #[test]
     fn test_has_metta_state_structure_invalid() {
-        // Create {| true |} -- a PathMap with a boolean, not MettaState structure
+        // Create {| true |} — a PathMap with a boolean, not MettaState structure
         let pathmap = EPathMap {
             ps: vec![Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::GBool(true)),

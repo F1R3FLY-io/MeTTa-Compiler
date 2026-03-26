@@ -3447,7 +3447,7 @@ fn collect_provider_roots_readonly() -> Option<Vec<MettaValue>> {
 /// The DFS traversal matches `trace_surviving_set()` but operates only on
 /// safepoint roots (not all environment roots), keeping cost proportional
 /// to the trampoline's working set rather than the entire live heap.
-fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
+pub(crate) fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
     let registry_ref = match SAFEPOINT_ROOTS.get() {
         Some(r) => r,
         None => return (None, true),
@@ -4535,6 +4535,100 @@ impl SlabAllocator {
     ///
     /// Returns a `PtrHashSet` of all value slot pointers reachable
     /// from the root registry. Same traversal logic as `mark_snapshot()` but
+    /// Promote a set of MettaValues (and their transitive children) to persistent
+    /// allocation (context_id=0). This makes them immune to session-based release.
+    ///
+    /// Called by `eval()` to protect result values before dropping the EvalGuard.
+    /// Without this, a pending session release on the GC pool could free these
+    /// values while they're still on the caller's Rust stack.
+    pub fn promote_values_to_persistent(&self, values: &[MettaValue]) {
+        if values.is_empty() {
+            return;
+        }
+
+        let slot_size = self.values.slot_size;
+        let pages = self.values.pages.read();
+        let page_index = PageIndex::new(&pages);
+
+        let mut visited = PtrHashSet::with_capacity_and_hasher(
+            values.len() * 4, PtrBuildHasher,
+        );
+        let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(values.len() * 4);
+
+        for value in values {
+            let ptr = value.inner_ptr();
+            if !ptr.is_null() && visited.insert(ptr as *const u8) {
+                worklist.push(ptr);
+            }
+        }
+
+        while let Some(ptr) = worklist.pop() {
+            // Set context_id=0 (persistent) for this slot
+            if let Some((page_idx, slot_idx)) = page_index.find(
+                &pages, ptr as *const u8, slot_size,
+            ) {
+                pages[page_idx].set_context_id(slot_idx, 0);
+            }
+
+            // Traverse children (same variant matching as trace_surviving_set)
+            match unsafe { &*ptr } {
+                MettaValueInner::SExpr(children) => {
+                    for child in children.iter() {
+                        let child_ptr = child.inner_ptr();
+                        if !child_ptr.is_null() && visited.insert(child_ptr as *const u8) {
+                            worklist.push(child_ptr);
+                        }
+                    }
+                }
+                MettaValueInner::Conjunction(goals) => {
+                    for goal in goals.iter() {
+                        let goal_ptr = goal.inner_ptr();
+                        if !goal_ptr.is_null() && visited.insert(goal_ptr as *const u8) {
+                            worklist.push(goal_ptr);
+                        }
+                    }
+                }
+                MettaValueInner::Error(_, details) => {
+                    let dp = details.inner_ptr();
+                    if !dp.is_null() && visited.insert(dp as *const u8) {
+                        worklist.push(dp);
+                    }
+                }
+                MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
+                    let ip = inner.inner_ptr();
+                    if !ip.is_null() && visited.insert(ip as *const u8) {
+                        worklist.push(ip);
+                    }
+                }
+                MettaValueInner::Spanned(v, _) => {
+                    let vp = v.inner_ptr();
+                    if !vp.is_null() && visited.insert(vp as *const u8) {
+                        worklist.push(vp);
+                    }
+                }
+                MettaValueInner::Space(handle) => {
+                    let mut space_values = Vec::new();
+                    handle.collect_gc_values(&mut space_values);
+                    for val in &space_values {
+                        let vp = val.inner_ptr();
+                        if !vp.is_null() && visited.insert(vp as *const u8) {
+                            worklist.push(vp);
+                        }
+                    }
+                }
+                MettaValueInner::Atom(_)
+                | MettaValueInner::Bool(_)
+                | MettaValueInner::Long(_)
+                | MettaValueInner::Float(_)
+                | MettaValueInner::String(_)
+                | MettaValueInner::Unit
+                | MettaValueInner::Empty
+                | MettaValueInner::State(_)
+                | MettaValueInner::Memo(_) => {}
+            }
+        }
+    }
+
     /// builds a HashSet instead of setting mark bits.
     ///
     /// Public because the async session release thread calls this to batch

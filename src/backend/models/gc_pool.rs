@@ -614,7 +614,19 @@ fn execute_session_release(context_ids: &[u32]) {
 
         // === Safe: trace roots at quiescent point ===
         let alloc = global_allocator();
-        let surviving = alloc.trace_surviving_set();
+        let mut surviving = alloc.trace_surviving_set();
+
+        // Safety net: merge safepoint + environment live set into surviving set.
+        // Mirrors the filter in process_gc_response. Prevents freeing values that
+        // are reachable from current safepoint roots or environment roots but were
+        // missed by trace_surviving_set() due to transiently dead Weak references
+        // in the root registry (e.g., from deferred_shared_drops.clear()).
+        let (safepoint_live, _env_complete) = super::gc_allocator::trace_safepoint_live_set();
+        if let (Some(live), _) = (safepoint_live, _env_complete) {
+            for ptr in live.iter() {
+                surviving.insert(*ptr);
+            }
+        }
 
         // Release sessions while GC_IN_PROGRESS is still held. Session
         // release frees slots via free_list.push(). If we released the

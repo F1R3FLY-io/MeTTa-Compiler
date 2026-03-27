@@ -24,6 +24,30 @@ use std::cell::Cell;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+// ── Background Drop Worker ─────────────────────────────────────────────
+//
+// A dedicated thread that receives batches of deferred environment drops
+// and destructs them off the hot evaluation path. The PathMap/MettaTrie
+// trie cascade drops (33% inclusive CPU) now happen here instead of on
+// the eval thread. Spawned lazily on first use.
+
+static DROP_SENDER: OnceLock<std::sync::mpsc::Sender<Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>>> = OnceLock::new();
+
+fn get_drop_sender() -> &'static std::sync::mpsc::Sender<Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>> {
+    DROP_SENDER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>>();
+        std::thread::Builder::new()
+            .name("mettatron-drop-worker".into())
+            .spawn(move || {
+                while let Ok(batch) = rx.recv() {
+                    drop(batch);
+                }
+            })
+            .expect("failed to spawn drop worker thread");
+        tx
+    })
+}
+
 use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
@@ -1297,9 +1321,7 @@ where
     // Main trampoline loop
     while let Some(work) = work_stack.pop() {
         // Incremental deferred-drop drain: pop 1 environment every 64 iterations.
-        // Spreads PathMap/MettaTrie trie cascade cost evenly across trampoline steps
-        // instead of spiking at GC safepoints. Safe outside safepoints because
-        // ACTIVE_EVALUATORS > 0 prevents concurrent GC sweeps.
+        // Drops happen on the eval thread (amortized, not spiked).
         gc_counter = gc_counter.wrapping_add(1);
         if gc_counter & 0x3F == 0 {
             deferred_shared_drops.pop();
@@ -1406,10 +1428,21 @@ where
 
             // Batch-drain deferred drops AFTER safepoint completes.
             // Their roots were collected into root_set above, so the GC saw them.
-            // Truncate from the tail (O(1) per element, no Vec shift overhead).
-            // Acts as a safety valve if incremental drain can't keep up.
-            let new_len = deferred_shared_drops.len().saturating_sub(32);
-            deferred_shared_drops.truncate(new_len);
+            // Send the batch to the background drop worker thread to avoid
+            // PathMap/MettaTrie cascade drops on the hot eval path.
+            if deferred_shared_drops.len() > 0 {
+                let drain_count = deferred_shared_drops.len().min(32);
+                let batch_start = deferred_shared_drops.len() - drain_count;
+                let batch: Vec<_> = deferred_shared_drops.drain(batch_start..).collect();
+                // Type-erase and send to background thread for async destruction.
+                // The Arc<GenericEnvironmentShared> is Send+Sync, so dropping on
+                // another thread is safe (GC roots were already collected above).
+                let erased: Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>> = batch
+                    .into_iter()
+                    .map(|arc| arc as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                    .collect();
+                let _ = get_drop_sender().send(erased);
+            }
 
             // Trace: GcSafepoint with measured pause duration
             #[cfg(feature = "eval-trace")]

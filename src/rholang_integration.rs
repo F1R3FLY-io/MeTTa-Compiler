@@ -22,7 +22,8 @@ use crate::backend::models::{
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
 #[cfg(feature = "async")]
-use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
+use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+use crate::backend::eval::trampoline::StaticEvalContext;
 
 #[cfg(feature = "async")]
 use crate::backend::models::work_pool::global_eval_pool;
@@ -511,7 +512,7 @@ async fn evaluate_batch_parallel_arena(
                 // For parallel evaluation, use StaticEvalContext which provides
                 // a thread-local leaked Bump arena per thread (Copy, Send-safe)
                 let ctx = StaticEvalContext::get();
-                let (eval_results, _new_env) = eval_trampoline_generic(expr, env, &ctx);
+                let (eval_results, _new_env) = eval_trampoline(expr, env, &ctx);
 
                 // Store result in pre-allocated slot (no contention — each task writes its own slot)
                 {

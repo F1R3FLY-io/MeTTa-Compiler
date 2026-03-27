@@ -7,7 +7,7 @@
 //!
 //! ## Design Notes
 //!
-//! - `GenericWorkItem`, `GenericContinuation`, `GenericEvalResult` are concrete
+//! - `WorkItem`, `Continuation`, `EvalResult` are concrete
 //! - MettaValue is Copy — all `.clone()` calls are zero-cost 8-byte memcpy
 //! - Bindings use `GenericBindings<MettaValue>` (heap-allocated binding map)
 //! - Names retain the `Generic` prefix for now; renaming is a separate step
@@ -27,7 +27,7 @@ use super::super::processing::GenericCartesianProductIter;
 ///
 /// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap allocation
 /// for the common single-result case (93%+ of evaluations produce 1 result).
-pub type GenericEvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
+pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 
 /// Work item representing pending evaluation work.
 ///
@@ -35,7 +35,7 @@ pub type GenericEvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 /// trampoline loop can process. MettaValue is Copy (8-byte tagged pointer),
 /// so all value passing is zero-cost.
 #[derive(Debug)]
-pub enum GenericWorkItem {
+pub enum WorkItem {
     /// Evaluate a value and send result to continuation at stack top
     Eval {
         value: MettaValue,
@@ -50,14 +50,14 @@ pub enum GenericWorkItem {
     },
     /// Evaluate a template with deferred bindings (lazy binding).
     ///
-    /// Instead of calling `apply_bindings_generic` upfront to materialize
+    /// Instead of calling `apply_bindings` upfront to materialize
     /// a fully-substituted expression tree, this carries `(template, bindings)`
     /// and resolves variables lazily:
     /// - Variables: look up in bindings, push result
     /// - Ground (no variables): push as Eval directly
     /// - Special forms (let, if, chain): resolve only immediate args, forward
     ///   remaining bindings to child evaluations via binding composition
-    /// - Other S-expressions: fall back to `apply_bindings_generic` + Eval
+    /// - Other S-expressions: fall back to `apply_bindings` + Eval
     ///
     /// This avoids O(tree_depth) recursive allocation for nested `let*` chains,
     /// where each level would otherwise materialize the entire remaining body.
@@ -71,7 +71,7 @@ pub enum GenericWorkItem {
     },
     /// Resume the continuation at stack top with a result
     Resume {
-        result: GenericEvalResult,
+        result: EvalResult,
     },
 }
 
@@ -88,14 +88,14 @@ pub enum GenericWorkItem {
 /// evaluation result is used instead. This is intentional - continuations track
 /// the original environment for debugging/reference.
 #[derive(Debug)]
-pub enum GenericContinuation {
+pub enum Continuation {
     /// Final result - return from eval()
     Done,
 
     /// Collecting S-expression sub-results before processing
     CollectSExpr {
         remaining: std::vec::IntoIter<MettaValue>,
-        collected: Vec<GenericEvalResult>,
+        collected: Vec<EvalResult>,
         original_env: MettaEnvironment,
         depth: usize,
     },
@@ -158,7 +158,7 @@ pub enum GenericContinuation {
         body: MettaValue,
         /// Outer bindings from an `EvalWithBindings` dispatch. When `Some`,
         /// these are composed with pattern-match bindings and the body is
-        /// evaluated via `EvalWithBindings` instead of `apply_bindings_generic`.
+        /// evaluated via `EvalWithBindings` instead of `apply_bindings`.
         /// This enables O(N) instead of O(N^2) work for nested `let*` chains.
         outer_bindings: Option<GenericBindings<MettaValue>>,
         results: Vec<MettaValue>,
@@ -767,7 +767,7 @@ pub enum GenericContinuation {
 // The exhaustive match on each enum ensures compile-time safety: adding a new
 // variant without updating collect_values() causes a compile error.
 
-impl GenericWorkItem {
+impl WorkItem {
     /// Collect all MettaValue values reachable from this work item into `out`.
     ///
     /// Used by the safepoint GC protocol to register trampoline state as
@@ -831,7 +831,7 @@ fn collect_cartesian_values(
     }
 }
 
-impl GenericContinuation {
+impl Continuation {
     /// Collect all MettaValue values reachable from this continuation into `out`.
     ///
     /// Used by the safepoint GC protocol to register trampoline state as
@@ -1277,7 +1277,7 @@ mod tests {
     #[test]
     fn test_work_item_eval_collects_value() {
         let f = factory();
-        let item = GenericWorkItem::Eval {
+        let item = WorkItem::Eval {
             value: f.long(42),
             env: env(),
             depth: 0,
@@ -1293,7 +1293,7 @@ mod tests {
     #[test]
     fn test_work_item_resume_collects_results() {
         let f = factory();
-        let item = GenericWorkItem::Resume {
+        let item = WorkItem::Resume {
             result: (smallvec![f.long(1), f.long(2), f.long(3)], env()),
         };
         let mut roots = Vec::new();
@@ -1306,7 +1306,7 @@ mod tests {
 
     #[test]
     fn test_continuation_done_collects_nothing() {
-        let cont = GenericContinuation::Done;
+        let cont = Continuation::Done;
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
         assert!(roots.is_empty());
@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn test_continuation_collect_sexpr_collects_all() {
         let f = factory();
-        let cont = GenericContinuation::CollectSExpr {
+        let cont = Continuation::CollectSExpr {
             remaining: vec![f.long(10), f.long(20)].into_iter(),
             collected: vec![
                 (smallvec![f.long(30)], env()),
@@ -1333,7 +1333,7 @@ mod tests {
     #[test]
     fn test_continuation_if_condition_collects_branches() {
         let f = factory();
-        let cont = GenericContinuation::ProcessIfCondition {
+        let cont = Continuation::ProcessIfCondition {
             then_branch: f.long(100),
             else_branch: f.long(200),
             outer_bindings: None,
@@ -1350,7 +1350,7 @@ mod tests {
     #[test]
     fn test_continuation_let_collects_pattern_body_results() {
         let f = factory();
-        let cont = GenericContinuation::ProcessLet {
+        let cont = Continuation::ProcessLet {
             pending_values: Some(vec![f.atom("a"), f.atom("b")].into()),
             pattern: f.atom("$x"),
             body: f.atom("body"),
@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn test_continuation_process_bind_collects_nothing() {
-        let cont = GenericContinuation::ProcessBind {
+        let cont = Continuation::ProcessBind {
             token: "var".to_string(),
             env: env(),
             depth: 0,
@@ -1380,7 +1380,7 @@ mod tests {
     #[test]
     fn test_continuation_match_space_collects_three_values() {
         let f = factory();
-        let cont = GenericContinuation::ProcessMatchSpace {
+        let cont = Continuation::ProcessMatchSpace {
             space_arg: f.atom("&self"),
             pattern: f.atom("$p"),
             template: f.atom("$t"),
@@ -1395,7 +1395,7 @@ mod tests {
     #[test]
     fn test_continuation_collapse_eval_results() {
         let f = factory();
-        let cont = GenericContinuation::ProcessCollapseEvalResults {
+        let cont = Continuation::ProcessCollapseEvalResults {
             remaining_raw: vec![f.long(1), f.long(2)].into_iter(),
             evaluated: vec![f.long(3)],
             is_bind: false,
@@ -1411,7 +1411,7 @@ mod tests {
     #[test]
     fn test_continuation_unify_pattern1_iter_collects_all() {
         let f = factory();
-        let cont = GenericContinuation::ProcessUnifyPattern1Iter {
+        let cont = Continuation::ProcessUnifyPattern1Iter {
             remaining_pattern1_results: vec![f.long(1)].into_iter(),
             pattern2: f.atom("p2"),
             success_body: f.atom("ok"),

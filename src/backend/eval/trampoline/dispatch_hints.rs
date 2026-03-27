@@ -343,7 +343,7 @@ pub fn clear_eval_memo() {
 // Phase 5: Thread-local Match Result Cache
 // ============================================================================
 //
-// Caches the output of `try_match_all_rules_generic` — the set of matching
+// Caches the output of `try_match_all_rules` — the set of matching
 // rules (RHS template, bindings, return type) for a given expression.
 //
 // Key: expression content hash (u64).
@@ -377,7 +377,7 @@ thread_local! {
 ///
 /// Returns `Some(results)` if the cache contains a valid entry for the given
 /// expression hash at the current rule epoch. The caller should use these
-/// results instead of calling `try_match_all_rules_generic`.
+/// results instead of calling `try_match_all_rules`.
 ///
 /// GC safety: checks GC sweep epoch before access (via `check_gc_epoch()`).
 #[inline]
@@ -449,7 +449,7 @@ pub fn clear_match_result_cache() {
 // Caches per-operator metadata to skip hash computation and bloom filter
 // lookups when all rule candidates have structural matchers. Keyed by
 // (head_symbol, arity), validated by rule epoch. When `all_structural` is
-// true, `try_match_all_rules_generic` can skip `hash_value()` (7.48% CPU)
+// true, `try_match_all_rules` can skip `hash_value()` (7.48% CPU)
 // and the match result cache entirely — going straight to structural matching.
 
 /// Cached metadata about an operator's rule candidates.
@@ -528,7 +528,7 @@ pub fn clear_operator_cache() {
 // Phase 6 (revised): Normal-Form Short-Circuit in dispatch_rule_matches
 // ============================================================================
 //
-// After apply_bindings_generic produces an instantiated RHS, many values are
+// After apply_bindings produces an instantiated RHS, many values are
 // already in normal form (data tuples, ground atoms) and the trampoline just
 // returns them unchanged — wasting a pop/push/dispatch cycle per value.
 //

@@ -21,7 +21,8 @@ use std::hash::{Hash, Hasher};
 
 use crate::backend::compile::compile_generic;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
-use crate::backend::eval::trampoline::{eval_trampoline_generic, MettaEnvironment, EvalContext};
+use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+use crate::backend::eval::trampoline::{ MettaEnvironment, EvalContext};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::resolve_module_path;
 
@@ -141,7 +142,7 @@ where
             if sexpr_items.len() == 2 {
                 if let Some("!") = sexpr_items[0].as_atom() {
                     let inner = sexpr_items[1].clone();
-                    let (results, new_env) = eval_trampoline_generic(inner, env, ctx);
+                    let (results, new_env) = eval_trampoline(inner, env, ctx);
                     env = new_env;
                     if let Some(r) = results.into_iter().last() {
                         last_result = r;
@@ -305,7 +306,7 @@ where
             if sexpr_items.len() == 2 {
                 if let Some("!") = sexpr_items[0].as_atom() {
                     let inner = sexpr_items[1].clone();
-                    let (_results, new_env) = eval_trampoline_generic(inner, env, ctx);
+                    let (_results, new_env) = eval_trampoline(inner, env, ctx);
                     env = new_env;
                     continue;
                 }

@@ -13,13 +13,13 @@
 //! ## Unified Generic Engine
 //!
 //! The `generic_trampoline` module provides a truly generic engine that uses
-//! `GenericWorkItem<V>` and `GenericContinuation<V>`, enabling the same evaluation
+//! `WorkItem<V>` and `Continuation<V>`, enabling the same evaluation
 //! logic to work with any `EvalContext` implementation.
 //!
 //! ## Entry Points
 //!
 //! - `eval_trampoline`: Arena-based evaluation (MettaValue → MettaValue)
-//! - `eval_trampoline_generic`: Generic evaluation for any `EvalContext`
+//! - `eval_trampoline`: Generic evaluation for any `EvalContext`
 //!
 //! ## Zero-Conversion Architecture
 //!
@@ -34,7 +34,7 @@
 mod arena_engine;
 mod context;
 mod generic_engine;
-mod generic_trampoline;
+pub(crate) mod generic_trampoline;
 mod generic_types;
 pub mod engine;
 pub(crate) mod dispatch_hints;
@@ -43,7 +43,7 @@ pub mod session_context;
 // Primary entry points
 pub use arena_engine::{
     eval_trampoline, get_static_factory,
-    is_arena_mode_available, new_env, EvalResult,
+    is_arena_mode_available, new_env,
 };
 
 #[cfg(feature = "eval-trace")]
@@ -55,22 +55,21 @@ pub use context::{
     MettaEnvironment, EvalContext, StaticEvalContext,
 };
 
-// Re-export generic types for the unified engine
+// Re-export trampoline types
 #[allow(unused_imports)]
 pub use generic_types::{
-    GenericContinuation, GenericEvalResult, GenericWorkItem,
+    Continuation, EvalResult, WorkItem,
 };
 
-// Re-export generic engine functions (zero-conversion evaluation)
+// Re-export engine functions
 pub use generic_engine::{
-    apply_bindings_generic, pattern_match_generic,
-    try_match_all_rules_generic, try_deterministic_chain,
+    apply_bindings, pattern_match,
+    try_match_all_rules, try_deterministic_chain,
 };
-// NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
 
-// Re-export the unified generic trampoline engine
-#[allow(unused_imports)]
-pub use generic_trampoline::eval_trampoline_generic;
+// Internal: generic_trampoline::eval_trampoline(value, env, &ctx) is used by
+// arena_engine and other entry points. Not re-exported — callers use
+// arena_engine::eval_trampoline which wraps it with SessionContext.
 
 // Phase 9.5: Normal-form memoization (check, insert, invalidate)
 pub use dispatch_hints::{invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form};

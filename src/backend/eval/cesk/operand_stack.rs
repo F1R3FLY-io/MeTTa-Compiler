@@ -6,7 +6,7 @@
 //!
 //! ## Motivation
 //!
-//! In the current trampoline, each `GenericWorkItem::Resume` carries a
+//! In the current trampoline, each `WorkItem::Resume` carries a
 //! `SmallVec<[V; 2]>` for results. While SmallVec inlines up to 2 elements,
 //! the allocation and initialization overhead occurs on every Resume. The
 //! operand stack pre-allocates a reusable buffer that persists across evaluation
@@ -22,7 +22,7 @@
 //!
 //! ## Integration with Resume
 //!
-//! The operand stack coexists with `GenericWorkItem::Resume` during the transition
+//! The operand stack coexists with `WorkItem::Resume` during the transition
 //! period. Phase 0.5 will gradually migrate Resume sites to use the operand stack
 //! directly for hot paths, while cold paths continue using Resume unchanged.
 
@@ -53,7 +53,7 @@ use crate::backend::models::MettaValueTrait;
 ///
 /// Initial capacity is 32 (covers >99% of PLN evaluations). The stack grows
 /// as needed via `Vec::push`. Capacity is never shrunk — it persists across
-/// trampoline iterations within a single `eval_trampoline_generic` call.
+/// trampoline iterations within a single `eval_trampoline` call.
 ///
 /// ## Value Ownership
 ///
@@ -116,7 +116,7 @@ impl<V: MettaValueTrait> OperandStack<V> {
     ///
     /// Returns `None` if no frame is active. This is the primary interface
     /// for extracting evaluation results — it returns the exact same
-    /// `SmallVec<[V; 2]>` type used by `GenericEvalResult`.
+    /// `SmallVec<[V; 2]>` type used by `EvalResult`.
     ///
     /// ## Performance
     ///

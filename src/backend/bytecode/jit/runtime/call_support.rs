@@ -158,7 +158,8 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
 
     // Use a lightweight EvalContext adapter for the trampoline.
-    use crate::backend::eval::trampoline::{eval_trampoline_generic, EvalContext};
+    use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+use crate::backend::eval::trampoline::EvalContext;
     use crate::backend::models::{GcFactory, global_factory};
 
     struct JitEvalContext {
@@ -176,7 +177,7 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
         factory: global_factory(),
     };
 
-    let (results, _) = eval_trampoline_generic(arg.clone(), env.clone(), &ctx);
+    let (results, _) = eval_trampoline(arg.clone(), env.clone(), &ctx);
 
     // Take the first result. If it differs from the original, use it.
     if let Some(first) = results.into_iter().next() {

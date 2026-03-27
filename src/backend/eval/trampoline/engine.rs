@@ -21,10 +21,7 @@ use crate::backend::models::{MettaValue, GcFactory, GenericBindings, MettaValueT
 /// Concrete type aliases.
 pub type Environment = GenericEnvironment<MettaValue, GcFactory>;
 pub type Bindings = GenericBindings<MettaValue>;
-/// Re-export monomorphized types (no longer generic).
-pub type WorkItem = super::generic_types::GenericWorkItem;
-pub type Continuation = super::generic_types::GenericContinuation;
-pub type EvalResult = super::generic_types::GenericEvalResult;
+pub use super::generic_types::{WorkItem, Continuation, EvalResult};
 
 /// Apply bindings to a MettaValue, substituting variables with bound values.
 ///
@@ -136,7 +133,7 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
 /// Pattern match a pattern against a value, returning bindings if successful.
 #[inline]
 pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
-    super::generic_engine::pattern_match_generic(pattern, value)
+    super::generic_engine::pattern_match(pattern, value)
 }
 
 /// Match all rules against an expression, returning (rhs, bindings, rhs_type) triples.
@@ -146,7 +143,7 @@ pub fn try_match_all_rules(
     env: &Environment,
     factory: GcFactory,
 ) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
-    super::generic_engine::try_match_all_rules_generic(expr, env, factory)
+    super::generic_engine::try_match_all_rules(expr, env, factory)
 }
 
 /// Try binding-aware rule matching (SG1 path) without materializing.
@@ -188,7 +185,7 @@ pub fn try_deferred_deterministic_chain(
 }
 
 /// Evaluate switch/case expression.
-pub use super::generic_engine::GenericSwitchResult as SwitchResult;
+pub use super::generic_engine::SwitchResult;
 
 #[inline]
 pub fn eval_switch(
@@ -196,7 +193,7 @@ pub fn eval_switch(
     cases: &MettaValue,
     factory: &GcFactory,
 ) -> SwitchResult {
-    super::generic_engine::eval_switch_generic(atom, cases, factory)
+    super::generic_engine::eval_switch(atom, cases, factory)
 }
 
 /// Check if a pattern is a boolean check optimization candidate.
@@ -207,7 +204,7 @@ pub fn is_boolean_check_pattern(success_body: &MettaValue, failure_body: &MettaV
 
 /// Apply bindings to a template using the iterative implementation.
 ///
-/// This delegates to the iterative `apply_bindings_generic` from
+/// This delegates to the iterative `apply_bindings` from
 /// `bindings_generic.rs`, which uses an explicit work stack instead of
 /// recursion. Used by environment matching and space operations.
 #[inline]

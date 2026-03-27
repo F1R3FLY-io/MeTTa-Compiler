@@ -1980,7 +1980,7 @@ where
     // Only reached when Step 2 found no args to pre-evaluate.
     // Use original_sexpr if available (avoids redundant factory.sexpr allocation).
     let resolved_sexpr = original_sexpr.unwrap_or_else(|| ctx.factory().sexpr(items.clone()));
-    let all_matches = crate::backend::eval::trampoline::try_match_all_rules_generic(&resolved_sexpr, &env, *ctx.factory());
+    let all_matches = crate::backend::eval::trampoline::try_match_all_rules(&resolved_sexpr, &env, *ctx.factory());
 
     if !all_matches.is_empty() {
         // Trace: RuleMatchSet

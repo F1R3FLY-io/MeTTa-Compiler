@@ -6,10 +6,10 @@
 //!
 //! ## Key Functions
 //!
-//! - `apply_bindings_generic` - Apply bindings to a value
-//! - `pattern_match_generic` - Pattern matching returning bindings
-//! - `try_match_all_rules_generic` - Match all rules against an expression
-//! - `eval_switch_generic` - Switch/case evaluation
+//! - `apply_bindings` - Apply bindings to a value
+//! - `pattern_match` - Pattern matching returning bindings
+//! - `try_match_all_rules` - Match all rules against an expression
+//! - `eval_switch` - Switch/case evaluation
 //! - `is_boolean_check_pattern` - Detect boolean check optimization patterns
 //!
 //! ## Copy-Semantic Architecture
@@ -42,7 +42,7 @@ type Bindings = GenericBindings<MettaValue>;
 /// including the "&" exclusion and NOT recursing into Type variants.
 ///
 /// `MettaValue` is `Copy` (8-byte tagged pointer), so cloning is free.
-pub fn apply_bindings_generic(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
+pub fn apply_bindings(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
     // Fast path: empty bindings means no substitutions possible
     if bindings.is_empty() {
         return *value;
@@ -53,7 +53,7 @@ pub fn apply_bindings_generic(value: &MettaValue, bindings: &Bindings, factory: 
         let span = *span; // Copy — Span is Copy
         // as_atom()/as_sexpr()/etc. see through Spanned, so we can let the
         // rest of the function process the value normally, then re-wrap.
-        let result = apply_bindings_generic_inner(value, bindings, factory);
+        let result = apply_bindings_inner(value, bindings, factory);
         // Avoid double-Spanned: if the result already carries a span (e.g.,
         // a variable was substituted with a value that has its own span),
         // use the result as-is rather than wrapping it in another Spanned layer.
@@ -65,11 +65,11 @@ pub fn apply_bindings_generic(value: &MettaValue, bindings: &Bindings, factory: 
         return factory.spanned(result, span);
     }
 
-    apply_bindings_generic_inner(value, bindings, factory)
+    apply_bindings_inner(value, bindings, factory)
 }
 
-/// Inner implementation of apply_bindings_generic (called after Spanned is peeled).
-fn apply_bindings_generic_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
+/// Inner implementation of apply_bindings (called after Spanned is peeled).
+fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
     // Handle variables (atoms starting with $, &, or ')
     // IMPORTANT: standalone "&" is a literal operator (used in match), not a variable
     if let Some(var_name) = value.as_atom() {
@@ -113,7 +113,7 @@ fn apply_bindings_generic_inner(value: &MettaValue, bindings: &Bindings, factory
                 if !item.has_variables_fast() {
                     return *item;
                 }
-                let result = apply_bindings_generic(item, bindings, factory);
+                let result = apply_bindings(item, bindings, factory);
                 // O(1) identity check via tagged pointer comparison.
                 // Avoids O(n) structural PartialEq fallthrough.
                 if !any_changed && !result.identity_eq(item) {
@@ -137,7 +137,7 @@ fn apply_bindings_generic_inner(value: &MettaValue, bindings: &Bindings, factory
                 if !goal.has_variables_fast() {
                     return *goal;
                 }
-                let result = apply_bindings_generic(goal, bindings, factory);
+                let result = apply_bindings(goal, bindings, factory);
                 if !any_changed && !result.identity_eq(goal) {
                     any_changed = true;
                 }
@@ -155,7 +155,7 @@ fn apply_bindings_generic_inner(value: &MettaValue, bindings: &Bindings, factory
     // MettaValueTrait::as_error() returns (msg, &Self) by reference.
     // We use the trait method here for consistency with identity_eq(&details).
     if let Some((msg, details)) = <MettaValue as MettaValueTrait>::as_error(value) {
-        let new_details = apply_bindings_generic(details, bindings, factory);
+        let new_details = apply_bindings(details, bindings, factory);
         if new_details.identity_eq(details) {
             return *value;
         }
@@ -176,7 +176,7 @@ fn apply_bindings_generic_inner(value: &MettaValue, bindings: &Bindings, factory
 /// including cross-type matching for Nil/Unit/Empty and the "&" exclusion.
 ///
 /// `MettaValue` is `Copy` (8-byte tagged pointer), so cloning is free.
-pub fn pattern_match_generic(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
+pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
     // Helper to check if a name is a variable
     // IMPORTANT: standalone "&" is a literal operator (used in match), not a variable
     fn is_variable(name: &str) -> bool {
@@ -247,7 +247,7 @@ pub fn pattern_match_generic(pattern: &MettaValue, value: &MettaValue) -> Option
 
             let mut combined_bindings = Bindings::new();
             for (p, v) in pattern_items.iter().zip(value_items.iter()) {
-                match pattern_match_generic(p, v) {
+                match pattern_match(p, v) {
                     Some(sub_bindings) => {
                         // Merge bindings using the merge method which checks for conflicts
                         if !combined_bindings.merge(&sub_bindings) {
@@ -271,7 +271,7 @@ pub fn pattern_match_generic(pattern: &MettaValue, value: &MettaValue) -> Option
 
             let mut combined_bindings = Bindings::new();
             for (p, v) in pattern_goals.iter().zip(value_goals.iter()) {
-                match pattern_match_generic(p, v) {
+                match pattern_match(p, v) {
                     Some(sub_bindings) => {
                         if !combined_bindings.merge(&sub_bindings) {
                             return None; // Conflict
@@ -292,7 +292,7 @@ pub fn pattern_match_generic(pattern: &MettaValue, value: &MettaValue) -> Option
             if pattern_msg != value_msg {
                 return None;
             }
-            return pattern_match_generic(&pattern_details, &value_details);
+            return pattern_match(&pattern_details, &value_details);
         }
         return None;
     }
@@ -381,7 +381,7 @@ pub fn pattern_match_generic(pattern: &MettaValue, value: &MettaValue) -> Option
 /// and expanded by rule multiplicity.
 /// Phase 8.7: Return type includes `rhs_type` for branch pruning.
 /// The third element is the cached RHS type from the rule entry (if available).
-pub fn try_match_all_rules_generic(
+pub fn try_match_all_rules(
     expr: &MettaValue,
     env: &MettaEnvironment,
     _factory: GcFactory,
@@ -432,11 +432,11 @@ pub fn try_match_all_rules_generic(
 // ============================================================================
 //
 // Instead of materializing `apply_bindings(template, outer_bindings)` and
-// then calling `try_match_all_rules_generic` on the result, this function
+// then calling `try_match_all_rules` on the result, this function
 // matches rules directly against the unresolved template by resolving
 // variables on-the-fly through `outer_bindings` inside the structural matcher.
 //
-// This eliminates the O(tree) allocation from `apply_bindings_generic` for
+// This eliminates the O(tree) allocation from `apply_bindings` for
 // the common case where all rule candidates have structural matchers.
 //
 // Returns `Some(matches)` if binding-aware matching was possible (even if
@@ -451,7 +451,7 @@ pub fn try_match_all_rules_generic(
 ///   (no rule matched — the expression is self-evaluating).
 /// - `None` — cannot use binding-aware path (e.g. some candidate lacks a
 ///   structural matcher, or the head can't be resolved).  Caller should
-///   fall back to `apply_bindings_generic + Eval`.
+///   fall back to `apply_bindings + Eval`.
 /// Resolve captured values in match_bindings through outer_bindings.
 ///
 /// When `try_match_with_bindings` captures a sub-expression from the template
@@ -472,13 +472,13 @@ fn resolve_match_bindings_through(
         GenericBindings::Empty => {}
         GenericBindings::Single((_, ref mut val)) => {
             if val.has_variables_fast() {
-                *val = apply_bindings_generic(val, outer_bindings, factory);
+                *val = apply_bindings(val, outer_bindings, factory);
             }
         }
         GenericBindings::Small(ref mut vec) => {
             for (_, val) in vec.iter_mut() {
                 if val.has_variables_fast() {
-                    *val = apply_bindings_generic(val, outer_bindings, factory);
+                    *val = apply_bindings(val, outer_bindings, factory);
                 }
             }
         }
@@ -690,7 +690,7 @@ fn try_deterministic_step(
     let bindings = matcher.try_match(expr)?;
 
     let result = if entry.rhs_has_variables {
-        apply_bindings_generic(&entry.rhs, &bindings, factory)
+        apply_bindings(&entry.rhs, &bindings, factory)
     } else {
         entry.rhs
     };
@@ -718,7 +718,7 @@ fn try_deterministic_step(
 /// Attempt to chain deterministic rule applications from an EvalWithBindings context.
 ///
 /// Given a `(template, bindings)` pair where the template is an S-expression:
-/// 1. Materializes the expression via `apply_bindings_generic`
+/// 1. Materializes the expression via `apply_bindings`
 /// 2. Checks if the head is a deterministic single-rule operator
 /// 3. If so, performs structural matching and chains into the next step
 /// 4. Returns `Some((final_rhs_template, composed_bindings))` for further
@@ -768,7 +768,7 @@ pub fn try_deferred_deterministic_chain(
     }
 
     // First step: materialize and match
-    let materialized = apply_bindings_generic(template, bindings, factory);
+    let materialized = apply_bindings(template, bindings, factory);
     let (rhs_template, match_bindings) = try_deterministic_match(&materialized, head, arity, env)?;
 
     // If RHS has variables, we can defer materialization by composing bindings
@@ -808,7 +808,7 @@ pub fn try_deferred_deterministic_chain(
             let _ = next_cache;
 
             // Materialize current template with current bindings for matching
-            let next_materialized = apply_bindings_generic(&current_template, &current_bindings, factory);
+            let next_materialized = apply_bindings(&current_template, &current_bindings, factory);
             match try_deterministic_match(&next_materialized, next_head, next_arity, env) {
                 Some((next_rhs, next_match_bindings)) => {
                     if next_rhs.has_variables_fast() {
@@ -912,7 +912,7 @@ pub fn is_boolean_check_pattern(success_body: &MettaValue, failure_body: &MettaV
 // ============================================================================
 
 /// Result type for switch evaluation
-pub enum GenericSwitchResult {
+pub enum SwitchResult {
     /// Match found - return the instantiated template and bindings
     Match(MettaValue, Bindings),
     /// No match found
@@ -934,10 +934,10 @@ pub enum GenericSwitchResult {
 ///
 /// # Returns
 ///
-/// - `GenericSwitchResult::Match(template, bindings)` if a pattern matches
-/// - `GenericSwitchResult::NoMatch` if no pattern matches
-/// - `GenericSwitchResult::Error(err)` if there's an error (malformed case)
-pub fn eval_switch_generic(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -> GenericSwitchResult {
+/// - `SwitchResult::Match(template, bindings)` if a pattern matches
+/// - `SwitchResult::NoMatch` if no pattern matches
+/// - `SwitchResult::Error(err)` if there's an error (malformed case)
+pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -> SwitchResult {
     // Cases must be an S-expression
     let Some(case_items) = cases.as_sexpr() else {
         let err = factory.error(
@@ -947,12 +947,12 @@ pub fn eval_switch_generic(atom: &MettaValue, cases: &MettaValue, factory: &GcFa
             ),
             *cases,
         );
-        return GenericSwitchResult::Error(err);
+        return SwitchResult::Error(err);
     };
 
     // No cases - return NoMatch (caller should handle as NotReducible)
     if case_items.is_empty() {
-        return GenericSwitchResult::NoMatch;
+        return SwitchResult::NoMatch;
     }
 
     // Iterate through cases looking for a match
@@ -963,7 +963,7 @@ pub fn eval_switch_generic(atom: &MettaValue, cases: &MettaValue, factory: &GcFa
                 "switch case should be an expression (pattern-template pair)",
                 *case,
             );
-            return GenericSwitchResult::Error(err);
+            return SwitchResult::Error(err);
         };
 
         // Each case must have exactly 2 elements: pattern and template
@@ -976,23 +976,23 @@ pub fn eval_switch_generic(atom: &MettaValue, cases: &MettaValue, factory: &GcFa
                 ),
                 *case,
             );
-            return GenericSwitchResult::Error(err);
+            return SwitchResult::Error(err);
         }
 
         let pattern = &case_parts[0];
         let template = &case_parts[1];
 
         // Try to match pattern against atom using pattern matching
-        if let Some(bindings) = pattern_match_generic(pattern, atom) {
+        if let Some(bindings) = pattern_match(pattern, atom) {
             // Pattern matches - apply bindings to template
-            let instantiated = apply_bindings_generic(template, &bindings, factory);
-            return GenericSwitchResult::Match(instantiated, bindings);
+            let instantiated = apply_bindings(template, &bindings, factory);
+            return SwitchResult::Match(instantiated, bindings);
         }
         // No match - continue to next case
     }
 
     // No case matched
-    GenericSwitchResult::NoMatch
+    SwitchResult::NoMatch
 }
 
 #[cfg(test)]
@@ -1003,7 +1003,7 @@ mod tests {
     fn test_pattern_match_variable() {
         let pattern = MettaValue::Atom("$x".to_string());
         let value = MettaValue::Long(42);
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         let bindings = bindings.expect("bindings should be Some");
         assert_eq!(bindings.get("$x").map(|v| v.as_long()), Some(Some(42)));
@@ -1013,7 +1013,7 @@ mod tests {
     fn test_pattern_match_wildcard() {
         let pattern = MettaValue::Atom("_".to_string());
         let value = MettaValue::Long(42);
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         assert!(bindings.expect("bindings should be Some").is_empty());
     }
@@ -1028,14 +1028,14 @@ mod tests {
             MettaValue::Atom("foo".to_string()),
             MettaValue::Long(42),
         ]);
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         let bindings = bindings.expect("bindings should be Some");
         assert_eq!(bindings.get("$x").map(|v| v.as_long()), Some(Some(42)));
     }
 
     #[test]
-    fn test_apply_bindings_generic() {
+    fn test_apply_bindings() {
         let factory = GcFactory::default();
         let mut bindings: Bindings = Bindings::new();
         bindings.insert("$x", MettaValue::Long(42));
@@ -1046,7 +1046,7 @@ mod tests {
             MettaValue::Long(1),
         ]);
 
-        let result = apply_bindings_generic(&template, &bindings, &factory);
+        let result = apply_bindings(&template, &bindings, &factory);
         assert!(result.is_sexpr());
         let items = result.as_sexpr().expect("should be sexpr");
         assert_eq!(items[1].as_long(), Some(42));
@@ -1060,7 +1060,7 @@ mod tests {
         let pattern = MettaValue::Atom("&".to_string());
         let value = MettaValue::Long(42);
         // Should NOT match - "&" is a literal, not a variable
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_none());
     }
 
@@ -1069,7 +1069,7 @@ mod tests {
         // "&foo" (variable starting with &) SHOULD be treated as a variable
         let pattern = MettaValue::Atom("&foo".to_string());
         let value = MettaValue::Long(42);
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         let bindings = bindings.expect("bindings should be Some");
         assert_eq!(bindings.get("&foo").map(|v| v.as_long()), Some(Some(42)));
@@ -1080,7 +1080,7 @@ mod tests {
         // Unit pattern matches Unit
         let pattern = MettaValue::Unit();
         let value = MettaValue::Unit();
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
     }
 
@@ -1089,7 +1089,7 @@ mod tests {
         // Unit pattern matches empty S-expression (SExpr([]) normalizes to Unit)
         let pattern = MettaValue::Unit();
         let value = MettaValue::SExpr(vec![]);
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
     }
 
@@ -1098,7 +1098,7 @@ mod tests {
         // Empty S-expression pattern matches Unit (SExpr([]) normalizes to Unit)
         let pattern = MettaValue::SExpr(vec![]);
         let value = MettaValue::Unit();
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
     }
 
@@ -1107,7 +1107,7 @@ mod tests {
         // Unit pattern matches Atom("Empty")
         let pattern = MettaValue::Unit();
         let value = MettaValue::Atom("Empty".to_string());
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
     }
 
@@ -1116,7 +1116,7 @@ mod tests {
         // Atom("Empty") does NOT match Unit -- they are different values.
         let pattern = MettaValue::Atom("Empty".to_string());
         let value = MettaValue::Unit();
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_none());
     }
 
@@ -1125,13 +1125,13 @@ mod tests {
         // Float comparison uses direct equality (not epsilon)
         let pattern = MettaValue::Float(1.0);
         let value = MettaValue::Float(1.0);
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
 
         // Different floats should not match
         let pattern = MettaValue::Float(1.0);
         let value = MettaValue::Float(1.0 + f64::EPSILON * 2.0);
-        let bindings = pattern_match_generic(&pattern, &value);
+        let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_none());
     }
 
@@ -1143,7 +1143,7 @@ mod tests {
         bindings.insert("&", MettaValue::Long(42));
 
         let template = MettaValue::Atom("&".to_string());
-        let result = apply_bindings_generic(&template, &bindings, &factory);
+        let result = apply_bindings(&template, &bindings, &factory);
         // Should remain as "&", not substituted
         assert_eq!(result.as_atom(), Some("&"));
     }
@@ -1157,7 +1157,7 @@ mod tests {
 
         // Type wrapping a variable - should not substitute
         let template = MettaValue::Type(MettaValue::Atom("$x".to_string()));
-        let result = apply_bindings_generic(&template, &bindings, &factory);
+        let result = apply_bindings(&template, &bindings, &factory);
 
         // Result should still be a Type with $x inside (not substituted)
         assert!(result.is_type());

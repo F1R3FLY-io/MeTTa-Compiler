@@ -11,7 +11,7 @@ use crate::backend::grounded::{execute_generic_grounded_op, has_generic_grounded
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 use crate::backend::models::{MettaValue, GcFactory};
-use super::super::trampoline::try_match_all_rules_generic;
+use super::super::trampoline::try_match_all_rules;
 // NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
 use super::super::helpers::needs_special_form_redispatch;
 
@@ -263,7 +263,7 @@ pub fn process_single_combination_generic(
     // Try rule matching using generic rule matching (zero-conversion)
     // Build sexpr once and reuse for both rule matching and no-match fallback
     let sexpr = factory.sexpr(evaled_items);
-    let all_matches_with_types = try_match_all_rules_generic(&sexpr, &unified_env, *factory);
+    let all_matches_with_types = try_match_all_rules(&sexpr, &unified_env, *factory);
 
     if !all_matches_with_types.is_empty() {
         // Rules match with evaluated arguments - evaluate the rule RHS

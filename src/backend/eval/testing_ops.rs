@@ -31,9 +31,8 @@ use smallvec::smallvec;
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
-use crate::backend::eval::trampoline::{
-    eval_trampoline_generic, MettaEnvironment, EvalContext,
-};
+use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::step::GenericEvalStep;
@@ -127,8 +126,8 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
-    let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
 
     drop(_frame_guard);
 
@@ -172,8 +171,8 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
-    let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
 
     drop(_frame_guard);
 
@@ -220,8 +219,8 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
-    let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
 
     drop(_frame_guard);
 
@@ -259,8 +258,8 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
-    let (expected_results, env) = eval_trampoline_generic(items[2].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
 
     drop(_frame_guard);
 
@@ -302,7 +301,7 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
@@ -347,7 +346,7 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
@@ -396,7 +395,7 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
@@ -439,7 +438,7 @@ where
         maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items)
     };
 
-    let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),

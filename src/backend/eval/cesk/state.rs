@@ -10,8 +10,8 @@
 //!
 //! S:     OperandStack<MettaValue> — pre-allocated operand stack for intermediate results
 //! E:     MettaEnvironment         — environment (variable bindings, rules)
-//! C:     Work stack               — Vec<GenericWorkItem> (control expressions + Resume)
-//! K:     Continuation             — Vec<GenericContinuation> (saved machine states)
+//! C:     Work stack               — Vec<WorkItem> (control expressions + Resume)
+//! K:     Continuation             — Vec<Continuation> (saved machine states)
 //! Store: Global slab allocator    — parameterized allocation subsystem
 //! ```
 //!
@@ -27,7 +27,7 @@
 //!
 //! ## Transition to Usage
 //!
-//! Phase 0.5 will modify `eval_trampoline_generic` to construct a `SeckState`
+//! Phase 0.5 will modify `eval_trampoline` to construct a `SeckState`
 //! at entry and destructure it at exit. The transition is gradual — the trampoline
 //! loop reads fields from the state instead of separate local variables.
 
@@ -39,7 +39,7 @@ use crate::backend::models::MettaValue;
 use super::operand_stack::OperandStack;
 use super::roots::RootSet;
 use super::super::trampoline::{
-    GenericContinuation, GenericEvalResult, GenericWorkItem,
+    Continuation, EvalResult, WorkItem,
 };
 
 // ============================================================================
@@ -73,13 +73,13 @@ pub struct SeckState {
     // ── C: Control (Work Stack) ──────────────────────────────────────
     /// Pending evaluation work items. The trampoline pops from this stack
     /// on each iteration. Contains Eval, EvalWithBindings, and Resume items.
-    pub work_stack: Vec<GenericWorkItem>,
+    pub work_stack: Vec<WorkItem>,
 
     // ── K: Kontinuation Stack ────────────────────────────────────────
     /// Saved machine states (continuations). When an Eval produces a result,
     /// the Resume item at the top of the work stack triggers the topmost
     /// continuation to process the result.
-    pub continuations: Vec<GenericContinuation>,
+    pub continuations: Vec<Continuation>,
 
     // ── GC Support ───────────────────────────────────────────────────
     /// Reusable root set buffer for GC safepoint root collection.
@@ -96,7 +96,7 @@ pub struct SeckState {
 
     // ── Result ───────────────────────────────────────────────────────
     /// Final evaluation result. Set when the Done continuation is reached.
-    pub final_result: Option<GenericEvalResult>,
+    pub final_result: Option<EvalResult>,
 }
 
 impl SeckState {
@@ -109,7 +109,7 @@ impl SeckState {
     /// - Empty root set with estimated capacity
     pub fn new(value: MettaValue, env: MettaEnvironment) -> Self {
         let mut work_stack = Vec::with_capacity(32);
-        work_stack.push(GenericWorkItem::Eval {
+        work_stack.push(WorkItem::Eval {
             value,
             env,
             depth: 0,
@@ -118,7 +118,7 @@ impl SeckState {
         });
 
         let mut continuations = Vec::with_capacity(64);
-        continuations.push(GenericContinuation::Done);
+        continuations.push(Continuation::Done);
 
         Self {
             operand_stack: OperandStack::new(),
@@ -139,25 +139,25 @@ impl SeckState {
 
     /// Pop the next work item from the work stack.
     #[inline]
-    pub fn pop_work(&mut self) -> Option<GenericWorkItem> {
+    pub fn pop_work(&mut self) -> Option<WorkItem> {
         self.work_stack.pop()
     }
 
     /// Push a work item onto the work stack.
     #[inline]
-    pub fn push_work(&mut self, work: GenericWorkItem) {
+    pub fn push_work(&mut self, work: WorkItem) {
         self.work_stack.push(work);
     }
 
     /// Push a continuation onto the continuation stack.
     #[inline]
-    pub fn push_continuation(&mut self, cont: GenericContinuation) {
+    pub fn push_continuation(&mut self, cont: Continuation) {
         self.continuations.push(cont);
     }
 
     /// Pop the topmost continuation.
     #[inline]
-    pub fn pop_continuation(&mut self) -> Option<GenericContinuation> {
+    pub fn pop_continuation(&mut self) -> Option<Continuation> {
         self.continuations.pop()
     }
 
@@ -179,7 +179,7 @@ impl SeckState {
     ///
     /// The `current_work` parameter is the work item that was just popped
     /// from the work stack (it's not on the stack but still holds live values).
-    pub fn collect_gc_roots(&mut self, current_work: &GenericWorkItem) {
+    pub fn collect_gc_roots(&mut self, current_work: &WorkItem) {
         self.root_set.clear();
         self.root_set.collect_from_operand_stack(&self.operand_stack);
         self.root_set.collect_from_work_items(current_work, &self.work_stack);
@@ -265,14 +265,14 @@ mod tests {
         let f = factory();
         let mut state = SeckState::new(f.long(42), env());
 
-        state.push_continuation(GenericContinuation::ProcessIsError {
+        state.push_continuation(Continuation::ProcessIsError {
             env: env(),
             depth: 0,
         });
         assert_eq!(state.continuation_depth(), 2); // Done + ProcessIsError
 
         let cont = state.pop_continuation();
-        assert!(matches!(cont, Some(GenericContinuation::ProcessIsError { .. })));
+        assert!(matches!(cont, Some(Continuation::ProcessIsError { .. })));
     }
 
     #[test]

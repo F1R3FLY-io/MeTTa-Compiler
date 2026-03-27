@@ -31,7 +31,7 @@ use crate::backend::models::MettaValueTrait;
 
 use super::operand_stack::OperandStack;
 use super::super::trampoline::{
-    GenericContinuation, GenericWorkItem,
+    Continuation, WorkItem,
 };
 
 // ============================================================================
@@ -156,8 +156,8 @@ impl<V: MettaValueTrait + Clone> RootSet<V> {
     }
 }
 
-/// Monomorphized methods that interact with the concrete GenericWorkItem and
-/// GenericContinuation types (which now use MettaValue directly).
+/// Monomorphized methods that interact with the concrete WorkItem and
+/// Continuation types (which now use MettaValue directly).
 impl RootSet<crate::backend::models::MettaValue> {
     /// Collect roots from work items (C component — control expressions).
     ///
@@ -165,8 +165,8 @@ impl RootSet<crate::backend::models::MettaValue> {
     /// Includes the currently-popped work item and all items remaining on the stack.
     pub fn collect_from_work_items(
         &mut self,
-        current_work: &GenericWorkItem,
-        work_stack: &[GenericWorkItem],
+        current_work: &WorkItem,
+        work_stack: &[WorkItem],
     ) {
         current_work.collect_values(&mut self.roots);
         for w in work_stack {
@@ -179,7 +179,7 @@ impl RootSet<crate::backend::models::MettaValue> {
     /// Corresponds to `addrs_in(K)` in the algebraic root formula.
     pub fn collect_from_continuations(
         &mut self,
-        continuations: &[GenericContinuation],
+        continuations: &[Continuation],
     ) {
         for c in continuations {
             c.collect_values(&mut self.roots);
@@ -199,9 +199,9 @@ impl RootSet<crate::backend::models::MettaValue> {
     pub fn collect_all(
         &mut self,
         operand_stack: &OperandStack<crate::backend::models::MettaValue>,
-        current_work: &GenericWorkItem,
-        work_stack: &[GenericWorkItem],
-        continuations: &[GenericContinuation],
+        current_work: &WorkItem,
+        work_stack: &[WorkItem],
+        continuations: &[Continuation],
     ) {
         self.clear();
         self.collect_from_operand_stack(operand_stack);
@@ -252,15 +252,15 @@ mod tests {
     #[test]
     fn test_collect_from_work_items() {
         let f = factory();
-        let current = GenericWorkItem::Eval {
+        let current = WorkItem::Eval {
             value: f.long(42),
             env: env(),
             depth: 0,
             is_tail_call: false,
             expected_type: None,
         };
-        let stack: Vec<GenericWorkItem> = vec![
-            GenericWorkItem::Resume {
+        let stack: Vec<WorkItem> = vec![
+            WorkItem::Resume {
                 result: (smallvec![f.long(1), f.long(2)], env()),
             },
         ];
@@ -273,9 +273,9 @@ mod tests {
     #[test]
     fn test_collect_from_continuations() {
         let f = factory();
-        let conts: Vec<GenericContinuation> = vec![
-            GenericContinuation::Done,
-            GenericContinuation::ProcessCatch {
+        let conts: Vec<Continuation> = vec![
+            Continuation::Done,
+            Continuation::ProcessCatch {
                 default: f.atom("fallback"),
                 env: env(),
                 depth: 0,
@@ -294,16 +294,16 @@ mod tests {
         operand_stack.push_frame();
         operand_stack.push(f.long(10));
 
-        let current = GenericWorkItem::Eval {
+        let current = WorkItem::Eval {
             value: f.long(20),
             env: env(),
             depth: 0,
             is_tail_call: false,
             expected_type: None,
         };
-        let work_stack: Vec<GenericWorkItem> = vec![];
-        let continuations: Vec<GenericContinuation> = vec![
-            GenericContinuation::Done,
+        let work_stack: Vec<WorkItem> = vec![];
+        let continuations: Vec<Continuation> = vec![
+            Continuation::Done,
         ];
 
         let mut rs = RootSet::with_estimated_capacity(0, 1, 1);

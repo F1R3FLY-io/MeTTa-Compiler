@@ -86,9 +86,9 @@ pub enum EvalOutcome {
 #[derive(Debug)]
 pub struct SuspendedEval {
     /// The work stack at the yield point.
-    pub work_stack: Vec<super::super::trampoline::GenericWorkItem>,
+    pub work_stack: Vec<super::super::trampoline::WorkItem>,
     /// The continuation stack at the yield point.
-    pub continuations: Vec<super::super::trampoline::GenericContinuation>,
+    pub continuations: Vec<super::super::trampoline::Continuation>,
 
     /// Evaluation depth at suspension (for priority scheduling).
     pub depth: u32,

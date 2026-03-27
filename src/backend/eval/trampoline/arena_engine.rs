@@ -21,31 +21,13 @@ use crate::backend::models::{MettaState, MettaValue, GcFactory, global_factory};
 use std::sync::Arc;
 
 use super::context::MettaEnvironment;
-use super::generic_trampoline::eval_trampoline_generic;
-use super::generic_types::GenericEvalResult;
+use super::generic_types::EvalResult;
 use super::session_context::SessionContext;
-
-/// Type alias for arena evaluation result.
-///
-/// This is the return type of `eval_trampoline` — a tuple of:
-/// - `Vec<MettaValue>`: The evaluation results
-/// - `MettaEnvironment`: The updated environment
-pub type EvalResult = GenericEvalResult;
 
 /// Zero-conversion arena evaluation using the global slab allocator.
 ///
-/// Evaluates `MettaValue` using the unified generic trampoline
-/// engine with `SessionContext` for GC-backed allocation.
-///
-/// # Arguments
-///
-/// - `value`: The value to evaluate (must be `MettaValue`)
-/// - `env`: The evaluation environment (`MettaEnvironment`)
-/// - `state`: The `MettaState` owning the compiled source
-///
-/// # Returns
-///
-/// A tuple of (results, final_environment) where results are `Vec<MettaValue>`.
+/// Evaluates `MettaValue` using the unified trampoline engine with
+/// `SessionContext` for GC-backed allocation.
 #[inline]
 pub fn eval_trampoline(
     value: MettaValue,
@@ -53,16 +35,10 @@ pub fn eval_trampoline(
     state: &MettaState,
 ) -> EvalResult {
     let ctx = SessionContext::new(state);
-    eval_trampoline_generic(value, env, &ctx)
+    super::generic_trampoline::eval_trampoline(value, env, &ctx)
 }
 
 /// Zero-conversion arena evaluation with optional trace collector.
-///
-/// Identical to [`eval_trampoline`] but accepts a trace collector that will
-/// be attached to the `SessionContext`. When `collector` is `Some`, all
-/// evaluation events are emitted to the collector's output file.
-///
-/// This function is only available when the `eval-trace` feature is enabled.
 #[cfg(feature = "eval-trace")]
 #[inline]
 pub fn eval_trampoline_with_trace(
@@ -73,7 +49,7 @@ pub fn eval_trampoline_with_trace(
 ) -> EvalResult {
     let ctx = SessionContext::new(state)
         .with_trace_collector(Arc::clone(collector));
-    eval_trampoline_generic(value, env, &ctx)
+    super::generic_trampoline::eval_trampoline(value, env, &ctx)
 }
 
 /// Check if arena mode is available.

@@ -68,13 +68,13 @@ pub use types::{
 
 use crate::backend::eval::trampoline::EvalContext;
 
-/// Lightweight `EvalContext` adapter for calling `eval_trampoline_generic`
+/// Lightweight `EvalContext` adapter for calling `eval_trampoline`
 /// from within the bytecode VM.
 ///
 /// The bytecode VM needs to evaluate sub-expressions during type-driven
 /// applicative pre-evaluation (Phase 5). Rather than one-step rule matching,
 /// this adapter enables full trampolined, TCO, CPS-based evaluation via the
-/// canonical `eval_trampoline_generic` engine.
+/// canonical `eval_trampoline` engine.
 ///
 /// # Why not `StaticEvalContext`?
 ///
@@ -4315,7 +4315,7 @@ where
 
     /// Evaluate a sub-expression using the full trampoline evaluator.
     ///
-    /// Uses `eval_trampoline_generic` for proper recursive evaluation with
+    /// Uses `eval_trampoline` for proper recursive evaluation with
     /// TCO (tail-call optimization) and CPS (continuation-passing style).
     /// This ensures sub-expression evaluation is lazy, handles nondeterminism
     /// correctly, and doesn't stack-overflow on deeply nested expressions.
@@ -4328,14 +4328,14 @@ where
         sub_expr: V,
         env: GenericEnvironment<V, F>,
     ) -> VmResult<V> {
-        use crate::backend::eval::trampoline::eval_trampoline_generic;
+        use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
 
         // Create a lightweight EvalContext adapter for the trampoline.
         let ctx = VmEvalContext {
             factory: crate::backend::models::global_factory(),
         };
 
-        // eval_trampoline_generic now takes MettaValue + MettaEnvironment.
+        // eval_trampoline now takes MettaValue + MettaEnvironment.
         // Transmute via TypeId check — in practice V is always MettaValue.
         assert_eq!(
             TypeId::of::<V>(), TypeId::of::<MettaValue>(),
@@ -4356,7 +4356,7 @@ where
 
         // Full trampoline evaluation: trampolined, TCO, CPS-based.
         // Returns (Vec<results>, final_env).
-        let (results, _final_env) = eval_trampoline_generic(metta_sub_expr.clone(), metta_env, &ctx);
+        let (results, _final_env) = eval_trampoline(metta_sub_expr.clone(), metta_env, &ctx);
 
         if let Some(first) = results.into_iter().next() {
             // SAFETY: V == MettaValue verified above. Transmute result back.
@@ -4375,13 +4375,13 @@ where
         sub_expr: V,
         env: GenericEnvironment<V, F>,
     ) -> Vec<V> {
-        use crate::backend::eval::trampoline::eval_trampoline_generic;
+        use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
 
         let ctx = VmEvalContext {
             factory: crate::backend::models::global_factory(),
         };
 
-        // eval_trampoline_generic now takes MettaValue + MettaEnvironment.
+        // eval_trampoline now takes MettaValue + MettaEnvironment.
         // Transmute via TypeId check — in practice V is always MettaValue.
         assert_eq!(
             TypeId::of::<V>(), TypeId::of::<MettaValue>(),
@@ -4400,7 +4400,7 @@ where
         std::mem::forget(sub_expr);
         std::mem::forget(env);
 
-        let (results, _final_env) = eval_trampoline_generic(metta_sub_expr, metta_env, &ctx);
+        let (results, _final_env) = eval_trampoline(metta_sub_expr, metta_env, &ctx);
         // SAFETY: V == MettaValue verified above. Vec<MettaValue> → Vec<V>.
         let metta_results: Vec<MettaValue> = results.into_vec();
         unsafe {

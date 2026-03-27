@@ -13,7 +13,7 @@
 //! The arena uses a flat `Vec<BindingEntry>` with a frame stack tracking scope
 //! boundaries. When a rule match fails, the arena truncates to the frame boundary
 //! instead of deallocating individual entries. This eliminates allocation overhead
-//! during the try-each-rule loop in `try_match_all_rules_generic`.
+//! during the try-each-rule loop in `try_match_all_rules`.
 //!
 //! ## Integration
 //!
@@ -97,7 +97,7 @@ pub struct ChoicePoint {
 ///
 /// The arena provides O(1) rollback for failed pattern matches by truncating
 /// the entries vector instead of deallocating individual bindings. This is
-/// critical for the `try_match_all_rules_generic` hot path where multiple
+/// critical for the `try_match_all_rules` hot path where multiple
 /// rules are tried against the same expression.
 ///
 /// ## Capacity

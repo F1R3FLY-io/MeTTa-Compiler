@@ -8,13 +8,13 @@
 //! ## Design
 //!
 //! The generic engine:
-//! - Uses `GenericWorkItem<V, F>` and `GenericContinuation<V, F>` for work tracking
+//! - Uses `WorkItem<V, F>` and `Continuation<V, F>` for work tracking
 //! - Calls `eval_step_generic` for single-step evaluation
 //! - Uses `GenericEnvironment<V, F>` for all environment operations
 //!
 //! ## Entry Points
 //!
-//! - `eval_trampoline_generic`: Generic evaluation for any `EvalContext`
+//! - `eval_trampoline`: Generic evaluation for any `EvalContext`
 //!
 //! The generic engine is parameterized by the `EvalContext` trait, which determines
 //! the value type and factory. The production implementation uses `StaticEvalContext`
@@ -56,11 +56,11 @@ use tracing::trace;
 use super::context::{EvalContext, MettaEnvironment};
 use crate::backend::models::gc_allocator::RootProvider;
 use super::generic_engine::{
-    apply_bindings_generic, eval_switch_generic, is_boolean_check_pattern, pattern_match_generic,
-    try_match_all_rules_generic, try_deferred_deterministic_chain, DeferredChainResult,
-    GenericSwitchResult,
+    apply_bindings, eval_switch, is_boolean_check_pattern, pattern_match,
+    try_match_all_rules, try_deferred_deterministic_chain, DeferredChainResult,
+    SwitchResult,
 };
-use super::generic_types::{GenericContinuation, GenericEvalResult, GenericWorkItem};
+use super::generic_types::{Continuation, EvalResult, WorkItem};
 use super::super::list_ops::substitute_variable_generic;
 use super::super::processing::{
     process_collected_sexpr_generic, GenericProcessedSExpr,
@@ -111,42 +111,42 @@ use super::dispatch_hints::REDUCIBLE_HEADS;
 ///
 /// Only inspects the variant tag (O(1)), not the contained data.
 fn continuation_to_stack_symbol(
-    cont: &GenericContinuation,
+    cont: &Continuation,
 ) -> crate::backend::scheduler::wpds::SchedulerStackSymbol {
     use crate::backend::scheduler::wpds::SchedulerStackSymbol;
 
     match cont {
-        GenericContinuation::Done => SchedulerStackSymbol::Root,
-        GenericContinuation::ProcessRuleMatches { .. }
-        | GenericContinuation::ProcessRuleMatchesLazy { .. } => {
+        Continuation::Done => SchedulerStackSymbol::Root,
+        Continuation::ProcessRuleMatches { .. }
+        | Continuation::ProcessRuleMatchesLazy { .. } => {
             SchedulerStackSymbol::RuleMatch {
                 head_hash: 0,
                 arity: 0,
             }
         }
-        GenericContinuation::ProcessGroundedOp { .. } => SchedulerStackSymbol::GroundedOp,
-        GenericContinuation::ProcessCombinations { .. } => SchedulerStackSymbol::Combinations,
-        GenericContinuation::ProcessLet { .. }
-        | GenericContinuation::ProcessLetStar { .. } => {
+        Continuation::ProcessGroundedOp { .. } => SchedulerStackSymbol::GroundedOp,
+        Continuation::ProcessCombinations { .. } => SchedulerStackSymbol::Combinations,
+        Continuation::ProcessLet { .. }
+        | Continuation::ProcessLetStar { .. } => {
             SchedulerStackSymbol::LetChain { depth: 0 }
         }
-        GenericContinuation::CollectSExpr { .. }
-        | GenericContinuation::CollectGroundedArg { .. } => {
+        Continuation::CollectSExpr { .. }
+        | Continuation::CollectGroundedArg { .. } => {
             SchedulerStackSymbol::ArgEval { position: 0 }
         }
-        GenericContinuation::ProcessIfCondition { .. } => {
+        Continuation::ProcessIfCondition { .. } => {
             SchedulerStackSymbol::Conditional { branch: 0 }
         }
-        GenericContinuation::ProcessCaseAtom { .. }
-        | GenericContinuation::ProcessCaseEvalScrutineeResults { .. } => {
+        Continuation::ProcessCaseAtom { .. }
+        | Continuation::ProcessCaseEvalScrutineeResults { .. } => {
             SchedulerStackSymbol::CaseSwitch
         }
-        GenericContinuation::ProcessCollapseEvalResults { .. } => {
+        Continuation::ProcessCollapseEvalResults { .. } => {
             SchedulerStackSymbol::Collapse
         }
-        GenericContinuation::MemoizeResult { .. }
-        | GenericContinuation::CompleteSubgoal { .. }
-        | GenericContinuation::CompleteThunk { .. } => {
+        Continuation::MemoizeResult { .. }
+        | Continuation::CompleteSubgoal { .. }
+        | Continuation::CompleteThunk { .. } => {
             SchedulerStackSymbol::Memoize
         }
         _ => SchedulerStackSymbol::Root,
@@ -158,7 +158,7 @@ fn continuation_to_stack_symbol(
 /// Returns a 64-bit context hash suitable for the SchedulerAutomaton's
 /// context_weight() method.
 fn hash_continuation_context(
-    continuations: &[GenericContinuation],
+    continuations: &[Continuation],
 ) -> u64 {
     let len = continuations.len();
     let limit = len.min(3);
@@ -313,8 +313,8 @@ fn dispatch_rule_matches<C: EvalContext>(
     env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-    work_stack: &mut Vec<GenericWorkItem>,
-    continuations: &mut Vec<GenericContinuation>,
+    work_stack: &mut Vec<WorkItem>,
+    continuations: &mut Vec<Continuation>,
     demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
 ) {
     debug_assert!(!matches.is_empty(), "dispatch_rule_matches called with empty matches");
@@ -354,7 +354,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings.
         // When RHS has no variables, push as Eval directly (O(1) pointer copy).
         if rhs.has_variables_fast() {
-            work_stack.push(GenericWorkItem::EvalWithBindings {
+            work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
                 bindings,
                 env,
@@ -365,12 +365,12 @@ fn dispatch_rule_matches<C: EvalContext>(
         } else {
             // Normal-form short-circuit for ground RHS
             if is_memoized_normal_form(&rhs) {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
                 });
             } else if is_normal_form_bounded(&rhs, &env, 2) {
                 memoize_normal_form(&rhs);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
                 });
             } else {
@@ -381,7 +381,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 if let Some(chained) = try_deterministic_chain(&rhs, &env, ctx.factory()) {
                     // The chain resolved one or more steps. The result still needs
                     // evaluation (may be a special form, nondeterministic, etc.)
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: chained,
                         env,
                         depth: depth + 1,
@@ -389,7 +389,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         expected_type: None,
                     });
                 } else {
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: rhs,
                         env,
                         depth: depth + 1,
@@ -414,7 +414,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             let (rhs, bindings) = coroutine.next_branch()
                 .expect("BranchCoroutine::new with non-empty matches must have first branch");
             // Push the lazy continuation to collect results incrementally
-            continuations.push(GenericContinuation::ProcessRuleMatchesLazy {
+            continuations.push(Continuation::ProcessRuleMatchesLazy {
                 coroutine,
                 results: base_results.into_vec(),
                 env: env.clone(),
@@ -422,7 +422,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             });
             // Evaluate the first branch
             if rhs.has_variables_fast() {
-                work_stack.push(GenericWorkItem::EvalWithBindings {
+                work_stack.push(WorkItem::EvalWithBindings {
                     template: rhs,
                     bindings,
                     env,
@@ -431,8 +431,8 @@ fn dispatch_rule_matches<C: EvalContext>(
                     expected_type: None,
                 });
             } else {
-                work_stack.push(GenericWorkItem::Eval {
-                    value: apply_bindings_generic(&rhs, &bindings, ctx.factory()),
+                work_stack.push(WorkItem::Eval {
+                    value: apply_bindings(&rhs, &bindings, ctx.factory()),
                     env,
                     depth: depth + 1,
                     is_tail_call: false,
@@ -477,7 +477,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             .into_iter()
             .map(|(rhs, bindings)| {
                 if rhs.has_variables_fast() {
-                    apply_bindings_generic(&rhs, &bindings, factory)
+                    apply_bindings(&rhs, &bindings, factory)
                 } else {
                     rhs.clone()
                 }
@@ -526,7 +526,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         let mut merged = base_results;
         merged.extend(results);
 
-        work_stack.push(GenericWorkItem::Resume {
+        work_stack.push(WorkItem::Resume {
             result: (merged, env),
         });
     } else {
@@ -573,7 +573,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             }
         };
 
-        continuations.push(GenericContinuation::ProcessRuleMatches {
+        continuations.push(Continuation::ProcessRuleMatches {
             remaining_matches: remaining_iter,
             results: base_results.into_vec(),
             env: env.clone(),
@@ -617,7 +617,7 @@ fn dispatch_rule_matches<C: EvalContext>(
 
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
         if rhs.has_variables_fast() {
-            work_stack.push(GenericWorkItem::EvalWithBindings {
+            work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
                 bindings,
                 env,
@@ -627,16 +627,16 @@ fn dispatch_rule_matches<C: EvalContext>(
             });
         } else {
             if is_memoized_normal_form(&rhs) {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
                 });
             } else if is_normal_form_bounded(&rhs, &env, 2) {
                 memoize_normal_form(&rhs);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
                 });
             } else {
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: rhs,
                     env,
                     depth,
@@ -751,7 +751,7 @@ fn parallel_branch_eval(
             let _guard = EvalGuard::enter();
             let ctx = ParallelBranchContext::get();
             let (eval_results, _new_env) =
-                eval_trampoline_generic(branch_expr, env, &ctx);
+                eval_trampoline(branch_expr, env, &ctx);
 
             // Store result in pre-allocated slot (no contention per slot)
             {
@@ -783,7 +783,7 @@ fn parallel_branch_eval(
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
         let ctx = ParallelBranchContext::get();
         let (eval_results, _new_env) =
-            eval_trampoline_generic(branches[0].clone(), env.clone(), &ctx);
+            eval_trampoline(branches[0].clone(), env.clone(), &ctx);
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
         eval_results
     };
@@ -972,7 +972,7 @@ fn parallel_collapse_eval(
             let _guard = EvalGuard::enter();
             let ctx = ParallelBranchContext::get();
             let (eval_results, _new_env) =
-                eval_trampoline_generic(item_expr, env, &ctx);
+                eval_trampoline(item_expr, env, &ctx);
 
             // Store result in pre-allocated slot
             {
@@ -1003,7 +1003,7 @@ fn parallel_collapse_eval(
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
         let ctx = ParallelBranchContext::get();
         let (eval_results, _new_env) =
-            eval_trampoline_generic(items[0].clone(), env.clone(), &ctx);
+            eval_trampoline(items[0].clone(), env.clone(), &ctx);
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
         eval_results
     };
@@ -1091,8 +1091,8 @@ fn parallel_collapse_eval(
 ///
 /// This function provides a unified evaluation engine that works with any value type
 /// implementing `MettaValueTrait`. It uses:
-/// - `GenericWorkItem<V, F>` for pending evaluation work
-/// - `GenericContinuation<V, F>` for continuation handling
+/// - `WorkItem<V, F>` for pending evaluation work
+/// - `Continuation<V, F>` for continuation handling
 /// - `eval_step_generic` for single-step evaluation
 ///
 /// All environment operations use `GenericEnvironment<V, F>` inherent methods.
@@ -1110,16 +1110,16 @@ fn parallel_collapse_eval(
 /// # Returns
 ///
 /// A tuple of (results, final_environment)
-/// I-18: Run eval_trampoline_generic to completion, resuming any yields.
+/// I-18: Run eval_trampoline to completion, resuming any yields.
 ///
 /// This is the backward-compatible entry point used by all callers.
 /// Internally, the trampoline may yield after exhausting its reduction budget,
 /// but this wrapper loops until `Complete`.
-pub fn eval_trampoline_generic<C: EvalContext>(
+pub fn eval_trampoline<C: EvalContext>(
     value: MettaValue,
     env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalResult {
+) -> EvalResult {
     let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0);
     loop {
         match outcome {
@@ -1146,9 +1146,9 @@ fn resume_trampoline_inner<C: EvalContext>(
     // The `value` and `env` parameters to eval_trampoline_inner are unused when
     // resuming (work_stack is pre-populated). We extract env from saved state.
     let env = match suspended.work_stack.first() {
-        Some(GenericWorkItem::Eval { env, .. }) => env.clone(),
-        Some(GenericWorkItem::EvalWithBindings { env, .. }) => env.clone(),
-        Some(GenericWorkItem::Resume { result }) => result.1.clone(),
+        Some(WorkItem::Eval { env, .. }) => env.clone(),
+        Some(WorkItem::EvalWithBindings { env, .. }) => env.clone(),
+        Some(WorkItem::Resume { result }) => result.1.clone(),
         None => panic!("resume_trampoline_inner: SuspendedEval has empty work_stack"),
     };
 
@@ -1171,8 +1171,8 @@ fn eval_trampoline_inner<C: EvalContext>(
     value: MettaValue,
     env: MettaEnvironment,
     ctx: &C,
-    resume_work_stack: Option<Vec<GenericWorkItem>>,
-    resume_continuations: Option<Vec<GenericContinuation>>,
+    resume_work_stack: Option<Vec<WorkItem>>,
+    resume_continuations: Option<Vec<Continuation>>,
     resume_reductions: u64,
 ) -> crate::backend::eval::cesk::EvalOutcome {
     // Debug tracing controlled by environment variable (cached — one syscall per process)
@@ -1218,12 +1218,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
     // Initialize work stack and continuations, either from resume state or fresh.
     let is_resuming = resume_work_stack.is_some();
-    let mut work_stack: Vec<GenericWorkItem> =
+    let mut work_stack: Vec<WorkItem> =
         if let Some(ws) = resume_work_stack {
             ws
         } else {
             let mut ws = Vec::with_capacity(32);
-            ws.push(GenericWorkItem::Eval {
+            ws.push(WorkItem::Eval {
                 value,
                 env: env.clone(),
                 depth: 0,
@@ -1233,17 +1233,17 @@ fn eval_trampoline_inner<C: EvalContext>(
             ws
         };
 
-    let mut continuations: Vec<GenericContinuation> =
+    let mut continuations: Vec<Continuation> =
         if let Some(cs) = resume_continuations {
             cs
         } else {
             let mut cs = Vec::with_capacity(64);
-            cs.push(GenericContinuation::Done);
+            cs.push(Continuation::Done);
             cs
         };
 
     // Final result storage
-    let mut final_result: Option<GenericEvalResult> = None;
+    let mut final_result: Option<EvalResult> = None;
 
     // GC safepoint counter: wrapping u16 overflows every 4096 iterations (mask 0xFFF).
     // Increased from u8 (256) to reduce maybe_process_gc_response overhead (4.9% → ~1%).
@@ -1437,14 +1437,14 @@ fn eval_trampoline_inner<C: EvalContext>(
         }
 
         match work {
-            GenericWorkItem::Eval {
+            WorkItem::Eval {
                 value,
                 env,
                 depth,
                 is_tail_call,
                 expected_type,
             } => {
-                trace!(target: "mettatron::backend::eval::eval_trampoline_generic", ?value, depth, "eval work item");
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?value, depth, "eval work item");
 
                 // Debug trace (zero-conversion: uses Debug trait)
                 if debug_eval {
@@ -1466,7 +1466,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // fixpoint (evaluated to itself), skip evaluation entirely.
                 let is_sexpr = value.as_sexpr().is_some();
                 if is_sexpr && is_memoized_normal_form(&value) {
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![value], env),
                     });
                     continue;
@@ -1482,20 +1482,20 @@ fn eval_trampoline_inner<C: EvalContext>(
                     });
                     match lookup {
                         crate::backend::eval::cesk::TableLookup::Complete(cached) => {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::from_vec(cached.into_vec()), env),
                             });
                             continue;
                         }
                         crate::backend::eval::cesk::TableLookup::Cycle(partial) => {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::from_vec(partial.into_vec()), env),
                             });
                             continue;
                         }
                         crate::backend::eval::cesk::TableLookup::Absent => {
                             // Push CompleteSubgoal continuation so results are cached
-                            continuations.push(GenericContinuation::CompleteSubgoal {
+                            continuations.push(Continuation::CompleteSubgoal {
                                 expr_hash: tabling_hash,
                                 env: env.clone(),
                                 depth,
@@ -1511,7 +1511,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     let h = value.hash_value();
                     if let Some(cached_results) = eval_memo_get(h) {
                         // Cache hit — skip evaluation entirely.
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(cached_results), env),
                         });
                         continue;
@@ -1586,7 +1586,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     );
                                 }
                             }
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::from_vec(results), new_env),
 
                             });
@@ -1601,7 +1601,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // memoizable expression. When the evaluation resolves, this
                 // continuation caches the results for future lookups.
                 if let Some(h) = memo_hash {
-                    continuations.push(GenericContinuation::MemoizeResult {
+                    continuations.push(Continuation::MemoizeResult {
                         expr_hash: h,
                         env: env.clone(),
                         depth,
@@ -1614,7 +1614,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Perform one step of evaluation using generic step function
                 let step_result = eval_step_generic(value, env.clone(), depth, ctx);
                 let _ = is_tail_call; // Used to determine depth in push sites
-                trace!(target: "mettatron::backend::eval::eval_trampoline_generic", ?step_result);
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?step_result);
 
                 // Process the step result
                 match step_result {
@@ -1628,13 +1628,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                         {
                             memoize_normal_form(&result.0[0]);
                         }
-                        work_stack.push(GenericWorkItem::Resume { result });
+                        work_stack.push(WorkItem::Resume { result });
                     }
 
                     // Need to evaluate S-expression sub-items
                     GenericEvalStep::EvalSExpr { items, env, depth } => {
                         if items.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().sexpr(vec![])], env),
                             });
                         } else {
@@ -1642,14 +1642,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let collect_capacity = items_iter.len(); // total count before consuming first
                             let first = items_iter.next().expect("items is non-empty");
 
-                            continuations.push(GenericContinuation::CollectSExpr {
+                            continuations.push(Continuation::CollectSExpr {
                                 remaining: items_iter,
                                 collected: Vec::with_capacity(collect_capacity),
                                 original_env: env.clone(),
                                 depth,
                             });
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first,
                                 env,
                                 depth: depth + 1,
@@ -1708,13 +1708,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             );
                                         }
                                     }
-                                    work_stack.push(GenericWorkItem::Resume {
+                                    work_stack.push(WorkItem::Resume {
                                         result: (SmallVec::from_vec(values), env),
 
                                     });
                                 }
                                 GenericGroundedWork::EvalArg { arg_idx, state: new_state } => {
-                                    continuations.push(GenericContinuation::ProcessGroundedOp {
+                                    continuations.push(Continuation::ProcessGroundedOp {
                                         state: new_state.clone(),
                                         pending_arg_idx: arg_idx,
                                         env: env.clone(),
@@ -1723,7 +1723,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                                     // Arg already in correct type V - NO conversion
                                     let arg_to_eval = new_state.args[arg_idx].clone();
-                                    work_stack.push(GenericWorkItem::Eval {
+                                    work_stack.push(WorkItem::Eval {
                                         value: arg_to_eval,
                                         env,
                                         depth,
@@ -1774,7 +1774,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                 expr_parts.push(arg.clone());
                                             }
                                             let unreduced = ctx.factory().sexpr(expr_parts);
-                                            work_stack.push(GenericWorkItem::Resume {
+                                            work_stack.push(WorkItem::Resume {
                                                 result: (smallvec![unreduced], env),
                                             });
                                         }
@@ -1785,7 +1785,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                 ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
                                                 ExecError::NoReduce => unreachable!(),
                                             };
-                                            work_stack.push(GenericWorkItem::Resume {
+                                            work_stack.push(WorkItem::Resume {
                                                 result: (smallvec![error_value], env),
                                             });
                                         }
@@ -1801,7 +1801,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &format!("Grounded operation '{}' not found in generic registry", op_name),
                                 ctx.factory().atom("OperationNotFoundError"),
                             );
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![error_value], env),
                             });
                         }
@@ -1809,7 +1809,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start let binding
                     GenericEvalStep::StartLetBinding { pattern, value_expr, body, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessLet {
+                        continuations.push(Continuation::ProcessLet {
                             pending_values: None,
                             pattern,
                             body,
@@ -1819,7 +1819,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: value_expr,
                             env,
                             depth: depth + 1,
@@ -1830,7 +1830,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Evaluate if branch (TCO)
                     GenericEvalStep::EvalIfBranch { branch, env, depth } => {
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: branch,
                             env,
                             depth,
@@ -1891,7 +1891,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         }
 
                         if matches.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), env),
                             });
                         } else {
@@ -1906,7 +1906,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Evaluate grounded arguments
                     GenericEvalStep::EvalGroundedArgs { items, grounded_indices, env, depth } => {
                         if grounded_indices.is_empty() {
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: ctx.factory().sexpr(items),
                                 env,
                                 depth,
@@ -1924,7 +1924,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             );
 
                             let grounded_count = grounded_indices.len();
-                            continuations.push(GenericContinuation::CollectGroundedArg {
+                            continuations.push(Continuation::CollectGroundedArg {
                                 items,
                                 grounded_indices,
                                 current_idx: 0,
@@ -1933,7 +1933,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 depth,
                             });
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: arg_to_eval,
                                 env,
                                 depth: depth + 1,
@@ -1946,7 +1946,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Start map-atom
                     GenericEvalStep::StartMapAtom { elements, var_name, template, env, depth } => {
                         if elements.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().sexpr(vec![])], env),
                             });
                         } else {
@@ -1954,7 +1954,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let map_capacity = remaining.len(); // total before consuming first
                             let first = remaining.next().expect("elements is non-empty");
 
-                            continuations.push(GenericContinuation::ProcessMapAtom {
+                            continuations.push(Continuation::ProcessMapAtom {
                                 remaining_elements: remaining,
                                 var_name: var_name.clone(),
                                 template: template.clone(),
@@ -1968,7 +1968,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &template, &var_name, &first, ctx.factory(),
                             );
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
                                 depth: depth + 1,
@@ -1981,7 +1981,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Start filter-atom
                     GenericEvalStep::StartFilterAtom { elements, var_name, predicate, env, depth } => {
                         if elements.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().sexpr(vec![])], env),
                             });
                         } else {
@@ -1989,7 +1989,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let filter_capacity = remaining.len(); // total before consuming first
                             let first = remaining.next().expect("elements is non-empty");
 
-                            continuations.push(GenericContinuation::ProcessFilterAtom {
+                            continuations.push(Continuation::ProcessFilterAtom {
                                 current_element: Some(first.clone()),
                                 remaining_elements: remaining,
                                 var_name: var_name.clone(),
@@ -2004,7 +2004,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &predicate, &var_name, &first, ctx.factory(),
                             );
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
                                 depth: depth + 1,
@@ -2018,14 +2018,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Start foldl-atom
                     GenericEvalStep::StartFoldlAtom { elements, init, acc_var_name, item_var_name, operation, env, depth } => {
                         if elements.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![init], env),
                             });
                         } else {
                             let mut remaining = elements.into_iter();
                             let first = remaining.next().expect("elements is non-empty");
 
-                            continuations.push(GenericContinuation::ProcessFoldlAtom {
+                            continuations.push(Continuation::ProcessFoldlAtom {
                                 remaining_elements: remaining,
                                 acc_var_name: acc_var_name.clone(),
                                 item_var_name: item_var_name.clone(),
@@ -2042,7 +2042,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &instantiated, &item_var_name, &first, ctx.factory(),
                             );
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
                                 depth: depth + 1,
@@ -2056,7 +2056,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     GenericEvalStep::StartSortTuple { elements, var1_name, var2_name, comparator, env, depth } => {
                         if elements.len() <= 1 {
                             // 0 or 1 elements — already sorted
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().sexpr(elements)], env),
                             });
                         } else {
@@ -2075,7 +2075,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &instantiated, &var2_name, &first, ctx.factory(),
                             );
 
-                            continuations.push(GenericContinuation::ProcessSortTuple {
+                            continuations.push(Continuation::ProcessSortTuple {
                                 sorted: vec![first],
                                 unsorted,
                                 current,
@@ -2087,7 +2087,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 depth,
                             });
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
                                 depth: depth + 1,
@@ -2101,7 +2101,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     GenericEvalStep::StartBestCandidate { elements, var_name, rank_fn, env, depth } => {
                         if elements.is_empty() {
                             // Empty tuple — return Unit
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().unit()], env),
                             });
                         } else {
@@ -2113,7 +2113,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &rank_fn, &var_name, &first, ctx.factory(),
                             );
 
-                            continuations.push(GenericContinuation::ProcessBestCandidate {
+                            continuations.push(Continuation::ProcessBestCandidate {
                                 best: None,
                                 best_rank: None,
                                 remaining,
@@ -2124,7 +2124,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 depth,
                             });
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
                                 depth: depth + 1,
@@ -2139,7 +2139,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         // Fast path: literal Bool condition — skip continuation + work item
                         if let Some(is_true) = condition.as_bool() {
                             let branch = if is_true { then_branch } else { else_branch };
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: branch,
                                 env,
                                 depth,
@@ -2147,7 +2147,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 expected_type: None,
                             });
                         } else {
-                            continuations.push(GenericContinuation::ProcessIfCondition {
+                            continuations.push(Continuation::ProcessIfCondition {
                                 then_branch,
                                 else_branch,
                                 outer_bindings: None,
@@ -2156,7 +2156,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             });
 
                             // 8.7: if-condition always expects Bool — prune non-Bool branches
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: condition,
                                 env,
                                 depth: depth + 1,
@@ -2168,14 +2168,14 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Evaluate case atom
                     GenericEvalStep::EvalCaseAtom { atom, cases, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessCaseAtom {
+                        continuations.push(Continuation::ProcessCaseAtom {
                             cases,
                             outer_bindings: None,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: atom,
                             env,
                             depth: depth + 1,
@@ -2187,10 +2187,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Switch: pattern match WITHOUT evaluating atom
                     GenericEvalStep::SwitchAtom { atom, cases, env, depth } => {
                         // Switch does NOT evaluate atom - pattern match directly
-                        match eval_switch_generic(&atom, &cases, ctx.factory()) {
-                            GenericSwitchResult::Match(template, _bindings) => {
+                        match eval_switch(&atom, &cases, ctx.factory()) {
+                            SwitchResult::Match(template, _bindings) => {
                                 // Template needs evaluation
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: template,
                                     env,
                                     depth,
@@ -2198,14 +2198,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     expected_type: None,
                                 });
                             }
-                            GenericSwitchResult::Error(err) => {
-                                work_stack.push(GenericWorkItem::Resume {
+                            SwitchResult::Error(err) => {
+                                work_stack.push(WorkItem::Resume {
                                     result: (smallvec![err], env),
                                 });
                             }
-                            GenericSwitchResult::NoMatch => {
+                            SwitchResult::NoMatch => {
                                 // No case matched - prune branch (MeTTa HE returns Empty)
-                                work_stack.push(GenericWorkItem::Resume {
+                                work_stack.push(WorkItem::Resume {
                                     result: (SmallVec::new(), env),
                                 });
                             }
@@ -2214,12 +2214,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Evaluate eval
                     GenericEvalStep::EvalEval { arg, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessEvalEval {
+                        continuations.push(Continuation::ProcessEvalEval {
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: arg,
                             env,
                             depth: depth + 1,
@@ -2230,12 +2230,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Evaluate return
                     GenericEvalStep::EvalReturn { value, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessReturn {
+                        continuations.push(Continuation::ProcessReturn {
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value,
                             env,
                             depth: depth + 1,
@@ -2246,7 +2246,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start chain
                     GenericEvalStep::StartChain { expr, var, body, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessChainExpr {
+                        continuations.push(Continuation::ProcessChainExpr {
                             var,
                             body,
                             outer_bindings: None,
@@ -2254,7 +2254,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -2265,13 +2265,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start function
                     GenericEvalStep::StartFunction { expr, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessFunction {
+                        continuations.push(Continuation::ProcessFunction {
                             iteration_count: 1,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -2282,12 +2282,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Evaluate is-error
                     GenericEvalStep::EvalIsError { expr, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessIsError {
+                        continuations.push(Continuation::ProcessIsError {
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -2298,13 +2298,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start catch
                     GenericEvalStep::StartCatch { expr, default, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessCatch {
+                        continuations.push(Continuation::ProcessCatch {
                             default,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -2316,11 +2316,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Start conjunction
                     GenericEvalStep::StartConjunction { goals, env, depth } => {
                         if goals.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().unit()], env),
                             });
                         } else if goals.len() == 1 {
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: goals.into_iter().next().expect("goals.len() == 1"),
                                 env,
                                 depth,
@@ -2332,14 +2332,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let conj_capacity = remaining.len(); // total before consuming first
                             let first_goal = remaining.next().expect("non-empty");
 
-                            continuations.push(GenericContinuation::ProcessConjunction {
+                            continuations.push(Continuation::ProcessConjunction {
                                 remaining_goals: remaining,
                                 accumulated_results: Vec::with_capacity(conj_capacity),
                                 env: env.clone(),
                                 depth,
                             });
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first_goal,
                                 env,
                                 depth: depth + 1,
@@ -2351,7 +2351,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start unify
                     GenericEvalStep::StartUnify { pattern1, pattern2, success_body, failure_body, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessUnifyPattern1 {
+                        continuations.push(Continuation::ProcessUnifyPattern1 {
                             pattern2,
                             success_body,
                             failure_body,
@@ -2359,7 +2359,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: pattern1,
                             env,
                             depth: depth + 1,
@@ -2370,12 +2370,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start collapse
                     GenericEvalStep::StartCollapse { expr, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessCollapse {
+                        continuations.push(Continuation::ProcessCollapse {
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -2386,12 +2386,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start collapse-bind
                     GenericEvalStep::StartCollapseBind { expr, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessCollapseBind {
+                        continuations.push(Continuation::ProcessCollapseBind {
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -2403,7 +2403,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Start amb
                     GenericEvalStep::StartAmb { alternatives, env, depth } => {
                         if alternatives.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), env),
                             });
                         } else {
@@ -2458,7 +2458,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     alternatives, metta_env, par_budget, current_depth,
                                 );
 
-                                work_stack.push(GenericWorkItem::Resume {
+                                work_stack.push(WorkItem::Resume {
                                     result: (SmallVec::from_vec(results), env),
                                 });
                             } else {
@@ -2467,14 +2467,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 let amb_capacity = alts_iter.len(); // total before consuming first
                                 let first = alts_iter.next().expect("alternatives is non-empty");
 
-                                continuations.push(GenericContinuation::ProcessAmb {
+                                continuations.push(Continuation::ProcessAmb {
                                     remaining_alts: alts_iter,
                                     results: Vec::with_capacity(amb_capacity),
                                     env: env.clone(),
                                     depth,
                                 });
 
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: first,
                                     env,
                                     depth: depth + 1,
@@ -2487,12 +2487,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start guard
                     GenericEvalStep::StartGuard { condition, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessGuard {
+                        continuations.push(Continuation::ProcessGuard {
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: condition,
                             env,
                             depth: depth + 1,
@@ -2503,13 +2503,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start get-atoms
                     GenericEvalStep::StartGetAtoms { space_ref, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessGetAtoms {
+                        continuations.push(Continuation::ProcessGetAtoms {
                             space_ref: space_ref.clone(),
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: space_ref,
                             env,
                             depth: depth + 1,
@@ -2520,7 +2520,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start memo
                     GenericEvalStep::StartMemo { memo_ref, expr, first_only, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessMemoTable {
+                        continuations.push(Continuation::ProcessMemoTable {
                             memo_ref: memo_ref.clone(),
                             expr,
                             first_only,
@@ -2528,7 +2528,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: memo_ref,
                             env,
                             depth: depth + 1,
@@ -2539,14 +2539,14 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start new-memo
                     GenericEvalStep::StartNewMemo { name_arg, size_arg, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessNewMemoName {
+                        continuations.push(Continuation::ProcessNewMemoName {
                             name_arg: name_arg.clone(),
                             size_arg,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: name_arg,
                             env,
                             depth: depth + 1,
@@ -2558,14 +2558,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Start memo operation
                     GenericEvalStep::StartMemoOp { memo_ref, op_type, env, depth } => {
                         let is_clear = matches!(op_type, super::super::step::MemoOpType::Clear);
-                        continuations.push(GenericContinuation::ProcessMemoOp {
+                        continuations.push(Continuation::ProcessMemoOp {
                             memo_ref: memo_ref.clone(),
                             is_clear,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: memo_ref,
                             env,
                             depth: depth + 1,
@@ -2576,7 +2576,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start match
                     GenericEvalStep::StartMatch { space_arg, pattern, template, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessMatchSpace {
+                        continuations.push(Continuation::ProcessMatchSpace {
                             space_arg: space_arg.clone(),
                             pattern,
                             template,
@@ -2584,7 +2584,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: space_arg,
                             env,
                             depth: depth + 1,
@@ -2595,14 +2595,14 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start add-atom
                     GenericEvalStep::StartAddAtom { space_ref, atom, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessAddAtomSpace {
+                        continuations.push(Continuation::ProcessAddAtomSpace {
                             space_ref: space_ref.clone(),
                             atom,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: space_ref,
                             env,
                             depth: depth + 1,
@@ -2613,14 +2613,14 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start remove-atom
                     GenericEvalStep::StartRemoveAtom { space_ref, atom, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessRemoveAtomSpace {
+                        continuations.push(Continuation::ProcessRemoveAtomSpace {
                             space_ref: space_ref.clone(),
                             atom,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: space_ref,
                             env,
                             depth: depth + 1,
@@ -2631,13 +2631,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start new-state
                     GenericEvalStep::StartNewState { initial_value, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessNewState {
+                        continuations.push(Continuation::ProcessNewState {
                             initial_value: initial_value.clone(),
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: initial_value,
                             env,
                             depth: depth + 1,
@@ -2648,13 +2648,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start get-state
                     GenericEvalStep::StartGetState { state_ref, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessGetState {
+                        continuations.push(Continuation::ProcessGetState {
                             state_ref: state_ref.clone(),
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: state_ref,
                             env,
                             depth: depth + 1,
@@ -2665,14 +2665,14 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start change-state
                     GenericEvalStep::StartChangeState { state_ref, new_value, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessChangeStateRef {
+                        continuations.push(Continuation::ProcessChangeStateRef {
                             state_ref: state_ref.clone(),
                             new_value,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: state_ref,
                             env,
                             depth: depth + 1,
@@ -2683,13 +2683,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start repr
                     GenericEvalStep::StartRepr { atom, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessRepr {
+                        continuations.push(Continuation::ProcessRepr {
                             atom: atom.clone(),
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: atom,
                             env,
                             depth: depth + 1,
@@ -2700,14 +2700,14 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start format-args
                     GenericEvalStep::StartFormatArgs { format_arg, args_arg, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessFormatArgsString {
+                        continuations.push(Continuation::ProcessFormatArgsString {
                             format_arg: format_arg.clone(),
                             args_arg,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: format_arg,
                             env,
                             depth: depth + 1,
@@ -2718,13 +2718,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start println
                     GenericEvalStep::StartPrintln { atom, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessPrintln {
+                        continuations.push(Continuation::ProcessPrintln {
                             atom: atom.clone(),
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: atom,
                             env,
                             depth: depth + 1,
@@ -2735,14 +2735,14 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start trace
                     GenericEvalStep::StartTrace { message, value_expr, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessTraceMessage {
+                        continuations.push(Continuation::ProcessTraceMessage {
                             message: message.clone(),
                             value_expr,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: message,
                             env,
                             depth: depth + 1,
@@ -2753,13 +2753,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start get-metatype
                     GenericEvalStep::StartGetMetatype { atom, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessGetMetatype {
+                        continuations.push(Continuation::ProcessGetMetatype {
                             atom: atom.clone(),
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: atom,
                             env,
                             depth: depth + 1,
@@ -2770,13 +2770,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start bind
                     GenericEvalStep::StartBind { token, atom_expr, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessBind {
+                        continuations.push(Continuation::ProcessBind {
                             token,
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: atom_expr,
                             env,
                             depth: depth + 1,
@@ -2787,7 +2787,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start if-reducible: evaluate expr, then compare to original
                     GenericEvalStep::EvalIfReducible { expr, then_branch, else_branch, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessIfReducible {
+                        continuations.push(Continuation::ProcessIfReducible {
                             original_expr: expr.clone(),
                             then_branch,
                             else_branch,
@@ -2795,7 +2795,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -2806,7 +2806,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start match-or: evaluate space, then match with default fallback
                     GenericEvalStep::StartMatchOr { space_arg, pattern, default, template, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessMatchOrSpace {
+                        continuations.push(Continuation::ProcessMatchOrSpace {
                             space_arg: space_arg.clone(),
                             pattern,
                             default,
@@ -2815,7 +2815,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: space_arg,
                             env,
                             depth: depth + 1,
@@ -2829,11 +2829,11 @@ fn eval_trampoline_inner<C: EvalContext>(
             // ── Lazy binding: evaluate template with deferred bindings ──
             //
             // Instead of eagerly materializing the entire expression tree via
-            // `apply_bindings_generic` (O(tree_depth) recursive alloc), we carry
+            // `apply_bindings` (O(tree_depth) recursive alloc), we carry
             // `(template, bindings)` and resolve lazily. For nested `let*` chains,
             // this reduces O(N^2) tree materialization to O(N) by composing
             // bindings at each level and only materializing the innermost body.
-            GenericWorkItem::EvalWithBindings {
+            WorkItem::EvalWithBindings {
                 template,
                 bindings,
                 env,
@@ -2843,7 +2843,7 @@ fn eval_trampoline_inner<C: EvalContext>(
             } => {
                 // Fast path: empty bindings or no variables → just Eval
                 if bindings.is_empty() || !template.has_variables_fast() {
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: template,
                         env,
                         depth,
@@ -2889,7 +2889,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     let lookup = crate::backend::eval::cesk::with_thunk_table(|t| t.lookup(thunk_hash));
                     match lookup {
                         crate::backend::eval::cesk::ThunkLookup::Evaluated(cached) => {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::from_vec(cached.into_vec()), env),
                             });
                             continue;
@@ -2897,14 +2897,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                         crate::backend::eval::cesk::ThunkLookup::Blackhole => {
                             // Infinite recursion detected — return error
                             let error_val = ctx.factory().error("blackhole", ctx.factory().atom("infinite recursion in EvalWithBindings"));
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![error_val], env),
                             });
                             continue;
                         }
                         _ => {
                             // Absent or Suspended — push CompleteThunk, proceed normally
-                            continuations.push(GenericContinuation::CompleteThunk {
+                            continuations.push(Continuation::CompleteThunk {
                                 thunk_hash,
                                 env: env.clone(),
                                 depth,
@@ -2920,7 +2920,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let resolved = bound.clone();
                             if resolved.has_variables_fast() {
                                 // Resolved value still has variables → recurse
-                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                work_stack.push(WorkItem::EvalWithBindings {
                                     template: resolved,
                                     bindings,
                                     env,
@@ -2929,7 +2929,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     expected_type,
                                 });
                             } else {
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: resolved,
                                     env,
                                     depth,
@@ -2938,13 +2938,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 });
                             }
                         } else {
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: template, env, depth, is_tail_call, expected_type,
                             });
                         }
                     } else {
                         // Non-variable atom: self-evaluating
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![template], env),
                         });
                     }
@@ -2954,7 +2954,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Template is an S-expression → check for `let` special form
                 if let Some(items) = template.as_sexpr() {
                     if items.is_empty() {
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![template], env),
                         });
                         continue;
@@ -2983,10 +2983,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // For nested let* of depth N, the body is never materialized
                     // until the innermost level, giving O(N) instead of O(N^2).
                     if resolved_head_atom == Some("let") && items.len() == 4 {
-                        let pattern = apply_bindings_generic(&items[1], &bindings, ctx.factory());
-                        let value_expr = apply_bindings_generic(&items[2], &bindings, ctx.factory());
+                        let pattern = apply_bindings(&items[1], &bindings, ctx.factory());
+                        let value_expr = apply_bindings(&items[2], &bindings, ctx.factory());
 
-                        continuations.push(GenericContinuation::ProcessLet {
+                        continuations.push(Continuation::ProcessLet {
                             pending_values: None,
                             pattern,
                             body: items[3].clone(), // RAW body — not materialized
@@ -2996,7 +2996,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: value_expr,
                             env,
                             depth: depth + 1,
@@ -3014,12 +3014,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // 3. When condition resolves to True/False, evaluate only the taken branch
                     //    via EvalWithBindings{branch, B} — the untaken branch is never materialized.
                     if resolved_head_atom == Some("if") && items.len() == 4 {
-                        let condition = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+                        let condition = apply_bindings(&items[1], &bindings, ctx.factory());
 
                         // Fast path: literal Bool after binding substitution
                         if let Some(is_true) = condition.as_bool() {
                             let branch_raw = if is_true { &items[2] } else { &items[3] };
-                            work_stack.push(GenericWorkItem::EvalWithBindings {
+                            work_stack.push(WorkItem::EvalWithBindings {
                                 template: branch_raw.clone(),
                                 bindings,
                                 env,
@@ -3030,7 +3030,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             continue;
                         }
 
-                        continuations.push(GenericContinuation::ProcessIfCondition {
+                        continuations.push(Continuation::ProcessIfCondition {
                             then_branch: items[2].clone(), // RAW — not materialized
                             else_branch: items[3].clone(), // RAW — not materialized
                             outer_bindings: Some(bindings),
@@ -3038,7 +3038,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: condition,
                             env,
                             depth: depth + 1,
@@ -3056,11 +3056,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // evaluate value expressions sequentially and accumulate bindings.
                     // Reduces to N+2 iterations and 0 nested `let` allocations.
                     if resolved_head_atom == Some("let*") && items.len() == 3 {
-                        let bindings_expr = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+                        let bindings_expr = apply_bindings(&items[1], &bindings, ctx.factory());
                         if let Some(binding_pairs) = bindings_expr.as_sexpr() {
                             if binding_pairs.is_empty() || bindings_expr.is_unit() {
                                 // No bindings — evaluate body with outer bindings
-                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                work_stack.push(WorkItem::EvalWithBindings {
                                     template: items[2].clone(),
                                     bindings,
                                     env,
@@ -3083,7 +3083,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             if pairs.is_empty() {
                                 // No valid pairs — evaluate body
-                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                work_stack.push(WorkItem::EvalWithBindings {
                                     template: items[2].clone(),
                                     bindings,
                                     env,
@@ -3096,13 +3096,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             // Pop first pair, materialize its value_expr with current bindings
                             let (first_pattern, first_value_expr) = pairs.remove(0);
-                            let materialized_value = apply_bindings_generic(
+                            let materialized_value = apply_bindings(
                                 &first_value_expr, &bindings, ctx.factory(),
                             );
 
                             // I-5: Enter region for let* scope
                             let region_id = crate::backend::eval::cesk::with_region_stack(|s| s.enter(depth as u32));
-                            continuations.push(GenericContinuation::ProcessLetStar {
+                            continuations.push(Continuation::ProcessLetStar {
                                 current_pattern: first_pattern,
                                 remaining_pairs: pairs,
                                 body: items[2].clone(), // RAW body
@@ -3113,7 +3113,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 region_id,
                             });
 
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: materialized_value,
                                 env,
                                 depth: depth + 1,
@@ -3133,9 +3133,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // 3. When expr resolves, compose {$var → result} into B and evaluate
                     //    body via EvalWithBindings{body, B ∪ {$var → result}}.
                     if resolved_head_atom == Some("chain") && items.len() == 4 {
-                        let expr = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+                        let expr = apply_bindings(&items[1], &bindings, ctx.factory());
 
-                        continuations.push(GenericContinuation::ProcessChainExpr {
+                        continuations.push(Continuation::ProcessChainExpr {
                             var: items[2].clone(),  // $var — doesn't need materialization
                             body: items[3].clone(), // RAW body — not materialized
                             outer_bindings: Some(bindings),
@@ -3143,7 +3143,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env,
                             depth: depth + 1,
@@ -3161,16 +3161,16 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // 3. When the matched case template is selected, cases are materialized
                     //    with B (patterns may reference outer variables).
                     if resolved_head_atom == Some("case") && items.len() == 3 {
-                        let atom = apply_bindings_generic(&items[1], &bindings, ctx.factory());
+                        let atom = apply_bindings(&items[1], &bindings, ctx.factory());
 
-                        continuations.push(GenericContinuation::ProcessCaseAtom {
+                        continuations.push(Continuation::ProcessCaseAtom {
                             cases: items[2].clone(), // RAW — deferred materialization
                             outer_bindings: Some(bindings),
                             env: env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: atom,
                             env,
                             depth: depth + 1,
@@ -3192,19 +3192,19 @@ fn eval_trampoline_inner<C: EvalContext>(
                     ) {
                         match chain_result {
                             DeferredChainResult::Deferred { template: new_template, bindings: new_bindings } => {
-                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                work_stack.push(WorkItem::EvalWithBindings {
                                     template: new_template,
                                     bindings: new_bindings,
                                     env, depth, is_tail_call, expected_type,
                                 });
                             }
                             DeferredChainResult::Concrete(value) => {
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value, env, depth, is_tail_call, expected_type,
                                 });
                             }
                             DeferredChainResult::Done(value) => {
-                                work_stack.push(GenericWorkItem::Resume {
+                                work_stack.push(WorkItem::Resume {
                                     result: (smallvec![value], env),
                                 });
                             }
@@ -3244,27 +3244,27 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // All other S-expressions: full materialization + Eval
-                    let materialized = apply_bindings_generic(&template, &bindings, ctx.factory());
-                    work_stack.push(GenericWorkItem::Eval {
+                    let materialized = apply_bindings(&template, &bindings, ctx.factory());
+                    work_stack.push(WorkItem::Eval {
                         value: materialized, env, depth, is_tail_call, expected_type,
                     });
                     continue;
                 }
 
                 // Non-S-expression (type, conjunction, etc.): materialize
-                let materialized = apply_bindings_generic(&template, &bindings, ctx.factory());
-                work_stack.push(GenericWorkItem::Eval {
+                let materialized = apply_bindings(&template, &bindings, ctx.factory());
+                work_stack.push(WorkItem::Eval {
                     value: materialized, env, depth, is_tail_call, expected_type,
                 });
             }
 
-            GenericWorkItem::Resume { result } => {
+            WorkItem::Resume { result } => {
                 // Take ownership of continuation for processing
                 let cont = continuations.pop().expect("non-empty continuation stack");
-                trace!(target: "mettatron::backend::eval::eval_trampoline_generic", ?cont, result_values = ?result.0, "resume work item");
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?cont, result_values = ?result.0, "resume work item");
 
                 // Process continuation - delegate to continuation handler
-                process_continuation_generic(
+                process_continuation(
                     cont,
                     result,
                     &mut work_stack,
@@ -3313,23 +3313,23 @@ fn eval_trampoline_inner<C: EvalContext>(
 ///
 /// This function handles all continuation types, converting at boundaries
 /// where necessary to interact with heap-based infrastructure (rules, environment).
-fn process_continuation_generic<C: EvalContext>(
-    cont: GenericContinuation,
-    result: GenericEvalResult,
-    work_stack: &mut Vec<GenericWorkItem>,
-    continuations: &mut Vec<GenericContinuation>,
-    final_result: &mut Option<GenericEvalResult>,
+fn process_continuation<C: EvalContext>(
+    cont: Continuation,
+    result: EvalResult,
+    work_stack: &mut Vec<WorkItem>,
+    continuations: &mut Vec<Continuation>,
+    final_result: &mut Option<EvalResult>,
     ctx: &C,
     deferred_shared_drops: &mut Vec<std::sync::Arc<
         crate::backend::environment::GenericEnvironmentShared<MettaValue>,
     >>,
 ) {
     match cont {
-        GenericContinuation::Done => {
+        Continuation::Done => {
             *final_result = Some(result);
         }
 
-        GenericContinuation::CollectSExpr {
+        Continuation::CollectSExpr {
             mut remaining,
             mut collected,
             original_env,
@@ -3344,13 +3344,13 @@ fn process_continuation_generic<C: EvalContext>(
 
                 match processed {
                     GenericProcessedSExpr::Done((results, env)) => {
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (results, env),
                         });
                     }
                     GenericProcessedSExpr::EvalRuleMatches { matches, env, depth, base_results } => {
                         if matches.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (base_results, env),
                             });
                         } else {
@@ -3359,7 +3359,7 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                     }
                     GenericProcessedSExpr::EvalCombinations { combinations, env, depth } => {
-                        continuations.push(GenericContinuation::ProcessCombinations {
+                        continuations.push(Continuation::ProcessCombinations {
                             combinations,
                             results: Vec::with_capacity(8),
                             pending_rule_matches: Vec::new(),
@@ -3367,13 +3367,13 @@ fn process_continuation_generic<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::new(), env),
                         });
                     }
                     GenericProcessedSExpr::RedispatchSExpr { items, env, depth: redispatch_depth } => {
                         let sexpr = ctx.factory().sexpr(items);
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: sexpr,
                             env,
                             depth: redispatch_depth,
@@ -3385,14 +3385,14 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 let next = remaining.next().expect("remaining is non-empty");
 
-                continuations.push(GenericContinuation::CollectSExpr {
+                continuations.push(Continuation::CollectSExpr {
                     remaining,
                     collected,
                     original_env: original_env.clone(),
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next,
                     env: original_env,
                     depth: depth + 1,
@@ -3402,7 +3402,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessRuleMatches {
+        Continuation::ProcessRuleMatches {
             mut remaining_matches,
             mut results,
             env,
@@ -3449,7 +3449,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // are collected into root_set at the next GC safepoint via
                 // collect_roots(), then the Vec is cleared after perform_safepoint.
                 deferred_shared_drops.push(std::sync::Arc::clone(&env.shared));
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
                 });
             } else {
@@ -3483,7 +3483,7 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 };
 
-                continuations.push(GenericContinuation::ProcessRuleMatches {
+                continuations.push(Continuation::ProcessRuleMatches {
                     remaining_matches,
                     results,
                     env: env.clone(),
@@ -3525,7 +3525,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
                 if rhs.has_variables_fast() {
-                    work_stack.push(GenericWorkItem::EvalWithBindings {
+                    work_stack.push(WorkItem::EvalWithBindings {
                         template: rhs,
                         bindings,
                         env,
@@ -3535,16 +3535,16 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 } else {
                     if is_memoized_normal_form(&rhs) {
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![rhs], env),
                         });
                     } else if is_normal_form_bounded(&rhs, &env, 2) {
                         memoize_normal_form(&rhs);
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![rhs], env),
                         });
                     } else {
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: rhs,
                             env,
                             depth,
@@ -3557,7 +3557,7 @@ fn process_continuation_generic<C: EvalContext>(
         }
 
         // ── I-15: ProcessRuleMatchesLazy — demand-driven branch evaluation ──
-        GenericContinuation::ProcessRuleMatchesLazy {
+        Continuation::ProcessRuleMatchesLazy {
             mut coroutine,
             mut results,
             env: _,
@@ -3573,12 +3573,12 @@ fn process_continuation_generic<C: EvalContext>(
 
             if coroutine.is_done() {
                 // Demand satisfied or branches exhausted
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
                 });
             } else if let Some((rhs, bindings)) = coroutine.next_branch() {
                 // More branches to evaluate — push continuation and eval next
-                continuations.push(GenericContinuation::ProcessRuleMatchesLazy {
+                continuations.push(Continuation::ProcessRuleMatchesLazy {
                     coroutine,
                     results,
                     env: result_env.clone(),
@@ -3586,7 +3586,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
 
                 if rhs.has_variables_fast() {
-                    work_stack.push(GenericWorkItem::EvalWithBindings {
+                    work_stack.push(WorkItem::EvalWithBindings {
                         template: rhs,
                         bindings,
                         env: result_env,
@@ -3595,7 +3595,7 @@ fn process_continuation_generic<C: EvalContext>(
                         expected_type: None,
                     });
                 } else {
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: rhs,
                         env: result_env,
                         depth: depth + 1,
@@ -3605,13 +3605,13 @@ fn process_continuation_generic<C: EvalContext>(
                 }
             } else {
                 // Exhausted — return what we have
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
                 });
             }
         }
 
-        GenericContinuation::ProcessGroundedOp {
+        Continuation::ProcessGroundedOp {
             mut state,
             pending_arg_idx,
             env: _,
@@ -3632,13 +3632,13 @@ fn process_continuation_generic<C: EvalContext>(
                             .into_iter()
                             .map(|(v, _)| v)
                             .collect();
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(values), result_env),
 
                         });
                     }
                     GenericGroundedWork::EvalArg { arg_idx, state: new_state } => {
-                        continuations.push(GenericContinuation::ProcessGroundedOp {
+                        continuations.push(Continuation::ProcessGroundedOp {
                             state: new_state.clone(),
                             pending_arg_idx: arg_idx,
                             env: result_env.clone(),
@@ -3647,7 +3647,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                         // Arg already in correct type V - NO conversion
                         let arg_to_eval = new_state.args[arg_idx].clone();
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: arg_to_eval,
                             env: result_env,
                             depth,
@@ -3665,7 +3665,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     expr_parts.push(arg.clone());
                                 }
                                 let unreduced = ctx.factory().sexpr(expr_parts);
-                                work_stack.push(GenericWorkItem::Resume {
+                                work_stack.push(WorkItem::Resume {
                                     result: (smallvec![unreduced], result_env),
                                 });
                             }
@@ -3676,7 +3676,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
                                     ExecError::NoReduce => unreachable!(),
                                 };
-                                work_stack.push(GenericWorkItem::Resume {
+                                work_stack.push(WorkItem::Resume {
                                     result: (smallvec![error_value], result_env),
                                 });
                             }
@@ -3690,13 +3690,13 @@ fn process_continuation_generic<C: EvalContext>(
                     &format!("Grounded operation '{}' not found in generic registry", state.op_name),
                     ctx.factory().atom("OperationNotFoundError"),
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![error_value], result_env),
                 });
             }
         }
 
-        GenericContinuation::ProcessCombinations {
+        Continuation::ProcessCombinations {
             mut combinations,
             mut results,
             mut pending_rule_matches,
@@ -3709,7 +3709,7 @@ fn process_continuation_generic<C: EvalContext>(
             // Process pending rule matches first
             // pending_rule_matches is already in generic type (V, GenericBindings<V>)
             if let Some((rhs, bindings)) = pending_rule_matches.pop() {
-                continuations.push(GenericContinuation::ProcessCombinations {
+                continuations.push(Continuation::ProcessCombinations {
                     combinations,
                     results,
                     pending_rule_matches,
@@ -3719,7 +3719,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
                 if rhs.has_variables_fast() {
-                    work_stack.push(GenericWorkItem::EvalWithBindings {
+                    work_stack.push(WorkItem::EvalWithBindings {
                         template: rhs,
                         bindings,
                         env: result_env,
@@ -3728,7 +3728,7 @@ fn process_continuation_generic<C: EvalContext>(
                         expected_type: None,
                     });
                 } else {
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: rhs,
                         env: result_env,
                         depth,
@@ -3745,13 +3745,13 @@ fn process_continuation_generic<C: EvalContext>(
                 let generic_sexpr = ctx.factory().sexpr(combo.to_vec());
 
                 // Try to match rules using generic version - no conversion needed!
-                let all_matches_with_types = try_match_all_rules_generic(&generic_sexpr, &result_env, *ctx.factory());
+                let all_matches_with_types = try_match_all_rules(&generic_sexpr, &result_env, *ctx.factory());
 
                 if all_matches_with_types.is_empty() {
                     // No rule matches - expression is data
                     results.push(generic_sexpr);
 
-                    continuations.push(GenericContinuation::ProcessCombinations {
+                    continuations.push(Continuation::ProcessCombinations {
                         combinations,
                         results,
                         pending_rule_matches,
@@ -3759,7 +3759,7 @@ fn process_continuation_generic<C: EvalContext>(
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 } else {
@@ -3770,7 +3770,7 @@ fn process_continuation_generic<C: EvalContext>(
                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                         .collect();
 
-                    continuations.push(GenericContinuation::ProcessCombinations {
+                    continuations.push(Continuation::ProcessCombinations {
                         combinations,
                         results,
                         pending_rule_matches: Vec::new(), // dispatch handles all matches
@@ -3783,14 +3783,14 @@ fn process_continuation_generic<C: EvalContext>(
                 }
             } else {
                 // All combinations processed - results already contains generic values
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),
 
                 });
             }
         }
 
-        GenericContinuation::ProcessLet {
+        Continuation::ProcessLet {
             pending_values,
             pattern,
             body,
@@ -3849,21 +3849,21 @@ fn process_continuation_generic<C: EvalContext>(
                                 }
                             }
                         }
-                        if let Some(pm_bindings) = pattern_match_generic(&pattern, value) {
+                        if let Some(pm_bindings) = pattern_match(&pattern, value) {
                             if let Some(ref ob) = outer_bindings {
                                 // Compose outer + pattern-match bindings, defer body
                                 let composed = ob.compose(&pm_bindings);
                                 bound_bodies.push(BoundBody::Deferred(composed));
                             } else {
                                 // No outer bindings — materialize body as before
-                                let instantiated = apply_bindings_generic(&body, &pm_bindings, ctx.factory());
+                                let instantiated = apply_bindings(&body, &pm_bindings, ctx.factory());
                                 bound_bodies.push(BoundBody::Materialized(instantiated));
                             }
                         }
                     }
 
                     if bound_bodies.is_empty() {
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(results), result_env),
                         });
                         return;
@@ -3874,7 +3874,7 @@ fn process_continuation_generic<C: EvalContext>(
                         let single = bound_bodies.into_iter().next().expect("len == 1");
                         match single {
                             BoundBody::Materialized(val) => {
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: val,
                                     env: result_env,
                                     depth,
@@ -3883,7 +3883,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 });
                             }
                             BoundBody::Deferred(composed_bindings) => {
-                                work_stack.push(GenericWorkItem::EvalWithBindings {
+                                work_stack.push(WorkItem::EvalWithBindings {
                                     template: body.clone(),
                                     bindings: composed_bindings,
                                     env: result_env,
@@ -3901,7 +3901,7 @@ fn process_continuation_generic<C: EvalContext>(
                         match bb {
                             BoundBody::Materialized(val) => val,
                             BoundBody::Deferred(composed_bindings) => {
-                                apply_bindings_generic(&body, &composed_bindings, ctx.factory())
+                                apply_bindings(&body, &composed_bindings, ctx.factory())
                             }
                         }
                     }).collect();
@@ -3945,7 +3945,7 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut merged = results;
                         merged.extend(par_results);
 
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(merged), result_env),
 
                         });
@@ -3957,14 +3957,14 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut bodies_iter = instantiated_bodies.into_iter();
                         let first_body = bodies_iter.next().expect("bodies is non-empty");
 
-                        continuations.push(GenericContinuation::ProcessAmb {
+                        continuations.push(Continuation::ProcessAmb {
                             remaining_alts: bodies_iter,
                             results,
                             env: result_env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: first_body,
                             env: result_env,
                             depth,
@@ -3995,7 +3995,7 @@ fn process_continuation_generic<C: EvalContext>(
                                         }
                                     }
                                 }
-                                if let Some(bindings) = pattern_match_generic(&pattern, &value) {
+                                if let Some(bindings) = pattern_match(&pattern, &value) {
                                     // Trace: pattern-match phase (subsequent resumption)
                                     #[cfg(feature = "eval-trace")]
                                     {
@@ -4015,7 +4015,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     }
 
                                     // Restore continuation for collecting more results
-                                    continuations.push(GenericContinuation::ProcessLet {
+                                    continuations.push(Continuation::ProcessLet {
                                         pending_values: Some(remaining_values),
                                         pattern,
                                         body: body.clone(),
@@ -4028,7 +4028,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     // Pattern matches - evaluate body with bindings
                                     if let Some(ref ob) = outer_bindings {
                                         let composed = ob.compose(&bindings);
-                                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                                        work_stack.push(WorkItem::EvalWithBindings {
                                             template: body,
                                             bindings: composed,
                                             env: result_env,
@@ -4037,8 +4037,8 @@ fn process_continuation_generic<C: EvalContext>(
                                             expected_type: None,
                                         });
                                     } else {
-                                        let instantiated_body = apply_bindings_generic(&body, &bindings, ctx.factory());
-                                        work_stack.push(GenericWorkItem::Eval {
+                                        let instantiated_body = apply_bindings(&body, &bindings, ctx.factory());
+                                        work_stack.push(WorkItem::Eval {
                                             value: instantiated_body,
                                             env: result_env,
                                             depth,
@@ -4069,7 +4069,7 @@ fn process_continuation_generic<C: EvalContext>(
                             }
                             None => {
                                 // All values processed - return results to parent
-                                work_stack.push(GenericWorkItem::Resume {
+                                work_stack.push(WorkItem::Resume {
                                     result: (SmallVec::from_vec(results), result_env),
 
                                 });
@@ -4081,7 +4081,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::CollectGroundedArg {
+        Continuation::CollectGroundedArg {
             items,
             grounded_indices,
             current_idx,
@@ -4110,7 +4110,7 @@ fn process_continuation_generic<C: EvalContext>(
                     &items, arg_idx, &result_env, ctx.factory(),
                 );
 
-                continuations.push(GenericContinuation::CollectGroundedArg {
+                continuations.push(Continuation::CollectGroundedArg {
                     items,
                     grounded_indices,
                     current_idx: next_idx,
@@ -4119,7 +4119,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: arg_to_eval,
                     env: result_env,
                     depth: depth + 1,
@@ -4134,7 +4134,7 @@ fn process_continuation_generic<C: EvalContext>(
                 if evaluated_results.iter().any(|r| r.is_empty()) {
                     // Empty result from any arg → no combinations possible
                     // (Cartesian product of anything × empty = empty)
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 } else {
@@ -4197,7 +4197,7 @@ fn process_continuation_generic<C: EvalContext>(
                             // that were skipped when Step 2 (EvalGroundedArgs) fired.
 
                             // Step 3: Try rule matching with the (unchanged) expression
-                            let all_matches_with_types = try_match_all_rules_generic(
+                            let all_matches_with_types = try_match_all_rules(
                                 &sexpr, &result_env, *ctx.factory()
                             );
 
@@ -4210,13 +4210,13 @@ fn process_continuation_generic<C: EvalContext>(
                                 dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations, None);
                             } else {
                                 // Step 4: No rules matched — return as data constructor
-                                work_stack.push(GenericWorkItem::Resume {
+                                work_stack.push(WorkItem::Resume {
                                     result: (smallvec![sexpr], result_env),
                                 });
                             }
                         } else {
                             // Args changed — safe to re-evaluate with new arg values
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: sexpr,
                                 env: result_env,
                                 depth,
@@ -4230,14 +4230,14 @@ fn process_continuation_generic<C: EvalContext>(
                         let first = remaining.next().expect("combinations is non-empty");
                         let app_capacity = remaining.len() + 1;
 
-                        continuations.push(GenericContinuation::CollectApplicativeResults {
+                        continuations.push(Continuation::CollectApplicativeResults {
                             remaining,
                             results: Vec::with_capacity(app_capacity),
                             env: result_env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: first,
                             env: result_env,
                             depth,
@@ -4249,7 +4249,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::CollectApplicativeResults {
+        Continuation::CollectApplicativeResults {
             mut remaining,
             mut results,
             env: _,
@@ -4260,7 +4260,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if remaining.len() == 0 {
                 // All combinations evaluated — resume parent with collected results
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
 
                 });
@@ -4268,14 +4268,14 @@ fn process_continuation_generic<C: EvalContext>(
                 // Evaluate next combination
                 let next = remaining.next().expect("remaining is non-empty");
 
-                continuations.push(GenericContinuation::CollectApplicativeResults {
+                continuations.push(Continuation::CollectApplicativeResults {
                     remaining,
                     results,
                     env: result_env.clone(),
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next,
                     env: result_env,
                     depth,
@@ -4285,7 +4285,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessMapAtom {
+        Continuation::ProcessMapAtom {
             mut remaining_elements,
             var_name,
             template,
@@ -4303,7 +4303,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // Check for error propagation
                 if first_result.is_error() {
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![first_result], result_env),
                     });
                     return;
@@ -4314,7 +4314,7 @@ fn process_continuation_generic<C: EvalContext>(
             if remaining_elements.len() == 0 {
                 // All elements processed - return result list
                 let result_list = ctx.factory().sexpr(collected_results);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_list], result_env),
                 });
             } else {
@@ -4326,7 +4326,7 @@ fn process_continuation_generic<C: EvalContext>(
                     &template, &var_name, &next_element, ctx.factory(),
                 );
 
-                continuations.push(GenericContinuation::ProcessMapAtom {
+                continuations.push(Continuation::ProcessMapAtom {
                     remaining_elements,
                     var_name,
                     template,
@@ -4335,7 +4335,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: instantiated,
                     env: result_env,
                     depth,
@@ -4345,7 +4345,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessFilterAtom {
+        Continuation::ProcessFilterAtom {
             current_element,
             mut remaining_elements,
             var_name,
@@ -4362,7 +4362,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // Check for error propagation
                 if first_result.is_error() {
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![first_result], result_env),
                     });
                     return;
@@ -4384,7 +4384,7 @@ fn process_continuation_generic<C: EvalContext>(
             if remaining_elements.len() == 0 {
                 // All elements processed - return filtered list
                 let result_list = ctx.factory().sexpr(filtered_results);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_list], result_env),
                 });
             } else {
@@ -4396,7 +4396,7 @@ fn process_continuation_generic<C: EvalContext>(
                     &predicate, &var_name, &next_element, ctx.factory(),
                 );
 
-                continuations.push(GenericContinuation::ProcessFilterAtom {
+                continuations.push(Continuation::ProcessFilterAtom {
                     current_element: Some(next_element),
                     remaining_elements,
                     var_name,
@@ -4406,7 +4406,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: instantiated,
                     env: result_env,
                     depth,
@@ -4416,7 +4416,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessFoldlAtom {
+        Continuation::ProcessFoldlAtom {
             mut remaining_elements,
             acc_var_name,
             item_var_name,
@@ -4434,7 +4434,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // Check for error propagation
                 if first_result.is_error() {
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![first_result], result_env),
                     });
                     return;
@@ -4444,7 +4444,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if remaining_elements.len() == 0 {
                 // All elements processed - return final accumulator
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![accumulator], result_env),
                 });
             } else {
@@ -4459,7 +4459,7 @@ fn process_continuation_generic<C: EvalContext>(
                     &instantiated, &item_var_name, &next_element, ctx.factory(),
                 );
 
-                continuations.push(GenericContinuation::ProcessFoldlAtom {
+                continuations.push(Continuation::ProcessFoldlAtom {
                     remaining_elements,
                     acc_var_name,
                     item_var_name,
@@ -4468,7 +4468,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: instantiated,
                     env: result_env,
                     depth,
@@ -4478,7 +4478,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessSortTuple {
+        Continuation::ProcessSortTuple {
             mut sorted,
             mut unsorted,
             current,
@@ -4511,7 +4511,7 @@ fn process_continuation_generic<C: EvalContext>(
                         &instantiated, &var2_name, &sorted[next_pos], ctx.factory(),
                     );
 
-                    continuations.push(GenericContinuation::ProcessSortTuple {
+                    continuations.push(Continuation::ProcessSortTuple {
                         sorted,
                         unsorted,
                         current,
@@ -4523,7 +4523,7 @@ fn process_continuation_generic<C: EvalContext>(
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env: result_env,
                         depth: depth + 1,
@@ -4541,7 +4541,7 @@ fn process_continuation_generic<C: EvalContext>(
             if unsorted.is_empty() {
                 // Sorting complete
                 let result_tuple = ctx.factory().sexpr(sorted);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_tuple], result_env),
                 });
             } else {
@@ -4555,7 +4555,7 @@ fn process_continuation_generic<C: EvalContext>(
                     &instantiated, &var2_name, &sorted[0], ctx.factory(),
                 );
 
-                continuations.push(GenericContinuation::ProcessSortTuple {
+                continuations.push(Continuation::ProcessSortTuple {
                     sorted,
                     unsorted,
                     current: next_current,
@@ -4567,7 +4567,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: instantiated,
                     env: result_env,
                     depth: depth + 1,
@@ -4577,7 +4577,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessBestCandidate {
+        Continuation::ProcessBestCandidate {
             best,
             best_rank,
             mut remaining,
@@ -4603,7 +4603,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if remaining.len() == 0 {
                 // Done — return best
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![new_best], result_env),
                 });
             } else {
@@ -4614,7 +4614,7 @@ fn process_continuation_generic<C: EvalContext>(
                     &rank_fn, &var_name, &next, ctx.factory(),
                 );
 
-                continuations.push(GenericContinuation::ProcessBestCandidate {
+                continuations.push(Continuation::ProcessBestCandidate {
                     best: Some(new_best),
                     best_rank: new_best_rank,
                     remaining,
@@ -4625,7 +4625,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: instantiated,
                     env: result_env,
                     depth: depth + 1,
@@ -4635,7 +4635,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessIfCondition {
+        Continuation::ProcessIfCondition {
             then_branch,
             else_branch,
             outer_bindings,
@@ -4665,7 +4665,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 // Check for error in condition
                 if first.is_error() {
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![first.clone()], env_after_cond),
                     });
                     return;
@@ -4718,7 +4718,7 @@ fn process_continuation_generic<C: EvalContext>(
                     // of the taken branch via EvalWithBindings.
                     if let Some(ob) = outer_bindings {
                         if branch.has_variables_fast() {
-                            work_stack.push(GenericWorkItem::EvalWithBindings {
+                            work_stack.push(WorkItem::EvalWithBindings {
                                 template: branch,
                                 bindings: ob,
                                 env: env_after_cond,
@@ -4727,7 +4727,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 expected_type: None,
                             });
                         } else {
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: branch,
                                 env: env_after_cond,
                                 depth,
@@ -4736,7 +4736,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
                         }
                     } else {
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: branch,
                             env: env_after_cond,
                             depth,
@@ -4750,8 +4750,8 @@ fn process_continuation_generic<C: EvalContext>(
                     // (needed for the unreduced (if cond then else) output).
                     let (mat_then, mat_else) = if let Some(ref ob) = outer_bindings {
                         (
-                            apply_bindings_generic(&then_branch, ob, ctx.factory()),
-                            apply_bindings_generic(&else_branch, ob, ctx.factory()),
+                            apply_bindings(&then_branch, ob, ctx.factory()),
+                            apply_bindings(&else_branch, ob, ctx.factory()),
                         )
                     } else {
                         (then_branch, else_branch)
@@ -4779,7 +4779,7 @@ fn process_continuation_generic<C: EvalContext>(
                         mat_then,
                         mat_else,
                     ]);
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![unreduced], env_after_cond),
                     });
                 }
@@ -4787,13 +4787,13 @@ fn process_continuation_generic<C: EvalContext>(
                 // MeTTa HE: if-condition produced zero results → entire if produces zero results.
                 // This is branch annihilation: an empty condition means the if-expression
                 // contributes nothing to the nondeterministic result set.
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), env_after_cond),
                 });
             }
         }
 
-        GenericContinuation::ProcessCaseAtom {
+        Continuation::ProcessCaseAtom {
             cases,
             outer_bindings,
             env: _,
@@ -4802,7 +4802,7 @@ fn process_continuation_generic<C: EvalContext>(
             // Phase C: If outer_bindings present, materialize cases (patterns +
             // templates may reference outer-scope variables).
             let cases = if let Some(ref ob) = outer_bindings {
-                apply_bindings_generic(&cases, ob, ctx.factory())
+                apply_bindings(&cases, ob, ctx.factory())
             } else {
                 cases
             };
@@ -4836,10 +4836,10 @@ fn process_continuation_generic<C: EvalContext>(
             if filtered_results.is_empty() {
                 // Match Empty against cases - NO conversion needed
                 let empty_atom = ctx.factory().atom("Empty");
-                match eval_switch_generic(&empty_atom, &cases, ctx.factory()) {
-                    GenericSwitchResult::Match(template, _bindings) => {
+                match eval_switch(&empty_atom, &cases, ctx.factory()) {
+                    SwitchResult::Match(template, _bindings) => {
                         // Template needs evaluation
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: template,
                             env: atom_env,
                             depth,
@@ -4847,14 +4847,14 @@ fn process_continuation_generic<C: EvalContext>(
                             expected_type: None,
                         });
                     }
-                    GenericSwitchResult::Error(err) => {
-                        work_stack.push(GenericWorkItem::Resume {
+                    SwitchResult::Error(err) => {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![err], atom_env),
                         });
                     }
-                    GenericSwitchResult::NoMatch => {
+                    SwitchResult::NoMatch => {
                         // No case matched - prune branch (MeTTa HE returns Empty)
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::new(), atom_env),
                         });
                     }
@@ -4876,7 +4876,7 @@ fn process_continuation_generic<C: EvalContext>(
             let mut remaining_raw = filtered_results.into_iter();
             let first_raw = remaining_raw.next().expect("filtered_results is non-empty");
 
-            continuations.push(GenericContinuation::ProcessCaseEvalScrutineeResults {
+            continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
                 remaining_raw,
                 evaluated: vec![],
                 cases,
@@ -4884,7 +4884,7 @@ fn process_continuation_generic<C: EvalContext>(
                 depth,
             });
 
-            work_stack.push(GenericWorkItem::Eval {
+            work_stack.push(WorkItem::Eval {
                 value: first_raw,
                 env: atom_env,
                 depth: depth + 1,
@@ -4893,7 +4893,7 @@ fn process_continuation_generic<C: EvalContext>(
             });
         }
 
-        GenericContinuation::ProcessCaseMultiResults {
+        Continuation::ProcessCaseMultiResults {
             mut remaining_atoms,
             cases,
             mut collected,
@@ -4940,9 +4940,9 @@ fn process_continuation_generic<C: EvalContext>(
                 };
 
                 // Use generic switch - NO conversion needed
-                match eval_switch_generic(&switch_atom, &effective_cases, ctx.factory()) {
-                    GenericSwitchResult::Match(template, _bindings) => {
-                        continuations.push(GenericContinuation::ProcessCaseMultiResults {
+                match eval_switch(&switch_atom, &effective_cases, ctx.factory()) {
+                    SwitchResult::Match(template, _bindings) => {
+                        continuations.push(Continuation::ProcessCaseMultiResults {
                             remaining_atoms,
                             cases,
                             collected,
@@ -4950,7 +4950,7 @@ fn process_continuation_generic<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: template,
                             env,
                             depth,
@@ -4958,11 +4958,11 @@ fn process_continuation_generic<C: EvalContext>(
                             expected_type: None,
                         });
                     }
-                    GenericSwitchResult::Error(err) => {
+                    SwitchResult::Error(err) => {
                         // Collect error and continue
                         collected.push(err);
 
-                        continuations.push(GenericContinuation::ProcessCaseMultiResults {
+                        continuations.push(Continuation::ProcessCaseMultiResults {
                             remaining_atoms,
                             cases,
                             collected,
@@ -4970,13 +4970,13 @@ fn process_continuation_generic<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::new(), env),
                         });
                     }
-                    GenericSwitchResult::NoMatch => {
+                    SwitchResult::NoMatch => {
                         // No match - continue to next atom
-                        continuations.push(GenericContinuation::ProcessCaseMultiResults {
+                        continuations.push(Continuation::ProcessCaseMultiResults {
                             remaining_atoms,
                             cases,
                             collected,
@@ -4984,14 +4984,14 @@ fn process_continuation_generic<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::new(), env),
                         });
                     }
                 }
             } else {
                 // All atoms processed
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(collected), env),
 
                 });
@@ -5002,7 +5002,7 @@ fn process_continuation_generic<C: EvalContext>(
         // normal form before pattern matching. This continuation sequentially
         // evaluates each raw result, collects the evaluated outputs, and then
         // performs the switch/pattern-match phase once all evaluations complete.
-        GenericContinuation::ProcessCaseEvalScrutineeResults {
+        Continuation::ProcessCaseEvalScrutineeResults {
             mut remaining_raw,
             mut evaluated,
             cases,
@@ -5016,7 +5016,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if let Some(next_raw) = remaining_raw.next() {
                 // More raw scrutinee results to evaluate — reuse cont slot
-                continuations.push(GenericContinuation::ProcessCaseEvalScrutineeResults {
+                continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
                     remaining_raw,
                     evaluated,
                     cases,
@@ -5024,7 +5024,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next_raw,
                     env: eval_env,
                     depth: depth + 1,
@@ -5036,9 +5036,9 @@ fn process_continuation_generic<C: EvalContext>(
                 if evaluated.is_empty() {
                     // All evaluations produced empty — match Empty against cases
                     let empty_atom = ctx.factory().atom("Empty");
-                    match eval_switch_generic(&empty_atom, &cases, ctx.factory()) {
-                        GenericSwitchResult::Match(template, _bindings) => {
-                            work_stack.push(GenericWorkItem::Eval {
+                    match eval_switch(&empty_atom, &cases, ctx.factory()) {
+                        SwitchResult::Match(template, _bindings) => {
+                            work_stack.push(WorkItem::Eval {
                                 value: template,
                                 env: eval_env,
                                 depth,
@@ -5046,13 +5046,13 @@ fn process_continuation_generic<C: EvalContext>(
                                 expected_type: None,
                             });
                         }
-                        GenericSwitchResult::Error(err) => {
-                            work_stack.push(GenericWorkItem::Resume {
+                        SwitchResult::Error(err) => {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![err], eval_env),
                             });
                         }
-                        GenericSwitchResult::NoMatch => {
-                            work_stack.push(GenericWorkItem::Resume {
+                        SwitchResult::NoMatch => {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), eval_env),
                             });
                         }
@@ -5072,8 +5072,8 @@ fn process_continuation_generic<C: EvalContext>(
                         first_atom
                     };
 
-                    match eval_switch_generic(&switch_atom, &cases, ctx.factory()) {
-                        GenericSwitchResult::Match(template, _bindings) => {
+                    match eval_switch(&switch_atom, &cases, ctx.factory()) {
+                        SwitchResult::Match(template, _bindings) => {
                             // Trace: case-match phase
                             #[cfg(feature = "eval-trace")]
                             {
@@ -5093,7 +5093,7 @@ fn process_continuation_generic<C: EvalContext>(
                             }
 
                             if eval_atoms.len() == 0 {
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: template,
                                     env: eval_env,
                                     depth,
@@ -5101,7 +5101,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     expected_type: None,
                                 });
                             } else {
-                                continuations.push(GenericContinuation::ProcessCaseMultiResults {
+                                continuations.push(Continuation::ProcessCaseMultiResults {
                                     remaining_atoms: eval_atoms,
                                     cases,
                                     collected: vec![],
@@ -5109,7 +5109,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     depth,
                                 });
 
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: template,
                                     env: eval_env,
                                     depth,
@@ -5118,12 +5118,12 @@ fn process_continuation_generic<C: EvalContext>(
                                 });
                             }
                         }
-                        GenericSwitchResult::Error(err) => {
-                            work_stack.push(GenericWorkItem::Resume {
+                        SwitchResult::Error(err) => {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![err], eval_env),
                             });
                         }
-                        GenericSwitchResult::NoMatch => {
+                        SwitchResult::NoMatch => {
                             // Trace: case-no-match phase
                             #[cfg(feature = "eval-trace")]
                             {
@@ -5143,7 +5143,7 @@ fn process_continuation_generic<C: EvalContext>(
                             }
 
                             // No case matched — prune branch (MeTTa HE returns Empty)
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), eval_env),
                             });
                         }
@@ -5152,14 +5152,14 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessEvalEval {
+        Continuation::ProcessEvalEval {
             env: _,
             depth,
         } => {
             let (eval_results, result_env) = result;
 
             if eval_results.is_empty() {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), result_env),
                 });
             } else if eval_results.len() == 1 {
@@ -5170,7 +5170,7 @@ fn process_continuation_generic<C: EvalContext>(
                 if let Some(inner) = value.as_quoted() {
                     value = inner;
                 }
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value,
                     env: result_env,
                     depth,
@@ -5186,14 +5186,14 @@ fn process_continuation_generic<C: EvalContext>(
                 let amb_capacity = results_iter.len(); // total before consuming first
                 let first = results_iter.next().unwrap();
 
-                continuations.push(GenericContinuation::ProcessAmb {
+                continuations.push(Continuation::ProcessAmb {
                     remaining_alts: results_iter,
                     results: Vec::with_capacity(amb_capacity),
                     env: result_env.clone(),
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: first,
                     env: result_env,
                     depth,
@@ -5203,7 +5203,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessReturn {
+        Continuation::ProcessReturn {
             env: _,
             depth: _,
         } => {
@@ -5211,7 +5211,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             // Check for errors first - pass through without wrapping
             if let Some(err) = arg_results.iter().find(|r| r.is_error()) {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err.clone()], arg_env),
                 });
             } else {
@@ -5225,14 +5225,14 @@ fn process_continuation_generic<C: EvalContext>(
                         ])
                     })
                     .collect();
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(return_results), arg_env),
 
                 });
             }
         }
 
-        GenericContinuation::ProcessChainExpr {
+        Continuation::ProcessChainExpr {
             var,
             body,
             outer_bindings,
@@ -5262,7 +5262,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if expr_results.is_empty() {
                 // Empty result — produce zero results (branch annihilation, HE-compatible)
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), result_env),
                 });
             } else if expr_results.len() == 1 {
@@ -5273,7 +5273,7 @@ fn process_continuation_generic<C: EvalContext>(
                 if let Some(mut ob) = outer_bindings {
                     ob.insert(var_name, expr_results[0].clone());
                     if body.has_variables_fast() {
-                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                        work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
                             bindings: ob,
                             env: result_env,
@@ -5282,7 +5282,7 @@ fn process_continuation_generic<C: EvalContext>(
                             expected_type: None,
                         });
                     } else {
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: body,
                             env: result_env,
                             depth,
@@ -5297,7 +5297,7 @@ fn process_continuation_generic<C: EvalContext>(
                         &expr_results[0],
                         ctx.factory(),
                     );
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env: result_env,
                         depth,
@@ -5311,7 +5311,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let chain_capacity = remaining_values.len(); // total before consuming first
                 let first = remaining_values.next().unwrap();
 
-                continuations.push(GenericContinuation::ProcessChainBody {
+                continuations.push(Continuation::ProcessChainBody {
                     remaining_values,
                     var: var.clone(),
                     body: body.clone(),
@@ -5326,7 +5326,7 @@ fn process_continuation_generic<C: EvalContext>(
                 if let Some(mut ob) = outer_bindings {
                     ob.insert(var_name, first);
                     if body.has_variables_fast() {
-                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                        work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
                             bindings: ob,
                             env: result_env,
@@ -5335,7 +5335,7 @@ fn process_continuation_generic<C: EvalContext>(
                             expected_type: None,
                         });
                     } else {
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: body,
                             env: result_env,
                             depth,
@@ -5350,7 +5350,7 @@ fn process_continuation_generic<C: EvalContext>(
                         &first,
                         ctx.factory(),
                     );
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env: result_env,
                         depth,
@@ -5361,7 +5361,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessChainBody {
+        Continuation::ProcessChainBody {
             mut remaining_values,
             var,
             body,
@@ -5374,7 +5374,7 @@ fn process_continuation_generic<C: EvalContext>(
             results.extend(body_results);
 
             if let Some(next_value) = remaining_values.next() {
-                continuations.push(GenericContinuation::ProcessChainBody {
+                continuations.push(Continuation::ProcessChainBody {
                     remaining_values,
                     var: var.clone(),
                     body: body.clone(),
@@ -5389,7 +5389,7 @@ fn process_continuation_generic<C: EvalContext>(
                 if let Some(mut ob) = outer_bindings {
                     ob.insert(var_name, next_value);
                     if body.has_variables_fast() {
-                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                        work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
                             bindings: ob,
                             env,
@@ -5398,7 +5398,7 @@ fn process_continuation_generic<C: EvalContext>(
                             expected_type: None,
                         });
                     } else {
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: body,
                             env,
                             depth,
@@ -5413,7 +5413,7 @@ fn process_continuation_generic<C: EvalContext>(
                         &next_value,
                         ctx.factory(),
                     );
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env,
                         depth,
@@ -5422,14 +5422,14 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 }
             } else {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),
 
                 });
             }
         }
 
-        GenericContinuation::ProcessFunction {
+        Continuation::ProcessFunction {
             iteration_count,
             env: _,
             depth,
@@ -5438,7 +5438,7 @@ fn process_continuation_generic<C: EvalContext>(
             let (eval_results, current_env) = result;
 
             if eval_results.is_empty() {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().unit()], current_env),
                 });
             } else {
@@ -5470,18 +5470,18 @@ fn process_continuation_generic<C: EvalContext>(
                             }
                         })
                         .collect();
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::from_vec(returns), current_env),
 
                     });
                 } else if continue_exprs.is_empty() {
                     // Nothing to continue
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![ctx.factory().unit()], current_env),
                     });
                 } else if iteration_count >= MAX_ITERATIONS {
                     // Hit iteration limit
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::from_vec(continue_exprs), current_env),
 
                     });
@@ -5489,13 +5489,13 @@ fn process_continuation_generic<C: EvalContext>(
                     // Continue evaluating
                     if continue_exprs.len() == 1 {
                         let next_expr = continue_exprs.into_iter().next().unwrap();
-                        continuations.push(GenericContinuation::ProcessFunction {
+                        continuations.push(Continuation::ProcessFunction {
                             iteration_count: iteration_count + 1,
                             env: current_env.clone(),
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: next_expr,
                             env: current_env,
                             depth, // TCO: reuse depth for iteration
@@ -5505,7 +5505,7 @@ fn process_continuation_generic<C: EvalContext>(
                     } else {
                         // Multiple continue expressions - just return them
                         // (more complex handling would evaluate each, but this matches heap engine)
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(continue_exprs), current_env),
 
                         });
@@ -5514,7 +5514,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessIsError {
+        Continuation::ProcessIsError {
             env: _,
             depth: _,
         } => {
@@ -5523,12 +5523,12 @@ fn process_continuation_generic<C: EvalContext>(
             let is_error = expr_results.iter().any(|v| v.is_error());
             let result_value = ctx.factory().bool(is_error);
 
-            work_stack.push(GenericWorkItem::Resume {
+            work_stack.push(WorkItem::Resume {
                 result: (smallvec![result_value], result_env),
             });
         }
 
-        GenericContinuation::ProcessCatch {
+        Continuation::ProcessCatch {
             default,
             env: _,
             depth,
@@ -5540,7 +5540,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if has_error {
                 // Evaluate default value
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: default,
                     env: result_env,
                     depth,
@@ -5549,13 +5549,13 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // No error - return original results
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (expr_results, result_env),
                 });
             }
         }
 
-        GenericContinuation::ProcessConjunction {
+        Continuation::ProcessConjunction {
             mut remaining_goals,
             mut accumulated_results,
             env: _,
@@ -5565,7 +5565,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             // Check for error or empty result
             if goal_results.is_empty() {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), result_env),
                 });
                 return;
@@ -5573,7 +5573,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if goal_results.iter().any(|v| v.is_error()) {
                 let error = goal_results.into_iter().find(|v| v.is_error()).unwrap();
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![error], result_env),
                 });
                 return;
@@ -5582,14 +5582,14 @@ fn process_continuation_generic<C: EvalContext>(
             accumulated_results.extend(goal_results);
 
             if let Some(next_goal) = remaining_goals.next() {
-                continuations.push(GenericContinuation::ProcessConjunction {
+                continuations.push(Continuation::ProcessConjunction {
                     remaining_goals,
                     accumulated_results,
                     env: result_env.clone(),
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next_goal,
                     env: result_env,
                     depth: depth + 1,
@@ -5599,13 +5599,13 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 // All goals evaluated - return last result
                 let final_result = accumulated_results.pop().unwrap_or_else(|| ctx.factory().unit());
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![final_result], result_env),
                 });
             }
         }
 
-        GenericContinuation::ProcessUnifyPattern1 {
+        Continuation::ProcessUnifyPattern1 {
             pattern2,
             success_body,
             failure_body,
@@ -5616,7 +5616,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if pattern1_results.is_empty() {
                 // Empty - evaluate failure body
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: failure_body,
                     env: result_env,
                     depth,
@@ -5642,12 +5642,12 @@ fn process_continuation_generic<C: EvalContext>(
                             // Non-module spaces use SpaceHandle's generic collapse
                             let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
-                                pattern_match_generic(&pattern2, atom).is_some()
-                                    || pattern_match_generic(atom, &pattern2).is_some()
+                                pattern_match(&pattern2, atom).is_some()
+                                    || pattern_match(atom, &pattern2).is_some()
                             })
                         };
                         let result_value = ctx.factory().bool(exists);
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![result_value], result_env),
                         });
                     } else {
@@ -5662,7 +5662,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                             if matches.is_empty() {
                                 // No matches - evaluate failure body
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: failure_body,
                                     env: result_env,
                                     depth,
@@ -5674,15 +5674,15 @@ fn process_continuation_generic<C: EvalContext>(
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for (generic_value, count) in &matches {
-                                    if let Some(bindings) = pattern_match_generic(&pattern2, generic_value) {
+                                    if let Some(bindings) = pattern_match(&pattern2, generic_value) {
                                         found_match = true;
-                                        let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                         for _ in 0..*count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
-                                    } else if let Some(bindings) = pattern_match_generic(generic_value, &pattern2) {
+                                    } else if let Some(bindings) = pattern_match(generic_value, &pattern2) {
                                         found_match = true;
-                                        let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                         for _ in 0..*count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
@@ -5698,7 +5698,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 if let Some(first_body) = bodies_iter.next() {
                                     if bodies_iter.len() == 0 {
                                         // Single body - tail call directly
-                                        work_stack.push(GenericWorkItem::Eval {
+                                        work_stack.push(WorkItem::Eval {
                                             value: first_body,
                                             env: result_env,
                                             depth,
@@ -5708,13 +5708,13 @@ fn process_continuation_generic<C: EvalContext>(
                                     } else {
                                         // Multiple bodies - use ProcessUnifyBodies
                                         let unify_capacity = bodies_iter.len() + 1;
-                                        continuations.push(GenericContinuation::ProcessUnifyBodies {
+                                        continuations.push(Continuation::ProcessUnifyBodies {
                                             remaining_bodies: bodies_iter,
                                             results: Vec::with_capacity(unify_capacity),
                                             env: result_env.clone(),
                                             depth,
                                         });
-                                        work_stack.push(GenericWorkItem::Eval {
+                                        work_stack.push(WorkItem::Eval {
                                             value: first_body,
                                             env: result_env,
                                             depth: depth + 1,
@@ -5724,7 +5724,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     }
                                 } else {
                                     // No bodies at all (shouldn't happen, but handle gracefully)
-                                    work_stack.push(GenericWorkItem::Eval {
+                                    work_stack.push(WorkItem::Eval {
                                         value: failure_body,
                                         env: result_env,
                                         depth,
@@ -5741,7 +5741,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                             if matches.is_empty() {
                                 // No matches - evaluate failure body
-                                work_stack.push(GenericWorkItem::Eval {
+                                work_stack.push(WorkItem::Eval {
                                     value: failure_body,
                                     env: result_env,
                                     depth,
@@ -5753,15 +5753,15 @@ fn process_continuation_generic<C: EvalContext>(
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for m in &matches {
-                                    if let Some(bindings) = pattern_match_generic(&pattern2, &m.value) {
+                                    if let Some(bindings) = pattern_match(&pattern2, &m.value) {
                                         found_match = true;
-                                        let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                         for _ in 0..m.count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
-                                    } else if let Some(bindings) = pattern_match_generic(&m.value, &pattern2) {
+                                    } else if let Some(bindings) = pattern_match(&m.value, &pattern2) {
                                         found_match = true;
-                                        let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                         for _ in 0..m.count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
@@ -5777,7 +5777,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 if let Some(first_body) = bodies_iter.next() {
                                     if bodies_iter.len() == 0 {
                                         // Single body - tail call directly
-                                        work_stack.push(GenericWorkItem::Eval {
+                                        work_stack.push(WorkItem::Eval {
                                             value: first_body,
                                             env: result_env,
                                             depth,
@@ -5787,13 +5787,13 @@ fn process_continuation_generic<C: EvalContext>(
                                     } else {
                                         // Multiple bodies - use ProcessUnifyBodies
                                         let unify_capacity = bodies_iter.len() + 1;
-                                        continuations.push(GenericContinuation::ProcessUnifyBodies {
+                                        continuations.push(Continuation::ProcessUnifyBodies {
                                             remaining_bodies: bodies_iter,
                                             results: Vec::with_capacity(unify_capacity),
                                             env: result_env.clone(),
                                             depth,
                                         });
-                                        work_stack.push(GenericWorkItem::Eval {
+                                        work_stack.push(WorkItem::Eval {
                                             value: first_body,
                                             env: result_env,
                                             depth: depth + 1,
@@ -5803,7 +5803,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     }
                                 } else {
                                     // No bodies at all (shouldn't happen, but handle gracefully)
-                                    work_stack.push(GenericWorkItem::Eval {
+                                    work_stack.push(WorkItem::Eval {
                                         value: failure_body,
                                         env: result_env,
                                         depth,
@@ -5816,7 +5816,7 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 } else {
                     // Non-space: evaluate pattern2
-                    continuations.push(GenericContinuation::ProcessUnifyPattern2 {
+                    continuations.push(Continuation::ProcessUnifyPattern2 {
                         val1,
                         pattern2: pattern2.clone(),
                         success_body,
@@ -5825,7 +5825,7 @@ fn process_continuation_generic<C: EvalContext>(
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: pattern2,
                         env: result_env,
                         depth: depth + 1,
@@ -5840,7 +5840,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let iter_capacity = remaining.len(); // total before consuming first
                 let first = remaining.next().unwrap();
 
-                continuations.push(GenericContinuation::ProcessUnifyPattern1Iter {
+                continuations.push(Continuation::ProcessUnifyPattern1Iter {
                     remaining_pattern1_results: remaining,
                     pattern2: pattern2.clone(),
                     success_body: success_body.clone(),
@@ -5865,15 +5865,15 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for (generic_value, count) in &matches {
-                            if let Some(bindings) = pattern_match_generic(&pattern2, generic_value) {
+                            if let Some(bindings) = pattern_match(&pattern2, generic_value) {
                                 found_match = true;
-                                let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..*count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
-                            } else if let Some(bindings) = pattern_match_generic(generic_value, &pattern2) {
+                            } else if let Some(bindings) = pattern_match(generic_value, &pattern2) {
                                 found_match = true;
-                                let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..*count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -5888,13 +5888,13 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut bodies_iter = bodies_to_eval.into_iter();
                         if let Some(first_body) = bodies_iter.next() {
                             let unify_capacity = bodies_iter.len() + 1;
-                            continuations.push(GenericContinuation::ProcessUnifyBodies {
+                            continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies: bodies_iter,
                                 results: Vec::with_capacity(unify_capacity),
                                 env: result_env.clone(),
                                 depth,
                             });
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first_body,
                                 env: result_env,
                                 depth: depth + 1,
@@ -5903,7 +5903,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
                         } else {
                             // No bodies at all - send empty to iterator
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), result_env),
                             });
                         }
@@ -5917,15 +5917,15 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) = pattern_match_generic(&pattern2, &m.value) {
+                            if let Some(bindings) = pattern_match(&pattern2, &m.value) {
                                 found_match = true;
-                                let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
-                            } else if let Some(bindings) = pattern_match_generic(&m.value, &pattern2) {
+                            } else if let Some(bindings) = pattern_match(&m.value, &pattern2) {
                                 found_match = true;
-                                let generic_body = apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -5940,13 +5940,13 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut bodies_iter = bodies_to_eval.into_iter();
                         if let Some(first_body) = bodies_iter.next() {
                             let unify_capacity = bodies_iter.len() + 1;
-                            continuations.push(GenericContinuation::ProcessUnifyBodies {
+                            continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies: bodies_iter,
                                 results: Vec::with_capacity(unify_capacity),
                                 env: result_env.clone(),
                                 depth,
                             });
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first_body,
                                 env: result_env,
                                 depth: depth + 1,
@@ -5955,14 +5955,14 @@ fn process_continuation_generic<C: EvalContext>(
                             });
                         } else {
                             // No bodies at all - send empty to iterator
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), result_env),
                             });
                         }
                     }
                 } else {
                     // Non-space: evaluate pattern2
-                    continuations.push(GenericContinuation::ProcessUnifyPattern2 {
+                    continuations.push(Continuation::ProcessUnifyPattern2 {
                         val1: first,
                         pattern2: pattern2.clone(),
                         success_body: ctx.factory().atom("__unify_success__"),
@@ -5971,7 +5971,7 @@ fn process_continuation_generic<C: EvalContext>(
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: pattern2,
                         env: result_env,
                         depth: depth + 1,
@@ -5982,7 +5982,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessUnifyPattern1Iter {
+        Continuation::ProcessUnifyPattern1Iter {
             mut remaining_pattern1_results,
             pattern2,
             success_body,
@@ -6000,7 +6000,7 @@ fn process_continuation_generic<C: EvalContext>(
             if let Some(val1) = remaining_pattern1_results.next() {
                 // Create new iterator continuation for the REMAINING values
                 // (after this one we're about to process)
-                continuations.push(GenericContinuation::ProcessUnifyPattern1Iter {
+                continuations.push(Continuation::ProcessUnifyPattern1Iter {
                     remaining_pattern1_results,
                     pattern2: pattern2.clone(),
                     success_body: success_body.clone(),
@@ -6029,11 +6029,11 @@ fn process_continuation_generic<C: EvalContext>(
                         } else {
                             let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
-                                pattern_match_generic(&pattern, atom).is_some()
-                                    || pattern_match_generic(atom, &pattern).is_some()
+                                pattern_match(&pattern, atom).is_some()
+                                    || pattern_match(atom, &pattern).is_some()
                             })
                         };
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![ctx.factory().bool(exists)], env_after),
                         });
                     } else {
@@ -6055,18 +6055,18 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) = pattern_match_generic(&pattern, &m.value) {
+                            if let Some(bindings) = pattern_match(&pattern, &m.value) {
                                 found_match = true;
                                 let instantiated =
-                                    apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                    apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(instantiated.clone());
                                 }
-                            } else if let Some(bindings) = pattern_match_generic(&m.value, &pattern)
+                            } else if let Some(bindings) = pattern_match(&m.value, &pattern)
                             {
                                 found_match = true;
                                 let instantiated =
-                                    apply_bindings_generic(&success_body, &bindings, ctx.factory());
+                                    apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(instantiated.clone());
                                 }
@@ -6079,13 +6079,13 @@ fn process_continuation_generic<C: EvalContext>(
                         let mut bodies_iter = bodies_to_eval.into_iter();
                         if let Some(first_body) = bodies_iter.next() {
                             let unify_capacity = bodies_iter.len() + 1;
-                            continuations.push(GenericContinuation::ProcessUnifyBodies {
+                            continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies: bodies_iter,
                                 results: Vec::with_capacity(unify_capacity),
                                 env: env_after.clone(),
                                 depth,
                             });
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first_body,
                                 env: env_after,
                                 depth: depth + 1,
@@ -6093,14 +6093,14 @@ fn process_continuation_generic<C: EvalContext>(
                                 expected_type: None,
                             });
                         } else {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), env_after),
                             });
                         }
                     }
                 } else {
                     // Non-space: evaluate pattern2
-                    continuations.push(GenericContinuation::ProcessUnifyPattern2 {
+                    continuations.push(Continuation::ProcessUnifyPattern2 {
                         val1,
                         pattern2: pattern2.clone(),
                         success_body,
@@ -6108,7 +6108,7 @@ fn process_continuation_generic<C: EvalContext>(
                         env: env_after.clone(),
                         depth,
                     });
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: pattern2,
                         env: env_after,
                         depth: depth + 1,
@@ -6119,7 +6119,7 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 // No more pattern1 values - return all accumulated results
                 if all_results.is_empty() {
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: failure_body,
                         env: env_after,
                         depth,
@@ -6127,7 +6127,7 @@ fn process_continuation_generic<C: EvalContext>(
                         expected_type: None,
                     });
                 } else {
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::from_vec(all_results), env_after),
 
                     });
@@ -6135,7 +6135,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessUnifyPattern2 {
+        Continuation::ProcessUnifyPattern2 {
             val1,
             pattern2: _,
             success_body,
@@ -6146,7 +6146,7 @@ fn process_continuation_generic<C: EvalContext>(
             let (pattern2_results, result_env) = result;
 
             if pattern2_results.is_empty() {
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: failure_body,
                     env: result_env,
                     depth,
@@ -6157,13 +6157,13 @@ fn process_continuation_generic<C: EvalContext>(
                 // Try to unify with each pattern2 result - NO conversion needed
                 let mut all_bindings = Vec::new();
                 for p2_result in &pattern2_results {
-                    if let Some(bindings) = pattern_match_generic(&val1, p2_result) {
+                    if let Some(bindings) = pattern_match(&val1, p2_result) {
                         all_bindings.push(bindings);
                     }
                 }
 
                 if all_bindings.is_empty() {
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: failure_body,
                         env: result_env,
                         depth,
@@ -6172,9 +6172,9 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 } else if all_bindings.len() == 1 {
                     // Apply bindings generically - NO conversion needed
-                    let instantiated = apply_bindings_generic(&success_body, &all_bindings[0], ctx.factory());
+                    let instantiated = apply_bindings(&success_body, &all_bindings[0], ctx.factory());
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env: result_env,
                         depth,
@@ -6185,21 +6185,21 @@ fn process_continuation_generic<C: EvalContext>(
                     // Multiple bindings - pre-instantiate all bodies generically
                     let bodies_vec: Vec<MettaValue> = all_bindings.iter()
                         .map(|bindings| {
-                            apply_bindings_generic(&success_body, bindings, ctx.factory())
+                            apply_bindings(&success_body, bindings, ctx.factory())
                         })
                         .collect();
                     let mut bodies_iter = bodies_vec.into_iter();
                     let first_body = bodies_iter.next().unwrap();
                     let unify_capacity = bodies_iter.len() + 1;
 
-                    continuations.push(GenericContinuation::ProcessUnifyBodies {
+                    continuations.push(Continuation::ProcessUnifyBodies {
                         remaining_bodies: bodies_iter,
                         results: Vec::with_capacity(unify_capacity),
                         env: result_env.clone(),
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: first_body,
                         env: result_env,
                         depth,
@@ -6210,7 +6210,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessUnifyBodies {
+        Continuation::ProcessUnifyBodies {
             mut remaining_bodies,
             mut results,
             env: _,
@@ -6220,13 +6220,13 @@ fn process_continuation_generic<C: EvalContext>(
             results.extend(body_results);
 
             if let Some(next_body) = remaining_bodies.next() {
-                continuations.push(GenericContinuation::ProcessUnifyBodies {
+                continuations.push(Continuation::ProcessUnifyBodies {
                     remaining_bodies,
                     results,
                     env: env_after_body.clone(),
                     depth,
                 });
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next_body,
                     env: env_after_body,
                     depth,
@@ -6234,14 +6234,14 @@ fn process_continuation_generic<C: EvalContext>(
                     expected_type: None,
                 });
             } else {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env_after_body),
 
                 });
             }
         }
 
-        GenericContinuation::ProcessCollapse {
+        Continuation::ProcessCollapse {
             env: _,
             depth,
         } => {
@@ -6250,7 +6250,7 @@ fn process_continuation_generic<C: EvalContext>(
             // Empty results: return empty tuple immediately
             if expr_results.is_empty() {
                 let result_list = ctx.factory().sexpr(vec![]);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_list], result_env),
                 });
                 return;
@@ -6300,7 +6300,7 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 }
 
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_list], result_env),
                 });
             } else {
@@ -6311,7 +6311,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
                 let first_raw = remaining_raw.next().expect("expr_results is non-empty");
 
-                continuations.push(GenericContinuation::ProcessCollapseEvalResults {
+                continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: false,
@@ -6319,7 +6319,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: first_raw,
                     env: result_env,
                     depth: depth + 1,
@@ -6329,7 +6329,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessCollapseBind {
+        Continuation::ProcessCollapseBind {
             env: _,
             depth,
         } => {
@@ -6338,7 +6338,7 @@ fn process_continuation_generic<C: EvalContext>(
             // Empty results: return empty tuple immediately
             if expr_results.is_empty() {
                 let result_list = ctx.factory().sexpr(vec![]);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_list], result_env),
                 });
                 return;
@@ -6382,7 +6382,7 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 }
 
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_list], result_env),
                 });
             } else {
@@ -6392,7 +6392,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
                 let first_raw = remaining_raw.next().expect("expr_results is non-empty");
 
-                continuations.push(GenericContinuation::ProcessCollapseEvalResults {
+                continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: true,
@@ -6400,7 +6400,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: first_raw,
                     env: result_env,
                     depth: depth + 1,
@@ -6410,7 +6410,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessCollapseEvalResults {
+        Continuation::ProcessCollapseEvalResults {
             mut remaining_raw,
             mut evaluated,
             is_bind: _,
@@ -6424,7 +6424,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if let Some(next_raw) = remaining_raw.next() {
                 // More results to evaluate — reuse continuation slot
-                continuations.push(GenericContinuation::ProcessCollapseEvalResults {
+                continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated,
                     is_bind: false,
@@ -6432,7 +6432,7 @@ fn process_continuation_generic<C: EvalContext>(
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next_raw,
                     env: result_env,
                     depth: depth + 1,
@@ -6461,13 +6461,13 @@ fn process_continuation_generic<C: EvalContext>(
                     }
                 }
 
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![result_list], result_env),
                 });
             }
         }
 
-        GenericContinuation::ProcessAmb {
+        Continuation::ProcessAmb {
             mut remaining_alts,
             mut results,
             env,
@@ -6480,14 +6480,14 @@ fn process_continuation_generic<C: EvalContext>(
                 // Use the ORIGINAL env for each alternative (not result_env).
                 // Parallel path gives all branches the same pre-fork env;
                 // sequential must do the same to preserve semantics.
-                continuations.push(GenericContinuation::ProcessAmb {
+                continuations.push(Continuation::ProcessAmb {
                     remaining_alts,
                     results,
                     env: env.clone(),
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next_alt,
                     env,
                     depth: depth + 1,
@@ -6495,13 +6495,13 @@ fn process_continuation_generic<C: EvalContext>(
                     expected_type: None,
                 });
             } else {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
                 });
             }
         }
 
-        GenericContinuation::ProcessGuard {
+        Continuation::ProcessGuard {
             env: _,
             depth: _,
         } => {
@@ -6510,19 +6510,19 @@ fn process_continuation_generic<C: EvalContext>(
             match cond_results.first() {
                 Some(v) if v.as_bool() == Some(true) => {
                     // Guard passes - return Unit
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![ctx.factory().unit()], result_env),
                     });
                 }
                 Some(v) if v.as_bool() == Some(false) => {
                     // Guard fails - return empty (nondeterministic failure)
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 }
                 Some(v) if v.is_error() => {
                     // Error propagates
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![v.clone()], result_env),
                     });
                 }
@@ -6535,20 +6535,20 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         v.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], result_env),
                     });
                 }
                 None => {
                     // Empty results - guard fails
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessGetAtoms {
+        Continuation::ProcessGetAtoms {
             space_ref,
             env: _,
             depth: _,
@@ -6560,7 +6560,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "get-atoms: space evaluated to empty",
                     space_ref,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], result_env),
                 });
             } else {
@@ -6570,12 +6570,12 @@ fn process_continuation_generic<C: EvalContext>(
                     let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                     if atoms.is_empty() {
                         // Empty space returns empty results
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::new(), result_env),
                         });
                     } else {
                         // Return all atoms as separate results (superposition)
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(atoms), result_env),
 
                         });
@@ -6585,14 +6585,14 @@ fn process_continuation_generic<C: EvalContext>(
                         &format!("get-atoms: first argument must be a space, got {}", first.friendly_repr()),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], result_env),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessMatchSpace {
+        Continuation::ProcessMatchSpace {
             space_arg,
             pattern,
             template,
@@ -6606,7 +6606,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "match: space evaluated to empty",
                     space_arg,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -6630,7 +6630,7 @@ fn process_continuation_generic<C: EvalContext>(
                                             .map(|name| {
                                                 let mut bindings = crate::backend::models::GenericBindings::new();
                                                 bindings.insert(var, ctx.factory().atom(name));
-                                                apply_bindings_generic(&template, &bindings, ctx.factory())
+                                                apply_bindings(&template, &bindings, ctx.factory())
                                             })
                                             .collect();
                                         Some(results)
@@ -6677,7 +6677,7 @@ fn process_continuation_generic<C: EvalContext>(
                             }
                         }
 
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(generic_results), env_after),
                         });
                     } else {
@@ -6704,11 +6704,11 @@ fn process_continuation_generic<C: EvalContext>(
                         }
 
                         if instantiated_templates.is_empty() {
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), env_after),
                             });
                         } else if instantiated_templates.len() == 1 {
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: instantiated_templates.into_iter().next().unwrap(),
                                 env: env_after,
                                 depth,
@@ -6721,7 +6721,7 @@ fn process_continuation_generic<C: EvalContext>(
                             let tmpl_capacity = generic_templates.len(); // total before consuming first
                             let first_template = generic_templates.next().unwrap();
 
-                            continuations.push(GenericContinuation::ProcessMatchTemplates {
+                            continuations.push(Continuation::ProcessMatchTemplates {
                                 remaining_templates: generic_templates,
                                 results: Vec::with_capacity(tmpl_capacity),
                                 env: env_after.clone(),
@@ -6729,7 +6729,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first_template,
                                 env: forked_env,
                                 depth,
@@ -6746,14 +6746,14 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessMatchTemplates {
+        Continuation::ProcessMatchTemplates {
             mut remaining_templates,
             mut results,
             env,
@@ -6763,21 +6763,21 @@ fn process_continuation_generic<C: EvalContext>(
             results.extend(template_results);
 
             if remaining_templates.len() == 0 {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),
 
                 });
             } else {
                 let next_template = remaining_templates.next().unwrap();
 
-                continuations.push(GenericContinuation::ProcessMatchTemplates {
+                continuations.push(Continuation::ProcessMatchTemplates {
                     remaining_templates,
                     results,
                     env: env.clone(),
                     depth,
                 });
 
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: next_template,
                     env: env.fork_for_nondeterminism(),
                     depth,
@@ -6787,7 +6787,7 @@ fn process_continuation_generic<C: EvalContext>(
             }
         }
 
-        GenericContinuation::ProcessAddAtomSpace {
+        Continuation::ProcessAddAtomSpace {
             space_ref,
             atom,
             env: _,
@@ -6800,7 +6800,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "add-atom: space evaluated to empty",
                     space_ref,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -6824,7 +6824,7 @@ fn process_continuation_generic<C: EvalContext>(
                         handle.add_atom_generic(&atom);
                     }
 
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![ctx.factory().unit()], env_after),
                     });
                 } else {
@@ -6835,7 +6835,7 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
@@ -6845,7 +6845,7 @@ fn process_continuation_generic<C: EvalContext>(
         // Disabled: ProcessAddAtomAtom is no longer constructed. The atom evaluation
         // step has been eliminated — add-atom now takes unevaluated atoms per MeTTa HE
         // semantics. See ProcessAddAtomSpace above.
-        // GenericContinuation::ProcessAddAtomAtom {
+        // Continuation::ProcessAddAtomAtom {
         //     space_handle,
         //     atom,
         //     env: _,
@@ -6859,21 +6859,21 @@ fn process_continuation_generic<C: EvalContext>(
         //             "add-atom: atom evaluated to empty",
         //             atom,
         //         );
-        //         work_stack.push(GenericWorkItem::Resume {
+        //         work_stack.push(WorkItem::Resume {
         //             cont_id: parent_cont,
         //             result: (smallvec![err], env_after),
         //         });
         //     } else {
         //         // GENERIC: Use add_atom_generic to avoid heap conversion
         //         space_handle.add_atom_generic(&atom_results[0]);
-        //         work_stack.push(GenericWorkItem::Resume {
+        //         work_stack.push(WorkItem::Resume {
         //             cont_id: parent_cont,
         //             result: (smallvec![ctx.factory().unit()], env_after),
         //         });
         //     }
         // }
 
-        GenericContinuation::ProcessRemoveAtomSpace {
+        Continuation::ProcessRemoveAtomSpace {
             space_ref,
             atom,
             env: _,
@@ -6886,7 +6886,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "remove-atom: space evaluated to empty",
                     space_ref,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -6908,7 +6908,7 @@ fn process_continuation_generic<C: EvalContext>(
                         handle.remove_atom_generic(&atom);
                     }
 
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![ctx.factory().unit()], env_after),
                     });
                 } else {
@@ -6919,7 +6919,7 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
@@ -6929,7 +6929,7 @@ fn process_continuation_generic<C: EvalContext>(
         // Disabled: ProcessRemoveAtomAtom is no longer constructed. The atom evaluation
         // step has been eliminated — remove-atom now takes unevaluated atoms per MeTTa HE
         // semantics. See ProcessRemoveAtomSpace above.
-        // GenericContinuation::ProcessRemoveAtomAtom {
+        // Continuation::ProcessRemoveAtomAtom {
         //     space_handle,
         //     atom,
         //     env: _,
@@ -6943,7 +6943,7 @@ fn process_continuation_generic<C: EvalContext>(
         //             "remove-atom: atom evaluated to empty",
         //             atom,
         //         );
-        //         work_stack.push(GenericWorkItem::Resume {
+        //         work_stack.push(WorkItem::Resume {
         //             cont_id: parent_cont,
         //             result: (smallvec![err], env_after),
         //         });
@@ -6952,14 +6952,14 @@ fn process_continuation_generic<C: EvalContext>(
         //         // NOTE: Arena engine returns Unit() regardless of whether removal succeeded
         //         // GENERIC: Use remove_atom_generic to avoid heap conversion
         //         space_handle.remove_atom_generic(&atom_results[0]);
-        //         work_stack.push(GenericWorkItem::Resume {
+        //         work_stack.push(WorkItem::Resume {
         //             cont_id: parent_cont,
         //             result: (smallvec![ctx.factory().unit()], env_after),
         //         });
         //     }
         // }
 
-        GenericContinuation::ProcessNewState {
+        Continuation::ProcessNewState {
             initial_value,
             env: _,
             depth: _,
@@ -6971,20 +6971,20 @@ fn process_continuation_generic<C: EvalContext>(
                     "new-state: initial value evaluated to empty",
                     initial_value,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
                 // Use create_state directly - values are already V
                 let state_id = env_after.create_state(&init_results[0]);
                 let state_value = ctx.factory().state(state_id);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![state_value], env_after),
                 });
             }
         }
 
-        GenericContinuation::ProcessGetState {
+        Continuation::ProcessGetState {
             state_ref,
             env: _,
             depth: _,
@@ -6996,7 +6996,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "get-state: state reference evaluated to empty",
                     state_ref,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -7004,7 +7004,7 @@ fn process_continuation_generic<C: EvalContext>(
                 if let Some(state_id) = first.as_state() {
                     // Use get_state directly - returns V
                     if let Some(generic_value) = env_after.get_state(state_id) {
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![generic_value], env_after),
                         });
                     } else {
@@ -7012,7 +7012,7 @@ fn process_continuation_generic<C: EvalContext>(
                             &format!("get-state: state {} not found", state_id),
                             first.clone(),
                         );
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![err], env_after),
                         });
                     }
@@ -7024,14 +7024,14 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessChangeStateRef {
+        Continuation::ProcessChangeStateRef {
             state_ref,
             new_value,
             env: _,
@@ -7044,20 +7044,20 @@ fn process_continuation_generic<C: EvalContext>(
                     "change-state!: state reference evaluated to empty",
                     state_ref,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &state_results[0];
                 if first.as_state().is_some() {
-                    continuations.push(GenericContinuation::ProcessChangeStateValue {
+                    continuations.push(Continuation::ProcessChangeStateValue {
                         state_value: first.clone(),
                         new_value: new_value.clone(),
                         env: env_after.clone(),
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: new_value,
                         env: env_after,
                         depth: depth + 1,
@@ -7072,14 +7072,14 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessChangeStateValue {
+        Continuation::ProcessChangeStateValue {
             state_value,
             new_value,
             env: _,
@@ -7092,7 +7092,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "change-state!: new value evaluated to empty",
                     new_value,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -7101,7 +7101,7 @@ fn process_continuation_generic<C: EvalContext>(
                     // Use change_state directly - values are already V
                     env_after.change_state(state_id, &value_results[0]);
                     let result_state = ctx.factory().state(state_id);
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![result_state], env_after),
                     });
                 } else {
@@ -7109,14 +7109,14 @@ fn process_continuation_generic<C: EvalContext>(
                         "change-state!: expected state value",
                         state_value,
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessRepr {
+        Continuation::ProcessRepr {
             atom: _,
             env: _,
             depth: _,
@@ -7124,18 +7124,18 @@ fn process_continuation_generic<C: EvalContext>(
             let (atom_results, env_after) = result;
 
             if atom_results.is_empty() {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().string("")], env_after),
                 });
             } else {
                 let repr = atom_results[0].friendly_repr();
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().string(&repr)], env_after),
                 });
             }
         }
 
-        GenericContinuation::ProcessFormatArgsString {
+        Continuation::ProcessFormatArgsString {
             format_arg,
             args_arg,
             env: _,
@@ -7148,20 +7148,20 @@ fn process_continuation_generic<C: EvalContext>(
                     "format-args: format string evaluated to empty",
                     format_arg,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
                 let first = &format_results[0];
                 if let Some(format_str) = first.as_string() {
-                    continuations.push(GenericContinuation::ProcessFormatArgsArgs {
+                    continuations.push(Continuation::ProcessFormatArgsArgs {
                         format_str: format_str.to_string(),
                         args_arg: args_arg.clone(),
                         env: env_after.clone(),
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: args_arg,
                         env: env_after,
                         depth: depth + 1,
@@ -7176,14 +7176,14 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessFormatArgsArgs {
+        Continuation::ProcessFormatArgsArgs {
             format_str,
             args_arg,
             env: _,
@@ -7196,7 +7196,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "format-args: args evaluated to empty",
                     args_arg,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -7215,13 +7215,13 @@ fn process_continuation_generic<C: EvalContext>(
                     result_str = result_str.replace(&placeholder, &repr);
                 }
 
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().string(&result_str)], env_after),
                 });
             }
         }
 
-        GenericContinuation::ProcessPrintln {
+        Continuation::ProcessPrintln {
             atom: _,
             env: _,
             depth: _,
@@ -7233,12 +7233,12 @@ fn process_continuation_generic<C: EvalContext>(
                 println!("{}", atom_result.to_display_string());
             }
 
-            work_stack.push(GenericWorkItem::Resume {
+            work_stack.push(WorkItem::Resume {
                 result: (smallvec![ctx.factory().unit()], env_after),
             });
         }
 
-        GenericContinuation::ProcessTraceMessage {
+        Continuation::ProcessTraceMessage {
             message: _,
             value_expr,
             env: _,
@@ -7252,13 +7252,13 @@ fn process_continuation_generic<C: EvalContext>(
             }
 
             // Now evaluate the value
-            continuations.push(GenericContinuation::ProcessTraceValue {
+            continuations.push(Continuation::ProcessTraceValue {
                 value_expr: value_expr.clone(),
                 env: env_after.clone(),
                 depth,
             });
 
-            work_stack.push(GenericWorkItem::Eval {
+            work_stack.push(WorkItem::Eval {
                 value: value_expr,
                 env: env_after,
                 depth: depth + 1,
@@ -7267,7 +7267,7 @@ fn process_continuation_generic<C: EvalContext>(
             });
         }
 
-        GenericContinuation::ProcessTraceValue {
+        Continuation::ProcessTraceValue {
             value_expr: _,
             env: _,
             depth: _,
@@ -7277,12 +7277,12 @@ fn process_continuation_generic<C: EvalContext>(
             // HE semantics: return evaluated value(s) as-is.
             // If empty, propagate empty (valid nondeterministic dead-end).
             // HE trace! does not print the value — only the message.
-            work_stack.push(GenericWorkItem::Resume {
+            work_stack.push(WorkItem::Resume {
                 result: (value_results, env_after),
             });
         }
 
-        GenericContinuation::ProcessGetMetatype {
+        Continuation::ProcessGetMetatype {
             atom: _,
             env: _,
             depth: _,
@@ -7290,7 +7290,7 @@ fn process_continuation_generic<C: EvalContext>(
             let (atom_results, env_after) = result;
 
             if atom_results.is_empty() {
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().atom("Undefined")], env_after),
                 });
             } else {
@@ -7318,13 +7318,13 @@ fn process_continuation_generic<C: EvalContext>(
                     _ => "Undefined",
                 };
 
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().atom(metatype)], env_after),
                 });
             }
         }
 
-        GenericContinuation::ProcessBind {
+        Continuation::ProcessBind {
             token,
             env: _,
             depth: _,
@@ -7336,19 +7336,19 @@ fn process_continuation_generic<C: EvalContext>(
                     "bind!: atom evaluated to empty",
                     ctx.factory().atom(&token),
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
                 env_after.register_token(&token, atom_results[0].clone());
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().unit()], env_after),
                 });
             }
         }
 
         // if-reducible: expr has been evaluated, compare to original
-        GenericContinuation::ProcessIfReducible {
+        Continuation::ProcessIfReducible {
             original_expr,
             then_branch,
             else_branch,
@@ -7391,7 +7391,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if is_irreducible {
                 // Expression didn't change — evaluate else branch
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: else_branch,
                     env: env_after,
                     depth,
@@ -7400,7 +7400,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // Expression reduced — evaluate then branch
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: then_branch,
                     env: env_after,
                     depth,
@@ -7411,7 +7411,7 @@ fn process_continuation_generic<C: EvalContext>(
         }
 
         // match-or: space has been evaluated, now perform match with default fallback
-        GenericContinuation::ProcessMatchOrSpace {
+        Continuation::ProcessMatchOrSpace {
             space_arg: _,
             pattern,
             default,
@@ -7441,7 +7441,7 @@ fn process_continuation_generic<C: EvalContext>(
                 }
 
                 // Space evaluated to empty — use default
-                work_stack.push(GenericWorkItem::Eval {
+                work_stack.push(WorkItem::Eval {
                     value: default,
                     env: env_after,
                     depth,
@@ -7479,7 +7479,7 @@ fn process_continuation_generic<C: EvalContext>(
                             }
 
                             // No matches — evaluate default
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: default,
                                 env: env_after,
                                 depth,
@@ -7488,7 +7488,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
                         } else if generic_results.len() == 1 {
                             // Single match — evaluate template result
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: generic_results.into_iter().next().expect("non-empty"),
                                 env: env_after,
                                 depth,
@@ -7501,7 +7501,7 @@ fn process_continuation_generic<C: EvalContext>(
                             let tmpl_capacity = templates.len(); // total before consuming first
                             let first_template = templates.next().expect("non-empty");
 
-                            continuations.push(GenericContinuation::ProcessMatchTemplates {
+                            continuations.push(Continuation::ProcessMatchTemplates {
                                 remaining_templates: templates,
                                 results: Vec::with_capacity(tmpl_capacity),
                                 env: env_after.clone(),
@@ -7509,7 +7509,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first_template,
                                 env: forked_env,
                                 depth,
@@ -7542,7 +7542,7 @@ fn process_continuation_generic<C: EvalContext>(
                             }
 
                             // No matches — evaluate default
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: default,
                                 env: env_after,
                                 depth,
@@ -7550,7 +7550,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 expected_type: None,
                             });
                         } else if instantiated_templates.len() == 1 {
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: instantiated_templates.into_iter().next().expect("non-empty"),
                                 env: env_after,
                                 depth,
@@ -7562,7 +7562,7 @@ fn process_continuation_generic<C: EvalContext>(
                             let tmpl_capacity = generic_templates.len(); // total before consuming first
                             let first_template = generic_templates.next().expect("non-empty");
 
-                            continuations.push(GenericContinuation::ProcessMatchTemplates {
+                            continuations.push(Continuation::ProcessMatchTemplates {
                                 remaining_templates: generic_templates,
                                 results: Vec::with_capacity(tmpl_capacity),
                                 env: env_after.clone(),
@@ -7570,7 +7570,7 @@ fn process_continuation_generic<C: EvalContext>(
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
-                            work_stack.push(GenericWorkItem::Eval {
+                            work_stack.push(WorkItem::Eval {
                                 value: first_template,
                                 env: forked_env,
                                 depth,
@@ -7587,7 +7587,7 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
@@ -7595,7 +7595,7 @@ fn process_continuation_generic<C: EvalContext>(
         }
 
         // Memo-related continuations - delegate to heap conversion for now
-        GenericContinuation::ProcessMemoTable {
+        Continuation::ProcessMemoTable {
             memo_ref,
             expr,
             first_only,
@@ -7609,7 +7609,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "memo/memo!: memo reference evaluated to empty",
                     memo_ref,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -7617,13 +7617,13 @@ fn process_continuation_generic<C: EvalContext>(
                 if let Some(memo_handle) = first.as_memo() {
                     // Check if already cached - use generic lookup
                     if let Some(cached) = memo_handle.lookup_generic(&expr, ctx.factory()) {
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(cached), env_after),
 
                         });
                     } else {
                         // Not cached - evaluate and cache result
-                        continuations.push(GenericContinuation::ProcessMemoExpr {
+                        continuations.push(Continuation::ProcessMemoExpr {
                             memo_handle: memo_handle.clone(),
                             expr: expr.clone(),
                             first_only,
@@ -7631,7 +7631,7 @@ fn process_continuation_generic<C: EvalContext>(
                             depth,
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: expr,
                             env: env_after,
                             depth: depth + 1,
@@ -7647,14 +7647,14 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessMemoExpr {
+        Continuation::ProcessMemoExpr {
             memo_handle,
             expr,
             first_only,
@@ -7670,12 +7670,12 @@ fn process_continuation_generic<C: EvalContext>(
                 memo_handle.store_generic(&expr, &expr_results);
             }
 
-            work_stack.push(GenericWorkItem::Resume {
+            work_stack.push(WorkItem::Resume {
                 result: (expr_results, env_after),
             });
         }
 
-        GenericContinuation::ProcessNewMemoName {
+        Continuation::ProcessNewMemoName {
             name_arg,
             size_arg,
             env: _,
@@ -7688,7 +7688,7 @@ fn process_continuation_generic<C: EvalContext>(
                     "new-memo: name evaluated to empty",
                     name_arg,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -7702,14 +7702,14 @@ fn process_continuation_generic<C: EvalContext>(
                 };
 
                 if let Some(size_value) = size_arg {
-                    continuations.push(GenericContinuation::ProcessNewMemoSize {
+                    continuations.push(Continuation::ProcessNewMemoSize {
                         name,
                         size_arg: size_value.clone(),
                         env: env_after.clone(),
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: size_value,
                         env: env_after,
                         depth: depth + 1,
@@ -7720,14 +7720,14 @@ fn process_continuation_generic<C: EvalContext>(
                     // No size argument - create memo with default size (no limit)
                     let memo_handle = crate::backend::models::MemoHandle::new(name);
                     let memo_value = ctx.factory().memo(memo_handle);
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![memo_value], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::ProcessNewMemoSize {
+        Continuation::ProcessNewMemoSize {
             name,
             size_arg,
             env: _,
@@ -7740,20 +7740,20 @@ fn process_continuation_generic<C: EvalContext>(
                     "new-memo: size evaluated to empty",
                     size_arg,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
                 let size = size_results[0].as_long().unwrap_or(1000) as usize;
                 let memo_handle = crate::backend::models::MemoHandle::with_max_size(name, size);
                 let memo_value = ctx.factory().memo(memo_handle);
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![memo_value], env_after),
                 });
             }
         }
 
-        GenericContinuation::ProcessMemoOp {
+        Continuation::ProcessMemoOp {
             memo_ref,
             is_clear,
             env: _,
@@ -7767,7 +7767,7 @@ fn process_continuation_generic<C: EvalContext>(
                     &format!("{}: memo reference evaluated to empty", op_name),
                     memo_ref,
                 );
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (smallvec![err], env_after),
                 });
             } else {
@@ -7775,7 +7775,7 @@ fn process_continuation_generic<C: EvalContext>(
                 if let Some(memo_handle) = first.as_memo() {
                     if is_clear {
                         memo_handle.clear();
-                        work_stack.push(GenericWorkItem::Resume {
+                        work_stack.push(WorkItem::Resume {
                             result: (smallvec![ctx.factory().unit()], env_after),
                         });
                     } else {
@@ -7790,7 +7790,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 ctx.factory().atom("size"),
                                 ctx.factory().long(stats.2 as i64),
                             ]);
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![stats_sexpr], env_after),
                             });
                         }
@@ -7801,7 +7801,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 "memo-stats requires track-stats feature",
                                 detail,
                             );
-                            work_stack.push(GenericWorkItem::Resume {
+                            work_stack.push(WorkItem::Resume {
                                 result: (smallvec![err], env_after),
                             });
                         }
@@ -7816,14 +7816,14 @@ fn process_continuation_generic<C: EvalContext>(
                         ),
                         first.clone(),
                     );
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (smallvec![err], env_after),
                     });
                 }
             }
         }
 
-        GenericContinuation::MemoizeResult {
+        Continuation::MemoizeResult {
             expr_hash,
             env: _,
             depth: _,
@@ -7833,7 +7833,7 @@ fn process_continuation_generic<C: EvalContext>(
             // Cache the evaluation results in the thread-local memo table.
             eval_memo_put(expr_hash, result_values.as_slice());
 
-            work_stack.push(GenericWorkItem::Resume {
+            work_stack.push(WorkItem::Resume {
                 result: (result_values, result_env),
             });
         }
@@ -7852,7 +7852,7 @@ fn process_continuation_generic<C: EvalContext>(
         // 2. Compose new bindings with accumulated_bindings
         // 3. If more pairs: materialize next value_expr, push ProcessLetStar, push Eval
         // 4. If no more pairs: push EvalWithBindings(body, final_bindings)
-        GenericContinuation::ProcessLetStar {
+        Continuation::ProcessLetStar {
             current_pattern,
             mut remaining_pairs,
             body,
@@ -7868,7 +7868,7 @@ fn process_continuation_generic<C: EvalContext>(
             if result_values.len() == 1 {
                 let value = &result_values[0];
 
-                if let Some(pm_bindings) = pattern_match_generic(&current_pattern, value) {
+                if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                     // Compose pattern-match bindings into accumulated
                     accumulated_bindings = accumulated_bindings.compose(&pm_bindings);
 
@@ -7876,7 +7876,7 @@ fn process_continuation_generic<C: EvalContext>(
                         // I-5: Exit region — let* scope complete
                         crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
                         // All bindings resolved — evaluate body with composed bindings
-                        work_stack.push(GenericWorkItem::EvalWithBindings {
+                        work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
                             bindings: accumulated_bindings,
                             env: result_env,
@@ -7887,11 +7887,11 @@ fn process_continuation_generic<C: EvalContext>(
                     } else {
                         // More pairs to process — pop next pair
                         let (next_pattern, next_value_expr) = remaining_pairs.remove(0);
-                        let materialized_value = apply_bindings_generic(
+                        let materialized_value = apply_bindings(
                             &next_value_expr, &accumulated_bindings, ctx.factory(),
                         );
 
-                        continuations.push(GenericContinuation::ProcessLetStar {
+                        continuations.push(Continuation::ProcessLetStar {
                             current_pattern: next_pattern,
                             remaining_pairs,
                             body,
@@ -7902,7 +7902,7 @@ fn process_continuation_generic<C: EvalContext>(
                             region_id, // I-5: propagate region through let* chain
                         });
 
-                        work_stack.push(GenericWorkItem::Eval {
+                        work_stack.push(WorkItem::Eval {
                             value: materialized_value,
                             env: result_env,
                             depth: depth + 1,
@@ -7913,14 +7913,14 @@ fn process_continuation_generic<C: EvalContext>(
                 } else {
                     // Pattern match failed — let* produces empty (MeTTa HE semantics)
                     crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); }); // I-5
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 }
             } else if result_values.is_empty() {
                 // Zero results — let* produces empty
                 crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); }); // I-5
-                work_stack.push(GenericWorkItem::Resume {
+                work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), result_env),
                 });
             } else {
@@ -7943,19 +7943,19 @@ fn process_continuation_generic<C: EvalContext>(
                 // For each result value, pattern-match and evaluate the rest
                 let mut bound_bodies: Vec<MettaValue> = Vec::new();
                 for value in result_values.iter() {
-                    if let Some(pm_bindings) = pattern_match_generic(&current_pattern, value) {
+                    if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                         let composed = accumulated_bindings.compose(&pm_bindings);
-                        let materialized = apply_bindings_generic(&let_body, &composed, ctx.factory());
+                        let materialized = apply_bindings(&let_body, &composed, ctx.factory());
                         bound_bodies.push(materialized);
                     }
                 }
 
                 if bound_bodies.is_empty() {
-                    work_stack.push(GenericWorkItem::Resume {
+                    work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 } else if bound_bodies.len() == 1 {
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: bound_bodies.into_iter().next().expect("len == 1"),
                         env: result_env,
                         depth,
@@ -7966,14 +7966,14 @@ fn process_continuation_generic<C: EvalContext>(
                     let mut bodies_iter = bound_bodies.into_iter();
                     let first = bodies_iter.next().expect("bodies non-empty");
 
-                    continuations.push(GenericContinuation::ProcessAmb {
+                    continuations.push(Continuation::ProcessAmb {
                         remaining_alts: bodies_iter,
                         results: Vec::new(),
                         env: result_env.clone(),
                         depth,
                     });
 
-                    work_stack.push(GenericWorkItem::Eval {
+                    work_stack.push(WorkItem::Eval {
                         value: first,
                         env: result_env,
                         depth: depth + 1,
@@ -7985,7 +7985,7 @@ fn process_continuation_generic<C: EvalContext>(
         }
 
         // ── I-4: CompleteSubgoal — cache tabling results ──
-        GenericContinuation::CompleteSubgoal {
+        Continuation::CompleteSubgoal {
             expr_hash,
             env: _,
             depth: _,
@@ -8001,13 +8001,13 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             }
 
-            work_stack.push(GenericWorkItem::Resume {
+            work_stack.push(WorkItem::Resume {
                 result: (result_values, result_env),
             });
         }
 
         // ── I-6: CompleteThunk — cache thunk results ──
-        GenericContinuation::CompleteThunk {
+        Continuation::CompleteThunk {
             thunk_hash,
             env: _,
             depth: _,
@@ -8023,7 +8023,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             }
 
-            work_stack.push(GenericWorkItem::Resume {
+            work_stack.push(WorkItem::Resume {
                 result: (result_values, result_env),
             });
         }

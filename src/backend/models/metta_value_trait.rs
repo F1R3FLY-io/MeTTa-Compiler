@@ -654,6 +654,9 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
     /// Create a Conjunction variant
     fn conjunction(&self, goals: Vec<V>) -> V;
 
+    /// Create a Conjunction variant from a slice, avoiding an intermediate Vec allocation.
+    fn conjunction_from_slice(&self, goals: &[V]) -> V;
+
     /// Create a Space variant
     fn space(&self, handle: SpaceHandle) -> V;
 
@@ -784,6 +787,11 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn conjunction(&self, goals: Vec<V>) -> V {
         (*self).conjunction(goals)
+    }
+
+    #[inline]
+    fn conjunction_from_slice(&self, goals: &[V]) -> V {
+        (*self).conjunction_from_slice(goals)
     }
 
     #[inline]

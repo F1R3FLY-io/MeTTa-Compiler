@@ -570,6 +570,43 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         GroupOrEmpty { inner: group_iter }.chain(self.wildcard.iter())
     }
 
+    /// Collect candidates with discrimination tree pruning applied.
+    ///
+    /// Returns candidates filtered by the disc tree (if one exists for the group),
+    /// plus all wildcard rules (which are always included since they match any head).
+    /// The disc tree filter only applies to group-level entries whose
+    /// `rule_index_in_group` is in the disc tree's index space.
+    pub fn get_candidates_filtered(
+        &self,
+        head: &str,
+        arity: usize,
+        first_arg_head: Option<&str>,
+        expr: &V,
+    ) -> SmallVec<[&RuleEntry<V>; 16]> {
+        use crate::backend::models::gc_allocator::global_allocator;
+        let interned: &'static str = global_allocator().alloc_str(head);
+
+        let mut result = SmallVec::new();
+
+        if let Some(group) = self.by_head_arity.get(&(interned, arity)) {
+            let disc_filter = group.disc_tree.as_ref().map(|tree| tree.query(expr));
+
+            // Collect group candidates, filtered by disc tree if available
+            for entry in group.get_candidates(first_arg_head) {
+                if let Some(ref allowed) = disc_filter {
+                    if !allowed.contains(&entry.rule_index_in_group) {
+                        continue;
+                    }
+                }
+                result.push(entry);
+            }
+        }
+
+        // Wildcard rules are always included — they're not in any group's disc tree
+        result.extend(self.wildcard.iter());
+        result
+    }
+
     /// Get all rules (for no-head queries).
     pub fn get_all_rules(&self) -> impl Iterator<Item = &RuleEntry<V>> {
         self.by_head_arity.values()
@@ -1916,10 +1953,10 @@ where
             let rule_index = self.shared.rule_index.read();
 
             // Collect candidates into a SmallVec (stack-allocated for ≤16 entries).
-            // This avoids holding the iterator across the match loop (which would
-            // prevent us from knowing upfront whether all candidates are structural).
+            // Uses get_candidates_filtered when head is known, which applies disc tree
+            // pruning to group entries while always including wildcard rules.
             let candidates: SmallVec<[&RuleEntry<V>; 16]> = if !head.is_empty() {
-                rule_index.get_candidates(head, arity, first_arg_head).collect()
+                rule_index.get_candidates_filtered(head, arity, first_arg_head, expr)
             } else {
                 rule_index.get_all_rules().collect()
             };

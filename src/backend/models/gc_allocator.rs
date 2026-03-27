@@ -5312,8 +5312,13 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
 
     #[inline]
     fn conjunction(&self, goals: Vec<MettaValue>) -> MettaValue {
+        self.conjunction_from_slice(&goals)
+    }
+
+    #[inline]
+    fn conjunction_from_slice(&self, goals: &[MettaValue]) -> MettaValue {
         let has_vars = goals.iter().any(|g| g.has_variables_fast());
-        let slice = self.alloc.alloc_slice_copy(&goals);
+        let slice = self.alloc.alloc_slice_copy(goals);
         let inner = self.alloc.alloc_value(MettaValueInner::Conjunction(slice));
         let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
         MettaValue::from_inner_tagged(inner, flags)

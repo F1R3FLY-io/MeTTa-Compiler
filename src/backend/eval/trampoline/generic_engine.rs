@@ -172,7 +172,7 @@ where
         if !any_changed {
             return value.clone();
         }
-        return factory.conjunction(new_goals.into_vec());
+        return factory.conjunction_from_slice(&new_goals);
     }
 
     // Handle errors - identity short-circuit
@@ -602,28 +602,38 @@ where
         None
     };
 
-    // Read rule index and collect candidates
+    // Read rule index and collect candidates with disc tree pruning applied.
+    // get_candidates_filtered applies disc tree to group entries only,
+    // always including wildcard rules (which are not in any group's disc tree).
     let rule_index = env.shared.rule_index.read();
     let candidates: SmallVec<[&crate::backend::environment::rule_management::RuleEntry<V>; 16]> =
-        rule_index.get_candidates(resolved_head, arity, first_arg_head).collect();
+        rule_index.get_candidates_filtered(resolved_head, arity, first_arg_head, template);
 
     if candidates.is_empty() {
         return Some(Vec::new()); // No candidates — self-evaluating
     }
 
-    // ALL candidates must have structural matchers for binding-aware path.
-    // If any lacks one, bail to materialization (MORK matching needs a concrete expr).
-    if !candidates.iter().all(|e| e.structural_matcher.is_some()) {
+    // ALL candidates must have a compiled matcher (structural or enhanced)
+    // for the binding-aware path. If any lacks both, bail to materialization.
+    if !candidates.iter().all(|e| e.structural_matcher.is_some() || e.enhanced_matcher.is_some()) {
         return None;
     }
 
-    // Match each candidate's structural matcher against the template,
-    // resolving variables through outer_bindings on the fly.
+    // Match each candidate against the template + outer_bindings without
+    // materializing. Both StructuralMatcher and EnhancedMatcher support
+    // try_match_with_bindings, resolving variables on the fly.
     let mut matches: Vec<(V, GenericBindings<V>)> = Vec::new();
 
     for entry in &candidates {
-        let matcher = entry.structural_matcher.as_ref().expect("checked above");
-        if let Some(mut match_bindings) = matcher.try_match_with_bindings(template, outer_bindings) {
+        let match_result = if let Some(ref matcher) = entry.structural_matcher {
+            matcher.try_match_with_bindings(template, outer_bindings)
+        } else if let Some(ref matcher) = entry.enhanced_matcher {
+            matcher.try_match_with_bindings(template, outer_bindings)
+        } else {
+            None
+        };
+
+        if let Some(mut match_bindings) = match_result {
             // Deep-resolve captured values through outer_bindings.
             //
             // navigate_resolving resolves variables at navigation boundaries but

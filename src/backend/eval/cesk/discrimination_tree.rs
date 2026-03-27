@@ -222,7 +222,8 @@ impl DiscriminationTree {
 
         // Extract query keys from expression
         let mut keys = SmallVec::<[DiscKey; 16]>::new();
-        Self::extract_query_keys(expr, &mut keys, self.max_depth, 0);
+        let mut sizes = SmallVec::<[u16; 16]>::new();
+        Self::extract_query_keys_with_sizes(expr, &mut keys, &mut sizes, self.max_depth, 0);
 
         if keys.is_empty() {
             // No keys to discriminate — return all root-level rules
@@ -360,14 +361,22 @@ impl DiscriminationTree {
 
     // ── Key Extraction (Expressions / Queries) ───────────────────────
 
-    /// Extract discrimination keys from an expression (for querying).
+    /// Extract discrimination keys from an expression (for querying),
+    /// along with precomputed subtree sizes.
     ///
-    /// Similar to `extract_keys` but never emits `Var` (expressions don't
-    /// have variables in the queried positions — or if they do, they're
-    /// treated as concrete atoms).
-    fn extract_query_keys<V: MettaValueTrait>(
+    /// `subtree_sizes[i]` records how many keys the subtree starting at
+    /// position `i` spans. This is needed by `traverse_query` when
+    /// following Var edges: the Var matches one expression term, which
+    /// may span multiple keys (e.g., an entire S-expression subtree).
+    ///
+    /// Computing sizes during extraction (when the tree structure is
+    /// available) avoids the ambiguity of the flat key sequence where
+    /// a standalone atom followed by an unrelated Arity key from a
+    /// parent level is indistinguishable from an S-expression head.
+    fn extract_query_keys_with_sizes<V: MettaValueTrait>(
         value: &V,
         keys: &mut SmallVec<[DiscKey; 16]>,
+        sizes: &mut SmallVec<[u16; 16]>,
         max_depth: usize,
         current_depth: usize,
     ) {
@@ -382,49 +391,77 @@ impl DiscriminationTree {
             value.clone()
         };
 
+        // Variables emit Var (matches any pattern structure)
+        if value.is_variable() {
+            keys.push(DiscKey::Var);
+            sizes.push(1);
+            return;
+        }
+
         if let Some(name) = value.as_atom() {
-            keys.push(DiscKey::Atom(name));
+            if name == "_" {
+                keys.push(DiscKey::Var);
+            } else {
+                keys.push(DiscKey::Atom(name));
+            }
+            sizes.push(1);
             return;
         }
 
         if let Some(n) = value.as_long() {
             keys.push(DiscKey::Long(n));
+            sizes.push(1);
             return;
         }
 
         if let Some(b) = value.as_bool() {
             keys.push(DiscKey::Bool(b));
+            sizes.push(1);
             return;
         }
 
         if let Some(f) = value.as_float() {
             keys.push(DiscKey::Float(f.to_bits()));
+            sizes.push(1);
             return;
         }
 
         if let Some(items) = value.as_sexpr() {
             if items.is_empty() {
                 keys.push(DiscKey::Arity(0));
+                sizes.push(1);
                 return;
             }
 
-            // Head
-            Self::extract_query_keys(&items[0], keys, max_depth, current_depth);
+            let start_pos = keys.len();
+
+            // Head (recursively extracts keys for head expression)
+            Self::extract_query_keys_with_sizes(&items[0], keys, sizes, max_depth, current_depth);
 
             // Arity
             keys.push(DiscKey::Arity(items.len() as u16));
+            sizes.push(1); // placeholder — will be overwritten below
 
             // Children
             for child in &items[1..] {
-                Self::extract_query_keys(child, keys, max_depth, current_depth + 1);
+                Self::extract_query_keys_with_sizes(
+                    child, keys, sizes, max_depth, current_depth + 1,
+                );
             }
+
+            // Compute total subtree size for this S-expression
+            let total_size = (keys.len() - start_pos) as u16;
+
+            // Set the subtree size for the HEAD key position
+            // (the head is the entry point when a Var edge matches this S-expr)
+            sizes[start_pos] = total_size;
 
             return;
         }
 
-        // For other types (quoted, type, error, etc.), emit nothing
-        // The traversal will stop here, and any trie-indexed rules
-        // reachable up to this point will be included.
+        // For other types (quoted, type, error, etc.), emit Var
+        keys.push(DiscKey::Var);
+        sizes.push(1);
     }
 
     // ── Trie Traversal ───────────────────────────────────────────────
@@ -441,27 +478,43 @@ impl DiscriminationTree {
         results.extend(node.rule_indices.iter().copied());
 
         if key_idx >= keys.len() {
-            // No more keys — collect all reachable rules from descendants
-            // (rules with shorter patterns that still match)
+            // No more query keys — collect all reachable rules from
+            // descendants, since patterns with Var edges at remaining positions
+            // would match any expression structure we can't discriminate further.
+            for child in node.children.values() {
+                self.collect_all_indices(child, results);
+            }
             return;
         }
 
         let key = &keys[key_idx];
+
+        // Query-side Var matches ANY pattern structure at this position.
+        // We cannot discriminate further through a variable, so collect all
+        // rules reachable from all children (conservative: no false negatives).
+        if *key == DiscKey::Var {
+            for child in node.children.values() {
+                self.collect_all_indices(child, results);
+            }
+            return;
+        }
 
         // Follow the concrete edge (exact match)
         if let Some(child) = node.children.get(key) {
             self.traverse_query(child, keys, key_idx + 1, results);
         }
 
-        // Follow the Var edge (wildcard match) — unless key IS Var
-        if *key != DiscKey::Var {
-            if let Some(var_child) = node.children.get(&DiscKey::Var) {
-                // Skip to next non-child key for the Var edge.
-                // For S-expressions, Var matches the entire argument (including
-                // its children), so we need to skip the right number of keys.
-                let skip_count = self.count_subtree_keys(keys, key_idx);
-                self.traverse_query(var_child, keys, key_idx + skip_count, results);
-            }
+        // Follow the Var edge (pattern-side wildcard match).
+        // The Var in the pattern matches one expression term, but in the flat
+        // key encoding, a "term" can span a variable number of keys (atoms=1,
+        // S-expressions=many). Rather than trying to compute the exact skip
+        // count (which is ambiguous when a head is both a subtree root AND
+        // nested within a larger S-expression), we conservatively collect ALL
+        // rules reachable through the Var edge. This guarantees no false
+        // negatives. The concrete edges earlier in the traversal still provide
+        // significant pruning (head symbol, arity, etc.).
+        if let Some(var_child) = node.children.get(&DiscKey::Var) {
+            self.collect_all_indices(var_child, results);
         }
     }
 

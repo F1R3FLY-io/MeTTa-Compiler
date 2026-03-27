@@ -221,6 +221,13 @@ where
     /// Collapse frames for nondeterminism sandboxing.
     /// Each `(collapse ...)` pushes a frame; backtracking cannot escape past the barrier.
     pub(crate) collapse_frames: Vec<GenericCollapseFrame<V>>,
+
+    /// Per-execution dispatch memo for nondeterministic call caching.
+    /// When backtracking causes the same expression to be re-dispatched
+    /// (Cartesian product scenario like `(op (nd1) (nd2))`), return cached
+    /// results instead of re-matching + re-evaluating all RHS bodies.
+    /// Key: expression hash via hash_value(). Value: pre-evaluated results.
+    pub(crate) dispatch_memo: std::collections::HashMap<u64, Vec<V>>,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
@@ -273,6 +280,7 @@ where
             unreduced: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
+            dispatch_memo: std::collections::HashMap::new(),
         }
     }
 
@@ -301,6 +309,7 @@ where
             unreduced: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
+            dispatch_memo: std::collections::HashMap::new(),
         }
     }
 
@@ -332,6 +341,7 @@ where
             unreduced: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
+            dispatch_memo: std::collections::HashMap::new(),
         }
     }
 
@@ -3951,6 +3961,41 @@ where
         // non-meta-typed S-expr arguments before rule matching.
         let expr = self.vm_type_driven_pre_eval(expr)?;
 
+        // Dispatch memo: check if we've already evaluated this exact expression.
+        // When backtracking causes re-dispatch (Cartesian product scenario like
+        // `(op (nd1) (nd2))`), return cached results instead of re-matching.
+        let expr_hash = expr.hash_value();
+        if let Some(cached) = self.dispatch_memo.get(&expr_hash) {
+            match cached.len() {
+                0 => {
+                    self.unreduced = true;
+                    self.push(expr);
+                }
+                1 => {
+                    self.push(cached[0].clone());
+                }
+                _ => {
+                    let mut iter = cached.iter().cloned();
+                    let first = iter.next().expect("non-empty cached");
+                    let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                        iter.map(GenericAlternative::Value).collect();
+                    if !alternatives.is_empty() {
+                        self.choice_points.push(GenericChoicePoint {
+                            ip: self.ip,
+                            chunk: Arc::clone(&self.chunk),
+                            value_stack_height: self.value_stack.len(),
+                            call_stack_height: self.call_stack.len(),
+                            bindings_stack_height: self.bindings_stack.len(),
+                            alternatives,
+                            saved_unreduced: self.unreduced,
+                        });
+                    }
+                    self.push(first);
+                }
+            }
+            return Ok(());
+        }
+
         // Get environment reference
         let env = match &self.env {
             Some(e) => e,
@@ -4088,6 +4133,8 @@ where
                     frame.set(name.to_string(), value.clone());
                 }
             }
+            // Cache single-match result for re-dispatch memoization
+            self.dispatch_memo.insert(expr_hash, vec![result.instantiated_rhs.clone()]);
             self.push(result.instantiated_rhs);
             return Ok(());
         }
@@ -4127,6 +4174,13 @@ where
                 env.clone(),
             );
             all_results.extend(sub_results);
+        }
+
+        // Cache multi-match results for re-dispatch memoization.
+        // On backtracking, the same expression may be re-dispatched;
+        // the memo returns cached results without re-matching + re-evaluating.
+        if !all_results.is_empty() {
+            self.dispatch_memo.insert(expr_hash, all_results.clone());
         }
 
         // Push results: single result goes on stack (normal path).

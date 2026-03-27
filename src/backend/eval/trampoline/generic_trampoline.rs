@@ -1296,8 +1296,16 @@ where
 
     // Main trampoline loop
     while let Some(work) = work_stack.pop() {
-        // Periodic GC safepoint check (every 4096 trampoline iterations)
+        // Incremental deferred-drop drain: pop 1 environment every 64 iterations.
+        // Spreads PathMap/MettaTrie trie cascade cost evenly across trampoline steps
+        // instead of spiking at GC safepoints. Safe outside safepoints because
+        // ACTIVE_EVALUATORS > 0 prevents concurrent GC sweeps.
         gc_counter = gc_counter.wrapping_add(1);
+        if gc_counter & 0x3F == 0 {
+            deferred_shared_drops.pop();
+        }
+
+        // Periodic GC safepoint check (every 4096 trampoline iterations)
         if gc_counter & 0xFFF == 0 && ctx.should_safepoint() {
             // SECK Phase 0.5: Algebraic root set collection.
             // Uses reusable RootSet buffer (allocated once before the loop)
@@ -1396,10 +1404,12 @@ where
             // allocated capacity for reuse at the next safepoint.
             ctx.perform_safepoint(root_set.drain_into_vec());
 
-            // Clear deferred environment drops AFTER safepoint completes.
+            // Batch-drain deferred drops AFTER safepoint completes.
             // Their roots were collected into root_set above, so the GC saw them.
-            // Now it's safe to drop them — the GC won't sweep their values.
-            deferred_shared_drops.clear();
+            // Truncate from the tail (O(1) per element, no Vec shift overhead).
+            // Acts as a safety valve if incremental drain can't keep up.
+            let new_len = deferred_shared_drops.len().saturating_sub(32);
+            deferred_shared_drops.truncate(new_len);
 
             // Trace: GcSafepoint with measured pause duration
             #[cfg(feature = "eval-trace")]

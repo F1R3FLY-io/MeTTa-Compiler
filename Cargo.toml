@@ -16,7 +16,7 @@ categories = ["compilers", "parser-implementations"]
 [lib]
 name = "mettatron"
 path = "src/lib.rs"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "mettatron"

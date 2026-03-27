@@ -61,13 +61,15 @@ use crate::backend::models::MettaValueTrait;
 /// traversal follows both concrete and Var edges.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DiscKey {
-    /// An atom symbol (e.g., "f", "+", "if").
-    /// Uses the interned `&'static str` pointer for O(1) hashing.
+    /// A standalone atom symbol (e.g., "f", "+", "if").
+    /// NOT an S-expression head — never followed by children in the key sequence.
     Atom(&'static str),
 
-    /// The arity of an S-expression.
-    /// Emitted after the head atom to discriminate by structure.
-    Arity(u16),
+    /// The start of an S-expression with an atom head.
+    /// Fuses head symbol and arity into a single key, unambiguously marking
+    /// S-expression boundaries. Children keys follow in depth-first order.
+    /// `arity` is items.len() (total items including head).
+    SExprStart(&'static str, u16),
 
     /// An integer literal.
     Long(i64),
@@ -222,8 +224,7 @@ impl DiscriminationTree {
 
         // Extract query keys from expression
         let mut keys = SmallVec::<[DiscKey; 16]>::new();
-        let mut sizes = SmallVec::<[u16; 16]>::new();
-        Self::extract_query_keys_with_sizes(expr, &mut keys, &mut sizes, self.max_depth, 0);
+        Self::extract_query_keys(expr, &mut keys, self.max_depth, 0);
 
         if keys.is_empty() {
             // No keys to discriminate — return all root-level rules
@@ -322,26 +323,42 @@ impl DiscriminationTree {
 
         if let Some(items) = value.as_sexpr() {
             if items.is_empty() {
-                keys.push(DiscKey::Arity(0));
+                keys.push(DiscKey::Var); // Empty S-expr → catchall
                 return true;
             }
 
-            // First: head atom
+            // Extract head atom name for SExprStart
             let head = &items[0];
-            if !Self::extract_keys(head, keys, max_depth, current_depth) {
-                return false;
+            let head_unwrapped = if head.is_spanned() {
+                head.strip_one_span()
+            } else {
+                head.clone()
+            };
+
+            if head_unwrapped.is_variable() {
+                // Variable head → entire S-expr is a wildcard
+                keys.push(DiscKey::Var);
+                return true;
             }
 
-            // Then: arity
-            keys.push(DiscKey::Arity(items.len() as u16));
-
-            // Then: remaining children (depth-first)
-            for child in &items[1..] {
-                if !Self::extract_keys(child, keys, max_depth, current_depth + 1) {
-                    return false;
+            if let Some(name) = head_unwrapped.as_atom() {
+                if name == "_" {
+                    keys.push(DiscKey::Var);
+                } else {
+                    // Fuse head + arity into SExprStart
+                    keys.push(DiscKey::SExprStart(name, items.len() as u16));
+                    // Children only (head is fused into SExprStart)
+                    for child in &items[1..] {
+                        if !Self::extract_keys(child, keys, max_depth, current_depth + 1) {
+                            return false;
+                        }
+                    }
                 }
+                return true;
             }
 
+            // Non-atom, non-variable head (nested S-expr as head) → catchall
+            keys.push(DiscKey::Var);
             return true;
         }
 
@@ -361,22 +378,13 @@ impl DiscriminationTree {
 
     // ── Key Extraction (Expressions / Queries) ───────────────────────
 
-    /// Extract discrimination keys from an expression (for querying),
-    /// along with precomputed subtree sizes.
+    /// Extract discrimination keys from an expression (for querying).
     ///
-    /// `subtree_sizes[i]` records how many keys the subtree starting at
-    /// position `i` spans. This is needed by `traverse_query` when
-    /// following Var edges: the Var matches one expression term, which
-    /// may span multiple keys (e.g., an entire S-expression subtree).
-    ///
-    /// Computing sizes during extraction (when the tree structure is
-    /// available) avoids the ambiguity of the flat key sequence where
-    /// a standalone atom followed by an unrelated Arity key from a
-    /// parent level is indistinguishable from an S-expression head.
-    fn extract_query_keys_with_sizes<V: MettaValueTrait>(
+    /// Uses the same SExprStart encoding as `extract_keys`, enabling
+    /// unambiguous `skip_count` computation during Var-edge traversal.
+    fn extract_query_keys<V: MettaValueTrait>(
         value: &V,
         keys: &mut SmallVec<[DiscKey; 16]>,
-        sizes: &mut SmallVec<[u16; 16]>,
         max_depth: usize,
         current_depth: usize,
     ) {
@@ -394,7 +402,6 @@ impl DiscriminationTree {
         // Variables emit Var (matches any pattern structure)
         if value.is_variable() {
             keys.push(DiscKey::Var);
-            sizes.push(1);
             return;
         }
 
@@ -404,64 +411,61 @@ impl DiscriminationTree {
             } else {
                 keys.push(DiscKey::Atom(name));
             }
-            sizes.push(1);
             return;
         }
 
         if let Some(n) = value.as_long() {
             keys.push(DiscKey::Long(n));
-            sizes.push(1);
             return;
         }
 
         if let Some(b) = value.as_bool() {
             keys.push(DiscKey::Bool(b));
-            sizes.push(1);
             return;
         }
 
         if let Some(f) = value.as_float() {
             keys.push(DiscKey::Float(f.to_bits()));
-            sizes.push(1);
             return;
         }
 
         if let Some(items) = value.as_sexpr() {
             if items.is_empty() {
-                keys.push(DiscKey::Arity(0));
-                sizes.push(1);
+                keys.push(DiscKey::Var); // Empty S-expr → catchall
                 return;
             }
 
-            let start_pos = keys.len();
+            let head = &items[0];
+            let head_unwrapped = if head.is_spanned() {
+                head.strip_one_span()
+            } else {
+                head.clone()
+            };
 
-            // Head (recursively extracts keys for head expression)
-            Self::extract_query_keys_with_sizes(&items[0], keys, sizes, max_depth, current_depth);
-
-            // Arity
-            keys.push(DiscKey::Arity(items.len() as u16));
-            sizes.push(1); // placeholder — will be overwritten below
-
-            // Children
-            for child in &items[1..] {
-                Self::extract_query_keys_with_sizes(
-                    child, keys, sizes, max_depth, current_depth + 1,
-                );
+            if head_unwrapped.is_variable() {
+                keys.push(DiscKey::Var);
+                return;
             }
 
-            // Compute total subtree size for this S-expression
-            let total_size = (keys.len() - start_pos) as u16;
+            if let Some(name) = head_unwrapped.as_atom() {
+                if name == "_" {
+                    keys.push(DiscKey::Var);
+                } else {
+                    keys.push(DiscKey::SExprStart(name, items.len() as u16));
+                    for child in &items[1..] {
+                        Self::extract_query_keys(child, keys, max_depth, current_depth + 1);
+                    }
+                }
+                return;
+            }
 
-            // Set the subtree size for the HEAD key position
-            // (the head is the entry point when a Var edge matches this S-expr)
-            sizes[start_pos] = total_size;
-
+            // Non-atom head (nested S-expr as head) → catchall
+            keys.push(DiscKey::Var);
             return;
         }
 
         // For other types (quoted, type, error, etc.), emit Var
         keys.push(DiscKey::Var);
-        sizes.push(1);
     }
 
     // ── Trie Traversal ───────────────────────────────────────────────
@@ -505,49 +509,37 @@ impl DiscriminationTree {
         }
 
         // Follow the Var edge (pattern-side wildcard match).
-        // The Var in the pattern matches one expression term, but in the flat
-        // key encoding, a "term" can span a variable number of keys (atoms=1,
-        // S-expressions=many). Rather than trying to compute the exact skip
-        // count (which is ambiguous when a head is both a subtree root AND
-        // nested within a larger S-expression), we conservatively collect ALL
-        // rules reachable through the Var edge. This guarantees no false
-        // negatives. The concrete edges earlier in the traversal still provide
-        // significant pruning (head symbol, arity, etc.).
+        // The Var in the pattern matches one expression term. With the
+        // SExprStart encoding, skip_count is unambiguous — SExprStart keys
+        // span their children, all other keys span exactly 1 position.
         if let Some(var_child) = node.children.get(&DiscKey::Var) {
-            self.collect_all_indices(var_child, results);
+            let skip = Self::skip_count(keys, key_idx);
+            self.traverse_query(var_child, keys, key_idx + skip, results);
         }
     }
 
-    /// Count how many keys a subtree at the given position spans.
+    /// Count how many keys the term at position `pos` spans.
     ///
-    /// For atoms/literals: 1 key.
-    /// For S-expressions: 1 (head) + 1 (arity) + sum(children's key counts).
-    fn count_subtree_keys(&self, keys: &[DiscKey], start: usize) -> usize {
-        if start >= keys.len() {
+    /// With the SExprStart encoding, this is unambiguous:
+    /// - `SExprStart(_, arity)`: 1 + sum of (arity-1) children's skip counts
+    /// - All other keys: 1
+    fn skip_count(keys: &[DiscKey], pos: usize) -> usize {
+        if pos >= keys.len() {
             return 1;
         }
-
-        match &keys[start] {
-            DiscKey::Atom(_) | DiscKey::Long(_) | DiscKey::Bool(_)
-            | DiscKey::Float(_) | DiscKey::Str(_) | DiscKey::Var => {
-                // Check if next key is Arity (this atom is head of S-expr)
-                if start + 1 < keys.len() {
-                    if let DiscKey::Arity(arity) = &keys[start + 1] {
-                        // S-expression: head + arity + children
-                        let arity = *arity as usize;
-                        let mut total = 2; // head + arity
-                        let mut pos = start + 2;
-                        for _ in 1..arity { // skip head (already counted)
-                            let child_keys = self.count_subtree_keys(keys, pos);
-                            total += child_keys;
-                            pos += child_keys;
-                        }
-                        return total;
-                    }
+        match &keys[pos] {
+            DiscKey::SExprStart(_, arity) => {
+                let num_children = (*arity as usize).saturating_sub(1);
+                let mut total = 1; // the SExprStart key itself
+                let mut p = pos + 1;
+                for _ in 0..num_children {
+                    let child_skip = Self::skip_count(keys, p);
+                    total += child_skip;
+                    p += child_skip;
                 }
-                1 // Simple atom/literal
+                total
             }
-            DiscKey::Arity(_) => 1, // Should not appear as subtree start
+            _ => 1,
         }
     }
 

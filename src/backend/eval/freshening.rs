@@ -13,7 +13,7 @@
 //! ## Implementation
 //!
 //! Uses the same iterative work-stack pattern as `seal_variables_iterative_generic`
-//! from `bindings_generic.rs`. Variables (`$`-prefixed atoms) are renamed to
+//! from `bindings.rs`. Variables (`$`-prefixed atoms) are renamed to
 //! `$__fr_{epoch}_{name}` where epoch is a globally unique counter. Non-variable
 //! atoms (`&self`, `&kb`, `&stack`, literals) pass through unchanged.
 
@@ -43,7 +43,7 @@ enum FreshenWork<'a, V> {
 /// ## Fast Path
 ///
 /// Returns the value unchanged (no allocation) if it contains no variables.
-/// Use `has_variables_generic()` from `mork_forms_generic.rs` to pre-check.
+/// Use `has_variables_generic()` from `mork_forms.rs` to pre-check.
 ///
 /// ## Epoch Isolation
 ///

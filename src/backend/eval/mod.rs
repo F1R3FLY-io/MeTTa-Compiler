@@ -4,7 +4,7 @@
 // The eval() entry point handles bytecode/JIT tiering with
 // tree-walker fallback via eval_trampoline().
 
-pub(crate) mod bindings_generic;
+pub(crate) mod bindings;
 pub mod cesk;
 pub(crate) mod frame_chain;
 pub(crate) mod freshening;
@@ -14,15 +14,15 @@ mod list_ops;
 pub(crate) mod alpha_equiv;
 pub(crate) mod set_ops;
 pub(crate) mod testing_ops;
-pub(crate) mod modules_generic;
-pub(crate) mod mork_forms_generic;
+pub(crate) mod modules;
+pub(crate) mod mork_forms;
 mod pattern;
 pub mod priority;
 mod processing;
 pub(crate) mod step;
 pub mod trampoline;
 pub(crate) mod type_fixpoint;
-pub(crate) mod types_generic;
+pub(crate) mod types;
 
 #[cfg(test)]
 mod arena_tests;
@@ -41,7 +41,7 @@ pub use trampoline::eval_trampoline;
 pub use trampoline::{MettaEnvironment, StaticEvalContext};
 
 // Type system re-exports for benchmarking
-pub use types_generic::{
+pub use types::{
     infer_types_generic, infer_type_generic,
     types_match_generic, types_match_with_subtypes,
     match_types_with_bindings, apply_type_bindings,
@@ -497,7 +497,7 @@ fn eval_inner(
                     let unreduced = vm.unreduced;
                     let has_choices = vm.choice_points_len() > 0;
                     let final_env = vm.env.take().unwrap_or_else(|| {
-                        crate::backend::environment::generic::MettaEnvironment::new(factory)
+                        crate::backend::environment::core::MettaEnvironment::new(factory)
                     });
                     (results, final_env, unreduced, has_choices)
                 })

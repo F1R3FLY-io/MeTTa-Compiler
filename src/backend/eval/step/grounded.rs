@@ -13,7 +13,7 @@
 //!
 //! MeTTaTron adds a bloom filter fallback for untyped operators that may have
 //! user-defined rules. The fixpoint detection in `CollectGroundedArg` (in
-//! `generic_trampoline.rs`) prevents infinite loops when the bloom filter
+//! `eval_loop.rs`) prevents infinite loops when the bloom filter
 //! produces false positives on data constructors.
 
 use crate::backend::environment::GenericEnvironment;
@@ -154,7 +154,7 @@ where
                     }
                     // Tier 3: Bloom filter fallback for untyped operators with rules.
                     // False positives are handled by fixpoint detection in
-                    // CollectGroundedArg (generic_trampoline.rs).
+                    // CollectGroundedArg (eval_loop.rs).
                     else if env.may_have_rules_for(op, sub_items.len() - 1) {
                         indices.push(i);
                     }
@@ -238,7 +238,7 @@ where
 /// or if any type is an arrow type.
 ///
 /// Used to skip rule matching entirely for data constructors (Step 2.5 in
-/// generic_sexpr.rs), sending them directly to the tuple path.
+/// sexpr.rs), sending them directly to the tuple path.
 ///
 /// If `precomputed_types` is `Some`, uses it directly instead of querying
 /// `env.get_types_generic(op)` — avoids redundant RwLock reads when the

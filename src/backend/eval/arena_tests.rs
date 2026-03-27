@@ -2489,7 +2489,7 @@ mod tests {
     /// Arrow covariant return: (-> Number Dog) should match (-> Number Animal) if Dog <: Animal
     #[test]
     fn test_arrow_covariant_return() {
-        use crate::backend::eval::types_generic::types_match_with_subtypes;
+        use crate::backend::eval::types::types_match_with_subtypes;
         use crate::backend::models::GcFactory;
         use crate::backend::environment::MettaEnvironment;
         use crate::backend::models::MettaValueFactory;
@@ -2514,7 +2514,7 @@ mod tests {
     /// Arrow contravariant param: (-> Animal Bool) should match (-> Dog Bool) if Dog <: Animal
     #[test]
     fn test_arrow_contravariant_param() {
-        use crate::backend::eval::types_generic::types_match_with_subtypes;
+        use crate::backend::eval::types::types_match_with_subtypes;
         use crate::backend::models::GcFactory;
         use crate::backend::environment::MettaEnvironment;
         use crate::backend::models::MettaValueFactory;
@@ -2541,7 +2541,7 @@ mod tests {
     /// with covariant params (would be unsound)
     #[test]
     fn test_arrow_invariant_mismatch() {
-        use crate::backend::eval::types_generic::types_match_with_subtypes;
+        use crate::backend::eval::types::types_match_with_subtypes;
         use crate::backend::models::GcFactory;
         use crate::backend::environment::MettaEnvironment;
         use crate::backend::models::MettaValueFactory;

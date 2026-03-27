@@ -51,7 +51,7 @@ use super::mork_encoding::mork_bytes_to_generic_value;
 use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
 use super::rule_management::extract_rule_parts;
 use super::scope::ScopeTracker;
-use crate::backend::eval::bindings_generic::{apply_bindings_generic, pattern_match_generic};
+use crate::backend::eval::bindings::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::grounded::{GenericGroundedRegistry, GroundedRegistry};
 use crate::backend::models::gc_allocator::{try_register_env_roots, RootProvider};

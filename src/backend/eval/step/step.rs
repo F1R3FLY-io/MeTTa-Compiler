@@ -16,8 +16,8 @@ use tracing::trace;
 use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
-use super::generic_sexpr::eval_sexpr_step_with_original;
-use super::generic_types::GenericEvalStep;
+use super::sexpr::eval_sexpr_step_with_original;
+use super::types::GenericEvalStep;
 
 /// Perform a single step of generic evaluation.
 ///

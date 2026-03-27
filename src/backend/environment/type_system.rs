@@ -11,7 +11,7 @@ use mork_expr::Expr;
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use tracing::trace;
 
-use super::generic::GenericEnvironment;
+use super::core::GenericEnvironment;
 use super::{MettaEnvironment, MettaValue};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait, ValueView};
 
@@ -742,7 +742,7 @@ mod tests {
     fn test_no_deprecated_get_type_generic() {
         // Compile-time verification: get_type_generic no longer exists.
         // This test documents that the old API was removed and replaced by get_types_generic.
-        // If get_type_generic still existed, the callers in types_generic.rs and grounded.rs
+        // If get_type_generic still existed, the callers in types.rs and grounded.rs
         // would fail to compile since they now use get_types_generic.
     }
 

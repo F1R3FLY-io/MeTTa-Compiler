@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use super::generic::GenericEnvironment;
+use super::core::GenericEnvironment;
 use super::MettaEnvironment;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::{LoadOptions, ModId};

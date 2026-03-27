@@ -158,7 +158,7 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
 
     // Use a lightweight EvalContext adapter for the trampoline.
-    use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+    use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::EvalContext;
     use crate::backend::models::{GcFactory, global_factory};
 

@@ -306,7 +306,7 @@ impl SpaceHandle {
     /// variable atoms ($-prefixed) go to the variable_atoms Vec.
     /// For module spaces, delegates to ModuleSpace.
     pub fn add_atom(&self, atom: MettaValue) {
-        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+        use crate::backend::eval::mork_forms::has_pattern_variables;
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
@@ -347,7 +347,7 @@ impl SpaceHandle {
     /// Remove an atom from this space.
     /// Returns true if the atom was found and removed.
     pub fn remove_atom(&self, atom: &MettaValue) -> bool {
-        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+        use crate::backend::eval::mork_forms::has_pattern_variables;
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
@@ -600,7 +600,7 @@ impl SpaceHandle {
 
     /// Check if the space contains a specific atom.
     pub fn contains(&self, atom: &MettaValue) -> bool {
-        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+        use crate::backend::eval::mork_forms::has_pattern_variables;
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
@@ -634,7 +634,7 @@ impl SpaceHandle {
 
     /// Get the multiplicity (count) of a specific atom in this space.
     pub fn atom_multiplicity(&self, atom: &MettaValue) -> usize {
-        use crate::backend::eval::mork_forms_generic::has_pattern_variables;
+        use crate::backend::eval::mork_forms::has_pattern_variables;
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
@@ -817,7 +817,7 @@ impl SpaceHandle {
         V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
         F: MettaValueFactory<V>,
     {
-        use crate::backend::eval::bindings_generic::{
+        use crate::backend::eval::bindings::{
             apply_bindings_generic, collect_variables_generic, pattern_match_generic,
         };
         use crate::backend::eval::freshening::freshen_variables_generic;

@@ -21,7 +21,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::backend::compile::compile_generic;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
-use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::{ MettaEnvironment, EvalContext};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::resolve_module_path;

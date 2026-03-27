@@ -27,7 +27,7 @@
 pub(crate) mod atom_space;
 pub(crate) mod bloom;
 mod fact_storage;
-pub(crate) mod generic;
+pub(crate) mod core;
 mod grounded_ops;
 mod module_ops;
 pub(crate) mod mork_encoding;
@@ -46,7 +46,7 @@ mod tests;
 mod proptests;
 mod type_system;
 
-pub use generic::{GenericEnvironment, GenericEnvironmentShared, MettaEnvironment, MultiplicityMatch as GenericMultiplicityMatch};
+pub use core::{GenericEnvironment, GenericEnvironmentShared, MettaEnvironment, MultiplicityMatch as GenericMultiplicityMatch};
 pub use named_spaces::NamedSpaceIter;
 pub use pattern_matching::MultiplicityMatch;
 pub use rule_management::RuleHeadsIter;

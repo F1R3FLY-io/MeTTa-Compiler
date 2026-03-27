@@ -3,7 +3,7 @@
 //! Provides methods for accessing grounded (built-in) operations.
 //! Active code uses `GenericGroundedRegistry` with static dispatch.
 
-use super::generic::GenericEnvironment;
+use super::core::GenericEnvironment;
 use crate::backend::grounded::{GenericGroundedState, GenericGroundedWork};
 use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use crate::backend::MettaValue;

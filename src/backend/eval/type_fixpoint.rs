@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::eval::types_generic::{infer_arrow_type_from_rule, infer_type_generic};
+use crate::backend::eval::types::{infer_arrow_type_from_rule, infer_type_generic};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
 /// Run iterative fixpoint type inference over all rules in the environment.

@@ -40,7 +40,7 @@ use dashmap::DashMap;
 
 use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::{MettaValue, MettaValueInner, ValueView};
-use crate::backend::environment::generic::MettaEnvironment;
+use crate::backend::environment::core::MettaEnvironment;
 use crate::backend::models::work_pool::global_compile_pool;
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 

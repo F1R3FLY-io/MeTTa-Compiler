@@ -18,11 +18,11 @@ use smallvec::{SmallVec, smallvec};
 
 use tracing::trace;
 
-use super::generic_types::GenericEvalStep;
+use super::types::GenericEvalStep;
 use super::grounded::{find_grounded_arg_indices_generic, find_typed_arg_indices_generic, is_declared_value_type, validate_grounded_arg_types};
 
-use crate::backend::eval::bindings_generic::{eval_atom_subst_generic, eval_sealed_generic};
-use crate::backend::eval::list_ops::generic::{
+use crate::backend::eval::bindings::{eval_atom_subst_generic, eval_sealed_generic};
+use crate::backend::eval::list_ops::ops::{
     eval_car_atom_generic, eval_cdr_atom_generic, eval_cons_atom_generic,
     eval_decons_atom_generic, eval_drop_atom_generic, eval_element_of_generic,
     eval_flatten_atom_generic, eval_index_atom_generic, eval_max_atom_generic,
@@ -32,15 +32,15 @@ use crate::backend::eval::list_ops::generic::{
 };
 use crate::backend::eval::list_ops::helpers::suggest_variable_format;
 // Generic module operations - used directly (no boundary conversion)
-use crate::backend::eval::modules_generic::{
+use crate::backend::eval::modules::{
     eval_import_generic, eval_include_generic, eval_mod_space_generic, eval_print_mods_generic,
 };
 // Generic MORK operations - used directly (no boundary conversion)
-use crate::backend::eval::mork_forms_generic::{
+use crate::backend::eval::mork_forms::{
     eval_coalg_generic, eval_exec_generic, eval_lookup_generic, eval_rulify_generic,
 };
 use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
-use crate::backend::eval::types_generic::{eval_check_type_generic, eval_get_type_generic, types_match_generic};
+use crate::backend::eval::types::{eval_check_type_generic, eval_get_type_generic, types_match_generic};
 use crate::backend::grounded::{has_generic_grounded_op, GenericGroundedState};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 use crate::backend::models::metta_value::MettaValueInner;
@@ -763,7 +763,7 @@ where
 
             // validate-atom - recursive well-typedness checking (Phase 4)
             "validate-atom" => {
-                let results = crate::backend::eval::types_generic::eval_validate_atom_generic(
+                let results = crate::backend::eval::types::eval_validate_atom_generic(
                     &items, ctx.factory(), &env,
                 );
                 return GenericEvalStep::Done((SmallVec::from_vec(results), env));
@@ -771,7 +771,7 @@ where
 
             // get-type-space - query types in a specific space (Phase 5)
             "get-type-space" => {
-                let results = crate::backend::eval::types_generic::eval_get_type_space_generic(
+                let results = crate::backend::eval::types::eval_get_type_space_generic(
                     &items, ctx.factory(), &env,
                 );
                 return GenericEvalStep::Done((SmallVec::from_vec(results), env));
@@ -810,7 +810,7 @@ where
                     );
                     return GenericEvalStep::Done((smallvec![err], env));
                 }
-                let results = crate::backend::eval::types_generic::eval_type_cast_generic(
+                let results = crate::backend::eval::types::eval_type_cast_generic(
                     &items, ctx.factory(), &env,
                 );
                 return GenericEvalStep::Done((SmallVec::from_vec(results), env));
@@ -873,7 +873,7 @@ where
 
                 // For non-expression atoms (symbols, grounded): type-cast check only
                 if atom.as_sexpr().is_none() && !atom.is_unit() {
-                    let results = crate::backend::eval::types_generic::eval_type_cast_generic(
+                    let results = crate::backend::eval::types::eval_type_cast_generic(
                         &items, ctx.factory(), &env,
                     );
                     return GenericEvalStep::Done((SmallVec::from_vec(results), env));

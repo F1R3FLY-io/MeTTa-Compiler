@@ -6,7 +6,7 @@
 //!
 //! ## Difference from `pattern_match_generic`
 //!
-//! `pattern_match_generic` (in `bindings_generic.rs`) is **unidirectional**: only
+//! `pattern_match_generic` (in `bindings.rs`) is **unidirectional**: only
 //! pattern-side variables bind; stored atom variables are treated as literal symbols.
 //! That function remains untouched — it's the fast path for rule application on the
 //! hot evaluation path.
@@ -395,7 +395,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::eval::bindings_generic::collect_variables_generic;
+    use crate::backend::eval::bindings::collect_variables_generic;
     use crate::backend::eval::freshening::freshen_variables_generic;
     use crate::backend::models::{GcFactory, MettaValueFactory};
 

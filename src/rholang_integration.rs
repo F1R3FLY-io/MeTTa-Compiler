@@ -22,7 +22,7 @@ use crate::backend::models::{
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
 #[cfg(feature = "async")]
-use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::StaticEvalContext;
 
 #[cfg(feature = "async")]

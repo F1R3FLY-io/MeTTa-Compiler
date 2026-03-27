@@ -55,19 +55,19 @@ use tracing::trace;
 
 use super::context::{EvalContext, MettaEnvironment};
 use crate::backend::models::gc_allocator::RootProvider;
-use super::generic_engine::{
+use super::engine::{
     apply_bindings, eval_switch, is_boolean_check_pattern, pattern_match,
     try_match_all_rules, try_deferred_deterministic_chain, DeferredChainResult,
     SwitchResult,
 };
-use super::generic_types::{Continuation, EvalResult, WorkItem};
+use super::types::{Continuation, EvalResult, WorkItem};
 use super::super::list_ops::substitute_variable_generic;
 use super::super::processing::{
     process_collected_sexpr_generic, GenericProcessedSExpr,
 };
 use super::super::step::{eval_step_generic, GenericEvalStep};
 
-use crate::backend::eval::types_generic::{
+use crate::backend::eval::types::{
     extract_type_constraint, get_ground_type, is_pattern_type_compatible,
     infer_type_generic, types_match_generic, types_match_with_subtypes,
 };
@@ -97,7 +97,7 @@ use super::dispatch_hints::{
     should_memoize, eval_memo_get, eval_memo_put,
     collect_eval_memo_roots, collect_match_result_roots,
 };
-use super::generic_engine::{try_deterministic_chain, try_match_rules_with_bindings};
+use super::engine::{try_deterministic_chain, try_match_rules_with_bindings};
 use super::dispatch_hints::REDUCIBLE_HEADS;
 
 // =============================================================================
@@ -678,7 +678,7 @@ thread_local! {
 /// Flat vector of all results from all branches, concatenated in branch order.
 fn parallel_branch_eval(
     branches: Vec<crate::backend::models::MettaValue>,
-    env: crate::backend::environment::generic::MettaEnvironment,
+    env: crate::backend::environment::core::MettaEnvironment,
     budget_acquired: u32,
     caller_depth: u32,
 ) -> Vec<crate::backend::models::MettaValue> {
@@ -908,7 +908,7 @@ const PARALLEL_COLLAPSE_THRESHOLD: usize = 16;
 /// Vec of all evaluated results (empty values filtered out), in item order.
 fn parallel_collapse_eval(
     items: Vec<crate::backend::models::MettaValue>,
-    env: crate::backend::environment::generic::MettaEnvironment,
+    env: crate::backend::environment::core::MettaEnvironment,
     budget_acquired: u32,
     caller_depth: u32,
     eval_depth: usize,

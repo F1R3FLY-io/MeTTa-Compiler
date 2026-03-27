@@ -31,7 +31,7 @@ use smallvec::smallvec;
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
-use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 
@@ -39,7 +39,7 @@ use super::step::GenericEvalStep;
 
 /// Dispatch a testing operation by name.
 ///
-/// Called from `generic_sexpr.rs` when a testing/assert operation is encountered.
+/// Called from `sexpr.rs` when a testing/assert operation is encountered.
 /// Extracts the operation name from `items[0]` to avoid borrow conflicts.
 pub fn eval_testing_op_generic<C: EvalContext>(
     items: Vec<MettaValue>,

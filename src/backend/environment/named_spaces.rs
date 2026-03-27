@@ -7,7 +7,7 @@
 
 use std::sync::atomic::Ordering;
 
-use super::generic::GenericEnvironment;
+use super::core::GenericEnvironment;
 use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use crate::backend::MettaValue;
 

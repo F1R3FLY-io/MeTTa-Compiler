@@ -12,7 +12,7 @@
 //!
 //! ## Unified Generic Engine
 //!
-//! The `generic_trampoline` module provides a truly generic engine that uses
+//! The `eval_loop` module provides a truly generic engine that uses
 //! `WorkItem<V>` and `Continuation<V>`, enabling the same evaluation
 //! logic to work with any `EvalContext` implementation.
 //!
@@ -33,9 +33,8 @@
 
 mod arena_engine;
 mod context;
-mod generic_engine;
-pub(crate) mod generic_trampoline;
-mod generic_types;
+pub(crate) mod eval_loop;
+mod types;
 pub mod engine;
 pub(crate) mod dispatch_hints;
 pub mod session_context;
@@ -57,17 +56,17 @@ pub use context::{
 
 // Re-export trampoline types
 #[allow(unused_imports)]
-pub use generic_types::{
+pub use types::{
     Continuation, EvalResult, WorkItem,
 };
 
 // Re-export engine functions
-pub use generic_engine::{
+pub use engine::{
     apply_bindings, pattern_match,
     try_match_all_rules, try_deterministic_chain,
 };
 
-// Internal: generic_trampoline::eval_trampoline(value, env, &ctx) is used by
+// Internal: eval_loop::eval_trampoline(value, env, &ctx) is used by
 // arena_engine and other entry points. Not re-exported — callers use
 // arena_engine::eval_trampoline which wraps it with SessionContext.
 

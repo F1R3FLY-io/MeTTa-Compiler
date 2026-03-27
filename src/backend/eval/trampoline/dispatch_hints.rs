@@ -1,6 +1,6 @@
 //! Dispatch Hints — Memoization and Type-Driven Evaluation Shortcuts
 //!
-//! Optimization helpers extracted from `generic_trampoline.rs` to improve
+//! Optimization helpers extracted from `eval_loop.rs` to improve
 //! icache locality for the hot trampoline loop. These functions are
 //! infrequently called relative to the main evaluation path and benefit
 //! from being in a separate compilation unit.
@@ -616,7 +616,7 @@ pub(crate) static REDUCIBLE_HEADS: phf::Set<&'static str> = phf_set! {
 #[inline]
 pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>(
     value: &V,
-    env: &crate::backend::environment::generic::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
+    env: &crate::backend::environment::core::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
     max_depth: u8,
 ) -> bool {
     // S-expressions: check head + children
@@ -656,7 +656,7 @@ pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin +
 #[inline]
 fn is_child_normal_form<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>(
     child: &V,
-    env: &crate::backend::environment::generic::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
+    env: &crate::backend::environment::core::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
     max_depth: u8,
 ) -> bool {
     // S-expression children: recurse with depth budget

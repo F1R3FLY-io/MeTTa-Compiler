@@ -36,7 +36,7 @@ use super::step::GenericEvalStep;
 
 /// Dispatch a set operation by name.
 ///
-/// Called from `generic_sexpr.rs` when a set operation is encountered.
+/// Called from `sexpr.rs` when a set operation is encountered.
 /// Extracts the operation name from `items[0]` to avoid borrow conflicts.
 /// All set operations return `GenericEvalStep::Done(...)`.
 pub fn eval_set_op_generic<C: EvalContext>(

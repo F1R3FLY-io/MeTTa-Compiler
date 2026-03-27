@@ -36,7 +36,7 @@ use super::native_registry::GenericNativeContext;
 use super::opcodes::Opcode;
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::eval::bindings_generic::apply_bindings_generic;
+use crate::backend::eval::bindings::apply_bindings_generic;
 use crate::backend::models::{
     numeric_equal_generic, GenericBindings, MettaValue, MettaValueFactory,
     MettaValueTrait, SpaceHandle, ValueView,
@@ -4004,7 +4004,7 @@ where
         // Phase 9.2/9.3: expected_type branch pruning — filter out rule matches
         // whose rhs_type is incompatible with the expected return type.
         let matches = if let Some(ref expected) = self.expected_type {
-            use crate::backend::eval::types_generic::types_match_generic;
+            use crate::backend::eval::types::types_match_generic;
             matches
                 .into_iter()
                 .filter(|m| match &m.rhs_type {
@@ -4328,7 +4328,7 @@ where
         sub_expr: V,
         env: GenericEnvironment<V, F>,
     ) -> VmResult<V> {
-        use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+        use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 
         // Create a lightweight EvalContext adapter for the trampoline.
         let ctx = VmEvalContext {
@@ -4375,7 +4375,7 @@ where
         sub_expr: V,
         env: GenericEnvironment<V, F>,
     ) -> Vec<V> {
-        use crate::backend::eval::trampoline::generic_trampoline::eval_trampoline;
+        use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 
         let ctx = VmEvalContext {
             factory: crate::backend::models::global_factory(),

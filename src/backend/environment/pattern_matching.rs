@@ -26,10 +26,10 @@ use crate::backend::models::metta_value_trait::MettaValueTrait;
 use crate::backend::mork_convert::{mork_bindings_to_metta, with_mork_query_bytes};
 
 // Re-export the generic MultiplicityMatch specialized for MettaValue
-pub use super::generic::MultiplicityMatch;
+pub use super::core::MultiplicityMatch;
 
 impl MettaEnvironment {
-    // Note: match_space() is now a generic method on GenericEnvironment<V, F> in generic.rs.
+    // Note: match_space() is now a generic method on GenericEnvironment<V, F> in core.rs.
     // The implementation uses MORK PathMap for storage and supports any MettaValueTrait type.
 
     /// Match pattern against atoms using MORK's native query_multi (O(k) where k = matches).

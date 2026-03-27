@@ -116,7 +116,7 @@ pub fn clear_mork_bytes_cache() {
     MORK_BYTES_CACHE.with(|c| c.borrow_mut().clear());
 }
 
-use super::generic::GenericEnvironment;
+use super::core::GenericEnvironment;
 use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
 // Disabled: mork_expr_to_generic_value no longer used directly — deserialization happens via
 // mork_bytes_to_generic_value for individual binding bytes.
@@ -1555,7 +1555,7 @@ where
         // Phase 8.1: Compute RHS type at insertion time for branch pruning (Phase 8.7).
         // Only stores non-trivial types — %Undefined% provides no pruning benefit.
         let rhs_type = {
-            use crate::backend::eval::types_generic::infer_type_generic;
+            use crate::backend::eval::types::infer_type_generic;
             let inferred = infer_type_generic(&rhs, &self.factory, self);
             if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
         };
@@ -1620,7 +1620,7 @@ where
                     == Some("->")
             });
             if !has_declared_arrow {
-                use crate::backend::eval::types_generic::infer_arrow_type_from_rule;
+                use crate::backend::eval::types::infer_arrow_type_from_rule;
                 if let Some(arrow) = infer_arrow_type_from_rule(
                     &lhs,
                     &rhs,
@@ -1665,7 +1665,7 @@ where
         ]);
 
         // Convert to De Bruijn bytes and insert into PathMap + RuleIndex
-        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
+        let rule_prefix_len = super::core::RULE_PREFIX_LEN;
         let result = with_mork_query_bytes(
             &rule_sexpr,
             &self.shared_mapping,
@@ -2305,7 +2305,7 @@ where
                         }
                     } else {
                         // Structural pattern match fallback for MORK-only candidates
-                        crate::backend::eval::bindings_generic::pattern_match_generic(&entry.lhs, expr)
+                        crate::backend::eval::bindings::pattern_match_generic(&entry.lhs, expr)
                     };
 
                     if let Some(bindings) = matched_bindings {
@@ -2552,7 +2552,7 @@ where
         }
 
         let space = self.create_space();
-        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
+        let rule_prefix_len = super::core::RULE_PREFIX_LEN;
         let rule_prefix = self.compute_rule_prefix();
         let mut rules: Vec<(V, V, u64)> = Vec::new();
 
@@ -2872,7 +2872,7 @@ impl MettaEnvironment {
         self.shared.rule_index.write().clear();
 
         let space = self.create_space();
-        let rule_prefix_len = super::generic::RULE_PREFIX_LEN;
+        let rule_prefix_len = super::core::RULE_PREFIX_LEN;
 
         for (path_bytes, multiplicity_val) in space.btm.iter() {
             let expr = Expr {
@@ -2920,7 +2920,7 @@ impl MettaEnvironment {
 
                         // Phase 8.1: Compute RHS type for branch pruning
                         let rhs_type = {
-                            use crate::backend::eval::types_generic::infer_type_generic;
+                            use crate::backend::eval::types::infer_type_generic;
                             let inferred = infer_type_generic(&rhs, &self.factory, self);
                             if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
                         };
@@ -2940,7 +2940,7 @@ impl MettaEnvironment {
                                     == Some("->")
                             });
                             if !has_declared_arrow {
-                                use crate::backend::eval::types_generic::infer_arrow_type_from_rule;
+                                use crate::backend::eval::types::infer_arrow_type_from_rule;
                                 if let Some(arrow) = infer_arrow_type_from_rule(
                                     &lhs,
                                     &rhs,

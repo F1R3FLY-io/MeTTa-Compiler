@@ -2,7 +2,7 @@
 //!
 //! Provides "Did you mean?" functionality for undefined symbols using Levenshtein distance.
 
-use super::generic::GenericEnvironment;
+use super::core::GenericEnvironment;
 use crate::backend::fuzzy_match::SmartSuggestion;
 use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 

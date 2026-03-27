@@ -21,7 +21,7 @@ use crate::backend::models::{MettaState, MettaValue, GcFactory, global_factory};
 use std::sync::Arc;
 
 use super::context::MettaEnvironment;
-use super::generic_types::EvalResult;
+use super::types::EvalResult;
 use super::session_context::SessionContext;
 
 /// Zero-conversion arena evaluation using the global slab allocator.
@@ -35,7 +35,7 @@ pub fn eval_trampoline(
     state: &MettaState,
 ) -> EvalResult {
     let ctx = SessionContext::new(state);
-    super::generic_trampoline::eval_trampoline(value, env, &ctx)
+    super::eval_loop::eval_trampoline(value, env, &ctx)
 }
 
 /// Zero-conversion arena evaluation with optional trace collector.
@@ -49,7 +49,7 @@ pub fn eval_trampoline_with_trace(
 ) -> EvalResult {
     let ctx = SessionContext::new(state)
         .with_trace_collector(Arc::clone(collector));
-    super::generic_trampoline::eval_trampoline(value, env, &ctx)
+    super::eval_loop::eval_trampoline(value, env, &ctx)
 }
 
 /// Check if arena mode is available.

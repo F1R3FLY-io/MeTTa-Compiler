@@ -31,11 +31,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 // trie cascade drops (33% inclusive CPU) now happen here instead of on
 // the eval thread. Spawned lazily on first use.
 
-static DROP_SENDER: OnceLock<std::sync::mpsc::Sender<Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>>> = OnceLock::new();
+type SharedEnvArc = std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>;
 
-fn get_drop_sender() -> &'static std::sync::mpsc::Sender<Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>> {
+static DROP_SENDER: OnceLock<std::sync::mpsc::Sender<Vec<SharedEnvArc>>> = OnceLock::new();
+
+fn get_drop_sender() -> &'static std::sync::mpsc::Sender<Vec<SharedEnvArc>> {
     DROP_SENDER.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>>();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<SharedEnvArc>>();
         std::thread::Builder::new()
             .name("mettatron-drop-worker".into())
             .spawn(move || {
@@ -1373,18 +1375,13 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Their roots were collected into root_set above, so the GC saw them.
             // Send the batch to the background drop worker thread to avoid
             // PathMap/MettaTrie cascade drops on the hot eval path.
-            if deferred_shared_drops.len() > 0 {
+            if !deferred_shared_drops.is_empty() {
                 let drain_count = deferred_shared_drops.len().min(32);
                 let batch_start = deferred_shared_drops.len() - drain_count;
-                let batch: Vec<_> = deferred_shared_drops.drain(batch_start..).collect();
-                // Type-erase and send to background thread for async destruction.
-                // The Arc<GenericEnvironmentShared> is Send+Sync, so dropping on
-                // another thread is safe (GC roots were already collected above).
-                let erased: Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>> = batch
-                    .into_iter()
-                    .map(|arc| arc as std::sync::Arc<dyn std::any::Any + Send + Sync>)
-                    .collect();
-                let _ = get_drop_sender().send(erased);
+                let batch: Vec<SharedEnvArc> = deferred_shared_drops.drain(batch_start..).collect();
+                // Send concrete Arc<GenericEnvironmentShared<MettaValue>> to background
+                // drop worker. No type erasure needed — concrete dispatch.
+                let _ = get_drop_sender().send(batch);
             }
 
             // Trace: GcSafepoint with measured pause duration

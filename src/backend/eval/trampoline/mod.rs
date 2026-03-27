@@ -36,6 +36,7 @@ mod context;
 mod generic_engine;
 mod generic_trampoline;
 mod generic_types;
+pub mod engine;
 pub(crate) mod dispatch_hints;
 pub mod session_context;
 

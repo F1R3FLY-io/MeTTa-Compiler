@@ -4092,19 +4092,11 @@ where
             return Ok(());
         }
 
-        // Multiple matches - create choice point for nondeterminism
-        // First match executes now, others become alternatives
-        let mut alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = Vec::with_capacity(matches.len() - 1);
-        let mut first_match = None;
-
-        for result in matches {
-            if first_match.is_none() {
-                first_match = Some(result);
-            } else {
-                // Store as alternative value
-                alternatives.push(GenericAlternative::Value(result.instantiated_rhs));
-            }
-        }
+        // Multiple matches — eager evaluation of all matched RHS expressions.
+        // Instead of creating choice points (which sets has_choices=true and
+        // forces tree-walker fallback), evaluate each matched RHS via the
+        // trampoline and collect all results. This mirrors superpose semantics
+        // and avoids re-executing shared sub-expressions.
 
         // Trace: NondeterministicFork for multiple matches
         #[cfg(feature = "eval-trace")]
@@ -4117,35 +4109,55 @@ where
                     trace_value_generic(&expr),
                     vec![], None,
                     trace_format::TraceEventKind::NondeterministicFork {
-                        branch_count: (alternatives.len() + 1) as u32,
+                        branch_count: matches.len() as u32,
                     },
                 );
             });
         }
 
-        // Create choice point for backtracking to alternatives
-        self.choice_points.push(GenericChoicePoint {
-            ip: self.ip,
-            chunk: Arc::clone(&self.chunk),
-            value_stack_height: self.value_stack.len(),
-            call_stack_height: self.call_stack.len(),
-            bindings_stack_height: self.bindings_stack.len(),
-            alternatives,
-            saved_unreduced: self.unreduced,
-        });
+        // Eagerly evaluate all matched RHS bodies and collect results.
+        let env = self.env.as_ref().expect("op_dispatch_rules requires env").clone();
 
-        // Execute first match
-        if let Some(result) = first_match {
-            // Set up bindings in the current binding frame
-            if let Some(frame) = self.bindings_stack.last_mut() {
-                for (name, value) in result.bindings.iter() {
-                    frame.set(name.to_string(), value.clone());
-                }
+        let mut all_results: Vec<V> = Vec::new();
+        for result in matches {
+            // Evaluate the instantiated RHS through the trampoline, which
+            // handles nested nondeterminism via continuation-based forking.
+            let sub_results = self.eval_sub_expr_vm_all(
+                result.instantiated_rhs,
+                env.clone(),
+            );
+            all_results.extend(sub_results);
+        }
+
+        // Push results: single result goes on stack (normal path).
+        // Multiple results go on stack as first + alternatives in choice points.
+        // The choice points are pre-evaluated (all RHS bodies are already
+        // fully reduced via trampoline), so backtracking just pops values
+        // without re-executing any code.
+        if all_results.len() == 1 {
+            self.push(all_results.into_iter().next().expect("len==1"));
+        } else if !all_results.is_empty() {
+            let mut iter = all_results.into_iter();
+            let first = iter.next().expect("non-empty");
+
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                iter.map(GenericAlternative::Value).collect();
+
+            if !alternatives.is_empty() {
+                self.choice_points.push(GenericChoicePoint {
+                    ip: self.ip,
+                    chunk: Arc::clone(&self.chunk),
+                    value_stack_height: self.value_stack.len(),
+                    call_stack_height: self.call_stack.len(),
+                    bindings_stack_height: self.bindings_stack.len(),
+                    alternatives,
+                    saved_unreduced: self.unreduced,
+                });
             }
 
-            // Push the instantiated body
-            self.push(result.instantiated_rhs);
+            self.push(first);
         }
+        // If no results, push nothing (expression is irreducible)
 
         Ok(())
     }
@@ -4288,6 +4300,25 @@ where
             // No results — return expression unchanged (data constructor)
             Ok(sub_expr)
         }
+    }
+
+    /// Evaluate a sub-expression via the trampoline, returning ALL results.
+    /// Used by eager multi-match evaluation to collect all nondeterministic
+    /// results from each matched RHS without creating VM choice points.
+    fn eval_sub_expr_vm_all(
+        &self,
+        sub_expr: V,
+        env: GenericEnvironment<V, F>,
+    ) -> Vec<V> {
+        use crate::backend::eval::trampoline::eval_trampoline_generic;
+
+        let ctx = VmEvalContext {
+            factory: self.factory,
+            _phantom: std::marker::PhantomData::<V>,
+        };
+
+        let (results, _final_env) = eval_trampoline_generic(sub_expr, env, &ctx);
+        results.into_vec()
     }
 
     // === Space Operations ===

@@ -182,7 +182,7 @@ pub fn try_deferred_deterministic_chain(
     bindings: &Bindings,
     env: &Environment,
     factory: &GcFactory,
-) -> Option<DeferredChainResult<MettaValue>> {
+) -> Option<DeferredChainResult> {
     super::generic_engine::try_deferred_deterministic_chain(template, bindings, env, factory)
 }
 
@@ -194,7 +194,7 @@ pub fn eval_switch(
     atom: &MettaValue,
     cases: &MettaValue,
     factory: &GcFactory,
-) -> SwitchResult<MettaValue> {
+) -> SwitchResult {
     super::generic_engine::eval_switch_generic(atom, cases, factory)
 }
 

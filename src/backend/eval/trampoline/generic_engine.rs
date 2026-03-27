@@ -1,71 +1,51 @@
-//! Generic Evaluation Helpers - Zero-Conversion Utilities
+//! Evaluation Helpers
 //!
-//! This module provides generic helper functions for evaluation that work with any
-//! value type implementing `MettaValueTrait`. These utilities enable zero-conversion
-//! evaluation for both heap-allocated (`MettaValue`) and arena-allocated (`MettaValue`)
-//! values.
-//!
-//! ## Design
-//!
-//! The generic helpers use:
-//! - `MettaValueTrait` for type checking and value inspection
-//! - `MettaValueFactory` for value construction
-//! - `GenericBindings<V>` for storing bindings in the native value type
+//! This module provides helper functions for evaluation that operate on
+//! concrete `MettaValue` and `GcFactory` types (monomorphized from the
+//! former generic implementation).
 //!
 //! ## Key Functions
 //!
-//! - `apply_bindings_generic` - Apply bindings to a value (zero-conversion)
-//! - `pattern_match_generic` - Pattern matching returning native bindings
-//! - `pattern_specificity_generic` - REMOVED: MeTTa HE has no specificity filter
+//! - `apply_bindings_generic` - Apply bindings to a value
+//! - `pattern_match_generic` - Pattern matching returning bindings
 //! - `try_match_all_rules_generic` - Match all rules against an expression
-//! - `eval_switch_generic` - Generic switch/case evaluation
+//! - `eval_switch_generic` - Switch/case evaluation
 //! - `is_boolean_check_pattern` - Detect boolean check optimization patterns
 //!
-//! ## Zero-Conversion Architecture
+//! ## Copy-Semantic Architecture
 //!
-//! These functions achieve zero MettaValue <-> MettaValue conversion by:
-//! 1. Using `GenericBindings<V>` - bindings store values in their native type
-//! 2. Pattern matching returns bindings in the value's native type
-//! 3. Binding application operates natively on the value type
-//! 4. Rule matching deserializes rules directly to the target type V
+//! `MettaValue` is an 8-byte tagged pointer with `Copy` semantics.
+//! Cloning is a simple bitwise copy — no reference counting or allocation.
 
 use smallvec::SmallVec;
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{
+    GenericBindings, GcFactory, MettaValue, MettaValueFactory, MettaValueTrait,
+};
 
 use super::dispatch_hints::{match_result_get, match_result_put};
 
-// MettaValue only used in tests
-#[cfg(test)]
-use crate::backend::models::MettaValue;
+/// Type alias for the concrete environment used throughout.
+type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
+
+/// Type alias for concrete bindings.
+type Bindings = GenericBindings<MettaValue>;
 
 // ============================================================================
-// Generic Helper Functions
+// Helper Functions
 // ============================================================================
 
-/// Apply bindings to a value using trait methods.
-///
-/// This is a generic version of `apply_bindings` that works with any value
-/// type implementing `MettaValueTrait`.
+/// Apply bindings to a value.
 ///
 /// This implementation matches the heap-based `apply_bindings` in `helpers.rs`,
 /// including the "&" exclusion and NOT recursing into Type variants.
 ///
-/// ## Zero-Conversion Design
-///
-/// When using `GenericBindings<V>`, bound values are stored in the same type
-/// as the input value, so no conversion is needed:
-/// - `MettaValue.clone()` = O(1) Arc increment
-/// - `MettaValue.clone()` = O(1) pointer copy
-pub fn apply_bindings_generic<V, F>(value: &V, bindings: &GenericBindings<V>, factory: &F) -> V
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V>,
-{
+/// `MettaValue` is `Copy` (8-byte tagged pointer), so cloning is free.
+pub fn apply_bindings_generic(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
     // Fast path: empty bindings means no substitutions possible
     if bindings.is_empty() {
-        return value.clone();
+        return *value;
     }
 
     // Peel Spanned wrapper: process inner value, re-wrap with same span
@@ -89,11 +69,7 @@ where
 }
 
 /// Inner implementation of apply_bindings_generic (called after Spanned is peeled).
-fn apply_bindings_generic_inner<V, F>(value: &V, bindings: &GenericBindings<V>, factory: &F) -> V
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V>,
-{
+fn apply_bindings_generic_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
     // Handle variables (atoms starting with $, &, or ')
     // IMPORTANT: standalone "&" is a literal operator (used in match), not a variable
     if let Some(var_name) = value.as_atom() {
@@ -101,42 +77,41 @@ where
             && var_name != "&"
         {
             if let Some(bound_value) = bindings.get(var_name) {
-                // NO CONVERSION NEEDED - bound_value is already type V
-                // This is the key optimization: O(1) clone with no deep allocation
-                return bound_value.clone();
+                // MettaValue is Copy — O(1) bitwise copy
+                return *bound_value;
             }
         }
-        return value.clone();
+        return *value;
     }
 
     // Fast path: if value contains no variables, bindings cannot affect it.
     // This avoids O(N) recursion + Vec allocation + factory.sexpr() for ground
-    // values like (+ 1 2). MettaValue::clone() is O(1) pointer copy.
+    // values like (+ 1 2). MettaValue copy is O(1).
     // Uses O(1) tagged pointer flag check instead of O(depth) tree walk.
     if !value.has_variables_fast() {
-        return value.clone();
+        return *value;
     }
 
     // Type variants do NOT recurse (matching heap behavior in helpers.rs)
     // Types are returned as-is without substitution
     if value.is_type() {
-        return value.clone();
+        return *value;
     }
 
     // Handle S-expressions - recursively apply bindings.
     // Identity short-circuit: if no child was actually substituted, return the
     // original value (O(1) pointer copy) instead of allocating a new S-expression.
-    // SmallVec<[V; 8]> avoids heap allocation for arity ≤ 8 (the vast majority).
+    // SmallVec<[MettaValue; 8]> avoids heap allocation for arity <= 8 (the vast majority).
     if let Some(items) = value.as_sexpr() {
         let mut any_changed = false;
-        let new_items: SmallVec<[V; 8]> = items
+        let new_items: SmallVec<[MettaValue; 8]> = items
             .iter()
             .map(|item| {
                 // Per-child fast path: skip recursion for ground children.
                 // Avoids function call overhead (Spanned check, atom check, etc.)
                 // for children that cannot be affected by bindings.
                 if !item.has_variables_fast() {
-                    return item.clone();
+                    return *item;
                 }
                 let result = apply_bindings_generic(item, bindings, factory);
                 // O(1) identity check via tagged pointer comparison.
@@ -148,7 +123,7 @@ where
             })
             .collect();
         if !any_changed {
-            return value.clone();
+            return *value;
         }
         return factory.sexpr_from_slice(&new_items);
     }
@@ -156,11 +131,11 @@ where
     // Handle conjunctions - same identity short-circuit optimization
     if let Some(goals) = value.as_conjunction() {
         let mut any_changed = false;
-        let new_goals: SmallVec<[V; 8]> = goals
+        let new_goals: SmallVec<[MettaValue; 8]> = goals
             .iter()
             .map(|goal| {
                 if !goal.has_variables_fast() {
-                    return goal.clone();
+                    return *goal;
                 }
                 let result = apply_bindings_generic(goal, bindings, factory);
                 if !any_changed && !result.identity_eq(goal) {
@@ -170,43 +145,38 @@ where
             })
             .collect();
         if !any_changed {
-            return value.clone();
+            return *value;
         }
         return factory.conjunction_from_slice(&new_goals);
     }
 
     // Handle errors - identity short-circuit
-    if let Some((msg, details)) = value.as_error() {
+    // NOTE: MettaValue::as_error() returns (msg, MettaValue) by value (Copy).
+    // MettaValueTrait::as_error() returns (msg, &Self) by reference.
+    // We use the trait method here for consistency with identity_eq(&details).
+    if let Some((msg, details)) = <MettaValue as MettaValueTrait>::as_error(value) {
         let new_details = apply_bindings_generic(details, bindings, factory);
         if new_details.identity_eq(details) {
-            return value.clone();
+            return *value;
         }
         return factory.error(msg, new_details);
     }
 
     // All other types (ground values: Long, Float, Bool, String, Nil, Unit,
     // Space, State, Memo, Empty) are returned as-is
-    value.clone()
+    *value
 }
 
 
-/// Pattern match two values generically.
+/// Pattern match two values.
 ///
 /// Returns bindings if the pattern matches the value, None otherwise.
 ///
 /// This implementation matches the heap-based `pattern_match` in `pattern.rs`,
 /// including cross-type matching for Nil/Unit/Empty and the "&" exclusion.
 ///
-/// ## Zero-Conversion Design
-///
-/// By using `GenericBindings<V>`, matched values are stored directly in their
-/// native type with no conversion:
-/// - `MettaValue.clone()` = O(1) Arc increment
-/// - `MettaValue.clone()` = O(1) pointer copy
-pub fn pattern_match_generic<V>(pattern: &V, value: &V) -> Option<GenericBindings<V>>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-{
+/// `MettaValue` is `Copy` (8-byte tagged pointer), so cloning is free.
+pub fn pattern_match_generic(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
     // Helper to check if a name is a variable
     // IMPORTANT: standalone "&" is a literal operator (used in match), not a variable
     fn is_variable(name: &str) -> bool {
@@ -222,27 +192,26 @@ where
     if let Some(pattern_name) = pattern.as_atom() {
         // Wildcard matches anything
         if is_wildcard(pattern_name) {
-            return Some(GenericBindings::new());
+            return Some(Bindings::new());
         }
 
         // Variable binds to value (excluding standalone "&")
         if is_variable(pattern_name) {
-            let mut bindings = GenericBindings::new();
-            // NO CONVERSION - store value directly in its native type
-            // This is O(1) clone (Arc increment for MettaValue, pointer copy for MettaValue)
-            bindings.insert(pattern_name, value.clone());
+            let mut bindings = Bindings::new();
+            // MettaValue is Copy — O(1) bitwise copy
+            bindings.insert(pattern_name, *value);
             return Some(bindings);
         }
 
         // Empty atom pattern matches Empty sentinel
         if pattern_name == "Empty" && value.is_empty() {
-            return Some(GenericBindings::new());
+            return Some(Bindings::new());
         }
 
         // Non-variable atom must match exactly
         if let Some(value_name) = value.as_atom() {
             if pattern_name == value_name {
-                return Some(GenericBindings::new());
+                return Some(Bindings::new());
             }
         }
         return None;
@@ -255,17 +224,17 @@ where
             // Empty S-expr matches empty S-expr
             if let Some(value_items) = value.as_sexpr() {
                 if value_items.is_empty() {
-                    return Some(GenericBindings::new());
+                    return Some(Bindings::new());
                 }
             }
             // Empty S-expr matches Unit
             if value.is_unit() {
-                return Some(GenericBindings::new());
+                return Some(Bindings::new());
             }
             // Empty S-expr matches Atom("Empty")
             if let Some(name) = value.as_atom() {
                 if name == "Empty" {
-                    return Some(GenericBindings::new());
+                    return Some(Bindings::new());
                 }
             }
             return None;
@@ -276,7 +245,7 @@ where
                 return None;
             }
 
-            let mut combined_bindings = GenericBindings::new();
+            let mut combined_bindings = Bindings::new();
             for (p, v) in pattern_items.iter().zip(value_items.iter()) {
                 match pattern_match_generic(p, v) {
                     Some(sub_bindings) => {
@@ -300,7 +269,7 @@ where
                 return None;
             }
 
-            let mut combined_bindings = GenericBindings::new();
+            let mut combined_bindings = Bindings::new();
             for (p, v) in pattern_goals.iter().zip(value_goals.iter()) {
                 match pattern_match_generic(p, v) {
                     Some(sub_bindings) => {
@@ -317,12 +286,13 @@ where
     }
 
     // Handle Error pattern
+    // NOTE: inherent as_error() returns (msg, MettaValue) by value (Copy).
     if let Some((pattern_msg, pattern_details)) = pattern.as_error() {
         if let Some((value_msg, value_details)) = value.as_error() {
             if pattern_msg != value_msg {
                 return None;
             }
-            return pattern_match_generic(pattern_details, value_details);
+            return pattern_match_generic(&pattern_details, &value_details);
         }
         return None;
     }
@@ -330,7 +300,7 @@ where
     // Handle ground types - must match exactly (use direct equality, not epsilon)
     if let (Some(p), Some(v)) = (pattern.as_bool(), value.as_bool()) {
         return if p == v {
-            Some(GenericBindings::new())
+            Some(Bindings::new())
         } else {
             None
         };
@@ -338,7 +308,7 @@ where
 
     if let (Some(p), Some(v)) = (pattern.as_long(), value.as_long()) {
         return if p == v {
-            Some(GenericBindings::new())
+            Some(Bindings::new())
         } else {
             None
         };
@@ -347,7 +317,7 @@ where
     // Float comparison uses direct equality (matching heap behavior)
     if let (Some(p), Some(v)) = (pattern.as_float(), value.as_float()) {
         return if p == v {
-            Some(GenericBindings::new())
+            Some(Bindings::new())
         } else {
             None
         };
@@ -355,7 +325,7 @@ where
 
     if let (Some(p), Some(v)) = (pattern.as_string(), value.as_string()) {
         return if p == v {
-            Some(GenericBindings::new())
+            Some(Bindings::new())
         } else {
             None
         };
@@ -364,16 +334,16 @@ where
     // Unit pattern matches Unit and empty S-expr
     if pattern.is_unit() {
         if value.is_unit() {
-            return Some(GenericBindings::new());
+            return Some(Bindings::new());
         }
         if let Some(items) = value.as_sexpr() {
             if items.is_empty() {
-                return Some(GenericBindings::new());
+                return Some(Bindings::new());
             }
         }
         if let Some(name) = value.as_atom() {
             if name == "Empty" {
-                return Some(GenericBindings::new());
+                return Some(Bindings::new());
             }
         }
         return None;
@@ -381,7 +351,7 @@ where
 
     // Empty matches empty
     if pattern.is_empty() && value.is_empty() {
-        return Some(GenericBindings::new());
+        return Some(Bindings::new());
     }
 
     None
@@ -389,7 +359,7 @@ where
 
 
 // ============================================================================
-// Generic Rule Matching
+// Rule Matching
 // ============================================================================
 
 // DEAD CODE: pattern_specificity_generic was removed because MeTTa HE has no
@@ -399,27 +369,11 @@ where
 // rule happened to have fewer NewVar tags (e.g. PLN's `(f ($c $tv) $y)` with 3 vars
 // beat `(f ((Implication $A $B) $TV) $Y)` with 4 vars despite the latter being more
 // specific due to the `(Implication ...)` constructor constraint).
-//
-// pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize { ... }
 
-/// Try to match all rules against a generic expression.
+/// Try to match all rules against an expression.
 ///
-/// This is the generic version of `try_match_all_rules` that works with any
-/// value type implementing `MettaValueTrait`. It retrieves rules from the
-/// environment using `get_matching_rules_for_expr` and performs pattern matching
-/// without any value type conversions.
-///
-/// # Zero-Conversion Design
-///
-/// This function:
-/// 1. Retrieves `(lhs, rhs, multiplicity)` tuples from the environment
-/// 2. Pattern matches using `pattern_match_generic` (no conversion)
-/// 3. Returns `GenericBindings<MettaValue>` (no conversion)
-///
-/// # Type Parameters
-///
-/// - `V`: The value type (MettaValue or MettaValue)
-/// - `F`: The factory type (must implement MettaValueFactory<V> + Copy)
+/// Retrieves rules from the environment using `get_matching_rules_for_expr`
+/// and performs pattern matching without any value type conversions.
 ///
 /// # Returns
 ///
@@ -427,32 +381,25 @@ where
 /// and expanded by rule multiplicity.
 /// Phase 8.7: Return type includes `rhs_type` for branch pruning.
 /// The third element is the cached RHS type from the rule entry (if available).
-pub fn try_match_all_rules_generic<V, F>(
-    expr: &V,
-    env: &GenericEnvironment<V, F>,
-    _factory: F,
-) -> Vec<(V, GenericBindings<V>, Option<V>)>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
-    let is_metta = std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>();
+pub fn try_match_all_rules_generic(
+    expr: &MettaValue,
+    env: &MettaEnvironment,
+    _factory: GcFactory,
+) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
     let expr_arity = expr.get_arity();
 
     // Phase E: For single-candidate all-structural operators, skip hash computation
     // and match_result_cache entirely. The cache rarely hits for these (different args
     // each call), so the hash overhead (~700ns) exceeds any cache benefit.
-    if is_metta {
-        if let Some(head) = expr.as_sexpr().and_then(|items| items.first()).and_then(|h| h.as_atom()) {
-            if let Some(cache_entry) = operator_cache_get(head, expr_arity) {
-                if cache_entry.all_structural && cache_entry.candidate_count == 1 {
-                    // Fast path: skip hash, skip match_result_cache, go straight to structural match
-                    let results = env.match_rules_native(expr, |v: &V, _: &GenericBindings<V>, _: &F| v.clone());
-                    return results
-                        .into_iter()
-                        .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
-                        .collect();
-                }
+    if let Some(head) = expr.as_sexpr().and_then(|items| items.first()).and_then(|h| h.as_atom()) {
+        if let Some(cache_entry) = operator_cache_get(head, expr_arity) {
+            if cache_entry.all_structural && cache_entry.candidate_count == 1 {
+                // Fast path: skip hash, skip match_result_cache, go straight to structural match
+                let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v);
+                return results
+                    .into_iter()
+                    .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
+                    .collect();
             }
         }
     }
@@ -460,40 +407,21 @@ where
     // Standard path: compute hash and use match_result_cache
     let expr_hash = expr.hash_value();
 
-    if is_metta {
-        if let Some(cached) = match_result_get(expr_hash, expr_arity) {
-            // Safety: V = MettaValue verified by TypeId check above.
-            // Both types have identical layout, so Vec reinterpretation is sound.
-            return unsafe {
-                let mut md = std::mem::ManuallyDrop::new(cached);
-                Vec::from_raw_parts(
-                    md.as_mut_ptr() as *mut (V, GenericBindings<V>, Option<V>),
-                    md.len(),
-                    md.capacity(),
-                )
-            };
-        }
+    if let Some(cached) = match_result_get(expr_hash, expr_arity) {
+        return cached;
     }
 
     // Use native byte-level matching via RuleIndex + extract_data.
     // match_rules_native also populates the operator cache for Phase E.
-    let results = env.match_rules_native(expr, |v: &V, _: &GenericBindings<V>, _: &F| v.clone());
-    let result_vec: Vec<(V, GenericBindings<V>, Option<V>)> = results
+    let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v);
+    let result_vec: Vec<(MettaValue, Bindings, Option<MettaValue>)> = results
         .into_iter()
         .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
         .collect();
 
     // Store in match result cache
-    if is_metta && !result_vec.is_empty() {
-        // Safety: V = MettaValue verified by TypeId check above.
-        let slice: &[(crate::backend::models::MettaValue, GenericBindings<crate::backend::models::MettaValue>, Option<crate::backend::models::MettaValue>)] = unsafe {
-            std::slice::from_raw_parts(
-                result_vec.as_ptr()
-                    as *const (crate::backend::models::MettaValue, GenericBindings<crate::backend::models::MettaValue>, Option<crate::backend::models::MettaValue>),
-                result_vec.len(),
-            )
-        };
-        match_result_put(expr_hash, expr_arity, slice);
+    if !result_vec.is_empty() {
+        match_result_put(expr_hash, expr_arity, &result_vec);
     }
 
     result_vec
@@ -520,7 +448,7 @@ where
 ///
 /// # Returns
 /// - `Some(matches)` — binding-aware matching succeeded.  `matches` may be empty
-///   (no rule matched → the expression is self-evaluating).
+///   (no rule matched — the expression is self-evaluating).
 /// - `None` — cannot use binding-aware path (e.g. some candidate lacks a
 ///   structural matcher, or the head can't be resolved).  Caller should
 ///   fall back to `apply_bindings_generic + Eval`.
@@ -535,15 +463,11 @@ where
 /// Only values with variables are resolved — concrete captures (the common case)
 /// pass through with zero allocation cost.
 #[inline]
-fn resolve_match_bindings_through<V, F>(
-    match_bindings: &mut GenericBindings<V>,
-    outer_bindings: &GenericBindings<V>,
-    factory: &F,
-)
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+fn resolve_match_bindings_through(
+    match_bindings: &mut Bindings,
+    outer_bindings: &Bindings,
+    factory: &GcFactory,
+) {
     match match_bindings {
         GenericBindings::Empty => {}
         GenericBindings::Single((_, ref mut val)) => {
@@ -561,18 +485,14 @@ where
     }
 }
 
-pub fn try_match_rules_with_bindings<V, F>(
-    template: &V,
-    outer_bindings: &GenericBindings<V>,
+pub fn try_match_rules_with_bindings(
+    template: &MettaValue,
+    outer_bindings: &Bindings,
     resolved_head: &str,
     arity: usize,
-    env: &GenericEnvironment<V, F>,
-    factory: &F,
-) -> Option<Vec<(V, GenericBindings<V>)>>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+    env: &MettaEnvironment,
+    factory: &GcFactory,
+) -> Option<Vec<(MettaValue, Bindings)>> {
     use crate::backend::environment::rule_management::get_first_arg_head;
 
     // Resolve the first argument's head through outer_bindings for second-level
@@ -606,7 +526,7 @@ where
     // get_candidates_filtered applies disc tree to group entries only,
     // always including wildcard rules (which are not in any group's disc tree).
     let rule_index = env.shared.rule_index.read();
-    let candidates: SmallVec<[&crate::backend::environment::rule_management::RuleEntry<V>; 16]> =
+    let candidates: SmallVec<[&crate::backend::environment::rule_management::RuleEntry<MettaValue>; 16]> =
         rule_index.get_candidates_filtered(resolved_head, arity, first_arg_head, template);
 
     if candidates.is_empty() {
@@ -622,7 +542,7 @@ where
     // Match each candidate against the template + outer_bindings without
     // materializing. Both StructuralMatcher and EnhancedMatcher support
     // try_match_with_bindings, resolving variables on the fly.
-    let mut matches: Vec<(V, GenericBindings<V>)> = Vec::new();
+    let mut matches: Vec<(MettaValue, Bindings)> = Vec::new();
 
     for entry in &candidates {
         let match_result = if let Some(ref matcher) = entry.structural_matcher {
@@ -648,10 +568,10 @@ where
 
             let multiplicity = entry.multiplicity.max(1);
             if multiplicity == 1 {
-                matches.push((entry.rhs.clone(), match_bindings));
+                matches.push((entry.rhs, match_bindings));
             } else {
                 for _ in 0..multiplicity {
-                    matches.push((entry.rhs.clone(), match_bindings.clone()));
+                    matches.push((entry.rhs, match_bindings.clone()));
                 }
             }
         }
@@ -684,26 +604,17 @@ use super::dispatch_hints::{
 /// # Performance
 ///
 /// Each chain step costs ~100-200 ns (structural match + apply_bindings).
-/// The trampoline alternative costs ~3-5 μs per step (push/pop work item,
+/// The trampoline alternative costs ~3-5 us per step (push/pop work item,
 /// dispatch, push continuation, collect results). For PLN deterministic
 /// operators (kbstatic, kbdynamic, PLNcategorizeObject), this saves ~80%
 /// of per-step overhead.
 #[inline]
-pub fn try_deterministic_chain<V, F>(
-    expr: &V,
-    env: &GenericEnvironment<V, F>,
-    factory: &F,
-) -> Option<V>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+pub fn try_deterministic_chain(
+    expr: &MettaValue,
+    env: &MettaEnvironment,
+    factory: &GcFactory,
+) -> Option<MettaValue> {
     const MAX_CHAIN_LENGTH: usize = 64;
-
-    // Only attempt for MettaValue (compile-time constant after monomorphization)
-    if std::any::TypeId::of::<V>() != std::any::TypeId::of::<crate::backend::models::MettaValue>() {
-        return None;
-    }
 
     let items = expr.as_sexpr()?;
     if items.is_empty() { return None; }
@@ -725,12 +636,12 @@ where
     for _ in 1..MAX_CHAIN_LENGTH {
         let next_items = match current.as_sexpr() {
             Some(items) if !items.is_empty() => items,
-            _ => return Some(current), // Not an S-expr or empty → done
+            _ => return Some(current), // Not an S-expr or empty -> done
         };
 
         let next_head = match next_items[0].as_atom() {
             Some(h) => h,
-            None => return Some(current), // Non-atom head → done
+            None => return Some(current), // Non-atom head -> done
         };
 
         if next_head.starts_with('$') { return Some(current); }
@@ -739,17 +650,17 @@ where
         let next_arity = next_items.len() - 1;
         let next_cache = match operator_cache_get(next_head, next_arity) {
             Some(c) if c.all_structural && c.candidate_count == 1 => c,
-            _ => return Some(current), // Non-deterministic or no cache → return current for trampoline
+            _ => return Some(current), // Non-deterministic or no cache -> return current for trampoline
         };
         let _ = next_cache;
 
         match try_deterministic_step(&current, next_head, next_arity, env, factory) {
             Some(result) => current = result,
-            None => return Some(current), // Match failed → return current for trampoline
+            None => return Some(current), // Match failed -> return current for trampoline
         }
     }
 
-    // Chain too long → bail, return current result for the trampoline to handle
+    // Chain too long -> bail, return current result for the trampoline to handle
     Some(current)
 }
 
@@ -758,17 +669,13 @@ where
 /// Reads the rule index to get the single candidate, runs its structural
 /// matcher, and applies bindings if variables exist in the RHS.
 #[inline]
-fn try_deterministic_step<V, F>(
-    expr: &V,
+fn try_deterministic_step(
+    expr: &MettaValue,
     head: &str,
     arity: usize,
-    env: &GenericEnvironment<V, F>,
-    factory: &F,
-) -> Option<V>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+    env: &MettaEnvironment,
+    factory: &GcFactory,
+) -> Option<MettaValue> {
     use crate::backend::environment::rule_management::get_first_arg_head;
 
     let first_arg_head = get_first_arg_head(expr);
@@ -785,7 +692,7 @@ where
     let result = if entry.rhs_has_variables {
         apply_bindings_generic(&entry.rhs, &bindings, factory)
     } else {
-        entry.rhs.clone()
+        entry.rhs
     };
 
     Some(result)
@@ -821,27 +728,18 @@ where
 ///
 /// # Performance
 ///
-/// For a deterministic chain of length N, this replaces N×(materialize + Eval +
+/// For a deterministic chain of length N, this replaces N x (materialize + Eval +
 /// eval_step + eval_sexpr_step + try_match_all_rules + dispatch_rule_matches)
-/// with N×(materialize + structural_match) + 1×EvalWithBindings. Saves ~60%
+/// with N x (materialize + structural_match) + 1 x EvalWithBindings. Saves ~60%
 /// of trampoline overhead for each chain step.
 #[inline]
-pub fn try_deferred_deterministic_chain<V, F>(
-    template: &V,
-    bindings: &GenericBindings<V>,
-    env: &GenericEnvironment<V, F>,
-    factory: &F,
-) -> Option<DeferredChainResult<V>>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+pub fn try_deferred_deterministic_chain(
+    template: &MettaValue,
+    bindings: &Bindings,
+    env: &MettaEnvironment,
+    factory: &GcFactory,
+) -> Option<DeferredChainResult> {
     const MAX_CHAIN_LENGTH: usize = 64;
-
-    // Only attempt for MettaValue (compile-time constant after monomorphization)
-    if std::any::TypeId::of::<V>() != std::any::TypeId::of::<crate::backend::models::MettaValue>() {
-        return None;
-    }
 
     // Template must be an S-expr with a resolvable head
     let items = template.as_sexpr()?;
@@ -948,15 +846,15 @@ where
 }
 
 /// Result of a deferred deterministic chain.
-pub enum DeferredChainResult<V: MettaValueTrait + Clone> {
+pub enum DeferredChainResult {
     /// Chain terminated with a deferred (template, bindings) pair.
     /// Push EvalWithBindings to continue evaluation.
-    Deferred { template: V, bindings: GenericBindings<V> },
+    Deferred { template: MettaValue, bindings: Bindings },
     /// Chain terminated with a concrete value needing further evaluation.
     /// Push Eval to continue.
-    Concrete(V),
+    Concrete(MettaValue),
     /// Chain terminated with a normal-form value. Push Resume directly.
-    Done(V),
+    Done(MettaValue),
 }
 
 /// Execute a single deterministic match step, returning the RHS template and bindings.
@@ -964,16 +862,12 @@ pub enum DeferredChainResult<V: MettaValueTrait + Clone> {
 /// Unlike `try_deterministic_step` which applies bindings immediately, this
 /// returns the raw (rhs_template, match_bindings) for deferred binding composition.
 #[inline]
-fn try_deterministic_match<V, F>(
-    expr: &V,
+fn try_deterministic_match(
+    expr: &MettaValue,
     head: &str,
     arity: usize,
-    env: &GenericEnvironment<V, F>,
-) -> Option<(V, GenericBindings<V>)>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+    env: &MettaEnvironment,
+) -> Option<(MettaValue, Bindings)> {
     use crate::backend::environment::rule_management::get_first_arg_head;
 
     let first_arg_head = get_first_arg_head(expr);
@@ -986,7 +880,7 @@ where
     let matcher = entry.structural_matcher.as_ref()?;
     let bindings = matcher.try_match(expr)?;
 
-    Some((entry.rhs.clone(), bindings))
+    Some((entry.rhs, bindings))
 }
 
 /// Check if success/failure bodies represent a simple boolean check pattern.
@@ -997,7 +891,7 @@ where
 ///
 /// This is used to optimize unify operations that are existence checks.
 #[inline]
-pub fn is_boolean_check_pattern<V: MettaValueTrait>(success_body: &V, failure_body: &V) -> bool {
+pub fn is_boolean_check_pattern(success_body: &MettaValue, failure_body: &MettaValue) -> bool {
     // Check for Bool(true), Bool(false) pattern
     if let (Some(true), Some(false)) = (success_body.as_bool(), failure_body.as_bool()) {
         return true;
@@ -1014,28 +908,23 @@ pub fn is_boolean_check_pattern<V: MettaValueTrait>(success_body: &V, failure_bo
 }
 
 // ============================================================================
-// Generic Switch/Case Evaluation
+// Switch/Case Evaluation
 // ============================================================================
 
-/// Result type for generic switch evaluation
-pub enum GenericSwitchResult<V: MettaValueTrait + Clone> {
+/// Result type for switch evaluation
+pub enum GenericSwitchResult {
     /// Match found - return the instantiated template and bindings
-    Match(V, GenericBindings<V>),
+    Match(MettaValue, Bindings),
     /// No match found
     NoMatch,
     /// Error occurred
-    Error(V),
+    Error(MettaValue),
 }
 
-/// Generic switch/case evaluation - works with any value type implementing MettaValueTrait.
+/// Switch/case evaluation.
 ///
 /// This function evaluates a switch/case expression by matching the atom against
 /// the pattern in each case, and returns the instantiated template if a match is found.
-///
-/// # Type Parameters
-///
-/// - `V`: The value type (must implement `MettaValueTrait + Clone`)
-/// - `F`: The factory type (must implement `MettaValueFactory<V>`)
 ///
 /// # Arguments
 ///
@@ -1048,18 +937,7 @@ pub enum GenericSwitchResult<V: MettaValueTrait + Clone> {
 /// - `GenericSwitchResult::Match(template, bindings)` if a pattern matches
 /// - `GenericSwitchResult::NoMatch` if no pattern matches
 /// - `GenericSwitchResult::Error(err)` if there's an error (malformed case)
-///
-/// # Performance
-///
-/// This generic version eliminates boundary conversions by operating directly
-/// on the generic value type. Pattern matching uses `pattern_match_generic`
-/// and binding application uses `apply_bindings_generic`, both of which operate
-/// without type conversion.
-pub fn eval_switch_generic<V, F>(atom: &V, cases: &V, factory: &F) -> GenericSwitchResult<V>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V>,
-{
+pub fn eval_switch_generic(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -> GenericSwitchResult {
     // Cases must be an S-expression
     let Some(case_items) = cases.as_sexpr() else {
         let err = factory.error(
@@ -1067,7 +945,7 @@ where
                 "switch-minimal expects expression as second argument, got: {}",
                 cases.friendly_type_name()
             ),
-            cases.clone(),
+            *cases,
         );
         return GenericSwitchResult::Error(err);
     };
@@ -1083,7 +961,7 @@ where
         let Some(case_parts) = case.as_sexpr() else {
             let err = factory.error(
                 "switch case should be an expression (pattern-template pair)",
-                case.clone(),
+                *case,
             );
             return GenericSwitchResult::Error(err);
         };
@@ -1096,7 +974,7 @@ where
                     Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
                     case_parts.len()
                 ),
-                case.clone(),
+                *case,
             );
             return GenericSwitchResult::Error(err);
         }
@@ -1104,11 +982,9 @@ where
         let pattern = &case_parts[0];
         let template = &case_parts[1];
 
-        // Try to match pattern against atom using generic pattern matching
-        // NO CONVERSION NEEDED - operates directly on V
+        // Try to match pattern against atom using pattern matching
         if let Some(bindings) = pattern_match_generic(pattern, atom) {
             // Pattern matches - apply bindings to template
-            // NO CONVERSION NEEDED - apply_bindings_generic operates on V
             let instantiated = apply_bindings_generic(template, &bindings, factory);
             return GenericSwitchResult::Match(instantiated, bindings);
         }
@@ -1122,7 +998,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::GcFactory;
 
     #[test]
     fn test_pattern_match_variable() {
@@ -1130,7 +1005,7 @@ mod tests {
         let value = MettaValue::Long(42);
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
-        let bindings = bindings.unwrap();
+        let bindings = bindings.expect("bindings should be Some");
         assert_eq!(bindings.get("$x").map(|v| v.as_long()), Some(Some(42)));
     }
 
@@ -1140,7 +1015,7 @@ mod tests {
         let value = MettaValue::Long(42);
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
-        assert!(bindings.unwrap().is_empty());
+        assert!(bindings.expect("bindings should be Some").is_empty());
     }
 
     #[test]
@@ -1155,14 +1030,14 @@ mod tests {
         ]);
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
-        let bindings = bindings.unwrap();
+        let bindings = bindings.expect("bindings should be Some");
         assert_eq!(bindings.get("$x").map(|v| v.as_long()), Some(Some(42)));
     }
 
     #[test]
     fn test_apply_bindings_generic() {
         let factory = GcFactory::default();
-        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        let mut bindings: Bindings = Bindings::new();
         bindings.insert("$x", MettaValue::Long(42));
 
         let template = MettaValue::SExpr(vec![
@@ -1173,7 +1048,7 @@ mod tests {
 
         let result = apply_bindings_generic(&template, &bindings, &factory);
         assert!(result.is_sexpr());
-        let items = result.as_sexpr().unwrap();
+        let items = result.as_sexpr().expect("should be sexpr");
         assert_eq!(items[1].as_long(), Some(42));
     }
 
@@ -1196,7 +1071,7 @@ mod tests {
         let value = MettaValue::Long(42);
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
-        let bindings = bindings.unwrap();
+        let bindings = bindings.expect("bindings should be Some");
         assert_eq!(bindings.get("&foo").map(|v| v.as_long()), Some(Some(42)));
     }
 
@@ -1264,7 +1139,7 @@ mod tests {
     fn test_apply_bindings_ampersand_not_variable() {
         // Standalone "&" should NOT be substituted as a variable
         let factory = GcFactory::default();
-        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        let mut bindings: Bindings = Bindings::new();
         bindings.insert("&", MettaValue::Long(42));
 
         let template = MettaValue::Atom("&".to_string());
@@ -1277,7 +1152,7 @@ mod tests {
     fn test_apply_bindings_type_no_recursion() {
         // Type variants should NOT have bindings applied to their contents
         let factory = GcFactory::default();
-        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        let mut bindings: Bindings = Bindings::new();
         bindings.insert("$x", MettaValue::Long(42));
 
         // Type wrapping a variable - should not substitute

@@ -20,7 +20,7 @@
 //! - `eval_rulify_generic`: Meta-programming for runtime rule generation
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::eval::trampoline::{apply_bindings_generic, pattern_match_generic};
+use crate::backend::eval::bindings_generic::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 /// Generic result type for MORK operations

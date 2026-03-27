@@ -10,10 +10,8 @@ use crate::backend::environment::GenericEnvironment;
 use crate::backend::grounded::{execute_generic_grounded_op, has_generic_grounded_op, GenericGroundedState, GenericGroundedWork};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
-#[allow(unused_imports)]
-use super::super::trampoline::{
-    apply_bindings_generic, try_match_all_rules_generic,
-};
+use crate::backend::models::{MettaValue, GcFactory};
+use super::super::trampoline::try_match_all_rules_generic;
 // NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
 use super::super::helpers::needs_special_form_redispatch;
 
@@ -162,20 +160,18 @@ pub fn cartesian_product_lazy_generic<V: MettaValueTrait + Clone>(
 // Generic Processing Functions
 // ============================================================================
 
-/// Process collected S-expression evaluation results (generic version).
+/// Type alias for the concrete environment.
+type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
+
+/// Process collected S-expression evaluation results.
 ///
-/// This is the zero-conversion version of `process_collected_sexpr` that works
-/// with any value type implementing `MettaValueTrait`.
-pub fn process_collected_sexpr_generic<V, F>(
-    collected: Vec<(SmallVec<[V; 2]>, GenericEnvironment<V, F>)>,
-    original_env: GenericEnvironment<V, F>,
+/// Operates on concrete `MettaValue` / `GcFactory` types.
+pub fn process_collected_sexpr_generic(
+    collected: Vec<(SmallVec<[MettaValue; 2]>, MettaEnvironment)>,
+    original_env: MettaEnvironment,
     depth: usize,
-    factory: &F,
-) -> GenericProcessedSExpr<V, F>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+    factory: &GcFactory,
+) -> GenericProcessedSExpr<MettaValue, GcFactory> {
     // Check for errors in sub-expression results
     for (results, new_env) in &collected {
         if let Some(first) = results.first() {
@@ -187,7 +183,7 @@ where
 
     // Split results and environments: convert SmallVec→Vec for Cartesian product
     // (Cartesian product works with Vec<Vec<V>> internally for multi-result cases)
-    let (eval_results, envs): (Vec<Vec<V>>, Vec<_>) = collected
+    let (eval_results, envs): (Vec<Vec<MettaValue>>, Vec<_>) = collected
         .into_iter()
         .map(|(sv, env)| (sv.into_vec(), env))
         .unzip();
@@ -217,32 +213,28 @@ where
     }
 }
 
-/// Process a single combination (generic version).
+/// Process a single combination.
 ///
-/// This is the zero-conversion version of `process_single_combination` that
-/// checks for grounded operations and rule matches without converting values.
-pub fn process_single_combination_generic<V, F>(
-    evaled_items: Vec<V>,
-    mut unified_env: GenericEnvironment<V, F>,
+/// Checks for grounded operations and rule matches without converting values.
+/// Operates on concrete `MettaValue` / `GcFactory` types.
+pub fn process_single_combination_generic(
+    evaled_items: Vec<MettaValue>,
+    mut unified_env: MettaEnvironment,
     depth: usize,
-    factory: &F,
-) -> GenericProcessedSExpr<V, F>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
+    factory: &GcFactory,
+) -> GenericProcessedSExpr<MettaValue, GcFactory> {
     // Check if this is a grounded operation or special form
     if let Some(first) = evaled_items.first() {
         if let Some(op) = first.as_atom() {
             // First, check for grounded operations using generic registry
             if has_generic_grounded_op(op) {
-                let args: Vec<V> = evaled_items[1..].to_vec();
+                let args: Vec<MettaValue> = evaled_items[1..].to_vec();
                 let mut state = GenericGroundedState::new(op.to_string(), args);
 
                 if let Some(work) = execute_generic_grounded_op(op, &mut state, factory) {
                     match work {
                         GenericGroundedWork::Done(results) => {
-                            let values: SmallVec<[V; 2]> = results.into_iter().map(|(v, _)| v).collect();
+                            let values: SmallVec<[MettaValue; 2]> = results.into_iter().map(|(v, _)| v).collect();
                             return GenericProcessedSExpr::Done((values, unified_env));
                         }
                         GenericGroundedWork::EvalArg { .. } => {

@@ -2305,7 +2305,7 @@ where
                         }
                     } else {
                         // Structural pattern match fallback for MORK-only candidates
-                        crate::backend::eval::trampoline::pattern_match_generic(&entry.lhs, expr)
+                        crate::backend::eval::bindings_generic::pattern_match_generic(&entry.lhs, expr)
                     };
 
                     if let Some(bindings) = matched_bindings {

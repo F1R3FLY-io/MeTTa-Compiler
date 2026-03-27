@@ -1659,14 +1659,7 @@ where
                 }
 
                 let lhs_start = rule_prefix_len;
-                let lhs_byte_len = match mork_expr_byte_len(&debruijn_bytes[lhs_start..]) {
-                    Some(len) => len,
-                    None => {
-                        // Truncated/invalid MORK LHS encoding — skip narrow path,
-                        // fallback to wide MORK encoding at the Err(()) path below.
-                        return;
-                    }
-                };
+                let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
 
                 // Validate LHS byte range, first byte, and ALL bytes
                 #[cfg(debug_assertions)]
@@ -2878,10 +2871,7 @@ impl MettaEnvironment {
                             return;
                         }
                         let lhs_start = rule_prefix_len;
-                        let lhs_byte_len = match mork_expr_byte_len(&debruijn_bytes[lhs_start..]) {
-                            Some(len) => len,
-                            None => return, // Truncated — skip
-                        };
+                        let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
                         // Pad with 0x00 for ExprZipper read-past-end safety
                         let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
                         lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);

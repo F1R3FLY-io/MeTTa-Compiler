@@ -328,8 +328,6 @@ pub fn with_mork_bytes<V: MettaValueTrait, R>(
         let gc_val = *needs_gc_validation;
         write_metta_value_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, gc_val)?;
         // Reset flag: all looked-up entries were validated in this pass.
-        // Entries not looked up may still be stale but will be checked on next access.
-        // validate_caches() will re-set the flag if another GC sweep occurs.
         if gc_val {
             *needs_gc_validation = false;
         }
@@ -363,15 +361,14 @@ pub fn with_mork_query_bytes<V: MettaValueTrait, R>(
         let ConvertState { buffer, scratch, context, symbol_cache, ground_cache, float_cache, needs_gc_validation, .. } = &mut *state;
         context.var_map.clear();
         context.var_names.clear();
+        // No ground_cache clear needed — per-entry epoch validation at every
+        // lookup catches ABA from GC slab reuse (see below).
         let expr = Expr { ptr: buffer.as_mut_ptr() };
         let mut ez = ExprZipper::new(expr);
         let mut pdp = ParDataParser::new(sm);
         let inner = value.inner_raw();
-        let gc_val = *needs_gc_validation;
+        let gc_val = false; // Cache just cleared, no validation needed
         write_metta_value_debruijn_inner(inner, &mut pdp, context, &mut ez, scratch, symbol_cache, ground_cache, float_cache, gc_val)?;
-        if gc_val {
-            *needs_gc_validation = false;
-        }
         if ez.loc > MAX_MORK_BUFFER {
             return Err(format!(
                 "Expression too large: {} bytes (max {})",
@@ -841,13 +838,11 @@ fn write_metta_value_debruijn_inner(
                 let item_key_ptr = item.inner_ptr();
                 if !item_key_ptr.is_null() && !item.has_variables_fast() {
                     let key = item_key_ptr as usize;
+                    // Always validate cached entries against slot epoch to catch
+                    // ABA from GC slab reuse. get_slot_epoch is O(1) page metadata.
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        if needs_gc_validation {
-                            let current_epoch = global_allocator().get_slot_epoch(item_key_ptr as *const u8);
-                            current_epoch == Some(entry.alloc_epoch)
-                        } else {
-                            true
-                        }
+                        let current_epoch = global_allocator().get_slot_epoch(item_key_ptr as *const u8);
+                        current_epoch == Some(entry.alloc_epoch)
                     } else {
                         false
                     };
@@ -927,12 +922,8 @@ fn write_metta_value_debruijn_inner(
                 if !goal_key_ptr.is_null() && !goal.has_variables_fast() {
                     let key = goal_key_ptr as usize;
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        if needs_gc_validation {
-                            let current_epoch = global_allocator().get_slot_epoch(goal_key_ptr as *const u8);
-                            current_epoch == Some(entry.alloc_epoch)
-                        } else {
-                            true
-                        }
+                        let current_epoch = global_allocator().get_slot_epoch(goal_key_ptr as *const u8);
+                        current_epoch == Some(entry.alloc_epoch)
                     } else {
                         false
                     };

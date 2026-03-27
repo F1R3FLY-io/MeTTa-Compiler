@@ -1,18 +1,9 @@
-//! Evaluation Context for Generic Trampoline Engine
+//! Evaluation Context for Trampoline Engine
 //!
-//! This module provides the `EvalContext` trait that bundles a value type with its
-//! factory, enabling generic evaluation code to work with different allocation
-//! strategies.
-//!
-//! ## Design
-//!
-//! The evaluation context provides:
-//! 1. A value type (`V: MettaValueTrait`) - the type being manipulated during evaluation
-//! 2. A factory type (`F: MettaValueFactory<V>`) - for constructing new values
-//! 3. Access to the factory instance
-//!
-//! The environment type is derived from Value + Factory:
-//! `GenericEnvironment<Self::Value, Self::Factory>`
+//! This module provides the `EvalContext` trait that encapsulates behavioral
+//! differences between evaluation contexts (GC policy, safepoints, tracing,
+//! compiled dispatch). All contexts use the same value type (`MettaValue`)
+//! and factory (`GcFactory`).
 //!
 //! ## Context Implementation
 //!
@@ -23,36 +14,22 @@ use std::cell::RefCell;
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{
-    MettaValue, GcFactory, MettaValueFactory,
-    MettaValueTrait, global_factory,
+    MettaValue, GcFactory, global_factory,
 };
 
-/// Evaluation context that bundles a value type with its factory.
+/// Evaluation context for the trampoline engine.
 ///
-/// This trait enables writing generic evaluation code that works with
-/// different allocation strategies. The context provides:
-///
-/// - `Value`: The concrete value type (e.g., MettaValue)
-/// - `Factory`: The factory type for constructing values
-/// - `factory()`: Access to the factory instance
-///
-/// The environment type is always `GenericEnvironment<Self::Value, Self::Factory>`,
-/// which provides type-safe rule and binding storage.
+/// All contexts use `MettaValue` and `GcFactory`. The trait captures
+/// behavioral differences: GC policy, safepoints, tracing, and
+/// compiled dispatch.
 pub trait EvalContext {
-    /// The value type used during evaluation
-    type Value: MettaValueTrait + Clone + Send + Sync + Unpin + 'static;
-
-    /// The factory type for constructing values
-    type Factory: MettaValueFactory<Self::Value> + Copy + Clone;
-
-    /// Get a reference to the factory for constructing values
-    fn factory(&self) -> &Self::Factory;
+    /// Get a reference to the factory for constructing values.
+    fn factory(&self) -> &GcFactory;
 
     /// Hint to the context that it may trigger GC if memory pressure is high.
     ///
     /// Called periodically from the trampoline loop (every 256 iterations).
-    /// Default implementation is a no-op. Override in contexts that own or
-    /// coordinate GC (e.g., `SessionContext` with `MettaState`).
+    /// Default implementation is a no-op.
     #[inline]
     fn maybe_gc(&self) {
         // no-op by default
@@ -63,9 +40,6 @@ pub trait EvalContext {
     /// Called every 4096 trampoline iterations. Returns `true` if the evaluator
     /// should pause, register trampoline roots, release the EvalGuard, and
     /// allow the quiescent GC to fire.
-    ///
-    /// Default implementation returns `false` (no safepoints). Override in
-    /// production contexts to check allocation growth.
     #[inline]
     fn should_safepoint(&self) -> bool {
         false
@@ -73,27 +47,12 @@ pub trait EvalContext {
 
     /// Perform a GC safepoint with the provided roots from trampoline state.
     ///
-    /// The caller has already collected all `Self::Value` references from the
-    /// work stack and continuations into `roots`. This method:
-    /// 1. Registers roots as temporary GC roots
-    /// 2. Drops the EvalGuard (ACTIVE_EVALUATORS--)
-    /// 3. Triggers/processes quiescent GC if possible
-    /// 4. Re-acquires the EvalGuard (ACTIVE_EVALUATORS++)
-    /// 5. Unregisters temporary roots
-    ///
     /// Default implementation is a no-op. Override in production contexts.
-    fn perform_safepoint(&self, _roots: Vec<Self::Value>) {
+    fn perform_safepoint(&self, _roots: Vec<MettaValue>) {
         // no-op by default — non-production contexts don't safepoint
     }
 
     /// Get the trace collector for emitting evaluation trace events.
-    ///
-    /// Returns `Some(&TraceCollector)` when evaluation tracing is active,
-    /// `None` otherwise. Called by `trace_emit_ctx!` macro to conditionally
-    /// emit events with zero overhead when tracing is disabled.
-    ///
-    /// Default implementation returns `None`. Override in contexts that
-    /// carry a `TraceCollector` (e.g., `SessionContext` when `--trace` is used).
     #[cfg(feature = "eval-trace")]
     #[inline]
     fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
@@ -103,27 +62,18 @@ pub trait EvalContext {
     /// Try to dispatch a sub-expression to compiled bytecode/JIT.
     ///
     /// Called from the trampoline for S-expressions with compilable heads.
-    /// `compilation_hash` is the pre-computed hash from `increment_and_get_hash`,
-    /// guaranteed non-zero by the caller.
     /// Returns `Some((results, new_env))` on successful dispatch, `None` to
     /// fall through to the tree-walker.
-    ///
-    /// Default implementation returns `None` (no tiered dispatch).
-    /// Override in production contexts that support bytecode/JIT execution.
     #[inline]
     fn try_compiled_dispatch(
         &self,
-        _value: &Self::Value,
-        _env: &ContextEnv<Self>,
+        _value: &MettaValue,
+        _env: &MettaEnvironment,
         _compilation_hash: u64,
-    ) -> Option<(Vec<Self::Value>, ContextEnv<Self>)> {
+    ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
         None
     }
 }
-
-/// Type alias for the environment associated with an EvalContext.
-/// This is always `GenericEnvironment<C::Value, C::Factory>` for any context C.
-pub type ContextEnv<C> = GenericEnvironment<<C as EvalContext>::Value, <C as EvalContext>::Factory>;
 
 // ============================================================================
 // Static Arena Context - Global Slab Allocator Evaluation
@@ -234,9 +184,6 @@ impl StaticEvalContext {
 }
 
 impl EvalContext for StaticEvalContext {
-    type Value = MettaValue;
-    type Factory = GcFactory;
-
     #[inline]
     fn factory(&self) -> &GcFactory {
         &self.factory
@@ -290,9 +237,6 @@ impl ParallelBranchContext {
 }
 
 impl EvalContext for ParallelBranchContext {
-    type Value = MettaValue;
-    type Factory = GcFactory;
-
     #[inline]
     fn factory(&self) -> &GcFactory {
         &self.factory
@@ -308,8 +252,9 @@ impl EvalContext for ParallelBranchContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
-    fn generic_create_error<C: EvalContext>(ctx: &C, msg: &str) -> C::Value {
+    fn generic_create_error<C: EvalContext>(ctx: &C, msg: &str) -> MettaValue {
         let details = ctx.factory().atom("details");
         ctx.factory().error(msg, details)
     }

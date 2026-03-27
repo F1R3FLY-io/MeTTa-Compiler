@@ -52,7 +52,7 @@ pub use arena_engine::eval_trampoline_with_trace;
 // Re-export evaluation context types
 #[allow(unused_imports)]
 pub use context::{
-    MettaEnvironment, ContextEnv, EvalContext, StaticEvalContext,
+    MettaEnvironment, EvalContext, StaticEvalContext,
 };
 
 // Re-export generic types for the unified engine

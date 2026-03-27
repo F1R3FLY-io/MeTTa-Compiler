@@ -51,7 +51,7 @@ fn get_drop_sender() -> &'static std::sync::mpsc::Sender<Vec<std::sync::Arc<dyn 
 use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
-use super::context::{ContextEnv, EvalContext};
+use super::context::{EvalContext, MettaEnvironment};
 use crate::backend::models::gc_allocator::RootProvider;
 use super::generic_engine::{
     apply_bindings_generic, eval_switch_generic, is_boolean_check_pattern, pattern_match_generic,
@@ -71,7 +71,7 @@ use crate::backend::eval::types_generic::{
 };
 use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
 use crate::backend::models::{
-    EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValueFactory, MettaValueInner,
+    EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValue, MettaValueFactory, MettaValueInner,
     MettaValueTrait,
 };
 use crate::backend::models::metta_value::is_variable_str;
@@ -306,18 +306,15 @@ fn release_budget(n: u32, depth: u32) {
 /// immediately return themselves from the trampoline.
 #[inline]
 fn dispatch_rule_matches<C: EvalContext>(
-    mut matches: Vec<(C::Value, crate::backend::models::GenericBindings<C::Value>)>,
-    base_results: SmallVec<[C::Value; 2]>,
-    env: ContextEnv<C>,
+    mut matches: Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    base_results: SmallVec<[MettaValue; 2]>,
+    env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-    work_stack: &mut Vec<GenericWorkItem<C::Value, ContextEnv<C>>>,
-    continuations: &mut Vec<GenericContinuation<C::Value, ContextEnv<C>>>,
+    work_stack: &mut Vec<GenericWorkItem<MettaValue, MettaEnvironment>>,
+    continuations: &mut Vec<GenericContinuation<MettaValue, MettaEnvironment>>,
     demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
-)
-where
-    C::Value: Clone,
-{
+) {
     debug_assert!(!matches.is_empty(), "dispatch_rule_matches called with empty matches");
 
     // ── Single-match fast path ──
@@ -452,16 +449,10 @@ where
     // All forks go through try_acquire_budget — no unconditional bypass.
     let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
 
-    let is_metta = std::any::TypeId::of::<C::Value>()
-        == std::any::TypeId::of::<crate::backend::models::MettaValue>();
-
-    let wfst_allows_parallel = if is_metta && matches.len() >= 2 {
+    let wfst_allows_parallel = if matches.len() >= 2 {
         let scheduler = crate::backend::scheduler::global_scheduler();
         matches.iter().any(|(rhs, _)| {
-            // SAFETY: C::Value is MettaValue (TypeId checked above).
-            let metta_rhs: &crate::backend::models::MettaValue =
-                unsafe { &*(rhs as *const C::Value as *const crate::backend::models::MettaValue) };
-            let (_, action) = scheduler.classify_and_transduce(metta_rhs);
+            let (_, action) = scheduler.classify_and_transduce(rhs);
             action.parallelism_degree > 1
         })
     } else {
@@ -480,33 +471,18 @@ where
     if budget > 0 {
         // ── Parallel path: dispatch all branches to work pool ──
         let factory = ctx.factory();
-        let branches: Vec<crate::backend::models::MettaValue> = matches
+        let branches: Vec<MettaValue> = matches
             .into_iter()
             .map(|(rhs, bindings)| {
-                // SAFETY: C::Value is MettaValue (TypeId checked above).
-                // MettaValue and C::Value have identical layout (same struct).
-                let metta_rhs: &crate::backend::models::MettaValue =
-                    unsafe { &*(&rhs as *const C::Value as *const crate::backend::models::MettaValue) };
-                let metta_bindings: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
-                    unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
-                let metta_factory: &GcFactory =
-                    unsafe { &*(factory as *const C::Factory as *const GcFactory) };
-                if metta_rhs.has_variables_fast() {
-                    apply_bindings_generic(metta_rhs, metta_bindings, metta_factory)
+                if rhs.has_variables_fast() {
+                    apply_bindings_generic(&rhs, &bindings, factory)
                 } else {
-                    metta_rhs.clone()
+                    rhs.clone()
                 }
             })
             .collect();
 
-        // Clone env to properly increment Arc refcounts, then
-        // reinterpret as MettaEnvironment. transmute_copy alone
-        // would alias without incrementing refcounts → UAF.
-        // forget(clone) transfers ownership to metta_env.
-        let env_clone = env.clone();
-        let metta_env: crate::backend::environment::generic::MettaEnvironment =
-            unsafe { std::mem::transmute_copy(&env_clone) };
-        std::mem::forget(env_clone);
+        let metta_env = env.clone();
 
         // Trace: NondeterministicFork (parallel)
         #[cfg(feature = "eval-trace")]
@@ -544,13 +520,9 @@ where
 
         let results = parallel_branch_eval(branches, metta_env, actual_budget_acquired, current_depth);
 
-        // SAFETY: MettaValue and C::Value are the same type (TypeId checked).
-        let generic_results: Vec<C::Value> =
-            unsafe { std::mem::transmute(results) };
-
         // Merge with base_results from prior branches (e.g., from EvalRuleMatches)
         let mut merged = base_results;
-        merged.extend(generic_results);
+        merged.extend(results);
 
         work_stack.push(GenericWorkItem::Resume {
             result: (merged, env),
@@ -1130,7 +1102,7 @@ fn parallel_collapse_eval(
 /// # Arguments
 ///
 /// - `value`: The value to evaluate
-/// - `env`: The evaluation environment (`GenericEnvironment<C::Value, C::Factory>`)
+/// - `env`: The evaluation environment (`GenericEnvironment<MettaValue, GcFactory>`)
 /// - `ctx`: The evaluation context providing the factory
 ///
 /// # Returns
@@ -1142,13 +1114,10 @@ fn parallel_collapse_eval(
 /// Internally, the trampoline may yield after exhausting its reduction budget,
 /// but this wrapper loops until `Complete`.
 pub fn eval_trampoline_generic<C: EvalContext>(
-    value: C::Value,
-    env: ContextEnv<C>,
+    value: MettaValue,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalResult<C::Value, ContextEnv<C>>
-where
-    C::Value: Clone,
-{
+) -> GenericEvalResult<MettaValue, MettaEnvironment> {
     let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0);
     loop {
         match outcome {
@@ -1168,12 +1137,9 @@ where
 /// Reconstructs the trampoline loop from the saved work_stack and continuations,
 /// continuing with a fresh reduction budget slice.
 fn resume_trampoline_inner<C: EvalContext>(
-    suspended: crate::backend::eval::cesk::SuspendedEval<C::Value, ContextEnv<C>>,
+    suspended: crate::backend::eval::cesk::SuspendedEval<MettaValue, MettaEnvironment>,
     ctx: &C,
-) -> crate::backend::eval::cesk::EvalOutcome<C::Value, ContextEnv<C>>
-where
-    C::Value: Clone,
-{
+) -> crate::backend::eval::cesk::EvalOutcome<MettaValue, MettaEnvironment> {
     // Extract environment from the first work item.
     // The `value` and `env` parameters to eval_trampoline_inner are unused when
     // resuming (work_stack is pre-populated). We extract env from saved state.
@@ -1200,16 +1166,13 @@ where
 /// a previously suspended evaluation from saved state rather than starting fresh.
 /// `resume_reductions` carries the lifetime reduction count across yields.
 fn eval_trampoline_inner<C: EvalContext>(
-    value: C::Value,
-    env: ContextEnv<C>,
+    value: MettaValue,
+    env: MettaEnvironment,
     ctx: &C,
-    resume_work_stack: Option<Vec<GenericWorkItem<C::Value, ContextEnv<C>>>>,
-    resume_continuations: Option<Vec<GenericContinuation<C::Value, ContextEnv<C>>>>,
+    resume_work_stack: Option<Vec<GenericWorkItem<MettaValue, MettaEnvironment>>>,
+    resume_continuations: Option<Vec<GenericContinuation<MettaValue, MettaEnvironment>>>,
     resume_reductions: u64,
-) -> crate::backend::eval::cesk::EvalOutcome<C::Value, ContextEnv<C>>
-where
-    C::Value: Clone,
-{
+) -> crate::backend::eval::cesk::EvalOutcome<MettaValue, MettaEnvironment> {
     // Debug tracing controlled by environment variable (cached — one syscall per process)
     let debug_eval = is_debug_eval();
     let mut eval_count: u64 = 0;
@@ -1253,7 +1216,7 @@ where
 
     // Initialize work stack and continuations, either from resume state or fresh.
     let is_resuming = resume_work_stack.is_some();
-    let mut work_stack: Vec<GenericWorkItem<C::Value, ContextEnv<C>>> =
+    let mut work_stack: Vec<GenericWorkItem<MettaValue, MettaEnvironment>> =
         if let Some(ws) = resume_work_stack {
             ws
         } else {
@@ -1268,7 +1231,7 @@ where
             ws
         };
 
-    let mut continuations: Vec<GenericContinuation<C::Value, ContextEnv<C>>> =
+    let mut continuations: Vec<GenericContinuation<MettaValue, MettaEnvironment>> =
         if let Some(cs) = resume_continuations {
             cs
         } else {
@@ -1278,7 +1241,7 @@ where
         };
 
     // Final result storage
-    let mut final_result: Option<GenericEvalResult<C::Value, ContextEnv<C>>> = None;
+    let mut final_result: Option<GenericEvalResult<MettaValue, MettaEnvironment>> = None;
 
     // GC safepoint counter: wrapping u16 overflows every 4096 iterations (mask 0xFFF).
     // Increased from u8 (256) to reduce maybe_process_gc_response overhead (4.9% → ~1%).
@@ -1294,17 +1257,14 @@ where
     // SECK Phase 0.5: Reusable root set for GC safepoints.
     // Allocated once here, cleared and reused across safepoints. This avoids
     // re-allocating a Vec<V> on every safepoint (previously ~every 4096 iterations).
-    let mut root_set = crate::backend::eval::cesk::RootSet::<C::Value>::with_estimated_capacity(
+    let mut root_set = crate::backend::eval::cesk::RootSet::<MettaValue>::with_estimated_capacity(
         32, 64, 0,
     );
 
     // I-4/I-6: Clear subgoal and thunk tables between top-level evaluations
     // to prevent stale cached results from previous evaluations.
     // Skip when resuming — tables were already cleared on the initial call.
-    if !is_resuming
-        && std::any::TypeId::of::<C::Value>()
-            == std::any::TypeId::of::<crate::backend::models::MettaValue>()
-    {
+    if !is_resuming {
         crate::backend::eval::cesk::clear_subgoal_table();
         crate::backend::eval::cesk::clear_thunk_table();
     }
@@ -1315,7 +1275,7 @@ where
     // their MettaValues to the root_set (so the GC doesn't sweep them), then
     // clear the Vec AFTER the safepoint completes.
     let mut deferred_shared_drops: Vec<std::sync::Arc<
-        crate::backend::environment::GenericEnvironmentShared<C::Value>,
+        crate::backend::environment::GenericEnvironmentShared<MettaValue>,
     >> = Vec::new();
 
     // Main trampoline loop
@@ -1343,22 +1303,14 @@ where
             // Collect roots from all caller frames in the thread-local chain.
             // This protects values held by callers of nested trampolines
             // (e.g., compiled expressions in eval_include_generic).
-            // Only applies when C::Value is MettaValue (GC-managed). After
-            // monomorphization, the TypeId check becomes a compile-time constant.
-            if std::any::TypeId::of::<C::Value>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
-                // SAFETY: C::Value is MettaValue, so Vec<C::Value> and Vec<MettaValue>
-                // have identical layout. We transmute the reference temporarily.
-                let concrete_roots: &mut Vec<crate::backend::models::MettaValue> =
-                    unsafe { &mut *(root_set.as_mut_vec() as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
+            {
+                let concrete_roots = root_set.as_mut_vec();
                 crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
             }
             // Collect GC roots from the eval memo cache. Cached MettaValue
             // pointers must survive the mark-sweep cycle.
-            if std::any::TypeId::of::<C::Value>()
-                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
             {
-                let concrete_roots: &mut Vec<crate::backend::models::MettaValue> =
-                    unsafe { &mut *(root_set.as_mut_vec() as *mut Vec<C::Value> as *mut Vec<crate::backend::models::MettaValue>) };
+                let concrete_roots = root_set.as_mut_vec();
                 collect_eval_memo_roots(concrete_roots);
                 collect_match_result_roots(concrete_roots);
                 crate::backend::eval::cesk::tabling::collect_subgoal_roots(concrete_roots);
@@ -1368,27 +1320,18 @@ where
                 // These environments' MettaValues must be visible to the GC
                 // so it doesn't sweep values only reachable through them.
                 for deferred_env in &deferred_shared_drops {
-                    // SAFETY: TypeId check above guarantees C::Value == MettaValue.
-                    // GenericEnvironmentShared<C::Value> and GenericEnvironmentShared<MettaValue>
-                    // have identical layout.
-                    let concrete_env: &crate::backend::environment::GenericEnvironmentShared<crate::backend::models::MettaValue> =
-                        unsafe { &*(deferred_env.as_ref() as *const crate::backend::environment::GenericEnvironmentShared<C::Value>
-                            as *const crate::backend::environment::GenericEnvironmentShared<crate::backend::models::MettaValue>) };
-                    concrete_env.collect_roots(concrete_roots);
+                    deferred_env.as_ref().collect_roots(concrete_roots);
                 }
             }
 
             // Phase 2.2: Incremental nursery collection (thread-local, no quiescence needed).
             // Runs BEFORE cache clearing and old-gen safepoint. Uses the algebraic
             // root set to determine which nursery values are live.
-            if std::any::TypeId::of::<C::Value>()
-                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
             {
                 crate::backend::eval::cesk::with_nursery_collector(|collector| {
                     if collector.should_collect() {
                         // Build live pointer set from root set
-                        let concrete_roots: &Vec<crate::backend::models::MettaValue> =
-                            unsafe { &*(root_set.as_mut_vec() as *const Vec<C::Value> as *const Vec<crate::backend::models::MettaValue>) };
+                        let concrete_roots = root_set.as_mut_vec();
                         let live_ptrs: std::collections::HashSet<usize> = concrete_roots
                             .iter()
                             .map(|v| v.inner_ptr() as usize)
@@ -1534,30 +1477,22 @@ where
 
                 // I-4: Subgoal tabling — check if this expression has been
                 // previously evaluated (Complete) or is currently being evaluated
-                // (Active → cycle detection). Only for S-expressions at depth >= 2
-                // and only for MettaValue (GC-managed).
-                if is_sexpr && depth >= 2
-                    && std::any::TypeId::of::<C::Value>()
-                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
-                {
+                // (Active → cycle detection). Only for S-expressions at depth >= 2.
+                if is_sexpr && depth >= 2 {
                     let tabling_hash = value.hash_value();
                     let lookup = crate::backend::eval::cesk::with_subgoal_table(|t| {
                         t.lookup(tabling_hash, depth as u32)
                     });
                     match lookup {
                         crate::backend::eval::cesk::TableLookup::Complete(cached) => {
-                            let generic_results: Vec<C::Value> =
-                                unsafe { std::mem::transmute(cached.into_vec()) };
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (SmallVec::from_vec(generic_results), env),
+                                result: (SmallVec::from_vec(cached.into_vec()), env),
                             });
                             continue;
                         }
                         crate::backend::eval::cesk::TableLookup::Cycle(partial) => {
-                            let generic_results: Vec<C::Value> =
-                                unsafe { std::mem::transmute(partial.into_vec()) };
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (SmallVec::from_vec(generic_results), env),
+                                result: (SmallVec::from_vec(partial.into_vec()), env),
                             });
                             continue;
                         }
@@ -1575,19 +1510,12 @@ where
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
-                let memo_hash = if is_sexpr
-                    && std::any::TypeId::of::<C::Value>()
-                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
-                    && should_memoize(&value)
-                {
+                let memo_hash = if is_sexpr && should_memoize(&value) {
                     let h = value.hash_value();
                     if let Some(cached_results) = eval_memo_get(h) {
                         // Cache hit — skip evaluation entirely.
-                        // SAFETY: C::Value is MettaValue (TypeId checked above).
-                        let generic_results: Vec<C::Value> =
-                            unsafe { std::mem::transmute(cached_results) };
                         work_stack.push(GenericWorkItem::Resume {
-                            result: (SmallVec::from_vec(generic_results), env),
+                            result: (SmallVec::from_vec(cached_results), env),
                         });
                         continue;
                     }
@@ -1609,13 +1537,7 @@ where
                 // Net overhead for cold expressions (no compiled code): ~25-30 cycles
                 // Net benefit for hot expressions: tree-walker step replaced by bytecode/JIT
                 //
-                // Only active for MettaValue (GC-managed) — after monomorphization
-                // the TypeId check becomes a compile-time constant, and the else
-                // branch is eliminated entirely for non-MettaValue instantiations.
-                if is_sexpr
-                    && std::any::TypeId::of::<C::Value>()
-                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
-                {
+                if is_sexpr {
                     let has_compilable_head = if let Some(items) = value.as_sexpr() {
                         if let Some(head) = items.first() {
                             if let Some(name) = head.as_atom() {
@@ -1755,7 +1677,7 @@ where
                             match work {
                                 GenericGroundedWork::Done(results) => {
                                     // Results are already in correct type V - NO conversion
-                                    let values: Vec<C::Value> = results
+                                    let values: Vec<MettaValue> = results
                                         .into_iter()
                                         .map(|(v, _)| v)
                                         .collect();
@@ -2497,14 +2419,10 @@ where
                             // queue pressure backoff prevent over-parallelization.
                             // WFST classification: only parallelize when branches
                             // justify the dispatch overhead.
-                            let is_metta_amb = std::any::TypeId::of::<C::Value>()
-                                == std::any::TypeId::of::<crate::backend::models::MettaValue>();
-                            let wfst_allows = if is_metta_amb && alternatives.len() >= 2 {
+                            let wfst_allows = if alternatives.len() >= 2 {
                                 let scheduler = crate::backend::scheduler::global_scheduler();
                                 alternatives.iter().any(|alt| {
-                                    let metta_alt: &crate::backend::models::MettaValue =
-                                        unsafe { &*(alt as *const C::Value as *const crate::backend::models::MettaValue) };
-                                    let (_, action) = scheduler.classify_and_transduce(metta_alt);
+                                    let (_, action) = scheduler.classify_and_transduce(alt);
                                     action.parallelism_degree > 1
                                 })
                             } else {
@@ -2521,17 +2439,6 @@ where
                             };
 
                             if par_budget > 0 {
-                                // Transmute alternatives to MettaValue
-                                let metta_alts: Vec<crate::backend::models::MettaValue> = unsafe {
-                                    std::mem::transmute(alternatives)
-                                };
-
-                                // Clone env and transmute to MettaEnvironment
-                                let env_clone = env.clone();
-                                let metta_env: crate::backend::environment::generic::MettaEnvironment =
-                                    unsafe { std::mem::transmute_copy(&env_clone) };
-                                std::mem::forget(env_clone);
-
                                 // Trace: NondeterministicFork (parallel amb)
                                 #[cfg(feature = "eval-trace")]
                                 {
@@ -2543,23 +2450,19 @@ where
                                             vec![],
                                             None,
                                             trace_format::TraceEventKind::NondeterministicFork {
-                                                branch_count: metta_alts.len() as u32,
+                                                branch_count: alternatives.len() as u32,
                                             },
                                         );
                                     }
                                 }
 
+                                let metta_env = env.clone();
                                 let results = parallel_branch_eval(
-                                    metta_alts, metta_env, par_budget, current_depth,
+                                    alternatives, metta_env, par_budget, current_depth,
                                 );
 
-                                // Transmute back to C::Value
-                                let generic_results: Vec<C::Value> = unsafe {
-                                    std::mem::transmute(results)
-                                };
-
                                 work_stack.push(GenericWorkItem::Resume {
-                                    result: (SmallVec::from_vec(generic_results), env),
+                                    result: (SmallVec::from_vec(results), env),
                                 });
                             } else {
                                 // ── Sequential path (original) ──
@@ -2974,14 +2877,10 @@ where
                 };
 
                 // I-6: ThunkTable lookup — check if (template, bindings) was previously evaluated.
-                // Only for MettaValue at depth >= 3 where template has variables.
+                // Only at depth >= 3 where template has variables.
                 // The hash incorporates BOTH template AND bindings to distinguish
                 // recursive calls with different arguments.
-                if depth >= 3
-                    && template.has_variables_fast()
-                    && std::any::TypeId::of::<C::Value>()
-                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
-                {
+                if depth >= 3 && template.has_variables_fast() {
                     // Hash template + bindings content for unique identification
                     let mut thunk_hash = template.hash_value();
                     for (name, val) in bindings.iter() {
@@ -2993,10 +2892,8 @@ where
                     let lookup = crate::backend::eval::cesk::with_thunk_table(|t| t.lookup(thunk_hash));
                     match lookup {
                         crate::backend::eval::cesk::ThunkLookup::Evaluated(cached) => {
-                            let generic_results: Vec<C::Value> =
-                                unsafe { std::mem::transmute(cached.into_vec()) };
                             work_stack.push(GenericWorkItem::Resume {
-                                result: (SmallVec::from_vec(generic_results), env),
+                                result: (SmallVec::from_vec(cached.into_vec()), env),
                             });
                             continue;
                         }
@@ -3178,7 +3075,7 @@ where
                             }
 
                             // Extract (pattern, value_expr) pairs
-                            let mut pairs: Vec<(C::Value, C::Value)> = Vec::with_capacity(binding_pairs.len());
+                            let mut pairs: Vec<(MettaValue, MettaValue)> = Vec::with_capacity(binding_pairs.len());
                             for binding in binding_pairs.iter() {
                                 if let Some(pair) = binding.as_sexpr() {
                                     if pair.len() == 2 {
@@ -3420,18 +3317,16 @@ where
 /// This function handles all continuation types, converting at boundaries
 /// where necessary to interact with heap-based infrastructure (rules, environment).
 fn process_continuation_generic<C: EvalContext>(
-    cont: GenericContinuation<C::Value, ContextEnv<C>>,
-    result: GenericEvalResult<C::Value, ContextEnv<C>>,
-    work_stack: &mut Vec<GenericWorkItem<C::Value, ContextEnv<C>>>,
-    continuations: &mut Vec<GenericContinuation<C::Value, ContextEnv<C>>>,
-    final_result: &mut Option<GenericEvalResult<C::Value, ContextEnv<C>>>,
+    cont: GenericContinuation<MettaValue, MettaEnvironment>,
+    result: GenericEvalResult<MettaValue, MettaEnvironment>,
+    work_stack: &mut Vec<GenericWorkItem<MettaValue, MettaEnvironment>>,
+    continuations: &mut Vec<GenericContinuation<MettaValue, MettaEnvironment>>,
+    final_result: &mut Option<GenericEvalResult<MettaValue, MettaEnvironment>>,
     ctx: &C,
     deferred_shared_drops: &mut Vec<std::sync::Arc<
-        crate::backend::environment::GenericEnvironmentShared<C::Value>,
+        crate::backend::environment::GenericEnvironmentShared<MettaValue>,
     >>,
-) where
-    C::Value: Clone,
-{
+) {
     match cont {
         GenericContinuation::Done => {
             *final_result = Some(result);
@@ -3736,7 +3631,7 @@ fn process_continuation_generic<C: EvalContext>(
                 match work {
                     GenericGroundedWork::Done(results) => {
                         // Results are already in correct type V - NO conversion
-                        let values: Vec<C::Value> = results
+                        let values: Vec<MettaValue> = results
                             .into_iter()
                             .map(|(v, _)| v)
                             .collect();
@@ -3946,7 +3841,7 @@ fn process_continuation_generic<C: EvalContext>(
                         Deferred(crate::backend::models::GenericBindings<V>),
                     }
 
-                    let mut bound_bodies: Vec<BoundBody<C::Value>> = Vec::new();
+                    let mut bound_bodies: Vec<BoundBody<MettaValue>> = Vec::new();
                     for value in result_values.iter() {
                         // Phase 8.5: Type pre-check for typed patterns
                         if let Some(ref tc) = type_constraint {
@@ -4005,7 +3900,7 @@ fn process_continuation_generic<C: EvalContext>(
                     }
 
                     // Multiple matches: materialize all deferred bodies for dispatch
-                    let instantiated_bodies: Vec<C::Value> = bound_bodies.into_iter().map(|bb| {
+                    let instantiated_bodies: Vec<MettaValue> = bound_bodies.into_iter().map(|bb| {
                         match bb {
                             BoundBody::Materialized(val) => val,
                             BoundBody::Deferred(composed_bindings) => {
@@ -4021,14 +3916,10 @@ fn process_continuation_generic<C: EvalContext>(
                     // WFST classification: only parallelize when branches
                     // justify the dispatch overhead.
                     let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
-                    let is_metta_match = std::any::TypeId::of::<C::Value>()
-                        == std::any::TypeId::of::<crate::backend::models::MettaValue>();
-                    let wfst_allows_match = if is_metta_match && instantiated_bodies.len() >= 2 {
+                    let wfst_allows_match = if instantiated_bodies.len() >= 2 {
                         let scheduler = crate::backend::scheduler::global_scheduler();
                         instantiated_bodies.iter().any(|body| {
-                            let metta_body: &crate::backend::models::MettaValue =
-                                unsafe { &*(body as *const C::Value as *const crate::backend::models::MettaValue) };
-                            let (_, action) = scheduler.classify_and_transduce(metta_body);
+                            let (_, action) = scheduler.classify_and_transduce(body);
                             action.parallelism_degree > 1
                         })
                     } else {
@@ -4048,29 +3939,14 @@ fn process_continuation_generic<C: EvalContext>(
                     };
 
                     if par_budget > 0 {
-                        // Transmute bodies to MettaValue for parallel dispatch
-                        let metta_bodies: Vec<crate::backend::models::MettaValue> = unsafe {
-                            std::mem::transmute(instantiated_bodies)
-                        };
-
-                        // Clone env and transmute to MettaEnvironment
-                        let env_clone = result_env.clone();
-                        let metta_env: crate::backend::environment::generic::MettaEnvironment =
-                            unsafe { std::mem::transmute_copy(&env_clone) };
-                        std::mem::forget(env_clone);
-
+                        let metta_env = result_env.clone();
                         let par_results = parallel_branch_eval(
-                            metta_bodies, metta_env, par_budget, current_depth,
+                            instantiated_bodies, metta_env, par_budget, current_depth,
                         );
-
-                        // Transmute back to C::Value
-                        let generic_results: Vec<C::Value> = unsafe {
-                            std::mem::transmute(par_results)
-                        };
 
                         // Merge with accumulated results
                         let mut merged = results;
-                        merged.extend(generic_results);
+                        merged.extend(par_results);
 
                         work_stack.push(GenericWorkItem::Resume {
                             result: (SmallVec::from_vec(merged), result_env),
@@ -4267,7 +4143,7 @@ fn process_continuation_generic<C: EvalContext>(
                 } else {
                     // Build all Cartesian product combinations as sexpr values.
                     // Each combination substitutes one result per grounded arg into items.
-                    let mut combinations: Vec<C::Value> = Vec::new();
+                    let mut combinations: Vec<MettaValue> = Vec::new();
 
                     // Track whether any grounded arg changed after pre-evaluation.
                     // If no args changed (fixpoint), skip re-evaluation to prevent
@@ -5046,7 +4922,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // matching against structurally incompatible patterns.
                 let effective_cases = if let Some(scrutinee_type) = get_ground_type(&switch_atom) {
                     if let Some(case_pairs) = cases.as_sexpr() {
-                        let filtered: Vec<C::Value> = case_pairs.iter().filter(|pair| {
+                        let filtered: Vec<MettaValue> = case_pairs.iter().filter(|pair| {
                             pair.as_sexpr().map_or(true, |p| {
                                 p.first().map_or(true, |pattern| {
                                     is_pattern_type_compatible(pattern, scrutinee_type)
@@ -5343,7 +5219,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // Wrap results in return structure: (return value)
-                let return_results: Vec<C::Value> = arg_results
+                let return_results: Vec<MettaValue> = arg_results
                     .into_iter()
                     .map(|r| {
                         ctx.factory().sexpr(vec![
@@ -5587,7 +5463,7 @@ fn process_continuation_generic<C: EvalContext>(
 
                 if !final_results.is_empty() {
                     // Extract return values - unwrap (return value) to just value
-                    let returns: Vec<C::Value> = final_results
+                    let returns: Vec<MettaValue> = final_results
                         .into_iter()
                         .map(|r| {
                             if let Some(items) = r.as_sexpr() {
@@ -5767,7 +5643,7 @@ fn process_continuation_generic<C: EvalContext>(
                             result_env.match_space_exists(&pattern2)
                         } else {
                             // Non-module spaces use SpaceHandle's generic collapse
-                            let atoms: Vec<C::Value> = handle.collapse_generic(ctx.factory());
+                            let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
                                 pattern_match_generic(&pattern2, atom).is_some()
                                     || pattern_match_generic(atom, &pattern2).is_some()
@@ -5781,7 +5657,7 @@ fn process_continuation_generic<C: EvalContext>(
                         // Full space matching with body evaluation
                         if handle.is_module_space() || handle.name == "self" {
                             // Module/self spaces use Environment's match_space
-                            let matches: Vec<(C::Value, usize)> =
+                            let matches: Vec<(MettaValue, usize)> =
                                 result_env.match_space(&pattern2, &pattern2)
                                     .into_iter()
                                     .map(|m| (m.value, m.count))
@@ -5798,7 +5674,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 });
                             } else {
                                 // Build bodies to evaluate for each match - values already generic
-                                let mut bodies_to_eval: Vec<C::Value> = Vec::new();
+                                let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for (generic_value, count) in &matches {
                                     if let Some(bindings) = pattern_match_generic(&pattern2, generic_value) {
@@ -5863,7 +5739,7 @@ fn process_continuation_generic<C: EvalContext>(
                         } else {
                             // GENERIC: Non-module spaces - use generic collapse_with_multiplicity
 
-                            let matches: Vec<GenericMultiplicityMatch<C::Value>> =
+                            let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
                                 handle.collapse_with_multiplicity_generic(ctx.factory());
 
                             if matches.is_empty() {
@@ -5877,7 +5753,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 });
                             } else {
                                 // Build bodies to evaluate for each match - NO conversion needed
-                                let mut bodies_to_eval: Vec<C::Value> = Vec::new();
+                                let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for m in &matches {
                                     if let Some(bindings) = pattern_match_generic(&pattern2, &m.value) {
@@ -5982,14 +5858,14 @@ fn process_continuation_generic<C: EvalContext>(
                     // Space unification for first value
                     if handle.is_module_space() || handle.name == "self" {
                         // Module/self spaces use Environment's match_space
-                        let matches: Vec<(C::Value, usize)> =
+                        let matches: Vec<(MettaValue, usize)> =
                             result_env.match_space(&pattern2, &pattern2)
                                 .into_iter()
                                 .map(|m| (m.value, m.count))
                                 .collect();
 
                         // Build bodies for matches - values already generic
-                        let mut bodies_to_eval: Vec<C::Value> = Vec::new();
+                        let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for (generic_value, count) in &matches {
                             if let Some(bindings) = pattern_match_generic(&pattern2, generic_value) {
@@ -6037,11 +5913,11 @@ fn process_continuation_generic<C: EvalContext>(
                     } else {
                         // GENERIC: Non-module spaces - use generic collapse_with_multiplicity
 
-                        let matches: Vec<GenericMultiplicityMatch<C::Value>> =
+                        let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
                             handle.collapse_with_multiplicity_generic(ctx.factory());
 
                         // Build bodies for matches - NO conversion needed
-                        let mut bodies_to_eval: Vec<C::Value> = Vec::new();
+                        let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
                             if let Some(bindings) = pattern_match_generic(&pattern2, &m.value) {
@@ -6154,7 +6030,7 @@ fn process_continuation_generic<C: EvalContext>(
                         let exists = if handle.is_module_space() || handle.name == "self" {
                             env_after.match_space_exists(&pattern)
                         } else {
-                            let atoms: Vec<C::Value> = handle.collapse_generic(ctx.factory());
+                            let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
                                 pattern_match_generic(&pattern, atom).is_some()
                                     || pattern_match_generic(atom, &pattern).is_some()
@@ -6166,7 +6042,7 @@ fn process_continuation_generic<C: EvalContext>(
                     } else {
                         // Full match: get matches from appropriate source
 
-                        let matches: Vec<GenericMultiplicityMatch<C::Value>> =
+                        let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
                             if handle.is_module_space() || handle.name == "self" {
                                 // Module/self spaces - use match_space
                                 env_after
@@ -6179,7 +6055,7 @@ fn process_continuation_generic<C: EvalContext>(
                                 handle.collapse_with_multiplicity_generic(ctx.factory())
                             };
 
-                        let mut bodies_to_eval: Vec<C::Value> = Vec::new();
+                        let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
                             if let Some(bindings) = pattern_match_generic(&pattern, &m.value) {
@@ -6310,7 +6186,7 @@ fn process_continuation_generic<C: EvalContext>(
                     });
                 } else {
                     // Multiple bindings - pre-instantiate all bodies generically
-                    let bodies_vec: Vec<C::Value> = all_bindings.iter()
+                    let bodies_vec: Vec<MettaValue> = all_bindings.iter()
                         .map(|bindings| {
                             apply_bindings_generic(&success_body, bindings, ctx.factory())
                         })
@@ -6390,8 +6266,6 @@ fn process_continuation_generic<C: EvalContext>(
             let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
             let n_results = expr_results.len();
             let par_budget = if n_results >= PARALLEL_COLLAPSE_THRESHOLD
-                && std::any::TypeId::of::<C::Value>()
-                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
                 && current_depth < max_parallel_depth()
                 && global_eval_pool().active_workers() > 0
             {
@@ -6401,28 +6275,15 @@ fn process_continuation_generic<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                // Convert SmallVec to Vec, then transmute to MettaValue for parallel dispatch
-                let metta_items: Vec<crate::backend::models::MettaValue> = unsafe {
-                    std::mem::transmute(expr_results.into_vec())
-                };
-
-                // Clone env and transmute to MettaEnvironment
-                let env_clone = result_env.clone();
-                let metta_env: crate::backend::environment::generic::MettaEnvironment =
-                    unsafe { std::mem::transmute_copy(&env_clone) };
-                std::mem::forget(env_clone);
+                let metta_items: Vec<MettaValue> = expr_results.into_vec();
+                let metta_env = result_env.clone();
 
                 let evaluated = parallel_collapse_eval(
                     metta_items, metta_env, par_budget, current_depth, depth,
                 );
 
-                // Transmute back to C::Value
-                let generic_evaluated: Vec<C::Value> = unsafe {
-                    std::mem::transmute(evaluated)
-                };
-
                 // Assemble the tuple
-                let result_list = ctx.factory().sexpr(generic_evaluated);
+                let result_list = ctx.factory().sexpr(evaluated);
 
                 // Trace: collapse-result phase
                 #[cfg(feature = "eval-trace")]
@@ -6448,7 +6309,7 @@ fn process_continuation_generic<C: EvalContext>(
             } else {
                 // ── Sequential path: evaluate one-at-a-time ──
                 // MeTTa HE collapse semantics: evaluate each result to normal form.
-                let remaining_vec: Vec<C::Value> = expr_results.into_iter().collect();
+                let remaining_vec: Vec<MettaValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
                 let first_raw = remaining_raw.next().expect("expr_results is non-empty");
@@ -6489,8 +6350,6 @@ fn process_continuation_generic<C: EvalContext>(
             // ── Parallel path: identical to ProcessCollapse ──
             let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
             let par_budget = if expr_results.len() >= PARALLEL_COLLAPSE_THRESHOLD
-                && std::any::TypeId::of::<C::Value>()
-                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
                 && current_depth < max_parallel_depth()
                 && global_eval_pool().active_workers() > 0
             {
@@ -6500,24 +6359,14 @@ fn process_continuation_generic<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                let metta_items: Vec<crate::backend::models::MettaValue> = unsafe {
-                    std::mem::transmute(expr_results.into_vec())
-                };
-
-                let env_clone = result_env.clone();
-                let metta_env: crate::backend::environment::generic::MettaEnvironment =
-                    unsafe { std::mem::transmute_copy(&env_clone) };
-                std::mem::forget(env_clone);
+                let metta_items: Vec<MettaValue> = expr_results.into_vec();
+                let metta_env = result_env.clone();
 
                 let evaluated = parallel_collapse_eval(
                     metta_items, metta_env, par_budget, current_depth, depth,
                 );
 
-                let generic_evaluated: Vec<C::Value> = unsafe {
-                    std::mem::transmute(evaluated)
-                };
-
-                let result_list = ctx.factory().sexpr(generic_evaluated);
+                let result_list = ctx.factory().sexpr(evaluated);
 
                 #[cfg(feature = "eval-trace")]
                 {
@@ -6541,7 +6390,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // ── Sequential path ──
-                let remaining_vec: Vec<C::Value> = expr_results.into_iter().collect();
+                let remaining_vec: Vec<MettaValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
                 let first_raw = remaining_raw.next().expect("expr_results is non-empty");
@@ -6721,7 +6570,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let first = &space_results[0];
                 if let Some(handle) = first.as_space() {
                     // GENERIC: Use collapse_generic to avoid heap conversion
-                    let atoms: Vec<C::Value> = handle.collapse_generic(ctx.factory());
+                    let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                     if atoms.is_empty() {
                         // Empty space returns empty results
                         work_stack.push(GenericWorkItem::Resume {
@@ -6780,7 +6629,7 @@ fn process_continuation_generic<C: EvalContext>(
                                     if var.starts_with('$') {
                                         // Use type index: O(k) where k = atoms of matching type
                                         let matching_atoms = env.get_atoms_of_type(type_name);
-                                        let results: Vec<C::Value> = matching_atoms.iter()
+                                        let results: Vec<MettaValue> = matching_atoms.iter()
                                             .map(|name| {
                                                 let mut bindings = crate::backend::models::GenericBindings::new();
                                                 bindings.insert(var, ctx.factory().atom(name));
@@ -6801,7 +6650,7 @@ fn process_continuation_generic<C: EvalContext>(
                             None
                         };
 
-                        let generic_results: Vec<C::Value> = if let Some(filtered) = type_filtered {
+                        let generic_results: Vec<MettaValue> = if let Some(filtered) = type_filtered {
                             filtered
                         } else {
                             // Standard path: match_space which handles serialization internally
@@ -6836,7 +6685,7 @@ fn process_continuation_generic<C: EvalContext>(
                         });
                     } else {
                         // Owned space - match against atoms in SpaceHandle via unified match_pattern_generic
-                        let instantiated_templates: Vec<C::Value> =
+                        let instantiated_templates: Vec<MettaValue> =
                             handle.match_pattern_generic(&pattern, &template, ctx.factory());
 
                         // Trace: space-result phase (owned space)
@@ -7355,7 +7204,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // Get args as a list - use native generic values directly
-                let args_list: Vec<&C::Value> = if let Some(items) = args_results[0].as_sexpr() {
+                let args_list: Vec<&MettaValue> = if let Some(items) = args_results[0].as_sexpr() {
                     items.iter().collect()
                 } else {
                     args_results.iter().collect()
@@ -7608,7 +7457,7 @@ fn process_continuation_generic<C: EvalContext>(
                     if handle.is_module_space() || handle.name == "self" {
                         // &self or module space — use env.match_space
                         let matches = env.match_space(&pattern, &template);
-                        let generic_results: Vec<C::Value> = matches
+                        let generic_results: Vec<MettaValue> = matches
                             .into_iter()
                             .flat_map(|m| std::iter::repeat(m.value).take(m.count))
                             .collect();
@@ -7673,7 +7522,7 @@ fn process_continuation_generic<C: EvalContext>(
                         }
                     } else {
                         // Owned space — match against SpaceHandle
-                        let instantiated_templates: Vec<C::Value> =
+                        let instantiated_templates: Vec<MettaValue> =
                             handle.match_pattern_generic(&pattern, &template, ctx.factory());
 
                         if instantiated_templates.is_empty() {
@@ -7985,20 +7834,7 @@ fn process_continuation_generic<C: EvalContext>(
             let (result_values, result_env) = result;
 
             // Cache the evaluation results in the thread-local memo table.
-            // Only for MettaValue (compile-time constant after monomorphization).
-            if std::any::TypeId::of::<C::Value>()
-                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
-            {
-                // SAFETY: C::Value is MettaValue (TypeId checked above).
-                // Vec<C::Value> and Vec<MettaValue> have identical layout.
-                let concrete_slice: &[crate::backend::models::MettaValue] = unsafe {
-                    std::slice::from_raw_parts(
-                        result_values.as_ptr() as *const crate::backend::models::MettaValue,
-                        result_values.len(),
-                    )
-                };
-                eval_memo_put(expr_hash, concrete_slice);
-            }
+            eval_memo_put(expr_hash, result_values.as_slice());
 
             work_stack.push(GenericWorkItem::Resume {
                 result: (result_values, result_env),
@@ -8108,7 +7944,7 @@ fn process_continuation_generic<C: EvalContext>(
                 }
 
                 // For each result value, pattern-match and evaluate the rest
-                let mut bound_bodies: Vec<C::Value> = Vec::new();
+                let mut bound_bodies: Vec<MettaValue> = Vec::new();
                 for value in result_values.iter() {
                     if let Some(pm_bindings) = pattern_match_generic(&current_pattern, value) {
                         let composed = accumulated_bindings.compose(&pm_bindings);
@@ -8160,17 +7996,9 @@ fn process_continuation_generic<C: EvalContext>(
             let (result_values, result_env) = result;
 
             // Store results in the subgoal table for future cache hits.
-            if std::any::TypeId::of::<C::Value>()
-                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
             {
-                let concrete_results: &[crate::backend::models::MettaValue] = unsafe {
-                    std::slice::from_raw_parts(
-                        result_values.as_ptr() as *const crate::backend::models::MettaValue,
-                        result_values.len(),
-                    )
-                };
-                let cached: smallvec::SmallVec<[crate::backend::models::MettaValue; 2]> =
-                    concrete_results.iter().cloned().collect();
+                let cached: smallvec::SmallVec<[MettaValue; 2]> =
+                    result_values.iter().cloned().collect();
                 crate::backend::eval::cesk::with_subgoal_table(|t| {
                     t.complete(expr_hash, cached);
                 });
@@ -8190,17 +8018,9 @@ fn process_continuation_generic<C: EvalContext>(
             let (result_values, result_env) = result;
 
             // Store results in the thunk table for future cache hits.
-            if std::any::TypeId::of::<C::Value>()
-                == std::any::TypeId::of::<crate::backend::models::MettaValue>()
             {
-                let concrete_results: &[crate::backend::models::MettaValue] = unsafe {
-                    std::slice::from_raw_parts(
-                        result_values.as_ptr() as *const crate::backend::models::MettaValue,
-                        result_values.len(),
-                    )
-                };
-                let cached: smallvec::SmallVec<[crate::backend::models::MettaValue; 2]> =
-                    concrete_results.iter().cloned().collect();
+                let cached: smallvec::SmallVec<[MettaValue; 2]> =
+                    result_values.iter().cloned().collect();
                 crate::backend::eval::cesk::with_thunk_table(|t| {
                     t.update(thunk_hash, cached);
                 });

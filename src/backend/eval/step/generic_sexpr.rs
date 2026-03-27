@@ -39,10 +39,10 @@ use crate::backend::eval::modules_generic::{
 use crate::backend::eval::mork_forms_generic::{
     eval_coalg_generic, eval_exec_generic, eval_lookup_generic, eval_rulify_generic,
 };
-use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
+use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
 use crate::backend::eval::types_generic::{eval_check_type_generic, eval_get_type_generic, types_match_generic};
 use crate::backend::grounded::{has_generic_grounded_op, GenericGroundedState};
-use crate::backend::models::{MettaValueFactory, MettaValueTrait, SpaceHandle};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 use crate::backend::models::metta_value::MettaValueInner;
 
 /// Generic S-expression step evaluation.
@@ -57,19 +57,19 @@ use crate::backend::models::metta_value::MettaValueInner;
 /// # Arguments
 ///
 /// - `items`: The S-expression items to evaluate
-/// - `env`: The evaluation environment (`GenericEnvironment<C::Value, C::Factory>`)
+/// - `env`: The evaluation environment (`MettaEnvironment`)
 /// - `depth`: Current evaluation depth
 /// - `ctx`: The evaluation context providing the factory
 ///
 /// All environment operations use `GenericEnvironment` methods directly.
 pub fn eval_sexpr_step_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     eval_sexpr_step_generic_inner(items, None, env, depth, ctx)
 }
@@ -79,14 +79,14 @@ where
 /// EvalWithBindings materialization), passing it here skips the `factory.sexpr(items.clone())`
 /// allocation at the rule-matching catch-all arm.
 pub fn eval_sexpr_step_with_original<C: EvalContext>(
-    items: Vec<C::Value>,
-    original_sexpr: C::Value,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    original_sexpr: MettaValue,
+    env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     eval_sexpr_step_generic_inner(items, Some(original_sexpr), env, depth, ctx)
 }
@@ -96,14 +96,14 @@ where
 /// materialization). When `original_sexpr` is `Some`, it's used directly for rule
 /// matching instead of re-wrapping items via `factory.sexpr(items.clone())`.
 fn eval_sexpr_step_generic_inner<C: EvalContext>(
-    items: Vec<C::Value>,
-    original_sexpr: Option<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    original_sexpr: Option<MettaValue>,
+    env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     trace!(target: "mettatron::backend::eval::eval_sexpr_step_generic", ?items, depth);
 
@@ -121,7 +121,7 @@ where
     // Cached parent operator types: computed once in the catch-all arm (Phase 1),
     // reused by find_typed_arg_indices_generic (Step 2) and
     // is_declared_value_type (Step 2.5) to avoid redundant RwLock reads.
-    let mut cached_parent_op_types: Option<Vec<C::Value>> = None;
+    let mut cached_parent_op_types: Option<Vec<MettaValue>> = None;
 
     // Check for special forms - these are handled directly
     if let Some(op) = items.first().and_then(|v| v.as_atom()) {
@@ -1415,7 +1415,7 @@ where
                     // Empty amb returns empty
                     return GenericEvalStep::Done((smallvec![], env));
                 }
-                let alternatives: Vec<C::Value> = items[1..].iter().cloned().collect();
+                let alternatives: Vec<MettaValue> = items[1..].iter().cloned().collect();
                 return GenericEvalStep::StartAmb {
                     alternatives,
                     env,
@@ -1869,7 +1869,7 @@ where
                 // Try generic grounded operation (zero-conversion path)
                 // Uses static dispatch - works with any V: MettaValueTrait
                 if has_generic_grounded_op(op) {
-                    let args: Vec<C::Value> = items[1..].to_vec();
+                    let args: Vec<MettaValue> = items[1..].to_vec();
                     // Phase 8.8: Pre-validate ground-type args against arrow signature.
                     // Returns clear type error instead of NoReduce → unreduced expression.
                     if let Some(type_error) = validate_grounded_arg_types(op, &args, ctx.factory()) {
@@ -2029,14 +2029,14 @@ where
 ///
 /// Used by `map-atom`, `filter-atom`, and `foldl-atom` variable arguments.
 fn extract_var_name<C: EvalContext>(
-    var_arg: &C::Value,
+    var_arg: &MettaValue,
     op_name: &str,
     arg_position: &str,
-    env: &ContextEnv<C>,
+    env: &MettaEnvironment,
     ctx: &C,
-) -> Result<String, GenericEvalStep<C::Value, ContextEnv<C>>>
+) -> Result<String, GenericEvalStep<MettaValue, MettaEnvironment>>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     match var_arg.as_atom() {
         Some(name) if name.starts_with('$') => Ok(name.to_string()),
@@ -2073,13 +2073,13 @@ where
 ///
 /// Used by `map-atom`, `filter-atom`, and `foldl-atom` list arguments.
 fn extract_list_elements<C: EvalContext>(
-    list_arg: &C::Value,
+    list_arg: &MettaValue,
     op_name: &str,
     ctx: &C,
-    env: &ContextEnv<C>,
-) -> Result<Vec<C::Value>, GenericEvalStep<C::Value, ContextEnv<C>>>
+    env: &MettaEnvironment,
+) -> Result<Vec<MettaValue>, GenericEvalStep<MettaValue, MettaEnvironment>>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     match (list_arg.is_unit(), list_arg.as_sexpr()) {
         (true, _) => Ok(vec![]),
@@ -2096,11 +2096,11 @@ where
 
 /// Preprocess space references: combine `& self` into `&self`.
 fn preprocess_space_refs_generic<C: EvalContext>(
-    items: Vec<C::Value>,
+    items: Vec<MettaValue>,
     ctx: &C,
-) -> Vec<C::Value>
+) -> Vec<MettaValue>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     // Look for pattern: [... , "&", "self", ...]
     // and combine into [... , "&self", ...]

@@ -2077,7 +2077,7 @@ where
                                                 unsafe { &*(&entry.rhs as *const V as *const crate::backend::models::MettaValue) };
                                             let b_ref: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
                                                 unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
-                                            let result = crate::backend::eval::trampoline::apply_bindings_generic(
+                                            let result = crate::backend::eval::trampoline::engine::apply_bindings(
                                                 v_ref, b_ref, &fac,
                                             );
                                             // SAFETY: MettaValue and V are the same type

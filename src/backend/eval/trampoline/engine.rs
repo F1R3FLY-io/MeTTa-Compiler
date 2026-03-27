@@ -203,3 +203,13 @@ pub fn eval_switch(
 pub fn is_boolean_check_pattern(success_body: &MettaValue, failure_body: &MettaValue) -> bool {
     super::generic_engine::is_boolean_check_pattern(success_body, failure_body)
 }
+
+/// Apply bindings to a template using the iterative implementation.
+///
+/// This delegates to the iterative `apply_bindings_generic` from
+/// `bindings_generic.rs`, which uses an explicit work stack instead of
+/// recursion. Used by environment matching and space operations.
+#[inline]
+pub fn apply_bindings_iterative(template: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
+    crate::backend::eval::bindings_generic::apply_bindings_generic(template, bindings, factory)
+}

@@ -166,9 +166,6 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     }
 
     impl EvalContext for JitEvalContext {
-        type Value = MettaValue;
-        type Factory = GcFactory;
-
         #[inline]
         fn factory(&self) -> &GcFactory {
             &self.factory

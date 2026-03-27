@@ -124,14 +124,11 @@ pub fn invalidate_normal_form_memo() {
 /// - The formal type is a meta-type (Atom, Expression, etc.), or
 /// - Multiple arrow types disagree on the arg type at this position.
 pub(super) fn derive_arg_expected_type<C: EvalContext>(
-    items: &[C::Value],
+    items: &[MettaValue],
     arg_idx: usize,
-    env: &super::context::ContextEnv<C>,
-    factory: &C::Factory,
-) -> Option<C::Value>
-where
-    C::Value: Clone,
-{
+    env: &super::context::MettaEnvironment,
+    factory: &crate::backend::models::GcFactory,
+) -> Option<MettaValue> {
     let op = items.first().and_then(|v| v.as_atom())?;
     let arg_pos = arg_idx.checked_sub(1)?; // Convert to 0-based arg position
 
@@ -156,12 +153,9 @@ where
 fn extract_consistent_arg_type_from_env<C: EvalContext>(
     op: &str,
     arg_pos: usize,
-    env: &super::context::ContextEnv<C>,
-    factory: &C::Factory,
-) -> Option<C::Value>
-where
-    C::Value: Clone,
-{
+    env: &super::context::MettaEnvironment,
+    factory: &crate::backend::models::GcFactory,
+) -> Option<MettaValue> {
     use super::super::step::{extract_arg_types, is_meta_type};
 
     let types = env.get_types_generic(op);

@@ -21,8 +21,8 @@ use std::hash::{Hash, Hasher};
 
 use crate::backend::compile::compile_generic;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
-use crate::backend::eval::trampoline::{eval_trampoline_generic, ContextEnv, EvalContext};
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::eval::trampoline::{eval_trampoline_generic, MettaEnvironment, EvalContext};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::resolve_module_path;
 
 // ============================================================================
@@ -35,12 +35,12 @@ use crate::backend::modules::resolve_module_path;
 /// Evaluates `!`-prefixed expressions (force-eval) encountered in the file,
 /// enabling transitive imports and runtime operations in included modules.
 pub fn eval_include_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    mut env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    mut env: MettaEnvironment,
     ctx: &C,
-) -> (Vec<C::Value>, ContextEnv<C>)
+) -> (Vec<MettaValue>, MettaEnvironment)
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     let factory = ctx.factory();
 
@@ -101,7 +101,7 @@ where
     };
 
     // Compile the file contents using generic compile
-    let expressions: Vec<C::Value> = match compile_generic(&contents, factory) {
+    let expressions: Vec<MettaValue> = match compile_generic(&contents, factory) {
         Ok(exprs) => exprs,
         Err(e) => {
             env.unmark_module_loading(content_hash);
@@ -195,12 +195,12 @@ where
 /// evaluates `!`-prefixed expressions (enabling transitive imports),
 /// and returns `()` (unit).
 pub fn eval_import_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    mut env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    mut env: MettaEnvironment,
     ctx: &C,
-) -> (Vec<C::Value>, ContextEnv<C>)
+) -> (Vec<MettaValue>, MettaEnvironment)
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     let factory = ctx.factory();
 
@@ -273,7 +273,7 @@ where
     }
 
     // Compile the file contents
-    let expressions: Vec<C::Value> = match compile_generic(&contents, factory) {
+    let expressions: Vec<MettaValue> = match compile_generic(&contents, factory) {
         Ok(exprs) => exprs,
         Err(e) => {
             // Restore module dir and unmark before returning

@@ -142,9 +142,6 @@ impl<'s> SessionContext<'s> {
 
 // EvalContext routes all allocations through the single GcFactory
 impl<'s> EvalContext for SessionContext<'s> {
-    type Value = MettaValue;
-    type Factory = GcFactory;
-
     #[inline]
     fn factory(&self) -> &GcFactory {
         &self.factory

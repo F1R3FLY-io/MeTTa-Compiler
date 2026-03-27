@@ -18,9 +18,8 @@
 //! - **~2-4ns push/pop**: Two thread-local `Cell` operations each
 //! - **Type-erased collectors**: `RootCollectorFn` is a function pointer, no
 //!   dynamic dispatch or `dyn Trait`
-//! - **TypeId-gated generic bridge**: `maybe_push_frame<C>()` compiles to a
-//!   no-op for non-`MettaValue` types (the `TypeId` check becomes a
-//!   compile-time constant after monomorphization)
+//! - **Generic bridge**: `maybe_push_frame<C>()` pushes a frame protecting
+//!   `Vec<MettaValue>` from GC during nested trampoline calls
 //!
 //! ## Stack Traces
 //!
@@ -28,7 +27,6 @@
 //! `capture_stack_trace()` walks the chain and collects `FrameLabel`s from
 //! innermost (most recent) to outermost (root).
 
-use std::any::TypeId;
 use std::cell::Cell;
 use std::fmt;
 use std::ptr;
@@ -199,28 +197,21 @@ unsafe fn collect_vec_roots(data: *const (), out: &mut Vec<MettaValue>) {
 // Generic Type Bridge
 // ============================================================================
 
-/// Push a frame if `C::Value` is `MettaValue` (GC-managed). No-op for other types.
-///
-/// After monomorphization, the `TypeId` check becomes a compile-time constant,
-/// so this is zero-cost for non-MettaValue types.
+/// Push a frame that protects a `Vec<MettaValue>` from GC during nested
+/// trampoline calls.
 ///
 /// # Safety
 ///
-/// `data` must point to a valid `Vec<C::Value>` that outlives the returned
-/// guard. When `C::Value` is `MettaValue`, the pointer is transmuted to
-/// `*const Vec<MettaValue>` — this is safe because the types are identical.
+/// `data` must point to a valid `Vec<MettaValue>` that outlives the returned
+/// guard. Typically, both the Vec and the guard are locals in the same
+/// function scope, guaranteeing this.
 #[inline]
 pub unsafe fn maybe_push_frame<C: EvalContext>(
     label: FrameLabel,
-    data: *const Vec<C::Value>,
+    data: *const Vec<MettaValue>,
 ) -> Option<EvalFrameGuard> {
-    if TypeId::of::<C::Value>() == TypeId::of::<MettaValue>() {
-        // SAFETY: C::Value is MettaValue, so Vec<C::Value> and Vec<MettaValue>
-        // have identical layout. The caller guarantees data outlives the guard.
-        Some(EvalFrameGuard::push_vec(label, data as *const Vec<MettaValue>))
-    } else {
-        None
-    }
+    // All contexts now use MettaValue — always push the frame.
+    Some(EvalFrameGuard::push_vec(label, data))
 }
 
 // ============================================================================

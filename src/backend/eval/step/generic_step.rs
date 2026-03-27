@@ -13,8 +13,8 @@
 use smallvec::smallvec;
 use tracing::trace;
 
-use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
-use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
+use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 use super::generic_sexpr::eval_sexpr_step_with_original;
 use super::generic_types::GenericEvalStep;
@@ -25,7 +25,7 @@ use super::generic_types::GenericEvalStep;
 /// implementing `MettaValueTrait`. Returns either a final result or indicates
 /// more work is needed.
 ///
-/// **Design Note**: Uses `GenericEnvironment<C::Value, C::Factory>` directly.
+/// **Design Note**: Uses `MettaEnvironment` directly.
 /// - Rules stored in generic format, no serialization needed
 /// - Pattern matching uses `MettaValueTrait` methods (no conversion)
 /// - Environment operations use `GenericEnvironment` methods directly
@@ -37,7 +37,7 @@ use super::generic_types::GenericEvalStep;
 /// # Arguments
 ///
 /// - `value`: The value to evaluate
-/// - `env`: The evaluation environment (`GenericEnvironment<C::Value, C::Factory>`)
+/// - `env`: The evaluation environment (`MettaEnvironment`)
 /// - `depth`: Current evaluation depth (for debugging/metrics)
 /// - `ctx`: The evaluation context providing the factory
 ///
@@ -48,13 +48,13 @@ use super::generic_types::GenericEvalStep;
 /// - Various other variants indicating more work is needed
 #[inline]
 pub fn eval_step_generic<C: EvalContext>(
-    value: C::Value,
-    env: ContextEnv<C>,
+    value: MettaValue,
+    env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     trace!(target: "mettatron::backend::eval::eval_step_generic", ?value, depth);
 
@@ -90,13 +90,13 @@ where
 /// Inner evaluation logic — operates on span-stripped values.
 #[inline]
 fn eval_step_generic_inner<C: EvalContext>(
-    value: C::Value,
-    env: ContextEnv<C>,
+    value: MettaValue,
+    env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     // Errors propagate immediately
     if value.is_error() {
@@ -137,13 +137,13 @@ where
 
     // S-expressions need special handling
     if let Some(items) = value.as_sexpr() {
-        let items_vec: Vec<C::Value> = items.iter().cloned().collect();
+        let items_vec: Vec<MettaValue> = items.iter().cloned().collect();
         return eval_sexpr_step_with_original(items_vec, value, env, depth, ctx);
     }
 
     // For conjunctions, evaluate goals left-to-right with binding threading
     if let Some(goals) = value.as_conjunction() {
-        let goals_vec: Vec<C::Value> = goals.iter().cloned().collect();
+        let goals_vec: Vec<MettaValue> = goals.iter().cloned().collect();
         return eval_conjunction_step_generic(goals_vec, env, depth, ctx);
     }
 
@@ -167,15 +167,15 @@ where
 ///
 /// Evaluates conjunction goals sequentially, threading bindings through.
 ///
-/// **Design Note**: Uses `GenericEnvironment<C::Value, C::Factory>` directly.
+/// **Design Note**: Uses `MettaEnvironment` directly.
 fn eval_conjunction_step_generic<C: EvalContext>(
-    goals: Vec<C::Value>,
-    env: ContextEnv<C>,
+    goals: Vec<MettaValue>,
+    env: MettaEnvironment,
     depth: usize,
     _ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     trace!(target: "mettatron::backend::eval::eval_conjunction_step_generic", ?goals, depth);
 

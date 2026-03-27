@@ -81,21 +81,13 @@ use crate::backend::eval::trampoline::EvalContext;
 /// `StaticEvalContext` is concrete (`MettaValue`, `GcFactory`), but the VM
 /// is generic over `V` and `F`. This adapter bridges the gap, allowing the
 /// generic VM to use the generic trampoline.
-struct VmEvalContext<V, F> {
-    factory: F,
-    _phantom: std::marker::PhantomData<V>,
+struct VmEvalContext {
+    factory: crate::backend::models::GcFactory,
 }
 
-impl<V, F> EvalContext for VmEvalContext<V, F>
-where
-    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Copy + Clone,
-{
-    type Value = V;
-    type Factory = F;
-
+impl EvalContext for VmEvalContext {
     #[inline]
-    fn factory(&self) -> &F {
+    fn factory(&self) -> &crate::backend::models::GcFactory {
         &self.factory
     }
 }
@@ -4340,19 +4332,38 @@ where
 
         // Create a lightweight EvalContext adapter for the trampoline.
         let ctx = VmEvalContext {
-            factory: self.factory,
-            _phantom: std::marker::PhantomData::<V>,
+            factory: crate::backend::models::global_factory(),
         };
+
+        // eval_trampoline_generic now takes MettaValue + MettaEnvironment.
+        // Transmute via TypeId check — in practice V is always MettaValue.
+        assert_eq!(
+            TypeId::of::<V>(), TypeId::of::<MettaValue>(),
+            "eval_sub_expr_vm: V must be MettaValue"
+        );
+        // SAFETY: V == MettaValue verified above. Identical layouts.
+        let metta_sub_expr: MettaValue = unsafe {
+            std::ptr::read(&sub_expr as *const V as *const MettaValue)
+        };
+        let metta_env: crate::backend::eval::trampoline::MettaEnvironment = unsafe {
+            std::ptr::read(
+                &env as *const GenericEnvironment<V, F>
+                    as *const crate::backend::eval::trampoline::MettaEnvironment,
+            )
+        };
+        std::mem::forget(sub_expr);
+        std::mem::forget(env);
 
         // Full trampoline evaluation: trampolined, TCO, CPS-based.
         // Returns (Vec<results>, final_env).
-        let (results, _final_env) = eval_trampoline_generic(sub_expr.clone(), env, &ctx);
+        let (results, _final_env) = eval_trampoline_generic(metta_sub_expr.clone(), metta_env, &ctx);
 
         if let Some(first) = results.into_iter().next() {
-            Ok(first)
+            // SAFETY: V == MettaValue verified above. Transmute result back.
+            Ok(unsafe { std::ptr::read(&first as *const MettaValue as *const V) })
         } else {
             // No results — return expression unchanged (data constructor)
-            Ok(sub_expr)
+            Ok(unsafe { std::ptr::read(&metta_sub_expr as *const MettaValue as *const V) })
         }
     }
 
@@ -4367,12 +4378,39 @@ where
         use crate::backend::eval::trampoline::eval_trampoline_generic;
 
         let ctx = VmEvalContext {
-            factory: self.factory,
-            _phantom: std::marker::PhantomData::<V>,
+            factory: crate::backend::models::global_factory(),
         };
 
-        let (results, _final_env) = eval_trampoline_generic(sub_expr, env, &ctx);
-        results.into_vec()
+        // eval_trampoline_generic now takes MettaValue + MettaEnvironment.
+        // Transmute via TypeId check — in practice V is always MettaValue.
+        assert_eq!(
+            TypeId::of::<V>(), TypeId::of::<MettaValue>(),
+            "eval_sub_expr_vm_all: V must be MettaValue"
+        );
+        // SAFETY: V == MettaValue verified above. Identical layouts.
+        let metta_sub_expr: MettaValue = unsafe {
+            std::ptr::read(&sub_expr as *const V as *const MettaValue)
+        };
+        let metta_env: crate::backend::eval::trampoline::MettaEnvironment = unsafe {
+            std::ptr::read(
+                &env as *const GenericEnvironment<V, F>
+                    as *const crate::backend::eval::trampoline::MettaEnvironment,
+            )
+        };
+        std::mem::forget(sub_expr);
+        std::mem::forget(env);
+
+        let (results, _final_env) = eval_trampoline_generic(metta_sub_expr, metta_env, &ctx);
+        // SAFETY: V == MettaValue verified above. Vec<MettaValue> → Vec<V>.
+        let metta_results: Vec<MettaValue> = results.into_vec();
+        unsafe {
+            let mut v_results = std::mem::ManuallyDrop::new(metta_results);
+            Vec::from_raw_parts(
+                v_results.as_mut_ptr() as *mut V,
+                v_results.len(),
+                v_results.capacity(),
+            )
+        }
     }
 
     // === Space Operations ===

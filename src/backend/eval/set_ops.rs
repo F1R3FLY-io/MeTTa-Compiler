@@ -29,8 +29,8 @@ use std::collections::HashMap;
 use smallvec::smallvec;
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
-use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::step::GenericEvalStep;
 
@@ -40,12 +40,12 @@ use super::step::GenericEvalStep;
 /// Extracts the operation name from `items[0]` to avoid borrow conflicts.
 /// All set operations return `GenericEvalStep::Done(...)`.
 pub fn eval_set_op_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     let op = items[0].as_atom().expect("set_ops dispatch: head must be atom");
     match op {
@@ -79,12 +79,12 @@ fn extract_list<V: MettaValueTrait>(v: &V) -> Result<&[V], ()> {
 ///
 /// Preserves order of first occurrences.
 fn eval_unique_atom_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 2 {
         let err = ctx.factory().error(
@@ -109,7 +109,7 @@ where
     };
 
     // O(n²) alpha-equivalence dedup — matches MeTTa HE's approach
-    let mut seen: Vec<C::Value> = Vec::with_capacity(list_items.len());
+    let mut seen: Vec<MettaValue> = Vec::with_capacity(list_items.len());
     for item in list_items {
         let already_seen = seen.iter().any(|s| atoms_are_alpha_equivalent(s, item));
         if !already_seen {
@@ -125,12 +125,12 @@ where
 ///
 /// All elements from both lists are preserved. Left elements first, then right.
 fn eval_union_atom_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -179,12 +179,12 @@ where
 /// Uses structural equality (`Hash`/`Eq`) matching MeTTa HE's `==`.
 /// Order preserved from left input.
 fn eval_intersection_atom_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -221,7 +221,7 @@ where
 
     // Build count map from right list using hash_value() for keys
     // Maps hash → Vec<(value, remaining_count)> to handle hash collisions correctly
-    let mut right_by_hash: HashMap<u64, Vec<(C::Value, usize)>> = HashMap::with_capacity(right.len());
+    let mut right_by_hash: HashMap<u64, Vec<(MettaValue, usize)>> = HashMap::with_capacity(right.len());
 
     for item in right {
         let h = item.hash_value();
@@ -263,12 +263,12 @@ where
 /// Uses structural equality (`Hash`/`Eq`) matching MeTTa HE's `==`.
 /// Order preserved from left input.
 fn eval_subtraction_atom_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -304,7 +304,7 @@ where
     };
 
     // Build count map from right list (same approach as intersection)
-    let mut right_by_hash: HashMap<u64, Vec<(C::Value, usize)>> = HashMap::with_capacity(right.len());
+    let mut right_by_hash: HashMap<u64, Vec<(MettaValue, usize)>> = HashMap::with_capacity(right.len());
     for item in right {
         let h = item.hash_value();
         let entry = right_by_hash.entry(h).or_default();
@@ -345,7 +345,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::eval::trampoline::{ContextEnv, StaticEvalContext};
+    use crate::backend::eval::trampoline::{MettaEnvironment, StaticEvalContext};
     use crate::backend::models::gc_allocator::global_factory;
     use crate::backend::models::MettaValueFactory;
 
@@ -378,7 +378,7 @@ mod tests {
         let items = vec![f.atom("unique-atom"), list];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_unique_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -396,7 +396,7 @@ mod tests {
         let items = vec![f.atom("unique-atom"), list];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_unique_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -420,7 +420,7 @@ mod tests {
         let items = vec![f.atom("unique-atom"), list];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_unique_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -443,7 +443,7 @@ mod tests {
         let items = vec![f.atom("union-atom"), left, right];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_union_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -478,7 +478,7 @@ mod tests {
         let items = vec![f.atom("intersection-atom"), left, right];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_intersection_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -497,7 +497,7 @@ mod tests {
         let items = vec![f.atom("intersection-atom"), left, right];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_intersection_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -531,7 +531,7 @@ mod tests {
         let items = vec![f.atom("subtraction-atom"), left, right];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_subtraction_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -548,7 +548,7 @@ mod tests {
         let items = vec![f.atom("subtraction-atom"), f.long(42), f.long(43)];
 
         let ctx = StaticEvalContext::get();
-        let env = ContextEnv::<StaticEvalContext>::default();
+        let env = MettaEnvironment::default();
 
         let step = eval_subtraction_atom_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {

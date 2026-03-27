@@ -32,9 +32,9 @@ use smallvec::smallvec;
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
 use crate::backend::eval::trampoline::{
-    eval_trampoline_generic, ContextEnv, EvalContext,
+    eval_trampoline_generic, MettaEnvironment, EvalContext,
 };
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::step::GenericEvalStep;
 
@@ -43,12 +43,12 @@ use super::step::GenericEvalStep;
 /// Called from `generic_sexpr.rs` when a testing/assert operation is encountered.
 /// Extracts the operation name from `items[0]` to avoid borrow conflicts.
 pub fn eval_testing_op_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     let op = items[0].as_atom().expect("testing_ops dispatch: head must be atom");
     match op {
@@ -75,12 +75,12 @@ where
 ///
 /// Does NOT evaluate arguments — compares them as-is (like MeTTa HE).
 fn eval_alpha_eq_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -103,12 +103,12 @@ where
 
 /// `(assertEqual actual expected)` — Evaluate both, compare as multisets.
 fn eval_assert_equal_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -149,12 +149,12 @@ where
 
 /// `(assertAlphaEqual actual expected)` — Evaluate both, compare with alpha-equiv.
 fn eval_assert_alpha_equal_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -198,12 +198,12 @@ where
 
 /// `(assertEqualMsg actual expected msg)` — Like assertEqual with custom message.
 fn eval_assert_equal_msg_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 4 {
         let err = ctx.factory().error(
@@ -237,12 +237,12 @@ where
 
 /// `(assertAlphaEqualMsg actual expected msg)` — Like assertAlphaEqual with custom message.
 fn eval_assert_alpha_equal_msg_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 4 {
         let err = ctx.factory().error(
@@ -280,12 +280,12 @@ where
 
 /// `(assertEqualToResult actual expected-results)` — Evaluate first arg only, compare with literal.
 fn eval_assert_equal_to_result_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -304,7 +304,7 @@ where
 
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
-    let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
+    let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
@@ -325,12 +325,12 @@ where
 
 /// `(assertAlphaEqualToResult actual expected-results)` — Evaluate first, alpha-compare with literal.
 fn eval_assert_alpha_equal_to_result_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 3 {
         let err = ctx.factory().error(
@@ -349,7 +349,7 @@ where
 
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
-    let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
+    let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
@@ -374,12 +374,12 @@ where
 
 /// `(assertEqualToResultMsg actual expected-results msg)` — With custom message.
 fn eval_assert_equal_to_result_msg_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 4 {
         let err = ctx.factory().error(
@@ -398,7 +398,7 @@ where
 
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
-    let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
+    let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
@@ -417,12 +417,12 @@ where
 
 /// `(assertAlphaEqualToResultMsg actual expected-results msg)` — With custom message.
 fn eval_assert_alpha_equal_to_result_msg_generic<C: EvalContext>(
-    items: Vec<C::Value>,
-    env: ContextEnv<C>,
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalStep<C::Value, ContextEnv<C>>
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
 where
-    C::Value: Clone,
+    MettaValue: Clone,
 {
     if items.len() != 4 {
         let err = ctx.factory().error(
@@ -441,7 +441,7 @@ where
 
     let (actual_results, env) = eval_trampoline_generic(items[1].clone(), env, ctx);
     // expected-results is a list literal — extract its children as expected results
-    let expected_results: Vec<C::Value> = match items[2].as_sexpr() {
+    let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
         None => vec![items[2].clone()],
     };
@@ -663,9 +663,7 @@ mod tests {
         ];
 
         let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let env = crate::backend::eval::trampoline::MettaEnvironment::default();
 
         let step = eval_alpha_eq_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -687,9 +685,7 @@ mod tests {
         ];
 
         let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let env = crate::backend::eval::trampoline::MettaEnvironment::default();
 
         let step = eval_alpha_eq_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -779,9 +775,7 @@ mod tests {
         ];
 
         let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let env = crate::backend::eval::trampoline::MettaEnvironment::default();
 
         let step = eval_assert_equal_to_result_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -804,9 +798,7 @@ mod tests {
         ];
 
         let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let env = crate::backend::eval::trampoline::MettaEnvironment::default();
 
         let step = eval_assert_equal_to_result_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
@@ -831,9 +823,7 @@ mod tests {
         ];
 
         let ctx = crate::backend::eval::trampoline::StaticEvalContext::get();
-        let env = crate::backend::eval::trampoline::ContextEnv::<
-            crate::backend::eval::trampoline::StaticEvalContext,
-        >::default();
+        let env = crate::backend::eval::trampoline::MettaEnvironment::default();
 
         let step = eval_assert_alpha_equal_to_result_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {

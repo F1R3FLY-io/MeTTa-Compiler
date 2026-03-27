@@ -13,6 +13,9 @@ use crate::backend::models::{GcFactory, GenericBindings, MettaValue};
 /// Type aliases for the concrete monomorphized types.
 pub type Environment = GenericEnvironment<MettaValue, GcFactory>;
 pub type Bindings = GenericBindings<MettaValue>;
+pub type WorkItem = super::generic_types::GenericWorkItem<MettaValue, Environment>;
+pub type Continuation = super::generic_types::GenericContinuation<MettaValue, Environment>;
+pub type EvalResult = super::generic_types::GenericEvalResult<MettaValue>;
 
 /// Apply bindings to a MettaValue, substituting variables with bound values.
 ///

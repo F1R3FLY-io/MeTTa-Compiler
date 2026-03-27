@@ -108,8 +108,8 @@ use super::dispatch_hints::REDUCIBLE_HEADS;
 /// Map a continuation discriminant to a SchedulerStackSymbol for WPDS context hashing.
 ///
 /// Only inspects the variant tag (O(1)), not the contained data.
-fn continuation_to_stack_symbol<V: MettaValueTrait, E: Clone>(
-    cont: &GenericContinuation<V, E>,
+fn continuation_to_stack_symbol(
+    cont: &GenericContinuation,
 ) -> crate::backend::scheduler::wpds::SchedulerStackSymbol {
     use crate::backend::scheduler::wpds::SchedulerStackSymbol;
 
@@ -155,8 +155,8 @@ fn continuation_to_stack_symbol<V: MettaValueTrait, E: Clone>(
 ///
 /// Returns a 64-bit context hash suitable for the SchedulerAutomaton's
 /// context_weight() method.
-fn hash_continuation_context<V: MettaValueTrait, E: Clone>(
-    continuations: &[GenericContinuation<V, E>],
+fn hash_continuation_context(
+    continuations: &[GenericContinuation],
 ) -> u64 {
     let len = continuations.len();
     let limit = len.min(3);
@@ -311,8 +311,8 @@ fn dispatch_rule_matches<C: EvalContext>(
     env: MettaEnvironment,
     depth: usize,
     ctx: &C,
-    work_stack: &mut Vec<GenericWorkItem<MettaValue, MettaEnvironment>>,
-    continuations: &mut Vec<GenericContinuation<MettaValue, MettaEnvironment>>,
+    work_stack: &mut Vec<GenericWorkItem>,
+    continuations: &mut Vec<GenericContinuation>,
     demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
 ) {
     debug_assert!(!matches.is_empty(), "dispatch_rule_matches called with empty matches");
@@ -1117,7 +1117,7 @@ pub fn eval_trampoline_generic<C: EvalContext>(
     value: MettaValue,
     env: MettaEnvironment,
     ctx: &C,
-) -> GenericEvalResult<MettaValue, MettaEnvironment> {
+) -> GenericEvalResult {
     let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0);
     loop {
         match outcome {
@@ -1137,9 +1137,9 @@ pub fn eval_trampoline_generic<C: EvalContext>(
 /// Reconstructs the trampoline loop from the saved work_stack and continuations,
 /// continuing with a fresh reduction budget slice.
 fn resume_trampoline_inner<C: EvalContext>(
-    suspended: crate::backend::eval::cesk::SuspendedEval<MettaValue, MettaEnvironment>,
+    suspended: crate::backend::eval::cesk::SuspendedEval,
     ctx: &C,
-) -> crate::backend::eval::cesk::EvalOutcome<MettaValue, MettaEnvironment> {
+) -> crate::backend::eval::cesk::EvalOutcome {
     // Extract environment from the first work item.
     // The `value` and `env` parameters to eval_trampoline_inner are unused when
     // resuming (work_stack is pre-populated). We extract env from saved state.
@@ -1169,10 +1169,10 @@ fn eval_trampoline_inner<C: EvalContext>(
     value: MettaValue,
     env: MettaEnvironment,
     ctx: &C,
-    resume_work_stack: Option<Vec<GenericWorkItem<MettaValue, MettaEnvironment>>>,
-    resume_continuations: Option<Vec<GenericContinuation<MettaValue, MettaEnvironment>>>,
+    resume_work_stack: Option<Vec<GenericWorkItem>>,
+    resume_continuations: Option<Vec<GenericContinuation>>,
     resume_reductions: u64,
-) -> crate::backend::eval::cesk::EvalOutcome<MettaValue, MettaEnvironment> {
+) -> crate::backend::eval::cesk::EvalOutcome {
     // Debug tracing controlled by environment variable (cached — one syscall per process)
     let debug_eval = is_debug_eval();
     let mut eval_count: u64 = 0;
@@ -1216,7 +1216,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
     // Initialize work stack and continuations, either from resume state or fresh.
     let is_resuming = resume_work_stack.is_some();
-    let mut work_stack: Vec<GenericWorkItem<MettaValue, MettaEnvironment>> =
+    let mut work_stack: Vec<GenericWorkItem> =
         if let Some(ws) = resume_work_stack {
             ws
         } else {
@@ -1231,7 +1231,7 @@ fn eval_trampoline_inner<C: EvalContext>(
             ws
         };
 
-    let mut continuations: Vec<GenericContinuation<MettaValue, MettaEnvironment>> =
+    let mut continuations: Vec<GenericContinuation> =
         if let Some(cs) = resume_continuations {
             cs
         } else {
@@ -1241,7 +1241,7 @@ fn eval_trampoline_inner<C: EvalContext>(
         };
 
     // Final result storage
-    let mut final_result: Option<GenericEvalResult<MettaValue, MettaEnvironment>> = None;
+    let mut final_result: Option<GenericEvalResult> = None;
 
     // GC safepoint counter: wrapping u16 overflows every 4096 iterations (mask 0xFFF).
     // Increased from u8 (256) to reduce maybe_process_gc_response overhead (4.9% → ~1%).
@@ -3317,11 +3317,11 @@ fn eval_trampoline_inner<C: EvalContext>(
 /// This function handles all continuation types, converting at boundaries
 /// where necessary to interact with heap-based infrastructure (rules, environment).
 fn process_continuation_generic<C: EvalContext>(
-    cont: GenericContinuation<MettaValue, MettaEnvironment>,
-    result: GenericEvalResult<MettaValue, MettaEnvironment>,
-    work_stack: &mut Vec<GenericWorkItem<MettaValue, MettaEnvironment>>,
-    continuations: &mut Vec<GenericContinuation<MettaValue, MettaEnvironment>>,
-    final_result: &mut Option<GenericEvalResult<MettaValue, MettaEnvironment>>,
+    cont: GenericContinuation,
+    result: GenericEvalResult,
+    work_stack: &mut Vec<GenericWorkItem>,
+    continuations: &mut Vec<GenericContinuation>,
+    final_result: &mut Option<GenericEvalResult>,
     ctx: &C,
     deferred_shared_drops: &mut Vec<std::sync::Arc<
         crate::backend::environment::GenericEnvironmentShared<MettaValue>,
@@ -3836,12 +3836,12 @@ fn process_continuation_generic<C: EvalContext>(
                     // Each entry is either:
                     // - BoundBody::Materialized(value) — body fully instantiated
                     // - BoundBody::Deferred(bindings) — body + composed bindings
-                    enum BoundBody<V: MettaValueTrait + Clone> {
-                        Materialized(V),
-                        Deferred(crate::backend::models::GenericBindings<V>),
+                    enum BoundBody {
+                        Materialized(MettaValue),
+                        Deferred(crate::backend::models::GenericBindings<MettaValue>),
                     }
 
-                    let mut bound_bodies: Vec<BoundBody<MettaValue>> = Vec::new();
+                    let mut bound_bodies: Vec<BoundBody> = Vec::new();
                     for value in result_values.iter() {
                         // Phase 8.5: Type pre-check for typed patterns
                         if let Some(ref tc) = type_constraint {
@@ -5446,7 +5446,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // Helper: check if a value is a (return ...) expression
-                fn is_return_expr<V: MettaValueTrait>(v: &V) -> bool {
+                fn is_return_expr(v: &MettaValue) -> bool {
                     if let Some(items) = v.as_sexpr() {
                         if items.len() == 2 {
                             if let Some(s) = items[0].as_atom() {

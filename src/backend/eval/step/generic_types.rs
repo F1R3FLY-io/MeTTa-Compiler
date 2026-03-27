@@ -21,7 +21,6 @@ use crate::backend::environment::MettaEnvironment;
 use crate::backend::grounded::GenericGroundedState;
 use crate::backend::models::{GenericBindings, MettaValueTrait};
 
-use super::super::trampoline::GenericEvalResult;
 /// Type of memo operation for StartMemoOp
 #[derive(Debug, Clone)]
 pub enum MemoOpType {
@@ -43,7 +42,7 @@ pub enum MemoOpType {
 #[derive(Debug)]
 pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Evaluation complete, return this result
-    Done(GenericEvalResult<V, E>),
+    Done((smallvec::SmallVec<[V; 2]>, E)),
 
     /// Need to evaluate S-expression items (iteratively)
     EvalSExpr {

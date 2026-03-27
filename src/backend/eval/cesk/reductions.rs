@@ -70,13 +70,13 @@ pub fn reduction_budget() -> u32 {
 /// when the reduction budget is exhausted and the evaluation should be
 /// resumed later.
 #[derive(Debug)]
-pub enum EvalOutcome<V: crate::backend::models::MettaValueTrait, E: Clone> {
+pub enum EvalOutcome {
     /// Evaluation completed. Contains the final (results, environment).
-    Complete(smallvec::SmallVec<[V; 2]>, E),
+    Complete(smallvec::SmallVec<[crate::backend::models::MettaValue; 2]>, crate::backend::environment::MettaEnvironment),
 
     /// Evaluation yielded after exhausting its reduction budget.
     /// Contains the suspended state for resumption.
-    Yielded(SuspendedEval<V, E>),
+    Yielded(SuspendedEval),
 }
 
 /// A suspended trampoline evaluation that can be resumed.
@@ -84,11 +84,11 @@ pub enum EvalOutcome<V: crate::backend::models::MettaValueTrait, E: Clone> {
 /// Contains the complete machine state at the yield point plus metadata
 /// for priority scheduling and worker affinity.
 #[derive(Debug)]
-pub struct SuspendedEval<V: crate::backend::models::MettaValueTrait, E: Clone> {
+pub struct SuspendedEval {
     /// The work stack at the yield point.
-    pub work_stack: Vec<super::super::trampoline::GenericWorkItem<V, E>>,
+    pub work_stack: Vec<super::super::trampoline::GenericWorkItem>,
     /// The continuation stack at the yield point.
-    pub continuations: Vec<super::super::trampoline::GenericContinuation<V, E>>,
+    pub continuations: Vec<super::super::trampoline::GenericContinuation>,
 
     /// Evaluation depth at suspension (for priority scheduling).
     pub depth: u32,

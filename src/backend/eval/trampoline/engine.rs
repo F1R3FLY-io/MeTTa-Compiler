@@ -18,12 +18,13 @@ use smallvec::SmallVec;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{MettaValue, GcFactory, GenericBindings, MettaValueTrait, MettaValueFactory};
 
-/// Concrete type aliases (monomorphized from generic types).
+/// Concrete type aliases.
 pub type Environment = GenericEnvironment<MettaValue, GcFactory>;
 pub type Bindings = GenericBindings<MettaValue>;
-pub type WorkItem = super::generic_types::GenericWorkItem<MettaValue, Environment>;
-pub type Continuation = super::generic_types::GenericContinuation<MettaValue, Environment>;
-pub type EvalResult = super::generic_types::GenericEvalResult<MettaValue>;
+/// Re-export monomorphized types (no longer generic).
+pub type WorkItem = super::generic_types::GenericWorkItem;
+pub type Continuation = super::generic_types::GenericContinuation;
+pub type EvalResult = super::generic_types::GenericEvalResult;
 
 /// Apply bindings to a MettaValue, substituting variables with bound values.
 ///

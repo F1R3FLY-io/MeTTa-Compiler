@@ -30,7 +30,7 @@ use super::session_context::SessionContext;
 /// This is the return type of `eval_trampoline` — a tuple of:
 /// - `Vec<MettaValue>`: The evaluation results
 /// - `MettaEnvironment`: The updated environment
-pub type EvalResult = GenericEvalResult<MettaValue, MettaEnvironment>;
+pub type EvalResult = GenericEvalResult;
 
 /// Zero-conversion arena evaluation using the global slab allocator.
 ///

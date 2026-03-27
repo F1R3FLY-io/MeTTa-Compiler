@@ -104,56 +104,6 @@ impl<V: MettaValueTrait + Clone> RootSet<V> {
         stack.collect_roots(&mut self.roots);
     }
 
-    /// Collect roots from work items (C component — control expressions).
-    ///
-    /// Corresponds to `addrs_in(C)` in the algebraic root formula.
-    /// Includes the currently-popped work item and all items remaining on the stack.
-    pub fn collect_from_work_items<E: Clone>(
-        &mut self,
-        current_work: &GenericWorkItem<V, E>,
-        work_stack: &[GenericWorkItem<V, E>],
-    ) {
-        current_work.collect_values(&mut self.roots);
-        for w in work_stack {
-            w.collect_values(&mut self.roots);
-        }
-    }
-
-    /// Collect roots from the continuation stack (K component).
-    ///
-    /// Corresponds to `addrs_in(K)` in the algebraic root formula.
-    pub fn collect_from_continuations<E: Clone>(
-        &mut self,
-        continuations: &[GenericContinuation<V, E>],
-    ) {
-        for c in continuations {
-            c.collect_values(&mut self.roots);
-        }
-    }
-
-    /// Collect all roots from a complete SECK machine snapshot.
-    ///
-    /// Convenience method that calls all `collect_from_*` methods.
-    /// This is the algebraic root formula:
-    ///
-    /// ```text
-    /// roots = addrs_in(S) ∪ addrs_in(C) ∪ addrs_in(K)
-    /// ```
-    ///
-    /// Environment roots (E) are managed separately via `RootProvider`.
-    pub fn collect_all<E: Clone>(
-        &mut self,
-        operand_stack: &OperandStack<V>,
-        current_work: &GenericWorkItem<V, E>,
-        work_stack: &[GenericWorkItem<V, E>],
-        continuations: &[GenericContinuation<V, E>],
-    ) {
-        self.clear();
-        self.collect_from_operand_stack(operand_stack);
-        self.collect_from_work_items(current_work, work_stack);
-        self.collect_from_continuations(continuations);
-    }
-
     /// Return the collected roots as a Vec for consumption by the GC.
     ///
     /// Drains the internal buffer, transferring ownership to the caller.
@@ -206,6 +156,60 @@ impl<V: MettaValueTrait + Clone> RootSet<V> {
     }
 }
 
+/// Monomorphized methods that interact with the concrete GenericWorkItem and
+/// GenericContinuation types (which now use MettaValue directly).
+impl RootSet<crate::backend::models::MettaValue> {
+    /// Collect roots from work items (C component — control expressions).
+    ///
+    /// Corresponds to `addrs_in(C)` in the algebraic root formula.
+    /// Includes the currently-popped work item and all items remaining on the stack.
+    pub fn collect_from_work_items(
+        &mut self,
+        current_work: &GenericWorkItem,
+        work_stack: &[GenericWorkItem],
+    ) {
+        current_work.collect_values(&mut self.roots);
+        for w in work_stack {
+            w.collect_values(&mut self.roots);
+        }
+    }
+
+    /// Collect roots from the continuation stack (K component).
+    ///
+    /// Corresponds to `addrs_in(K)` in the algebraic root formula.
+    pub fn collect_from_continuations(
+        &mut self,
+        continuations: &[GenericContinuation],
+    ) {
+        for c in continuations {
+            c.collect_values(&mut self.roots);
+        }
+    }
+
+    /// Collect all roots from a complete SECK machine snapshot.
+    ///
+    /// Convenience method that calls all `collect_from_*` methods.
+    /// This is the algebraic root formula:
+    ///
+    /// ```text
+    /// roots = addrs_in(S) ∪ addrs_in(C) ∪ addrs_in(K)
+    /// ```
+    ///
+    /// Environment roots (E) are managed separately via `RootProvider`.
+    pub fn collect_all(
+        &mut self,
+        operand_stack: &OperandStack<crate::backend::models::MettaValue>,
+        current_work: &GenericWorkItem,
+        work_stack: &[GenericWorkItem],
+        continuations: &[GenericContinuation],
+    ) {
+        self.clear();
+        self.collect_from_operand_stack(operand_stack);
+        self.collect_from_work_items(current_work, work_stack);
+        self.collect_from_continuations(continuations);
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -216,9 +220,6 @@ mod tests {
     use smallvec::smallvec;
     use crate::backend::environment::MettaEnvironment;
     use crate::backend::models::{MettaValue, MettaValueFactory, global_factory};
-
-    type TestWorkItem = GenericWorkItem<MettaValue, MettaEnvironment>;
-    type TestContinuation = GenericContinuation<MettaValue, MettaEnvironment>;
 
     fn factory() -> crate::backend::models::GcFactory {
         global_factory()
@@ -251,14 +252,14 @@ mod tests {
     #[test]
     fn test_collect_from_work_items() {
         let f = factory();
-        let current: TestWorkItem = GenericWorkItem::Eval {
+        let current = GenericWorkItem::Eval {
             value: f.long(42),
             env: env(),
             depth: 0,
             is_tail_call: false,
             expected_type: None,
         };
-        let stack: Vec<TestWorkItem> = vec![
+        let stack: Vec<GenericWorkItem> = vec![
             GenericWorkItem::Resume {
                 result: (smallvec![f.long(1), f.long(2)], env()),
             },
@@ -272,7 +273,7 @@ mod tests {
     #[test]
     fn test_collect_from_continuations() {
         let f = factory();
-        let conts: Vec<TestContinuation> = vec![
+        let conts: Vec<GenericContinuation> = vec![
             GenericContinuation::Done,
             GenericContinuation::ProcessCatch {
                 default: f.atom("fallback"),
@@ -293,15 +294,15 @@ mod tests {
         operand_stack.push_frame();
         operand_stack.push(f.long(10));
 
-        let current: TestWorkItem = GenericWorkItem::Eval {
+        let current = GenericWorkItem::Eval {
             value: f.long(20),
             env: env(),
             depth: 0,
             is_tail_call: false,
             expected_type: None,
         };
-        let work_stack: Vec<TestWorkItem> = vec![];
-        let continuations: Vec<TestContinuation> = vec![
+        let work_stack: Vec<GenericWorkItem> = vec![];
+        let continuations: Vec<GenericContinuation> = vec![
             GenericContinuation::Done,
         ];
 

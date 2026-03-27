@@ -6,11 +6,17 @@
 //!
 //! MettaValue is Copy (8-byte tagged pointer), so clone() is a no-op memcpy.
 //! GcFactory is Copy + Clone, used as a global allocator.
+//!
+//! ## Migration Path
+//!
+//! Callers should progressively migrate from `generic_engine::*` to `engine::*`.
+//! Once all callers are migrated, the generic versions can be inlined here
+//! and the generic_engine module removed.
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GcFactory, GenericBindings, MettaValue};
+use crate::backend::models::{MettaValue, GcFactory, GenericBindings, MettaValueTrait};
 
-/// Type aliases for the concrete monomorphized types.
+/// Concrete type aliases (monomorphized from generic types).
 pub type Environment = GenericEnvironment<MettaValue, GcFactory>;
 pub type Bindings = GenericBindings<MettaValue>;
 pub type WorkItem = super::generic_types::GenericWorkItem<MettaValue, Environment>;
@@ -18,9 +24,6 @@ pub type Continuation = super::generic_types::GenericContinuation<MettaValue, En
 pub type EvalResult = super::generic_types::GenericEvalResult<MettaValue>;
 
 /// Apply bindings to a MettaValue, substituting variables with bound values.
-///
-/// MettaValue is Copy, so `value.clone()` in the generic version is a free
-/// 8-byte pointer copy. No heap allocation for the return value itself.
 #[inline]
 pub fn apply_bindings(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
     super::generic_engine::apply_bindings_generic(value, bindings, factory)
@@ -88,7 +91,7 @@ pub fn eval_switch(
     atom: &MettaValue,
     cases: &MettaValue,
     factory: &GcFactory,
-) -> super::generic_engine::GenericSwitchResult<MettaValue> {
+) -> SwitchResult<MettaValue> {
     super::generic_engine::eval_switch_generic(atom, cases, factory)
 }
 

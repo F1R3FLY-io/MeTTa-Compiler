@@ -219,7 +219,7 @@ where
     /// (Cartesian product scenario like `(op (nd1) (nd2))`), return cached
     /// results instead of re-matching + re-evaluating all RHS bodies.
     /// Key: expression hash via hash_value(). Value: pre-evaluated results.
-    pub(crate) dispatch_memo: std::collections::HashMap<u64, Vec<V>>,
+    pub(crate) dispatch_memo: std::collections::HashMap<u64, (u64, Vec<V>)>,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
@@ -3842,6 +3842,7 @@ where
 
         // Add the rule (lhs=pattern, rhs=body)
         env.add_rule(pattern, body);
+        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
 
         // Push Unit to indicate success (VM-level convention).
         // The compiler emits Pop after DefineRule to match tree-walker
@@ -3959,35 +3960,39 @@ where
         // When backtracking causes re-dispatch (Cartesian product scenario like
         // `(op (nd1) (nd2))`), return cached results instead of re-matching.
         let expr_hash = expr.hash_value();
-        if let Some(cached) = self.dispatch_memo.get(&expr_hash) {
-            match cached.len() {
-                0 => {
-                    self.unreduced = true;
-                    self.push(expr);
-                }
-                1 => {
-                    self.push(cached[0].clone());
-                }
-                _ => {
-                    let mut iter = cached.iter().cloned();
-                    let first = iter.next().expect("non-empty cached");
-                    let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
-                        iter.map(GenericAlternative::Value).collect();
-                    if !alternatives.is_empty() {
-                        self.choice_points.push(GenericChoicePoint {
-                            ip: self.ip,
-                            chunk: Arc::clone(&self.chunk),
-                            value_stack_height: self.value_stack.len(),
-                            call_stack_height: self.call_stack.len(),
-                            bindings_stack_height: self.bindings_stack.len(),
-                            alternatives,
-                            saved_unreduced: self.unreduced,
-                        });
+        let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+        if let Some((cached_epoch, cached)) = self.dispatch_memo.get(&expr_hash) {
+            if *cached_epoch == current_epoch {
+                match cached.len() {
+                    0 => {
+                        self.unreduced = true;
+                        self.push(expr);
                     }
-                    self.push(first);
+                    1 => {
+                        self.push(cached[0].clone());
+                    }
+                    _ => {
+                        let mut iter = cached.iter().cloned();
+                        let first = iter.next().expect("non-empty cached");
+                        let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                            iter.map(GenericAlternative::Value).collect();
+                        if !alternatives.is_empty() {
+                            self.choice_points.push(GenericChoicePoint {
+                                ip: self.ip,
+                                chunk: Arc::clone(&self.chunk),
+                                value_stack_height: self.value_stack.len(),
+                                call_stack_height: self.call_stack.len(),
+                                bindings_stack_height: self.bindings_stack.len(),
+                                alternatives,
+                                saved_unreduced: self.unreduced,
+                            });
+                        }
+                        self.push(first);
+                    }
                 }
+                return Ok(());
             }
-            return Ok(());
+            // Epoch mismatch — stale entry, fall through to re-dispatch
         }
 
         // Get environment reference
@@ -4128,7 +4133,7 @@ where
 
             // Fast path: skip trampoline for values memoized as normal form.
             if crate::backend::eval::trampoline::is_memoized_normal_form(&rhs) {
-                self.dispatch_memo.insert(expr_hash, vec![rhs.clone()]);
+                self.dispatch_memo.insert(expr_hash, (current_epoch, vec![rhs.clone()]));
                 self.push(rhs);
                 return Ok(());
             }
@@ -4136,10 +4141,16 @@ where
             // Evaluate the RHS through the trampoline for full reduction.
             // Handles user-defined functions whose RHS bodies contain
             // further function calls or special forms.
+            let epoch_before = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
             let env = self.env.as_ref()
                 .expect("op_dispatch_rules requires env").clone();
             let evaluated = self.eval_sub_expr_vm(rhs, env)?;
-            self.dispatch_memo.insert(expr_hash, vec![evaluated.clone()]);
+            // Only cache if no mutation occurred (the expression is pure).
+            // Impure expressions (change-state!, add-atom, etc.) must re-execute
+            // on each call to preserve side effects.
+            if crate::backend::eval::trampoline::dispatch_hints::mutation_epoch() == epoch_before {
+                self.dispatch_memo.insert(expr_hash, (epoch_before, vec![evaluated.clone()]));
+            }
             self.push(evaluated);
             return Ok(());
         }
@@ -4170,6 +4181,7 @@ where
         // Eagerly evaluate all matched RHS bodies and collect results.
         let env = self.env.as_ref().expect("op_dispatch_rules requires env").clone();
 
+        let epoch_before_multi = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         let mut all_results: Vec<V> = Vec::new();
         for result in matches {
             // Evaluate the instantiated RHS through the trampoline, which
@@ -4184,8 +4196,11 @@ where
         // Cache multi-match results for re-dispatch memoization.
         // On backtracking, the same expression may be re-dispatched;
         // the memo returns cached results without re-matching + re-evaluating.
-        if !all_results.is_empty() {
-            self.dispatch_memo.insert(expr_hash, all_results.clone());
+        // Only cache if no mutation occurred during evaluation.
+        if !all_results.is_empty()
+            && crate::backend::eval::trampoline::dispatch_hints::mutation_epoch() == epoch_before_multi
+        {
+            self.dispatch_memo.insert(expr_hash, (epoch_before_multi, all_results.clone()));
         }
 
         // Push results: single result goes on stack (normal path).
@@ -4435,6 +4450,7 @@ where
         let space = self.pop()?;
         if let Some(handle) = space.as_space() {
             handle.add_atom_generic(&atom);
+            crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
             self.push(self.make_unit());
             Ok(())
         } else {
@@ -4452,6 +4468,7 @@ where
         let space = self.pop()?;
         if let Some(handle) = space.as_space() {
             let removed = handle.remove_atom_generic(&atom);
+            crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
             self.push(self.make_bool(removed));
             Ok(())
         } else {
@@ -4612,6 +4629,7 @@ where
         })?;
 
         let state_id = env.create_state(&initial);
+        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
         self.push(self.factory.state(state_id));
         Ok(())
     }
@@ -4645,6 +4663,7 @@ where
             })?;
 
             if env.change_state(state_id, &new_value) {
+                crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
                 self.push(self.factory.state(state_id));
                 Ok(())
             } else {

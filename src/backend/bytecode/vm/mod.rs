@@ -4121,15 +4121,26 @@ where
                 // Downcast failed — fall through to instantiated_rhs path
             }
 
-            // Fallback: set up bindings in current frame and push instantiated_rhs
-            if let Some(frame) = self.bindings_stack.last_mut() {
-                for (name, value) in result.bindings.iter() {
-                    frame.set(name.to_string(), value.clone());
-                }
+            // Fallback: no compiled RHS chunk — evaluate the instantiated RHS
+            // via the trampoline, matching the tree-walker's WorkItem::Eval behavior
+            // and the multi-match path's eval_sub_expr_vm_all pattern.
+            let rhs = result.instantiated_rhs;
+
+            // Fast path: skip trampoline for values memoized as normal form.
+            if crate::backend::eval::trampoline::is_memoized_normal_form(&rhs) {
+                self.dispatch_memo.insert(expr_hash, vec![rhs.clone()]);
+                self.push(rhs);
+                return Ok(());
             }
-            // Cache single-match result for re-dispatch memoization
-            self.dispatch_memo.insert(expr_hash, vec![result.instantiated_rhs.clone()]);
-            self.push(result.instantiated_rhs);
+
+            // Evaluate the RHS through the trampoline for full reduction.
+            // Handles user-defined functions whose RHS bodies contain
+            // further function calls or special forms.
+            let env = self.env.as_ref()
+                .expect("op_dispatch_rules requires env").clone();
+            let evaluated = self.eval_sub_expr_vm(rhs, env)?;
+            self.dispatch_memo.insert(expr_hash, vec![evaluated.clone()]);
+            self.push(evaluated);
             return Ok(());
         }
 

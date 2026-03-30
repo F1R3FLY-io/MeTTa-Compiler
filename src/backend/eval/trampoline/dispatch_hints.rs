@@ -248,7 +248,9 @@ thread_local! {
     /// Value: cached evaluation results (SmallVec avoids heap for ≤4 results)
     ///
     /// 8192 entries × ~40 bytes avg = ~320 KB per thread. LRU eviction bounds memory.
-    static EVAL_MEMO: RefCell<LruCache<u64, SmallVec<[MettaValue; 4]>, IdentityU64BuildHasher>> =
+    /// Each entry stores (mutation_epoch, results) so lookups can validate
+    /// freshness without clearing the entire cache on every mutation.
+    static EVAL_MEMO: RefCell<LruCache<u64, (u64, SmallVec<[MettaValue; 4]>), IdentityU64BuildHasher>> =
         RefCell::new(LruCache::with_hasher(NonZeroUsize::new(8192).expect("non-zero"), IdentityU64BuildHasher));
 
     /// Mutation epoch counter for cache correctness.
@@ -323,19 +325,32 @@ pub fn should_memoize<V: MettaValueTrait>(value: &V) -> bool {
 /// is cleared (returning `None`) to avoid use-after-free on stale pointers.
 #[inline]
 pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
-    // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
+    let current_epoch = mutation_epoch();
     EVAL_MEMO.with(|memo_cell| {
         let mut memo = memo_cell.borrow_mut();
-        memo.get(&expr_hash).map(|entries| entries.to_vec())
+        // get_mut: single hash lookup for the hot path (valid hit).
+        // NLL allows pop after the if-let borrow ends.
+        let mut stale = false;
+        if let Some((cached_epoch, entries)) = memo.get_mut(&expr_hash) {
+            if *cached_epoch == current_epoch {
+                return Some(entries.to_vec());
+            }
+            stale = true;
+        }
+        if stale {
+            memo.pop(&expr_hash);
+        }
+        None
     })
 }
 
 /// Store evaluation results in the memo cache.
 #[inline]
 pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
+    let epoch = mutation_epoch();
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
-        memo_cell.borrow_mut().put(expr_hash, entries);
+        memo_cell.borrow_mut().put(expr_hash, (epoch, entries));
     });
 }
 
@@ -346,7 +361,7 @@ pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
 pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
     EVAL_MEMO.with(|memo_cell| {
         let memo = memo_cell.borrow();
-        for (_hash, entries) in memo.iter() {
+        for (_hash, (_epoch, entries)) in memo.iter() {
             out.extend_from_slice(entries);
         }
     });

@@ -91,15 +91,21 @@ pub struct TableEntry<V: MettaValueTrait> {
     /// Evaluation depth at which this subgoal was first tabled.
     /// Used for cycle detection diagnostics.
     pub origin_depth: u32,
+
+    /// Mutation epoch when this entry was created/completed.
+    /// Used to invalidate stale entries after impure operations
+    /// (change-state!, add-atom, etc.) modify the environment.
+    pub mutation_epoch: u64,
 }
 
 impl<V: MettaValueTrait> TableEntry<V> {
-    fn new_active(depth: u32) -> Self {
+    fn new_active(depth: u32, epoch: u64) -> Self {
         Self {
             state: TableEntryState::Active,
             results: SmallVec::new(),
             hit_count: 0,
             origin_depth: depth,
+            mutation_epoch: epoch,
         }
     }
 }
@@ -168,7 +174,15 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
     ///
     /// On `Absent`, automatically creates an `Active` entry to detect future cycles.
     pub fn lookup(&mut self, expr_hash: u64, depth: u32) -> TableLookup<V> {
+        let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         if let Some(entry) = self.entries.get_mut(&expr_hash) {
+            // Stale: mutation occurred since this entry was tabled — evict and re-evaluate
+            if entry.mutation_epoch != current_epoch {
+                self.entries.remove(&expr_hash);
+                self.total_misses += 1;
+                self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch));
+                return TableLookup::Absent;
+            }
             entry.hit_count += 1;
             match entry.state {
                 TableEntryState::Complete => {
@@ -182,7 +196,7 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
             }
         } else {
             self.total_misses += 1;
-            self.entries.insert(expr_hash, TableEntry::new_active(depth));
+            self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch));
             TableLookup::Absent
         }
     }

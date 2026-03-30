@@ -1752,4 +1752,78 @@ mod tests {
             && matches!(items[0].inner(), MettaValueInner::Atom("middle"))
             && matches!(items[1].inner(), MettaValueInner::Atom("y")))));
     }
+
+    /// Regression: change-state! inside map-atom must persist across iterations.
+    /// The subgoal tabling cache was returning stale (get-state) results after
+    /// change-state! mutated the state, because the tabling cache did not check
+    /// the mutation epoch.
+    #[test]
+    fn test_state_mutation_inside_map_atom() {
+        let input = r#"
+            !(bind! &c (new-state 0))
+            !(map-atom (a b c) $x
+              (let* (
+                ($old (get-state &c))
+                ($new (+ $old 1))
+                ($_ (change-state! &c $new))
+              ) $new))
+        "#;
+
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
+        let mut last_result = Vec::new();
+
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
+            let (expr_results, new_env) = eval(expr, env, &state);
+            env = new_env;
+            if !expr_results.is_empty() {
+                last_result = expr_results.to_vec();
+            }
+        }
+
+        // map-atom should return (1 2 3) — state incremented each iteration
+        assert_eq!(last_result.len(), 1, "map-atom should return one result");
+        let items = last_result[0].as_sexpr().expect("result should be S-expression");
+        assert_eq!(items.len(), 3, "should have 3 elements");
+        assert!(matches!(items[0].inner(), MettaValueInner::Long(1)));
+        assert!(matches!(items[1].inner(), MettaValueInner::Long(2)));
+        assert!(matches!(items[2].inner(), MettaValueInner::Long(3)));
+    }
+
+    /// Regression: get-state after change-state! in the same let* must see
+    /// the updated value, not a stale cached value from before the mutation.
+    #[test]
+    fn test_get_state_after_change_state_in_let_star() {
+        let input = r#"
+            !(bind! &c (new-state 0))
+            !(let* (
+                ($gs1 (get-state &c))
+                ($sum (+ $gs1 1))
+                ($_ (change-state! &c $sum))
+                ($gs2 (get-state &c))
+              ) $gs2)
+        "#;
+
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
+        let mut last_result = Vec::new();
+
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
+            let (expr_results, new_env) = eval(expr, env, &state);
+            env = new_env;
+            if !expr_results.is_empty() {
+                last_result = expr_results.to_vec();
+            }
+        }
+
+        // get-state after change-state! should return 1 (the new value)
+        assert_eq!(last_result.len(), 1);
+        assert!(
+            matches!(last_result[0].inner(), MettaValueInner::Long(1)),
+            "get-state should return 1 after change-state!, got {:?}",
+            last_result[0]
+        );
+    }
 }

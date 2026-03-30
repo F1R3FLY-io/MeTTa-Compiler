@@ -96,6 +96,7 @@ use super::dispatch_hints::{
     derive_arg_expected_type,
     should_memoize, eval_memo_get, eval_memo_put,
     collect_eval_memo_roots, collect_match_result_roots,
+    mutation_epoch, increment_mutation_epoch,
 };
 use super::engine::{try_deterministic_chain, try_match_rules_with_bindings};
 use super::dispatch_hints::REDUCIBLE_HEADS;
@@ -1603,6 +1604,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 if let Some(h) = memo_hash {
                     continuations.push(Continuation::MemoizeResult {
                         expr_hash: h,
+                        mutation_epoch: mutation_epoch(),
                         env: env.clone(),
                         depth,
                     });
@@ -6823,6 +6825,7 @@ fn process_continuation<C: EvalContext>(
                         // for non-&self spaces via handle.collapse_generic()).
                         handle.add_atom_generic(&atom);
                     }
+                    increment_mutation_epoch();
 
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![ctx.factory().unit()], env_after),
@@ -6907,6 +6910,7 @@ fn process_continuation<C: EvalContext>(
                         // Named space: remove from SpaceHandle
                         handle.remove_atom_generic(&atom);
                     }
+                    increment_mutation_epoch();
 
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![ctx.factory().unit()], env_after),
@@ -6977,6 +6981,7 @@ fn process_continuation<C: EvalContext>(
             } else {
                 // Use create_state directly - values are already V
                 let state_id = env_after.create_state(&init_results[0]);
+                increment_mutation_epoch();
                 let state_value = ctx.factory().state(state_id);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![state_value], env_after),
@@ -7100,6 +7105,7 @@ fn process_continuation<C: EvalContext>(
                 if let Some(state_id) = state_value.as_state() {
                     // Use change_state directly - values are already V
                     env_after.change_state(state_id, &value_results[0]);
+                    increment_mutation_epoch();
                     let result_state = ctx.factory().state(state_id);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![result_state], env_after),
@@ -7232,6 +7238,7 @@ fn process_continuation<C: EvalContext>(
                 // Use to_display_string() - prints strings without quotes
                 println!("{}", atom_result.to_display_string());
             }
+            increment_mutation_epoch();
 
             work_stack.push(WorkItem::Resume {
                 result: (smallvec![ctx.factory().unit()], env_after),
@@ -7341,6 +7348,7 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 env_after.register_token(&token, atom_results[0].clone());
+                increment_mutation_epoch();
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().unit()], env_after),
                 });
@@ -7825,13 +7833,18 @@ fn process_continuation<C: EvalContext>(
 
         Continuation::MemoizeResult {
             expr_hash,
+            mutation_epoch: saved_epoch,
             env: _,
             depth: _,
         } => {
             let (result_values, result_env) = result;
 
-            // Cache the evaluation results in the thread-local memo table.
-            eval_memo_put(expr_hash, result_values.as_slice());
+            // Only cache results if no mutations occurred during evaluation.
+            // If the epoch advanced, a side effect happened transitively,
+            // so the result may depend on mutable state and must not be cached.
+            if mutation_epoch() == saved_epoch {
+                eval_memo_put(expr_hash, result_values.as_slice());
+            }
 
             work_stack.push(WorkItem::Resume {
                 result: (result_values, result_env),

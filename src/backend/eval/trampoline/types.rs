@@ -691,6 +691,10 @@ pub enum Continuation {
     MemoizeResult {
         /// Content hash of the expression (via `hash_value()`)
         expr_hash: u64,
+        /// Mutation epoch at the time this continuation was pushed.
+        /// If the epoch has advanced by the time evaluation completes,
+        /// the result must not be cached (a side effect occurred transitively).
+        mutation_epoch: u64,
         /// Environment (for result forwarding)
         env: MettaEnvironment,
         /// Evaluation depth

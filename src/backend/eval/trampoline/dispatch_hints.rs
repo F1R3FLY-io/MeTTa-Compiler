@@ -12,7 +12,7 @@
 //! - **Eval memo cache**: Thread-local LRU for pure expression memoization
 //! - **Match result cache**: Thread-local LRU for rule match result memoization
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::num::NonZeroUsize;
 use std::sync::LazyLock;
 
@@ -250,6 +250,29 @@ thread_local! {
     /// 8192 entries × ~40 bytes avg = ~320 KB per thread. LRU eviction bounds memory.
     static EVAL_MEMO: RefCell<LruCache<u64, SmallVec<[MettaValue; 4]>, IdentityU64BuildHasher>> =
         RefCell::new(LruCache::with_hasher(NonZeroUsize::new(8192).expect("non-zero"), IdentityU64BuildHasher));
+
+    /// Mutation epoch counter for cache correctness.
+    ///
+    /// Incremented on every impure operation (add-atom, remove-atom,
+    /// change-state!, new-state, println!, bind!, new-space). When a
+    /// `MemoizeResult` continuation fires, the result is only cached if the
+    /// epoch hasn't advanced since the continuation was pushed — ensuring
+    /// that functions which transitively trigger side effects are not
+    /// incorrectly memoized.
+    static MUTATION_EPOCH: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Returns the current mutation epoch for this thread.
+#[inline]
+pub fn mutation_epoch() -> u64 {
+    MUTATION_EPOCH.with(|e| e.get())
+}
+
+/// Increments the mutation epoch, invalidating any in-flight memoization
+/// guards that were recorded before this point.
+#[inline]
+pub fn increment_mutation_epoch() {
+    MUTATION_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
 }
 
 /// Check if an S-expression should be memoized (pure head, ≥2 items,

@@ -1290,6 +1290,7 @@ where
                 // Create named space via GenericEnvironment
                 let mut new_env = env.clone();
                 let space_id = new_env.create_named_space(&name);
+                crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
                 let handle = SpaceHandle::new(space_id, name);
 
                 // Return Space value using factory

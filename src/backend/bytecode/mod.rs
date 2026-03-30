@@ -101,7 +101,7 @@ pub mod cache;
 pub mod chunk;
 pub mod compiler;
 pub mod external_registry;
-pub mod generic_memo_cache;
+pub mod memo_cache;
 pub mod mork_bridge;
 pub mod native_registry;
 pub mod opcodes;
@@ -128,7 +128,7 @@ pub use chunk::{
 };
 pub use compiler::{compile, compile_arc, CompileContext, CompileError, CompileResult, Compiler};
 // Generic compiler for zero-conversion support
-pub use compiler::generic::{
+pub use compiler::core::{
     compile_bytecode, compile_bytecode_arc, compile_generic, compile_generic_arc,
     MettaCompiler, GenericCompiler,
 };
@@ -137,8 +137,8 @@ pub use external_registry::{
     // Generic external registry for zero-conversion support
     GenericExternalContext, GenericExternalFn, GenericExternalRegistry, GenericExternalResult,
 };
-pub use generic_memo_cache::{
-    GenericCacheStats, GenericMemoCache,
+pub use memo_cache::{
+    CacheStats, MemoCache,
     global_memo_cache, ensure_memo_cache_roots_registered,
 };
 pub use mork_bridge::{BridgeStats, CompiledRule, MorkBridge};

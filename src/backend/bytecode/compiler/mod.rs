@@ -12,7 +12,7 @@ mod context;
 mod control_flow;
 mod error;
 pub mod folding;
-pub mod generic;
+pub mod core;
 mod higher_order;
 mod iterative;
 mod work_item;

@@ -1992,7 +1992,7 @@ fn test_vm_call_cached_cache_hit() {
     let factory = crate::backend::models::global_factory();
     let env = GenericEnvironment::new(factory);
     let isolated_cache = Arc::new(
-        crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+        crate::backend::bytecode::memo_cache::MemoCache::default(),
     );
     let native_registry = Arc::new(
         crate::backend::bytecode::native_registry::GenericNativeRegistry::new(),
@@ -2049,7 +2049,7 @@ fn test_vm_call_cached_different_args() {
     let factory = crate::backend::models::global_factory();
     let env = GenericEnvironment::new(factory);
     let isolated_cache = Arc::new(
-        crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+        crate::backend::bytecode::memo_cache::MemoCache::default(),
     );
     let native_registry = Arc::new(
         crate::backend::bytecode::native_registry::GenericNativeRegistry::new(),
@@ -2860,7 +2860,7 @@ mod generic_vm_tests {
         let chunk = builder.build_arc();
         let env = GenericEnvironment::new(f.clone());
         let memo_cache = Arc::new(
-            crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+            crate::backend::bytecode::memo_cache::MemoCache::default(),
         );
         let ext_registry = Arc::new(
             crate::backend::bytecode::external_registry::GenericExternalRegistry::new(),
@@ -2903,7 +2903,7 @@ mod generic_vm_tests {
             crate::backend::bytecode::native_registry::GenericNativeRegistry::new(),
         );
         let memo_cache = Arc::new(
-            crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+            crate::backend::bytecode::memo_cache::MemoCache::default(),
         );
 
         let mut vm = GenericBytecodeVM::with_registries(
@@ -2932,7 +2932,7 @@ mod generic_vm_tests {
         env.add_rule(rule_lhs, rule_rhs);
 
         let memo_cache = Arc::new(
-            crate::backend::bytecode::generic_memo_cache::GenericMemoCache::<MettaValue>::new(1024),
+            crate::backend::bytecode::memo_cache::MemoCache::<MettaValue>::new(1024),
         );
 
         let mut builder = GenericChunkBuilder::with_factory("test_cached", f.clone());

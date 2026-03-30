@@ -98,23 +98,23 @@ impl EvalContext for VmEvalContext {
 /// registered as a GC root provider). For other value types, returns a fresh
 /// per-VM cache (no GC registration needed since non-MettaValue types are not
 /// slab-allocated).
-fn get_or_create_memo_cache<V, F>() -> Arc<super::generic_memo_cache::GenericMemoCache<V>>
+fn get_or_create_memo_cache<V, F>() -> Arc<super::memo_cache::MemoCache<V>>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
     F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
 {
     if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
         // V is MettaValue — use the global singleton (GC-root-registered)
-        let global = super::generic_memo_cache::global_memo_cache();
-        // SAFETY: We've verified V == MettaValue via TypeId. Arc<GenericMemoCache<MettaValue>>
-        // and Arc<GenericMemoCache<V>> have identical layouts when V = MettaValue.
-        let global_ref: &Arc<super::generic_memo_cache::GenericMemoCache<MettaValue>> = global;
-        let ptr = global_ref as *const Arc<super::generic_memo_cache::GenericMemoCache<MettaValue>>
-            as *const Arc<super::generic_memo_cache::GenericMemoCache<V>>;
+        let global = super::memo_cache::global_memo_cache();
+        // SAFETY: We've verified V == MettaValue via TypeId. Arc<MemoCache<MettaValue>>
+        // and Arc<MemoCache<V>> have identical layouts when V = MettaValue.
+        let global_ref: &Arc<super::memo_cache::MemoCache<MettaValue>> = global;
+        let ptr = global_ref as *const Arc<super::memo_cache::MemoCache<MettaValue>>
+            as *const Arc<super::memo_cache::MemoCache<V>>;
         unsafe { (*ptr).clone() }
     } else {
         // V is some other type — create a fresh per-VM cache
-        Arc::new(super::generic_memo_cache::GenericMemoCache::default())
+        Arc::new(super::memo_cache::MemoCache::default())
     }
 }
 
@@ -181,7 +181,7 @@ where
     pub(crate) external_registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>,
 
     /// Memoization cache for CallCached opcode
-    pub(crate) memo_cache: Arc<super::generic_memo_cache::GenericMemoCache<V>>,
+    pub(crate) memo_cache: Arc<super::memo_cache::MemoCache<V>>,
 
     /// Phase 9.2/9.3: Expected return type for the current dispatch, used for branch pruning.
     /// Set before sub-expression evaluation in `vm_type_driven_pre_eval()`, consumed
@@ -312,7 +312,7 @@ where
         factory: F,
         native_registry: Arc<super::native_registry::GenericNativeRegistry<V, F>>,
         external_registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>,
-        memo_cache: Arc<super::generic_memo_cache::GenericMemoCache<V>>,
+        memo_cache: Arc<super::memo_cache::MemoCache<V>>,
     ) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
@@ -4816,7 +4816,7 @@ where
 
     /// Get memo cache statistics (for testing).
     #[cfg(all(test, feature = "track-stats"))]
-    pub fn memo_cache_stats(&self) -> super::generic_memo_cache::GenericCacheStats {
+    pub fn memo_cache_stats(&self) -> super::memo_cache::CacheStats {
         self.memo_cache.stats()
     }
 }

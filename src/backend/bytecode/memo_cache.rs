@@ -1,4 +1,4 @@
-//! Generic Memoization Cache for Bytecode VM
+//! Memoization Cache for Bytecode VM
 //!
 //! This module provides a thread-safe memoization cache that works with any
 //! value type implementing `MettaValueTrait`. Uses `v.hash_value()` instead of
@@ -59,7 +59,7 @@ struct GenericMemoEntry<V> {
 ///
 /// Uses DashMap for lock-free concurrent access and AtomicU64 for counters.
 /// Works with any value type implementing `MettaValueTrait`.
-pub struct GenericMemoCache<V: MettaValueTrait + Clone + Send + Sync + 'static> {
+pub struct MemoCache<V: MettaValueTrait + Clone + Send + Sync + 'static> {
     /// Cache storage (lock-free concurrent HashMap)
     cache: DashMap<GenericMemoKey, GenericMemoEntry<V>>,
     /// Maximum number of entries
@@ -74,9 +74,9 @@ pub struct GenericMemoCache<V: MettaValueTrait + Clone + Send + Sync + 'static> 
     misses: AtomicU64,
 }
 
-impl<V: MettaValueTrait + Clone + Send + Sync + 'static> std::fmt::Debug for GenericMemoCache<V> {
+impl<V: MettaValueTrait + Clone + Send + Sync + 'static> std::fmt::Debug for MemoCache<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("GenericMemoCache");
+        let mut s = f.debug_struct("MemoCache");
         s.field("entries", &self.cache.len());
         s.field("max_entries", &self.max_entries);
         #[cfg(feature = "track-stats")]
@@ -88,13 +88,13 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> std::fmt::Debug for Gen
     }
 }
 
-impl<V: MettaValueTrait + Clone + Send + Sync + 'static> Default for GenericMemoCache<V> {
+impl<V: MettaValueTrait + Clone + Send + Sync + 'static> Default for MemoCache<V> {
     fn default() -> Self {
         Self::new(1000)
     }
 }
 
-impl<V: MettaValueTrait + Clone + Send + Sync + 'static> GenericMemoCache<V> {
+impl<V: MettaValueTrait + Clone + Send + Sync + 'static> MemoCache<V> {
     /// Create a new generic memo cache with specified capacity.
     pub fn new(max_entries: usize) -> Self {
         Self {
@@ -165,10 +165,10 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> GenericMemoCache<V> {
 
     /// Get cache statistics.
     #[cfg(feature = "track-stats")]
-    pub fn stats(&self) -> GenericCacheStats {
+    pub fn stats(&self) -> CacheStats {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
-        GenericCacheStats {
+        CacheStats {
             entries: self.cache.len(),
             max_entries: self.max_entries,
             hits,
@@ -205,7 +205,7 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> GenericMemoCache<V> {
 
 /// Generic cache statistics
 #[derive(Debug, Clone)]
-pub struct GenericCacheStats {
+pub struct CacheStats {
     /// Current number of entries
     pub entries: usize,
     /// Maximum entries allowed
@@ -225,16 +225,16 @@ pub struct GenericCacheStats {
 use crate::backend::models::gc_allocator::{register_root_provider, RootProvider};
 use crate::backend::models::MettaValue;
 
-/// Global singleton `GenericMemoCache<MettaValue>` shared across all VM instances.
+/// Global singleton `MemoCache<MettaValue>` shared across all VM instances.
 ///
 /// Uses `LazyLock` for zero-cost lazy initialization. Cache size is configurable
 /// via `METTA_MEMO_CACHE_SIZE` environment variable (default: 4096).
-static GLOBAL_MEMO_CACHE: LazyLock<Arc<GenericMemoCache<MettaValue>>> = LazyLock::new(|| {
+static GLOBAL_MEMO_CACHE: LazyLock<Arc<MemoCache<MettaValue>>> = LazyLock::new(|| {
     let max_entries = std::env::var("METTA_MEMO_CACHE_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4096);
-    Arc::new(GenericMemoCache::new(max_entries))
+    Arc::new(MemoCache::new(max_entries))
 });
 
 /// GC root provider that exposes all MettaValue entries stored in the global
@@ -266,11 +266,11 @@ pub fn ensure_memo_cache_roots_registered() {
     });
 }
 
-/// Get a reference to the global `GenericMemoCache<MettaValue>`.
+/// Get a reference to the global `MemoCache<MettaValue>`.
 ///
 /// On first call, this also registers the cache as a GC root provider
 /// (idempotent). All subsequent calls return the same `Arc`.
-pub fn global_memo_cache() -> &'static Arc<GenericMemoCache<MettaValue>> {
+pub fn global_memo_cache() -> &'static Arc<MemoCache<MettaValue>> {
     ensure_memo_cache_roots_registered();
     &GLOBAL_MEMO_CACHE
 }
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_generic_memo_cache_basic() {
-        let cache = GenericMemoCache::new(100);
+        let cache = MemoCache::new(100);
         let factory = GcFactory::default();
 
         // Miss on first lookup
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_generic_memo_cache_different_args() {
-        let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(100);
+        let cache: MemoCache<MettaValue> = MemoCache::new(100);
         let factory = GcFactory::default();
 
         cache.insert("double", &[factory.long(5)], factory.long(10));
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_generic_memo_cache_eviction() {
-        let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(4);
+        let cache: MemoCache<MettaValue> = MemoCache::new(4);
         let factory = GcFactory::default();
 
         for i in 0..4 {
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     #[cfg(feature = "track-stats")]
     fn test_generic_memo_cache_stats() {
-        let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(100);
+        let cache: MemoCache<MettaValue> = MemoCache::new(100);
         let factory = GcFactory::default();
 
         cache.insert("f", &[factory.long(1)], factory.long(1));
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_collect_all_values() {
-        let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(100);
+        let cache: MemoCache<MettaValue> = MemoCache::new(100);
         let factory = GcFactory::default();
 
         cache.insert("a", &[factory.long(1)], factory.long(10));

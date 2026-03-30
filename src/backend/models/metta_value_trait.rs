@@ -328,7 +328,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     ///
     /// This avoids requiring `Hash` as a supertrait (which causes orphan rule
     /// issues with arena types) while still enabling hash-based caches like
-    /// `GenericMemoCache<V>`.
+    /// `MemoCache<V>`.
     ///
     /// Implementations should produce consistent hashes for structurally equal
     /// values, matching the semantics of `PartialEq`.

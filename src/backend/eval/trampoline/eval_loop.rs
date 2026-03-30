@@ -95,6 +95,7 @@ use super::dispatch_hints::{
     is_normal_form_bounded,
     derive_arg_expected_type,
     should_memoize, eval_memo_get, eval_memo_put,
+    clear_eval_memo, clear_match_result_cache,
     collect_eval_memo_roots, collect_match_result_roots,
     mutation_epoch, increment_mutation_epoch,
 };
@@ -6824,6 +6825,10 @@ fn process_continuation<C: EvalContext>(
                         // Named space: add to SpaceHandle (match queries SpaceHandle
                         // for non-&self spaces via handle.collapse_generic()).
                         handle.add_atom_generic(&atom);
+                        // Invalidate match_result_cache and eval_memo — cached results
+                        // may reference patterns that now have new matches.
+                        clear_match_result_cache();
+                        clear_eval_memo();
                     }
                     increment_mutation_epoch();
 
@@ -6909,6 +6914,8 @@ fn process_continuation<C: EvalContext>(
                     } else {
                         // Named space: remove from SpaceHandle
                         handle.remove_atom_generic(&atom);
+                        clear_match_result_cache();
+                        clear_eval_memo();
                     }
                     increment_mutation_epoch();
 

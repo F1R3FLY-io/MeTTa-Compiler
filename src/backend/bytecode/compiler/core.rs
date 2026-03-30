@@ -1000,7 +1000,7 @@ where
 
             // sort-tuple and best-candidate intentionally fall through to tree-walker.
             // They have complex iterative evaluation requiring full trampoline context.
-            // /safe and clamp are handled by GenericGroundedOperationTCO without opcodes.
+            // /safe and clamp are handled by GroundedOperationTCO without opcodes.
 
             // Not a built-in
             _ => Ok(None),

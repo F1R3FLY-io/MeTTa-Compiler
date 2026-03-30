@@ -15,7 +15,7 @@
 use smallvec::SmallVec;
 
 use crate::backend::environment::MettaEnvironment;
-use crate::backend::grounded::GenericGroundedState;
+use crate::backend::grounded::GroundedState;
 use crate::backend::models::{GenericBindings, MemoHandle, MettaValue};
 // SpaceHandle was previously used by ProcessAddAtomAtom and ProcessRemoveAtomAtom,
 // which are now disabled (see comments on those variants below).
@@ -135,7 +135,7 @@ pub enum Continuation {
 
     /// Processing TCO grounded operation.
     ProcessGroundedOp {
-        state: GenericGroundedState<MettaValue>,
+        state: GroundedState<MettaValue>,
         /// The arg index whose evaluation result is pending.
         pending_arg_idx: usize,
         env: MettaEnvironment,
@@ -804,9 +804,9 @@ fn collect_bindings_values(
     }
 }
 
-/// Helper: collect all MettaValue values from a GenericGroundedState into `out`.
+/// Helper: collect all MettaValue values from a GroundedState into `out`.
 fn collect_grounded_state_values(
-    state: &GenericGroundedState<MettaValue>,
+    state: &GroundedState<MettaValue>,
     out: &mut Vec<MettaValue>,
 ) {
     out.extend(state.args.iter().copied());

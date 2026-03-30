@@ -53,7 +53,7 @@ use super::rule_management::extract_rule_parts;
 use super::scope::ScopeTracker;
 use crate::backend::eval::bindings::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::fuzzy_match::FuzzyMatcher;
-use crate::backend::grounded::{GenericGroundedRegistry, GroundedRegistry};
+use crate::backend::grounded::GroundedRegistry;
 use crate::backend::models::gc_allocator::{try_register_env_roots, RootProvider};
 use crate::backend::models::{
     GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
@@ -226,14 +226,9 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// deep-cloning all tokenizer entries. Writes go through make_owned().
     pub(crate) tokenizer: Arc<RwLock<crate::backend::modules::GenericTokenizer<V>>>,
 
-    /// Grounded operations registry (legacy, used by proptests only)
-    /// Arc-wrapped so fork_for_nondeterminism is O(1) (Arc::clone) instead of
-    /// deep-cloning the registry. Writes go through make_owned().
-    pub(crate) grounded_registry: Arc<RwLock<GroundedRegistry>>,
-
-    /// Generic grounded operations registry (type-parameterized, zero-conversion)
+    /// Grounded operations registry (type-parameterized, zero-conversion)
     /// Stateless and Clone, no lock needed
-    pub(crate) generic_grounded_registry: GenericGroundedRegistry,
+    pub(crate) grounded_registry: GroundedRegistry,
 
     /// Pattern cache for MORK serialization (keyed by MettaValue for heap mode)
     /// Uses RwLock (LruCache requires exclusive access for get/put)
@@ -394,8 +389,7 @@ where
             // Type-agnostic registries (Arc-wrapped for O(1) fork)
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             tokenizer: Arc::new(RwLock::new(crate::backend::modules::GenericTokenizer::<V>::new())),
-            grounded_registry: Arc::new(RwLock::new(GroundedRegistry::new())),
-            generic_grounded_registry: GenericGroundedRegistry::with_standard_ops(),
+            grounded_registry: GroundedRegistry::with_standard_ops(),
             pattern_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).expect("1000 is non-zero"),
             )),
@@ -542,9 +536,7 @@ where
             // owned env has exclusive copies for mutation
             module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
             tokenizer: Arc::new(RwLock::new(self.shared.tokenizer.read().clone())),
-            grounded_registry: Arc::new(RwLock::new(self.shared.grounded_registry.read().clone())),
-
-            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+            grounded_registry: self.shared.grounded_registry.clone(),
             pattern_cache: RwLock::new(self.shared.pattern_cache.read().clone()),
             type_index: RwLock::new(self.shared.type_index.read().clone()),
             type_index_dirty: AtomicBool::new(
@@ -598,9 +590,7 @@ where
             // don't modify these during evaluation, so sharing is safe.
             module_registry: Arc::clone(&self.shared.module_registry),
             tokenizer: Arc::clone(&self.shared.tokenizer),
-            grounded_registry: Arc::clone(&self.shared.grounded_registry),
-
-            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+            grounded_registry: self.shared.grounded_registry.clone(),
             // Clear pattern cache instead of copying
             pattern_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).expect("1000 is non-zero"),
@@ -877,9 +867,7 @@ where
             // Share from self (these are typically static after initialization)
             module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
             tokenizer: Arc::new(RwLock::new(self.shared.tokenizer.read().clone())),
-            grounded_registry: Arc::new(RwLock::new(self.shared.grounded_registry.read().clone())),
-
-            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+            grounded_registry: self.shared.grounded_registry.clone(),
 
             // Clear/reset caches after merge
             pattern_cache: RwLock::new(LruCache::new(
@@ -1272,9 +1260,7 @@ where
             // Share from self (typically static after init)
             module_registry: Arc::new(RwLock::new(self.shared.module_registry.read().clone())),
             tokenizer: Arc::new(RwLock::new(self.shared.tokenizer.read().clone())),
-            grounded_registry: Arc::new(RwLock::new(self.shared.grounded_registry.read().clone())),
-
-            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+            grounded_registry: self.shared.grounded_registry.clone(),
 
             // Clear/reset caches after merge
             pattern_cache: RwLock::new(LruCache::new(
@@ -1347,9 +1333,9 @@ where
     // Accessors
     // ========================================================================
 
-    /// Get the generic grounded registry.
-    pub fn generic_grounded_registry(&self) -> &GenericGroundedRegistry {
-        &self.shared.generic_grounded_registry
+    /// Get the grounded registry.
+    pub fn grounded_registry(&self) -> &GroundedRegistry {
+        &self.shared.grounded_registry
     }
 
     /// Check if the environment has been modified.

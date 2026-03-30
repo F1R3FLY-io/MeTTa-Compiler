@@ -71,7 +71,7 @@ use crate::backend::eval::types::{
     extract_type_constraint, get_ground_type, is_pattern_type_compatible,
     infer_type_generic, types_match_generic, types_match_with_subtypes,
 };
-use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
+use crate::backend::grounded::{execute_grounded_op, ExecError, GroundedWork};
 use crate::backend::models::{
     EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValue, MettaValueFactory, MettaValueInner,
     MettaValueTrait,
@@ -1670,9 +1670,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                         let _grounded_start_ns = {
                             ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
                         };
-                        if let Some(work) = execute_generic_grounded_op(&op_name, &mut state, ctx.factory()) {
+                        if let Some(work) = execute_grounded_op(&op_name, &mut state, ctx.factory()) {
                             match work {
-                                GenericGroundedWork::Done(results) => {
+                                GroundedWork::Done(results) => {
                                     // Results are already in correct type V - NO conversion
                                     let values: Vec<MettaValue> = results
                                         .into_iter()
@@ -1713,7 +1713,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                                     });
                                 }
-                                GenericGroundedWork::EvalArg { arg_idx, state: new_state } => {
+                                GroundedWork::EvalArg { arg_idx, state: new_state } => {
                                     continuations.push(Continuation::ProcessGroundedOp {
                                         state: new_state.clone(),
                                         pending_arg_idx: arg_idx,
@@ -1731,7 +1731,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         expected_type: None,
                                     });
                                 }
-                                GenericGroundedWork::Error(e) => {
+                                GroundedWork::Error(e) => {
                                     // Trace: GroundedOpError
                                     #[cfg(feature = "eval-trace")]
                                     {
@@ -3624,9 +3624,9 @@ fn process_continuation<C: EvalContext>(
 
             // Try static dispatch first - works with generic type V (NO conversion)
             let op_name = state.op_name.clone();
-            if let Some(work) = execute_generic_grounded_op(&op_name, &mut state, ctx.factory()) {
+            if let Some(work) = execute_grounded_op(&op_name, &mut state, ctx.factory()) {
                 match work {
-                    GenericGroundedWork::Done(results) => {
+                    GroundedWork::Done(results) => {
                         // Results are already in correct type V - NO conversion
                         let values: Vec<MettaValue> = results
                             .into_iter()
@@ -3637,7 +3637,7 @@ fn process_continuation<C: EvalContext>(
 
                         });
                     }
-                    GenericGroundedWork::EvalArg { arg_idx, state: new_state } => {
+                    GroundedWork::EvalArg { arg_idx, state: new_state } => {
                         continuations.push(Continuation::ProcessGroundedOp {
                             state: new_state.clone(),
                             pending_arg_idx: arg_idx,
@@ -3655,7 +3655,7 @@ fn process_continuation<C: EvalContext>(
                             expected_type: None,
                         });
                     }
-                    GenericGroundedWork::Error(e) => {
+                    GroundedWork::Error(e) => {
                         match e {
                             ExecError::NoReduce => {
                                 // MeTTa HE semantics: return the original expression unreduced

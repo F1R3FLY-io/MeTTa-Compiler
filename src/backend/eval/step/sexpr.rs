@@ -41,7 +41,7 @@ use crate::backend::eval::mork_forms::{
 };
 use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
 use crate::backend::eval::types::{eval_check_type_generic, eval_get_type_generic, types_match_generic};
-use crate::backend::grounded::{has_generic_grounded_op, GenericGroundedState};
+use crate::backend::grounded::{has_grounded_op, GroundedState};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 use crate::backend::models::metta_value::MettaValueInner;
 
@@ -1868,15 +1868,15 @@ where
 
                 // Try generic grounded operation (zero-conversion path)
                 // Uses static dispatch - works with any V: MettaValueTrait
-                if has_generic_grounded_op(op) {
+                if has_grounded_op(op) {
                     let args: Vec<MettaValue> = items[1..].to_vec();
                     // Phase 8.8: Pre-validate ground-type args against arrow signature.
                     // Returns clear type error instead of NoReduce → unreduced expression.
                     if let Some(type_error) = validate_grounded_arg_types(op, &args, ctx.factory()) {
                         return GenericEvalStep::Done((smallvec![type_error], env));
                     }
-                    // Use GenericGroundedState with native value type - NO conversion needed
-                    let state = GenericGroundedState::new(op.to_string(), args);
+                    // Use GroundedState with native value type - NO conversion needed
+                    let state = GroundedState::new(op.to_string(), args);
                     return GenericEvalStep::StartGroundedOp { state, env, depth };
                 }
 

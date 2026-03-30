@@ -1,260 +1,518 @@
-//! Non-TCO comparison operations.
+//! TCO comparison operations.
 //!
-//! Provides the standard comparison operations:
-//! - `LessOp`, `LessEqOp` - Less than / less than or equal
-//! - `GreaterOp`, `GreaterEqOp` - Greater than / greater than or equal
-//! - `EqualOp`, `NotEqualOp` - Equality / inequality
+//! Provides tail-call optimized comparison operations that work with any
+//! value type implementing `MettaValueTrait`:
+//!
+//! - `LessOp` - Less than (<)
+//! - `LessEqOp` - Less than or equal (<=)
+//! - `GreaterOp` - Greater than (>)
+//! - `GreaterEqOp` - Greater than or equal (>=)
+//! - `EqualOp` - Equality (==)
+//! - `NotEqualOp` - Not equal (!=)
+//!
+//! ## Zero-Conversion Design
+//!
+//! These operations use `MettaValueTrait` methods (e.g., `as_long()`, `as_float()`)
+//! instead of pattern matching on `MettaValueInner`, enabling them to work with
+//! both heap and arena allocation without conversion.
 
-use super::{
-    friendly_type_name, MettaEnvironment, EvalFn, ExecError, GroundedOperation, GroundedResult,
-    MettaValue,
-};
-use crate::backend::models::ValueView;
+use super::state::{find_error, GroundedState, GroundedWork};
+use super::traits::GroundedOperationTCO;
+use super::ExecError;
+use crate::backend::models::{numeric_equal_generic, MettaValueFactory, MettaValueTrait};
 
-/// Less than operation: (< a b)
+/// TCO Less than operation: (< a b)
 pub struct LessOp;
 
-impl GroundedOperation for LessOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for LessOp {
     fn name(&self) -> &str {
         "<"
     }
 
-    fn execute_raw(
+    fn execute_step<F: MettaValueFactory<V>>(
         &self,
-        args: &[MettaValue],
-        env: &MettaEnvironment,
-        eval_fn: &EvalFn,
-    ) -> GroundedResult {
-        eval_comparison(args, env, eval_fn, CompareKind::Less)
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V> {
+        comparison_step(state, factory, "<", |x, y| x < y, |x, y| x < y)
     }
 }
 
-/// Less than or equal operation: (<= a b)
+/// TCO Less than or equal operation: (<= a b)
 pub struct LessEqOp;
 
-impl GroundedOperation for LessEqOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for LessEqOp {
     fn name(&self) -> &str {
         "<="
     }
 
-    fn execute_raw(
+    fn execute_step<F: MettaValueFactory<V>>(
         &self,
-        args: &[MettaValue],
-        env: &MettaEnvironment,
-        eval_fn: &EvalFn,
-    ) -> GroundedResult {
-        eval_comparison(args, env, eval_fn, CompareKind::LessEq)
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V> {
+        comparison_step(state, factory, "<=", |x, y| x <= y, |x, y| x <= y)
     }
 }
 
-/// Greater than operation: (> a b)
+/// TCO Greater than operation: (> a b)
 pub struct GreaterOp;
 
-impl GroundedOperation for GreaterOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for GreaterOp {
     fn name(&self) -> &str {
         ">"
     }
 
-    fn execute_raw(
+    fn execute_step<F: MettaValueFactory<V>>(
         &self,
-        args: &[MettaValue],
-        env: &MettaEnvironment,
-        eval_fn: &EvalFn,
-    ) -> GroundedResult {
-        eval_comparison(args, env, eval_fn, CompareKind::Greater)
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V> {
+        comparison_step(state, factory, ">", |x, y| x > y, |x, y| x > y)
     }
 }
 
-/// Greater than or equal operation: (>= a b)
+/// TCO Greater than or equal operation: (>= a b)
 pub struct GreaterEqOp;
 
-impl GroundedOperation for GreaterEqOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for GreaterEqOp {
     fn name(&self) -> &str {
         ">="
     }
 
-    fn execute_raw(
+    fn execute_step<F: MettaValueFactory<V>>(
         &self,
-        args: &[MettaValue],
-        env: &MettaEnvironment,
-        eval_fn: &EvalFn,
-    ) -> GroundedResult {
-        eval_comparison(args, env, eval_fn, CompareKind::GreaterEq)
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V> {
+        comparison_step(state, factory, ">=", |x, y| x >= y, |x, y| x >= y)
     }
 }
 
-/// Equality operation: (== a b)
+/// TCO Equality operation: (== a b)
 pub struct EqualOp;
 
-impl GroundedOperation for EqualOp {
+impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for EqualOp {
     fn name(&self) -> &str {
         "=="
     }
 
-    fn execute_raw(
+    fn execute_step<F: MettaValueFactory<V>>(
         &self,
-        args: &[MettaValue],
-        env: &MettaEnvironment,
-        eval_fn: &EvalFn,
-    ) -> GroundedResult {
-        eval_equality(args, env, eval_fn, true)
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V> {
+        equality_step(state, factory, "==", true)
     }
 }
 
-/// Inequality operation: (!= a b)
+/// TCO Not equal operation: (!= a b)
 pub struct NotEqualOp;
 
-impl GroundedOperation for NotEqualOp {
+impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for NotEqualOp {
     fn name(&self) -> &str {
         "!="
     }
 
-    fn execute_raw(
+    fn execute_step<F: MettaValueFactory<V>>(
         &self,
-        args: &[MettaValue],
-        env: &MettaEnvironment,
-        eval_fn: &EvalFn,
-    ) -> GroundedResult {
-        eval_equality(args, env, eval_fn, false)
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V> {
+        equality_step(state, factory, "!=", false)
     }
 }
 
-/// Comparison kind for ordering operations
-pub(crate) enum CompareKind {
-    Less,
-    LessEq,
-    Greater,
-    GreaterEq,
-}
-
-impl CompareKind {
-    #[inline]
-    pub(crate) fn compare<T: PartialOrd>(&self, a: &T, b: &T) -> bool {
-        match self {
-            CompareKind::Less => a < b,
-            CompareKind::LessEq => a <= b,
-            CompareKind::Greater => a > b,
-            CompareKind::GreaterEq => a >= b,
-        }
-    }
-}
-
-/// Helper function for comparison operations (supports numbers and strings)
-fn eval_comparison(
-    args: &[MettaValue],
-    env: &MettaEnvironment,
-    eval_fn: &EvalFn,
-    kind: CompareKind,
-) -> GroundedResult {
-    if args.len() != 2 {
-        return Err(ExecError::IncorrectArgument(format!(
-            "Comparison requires 2 arguments, got {}",
-            args.len()
-        )));
-    }
-
-    let (a_results, env1) = eval_fn(args[0].clone(), env.clone());
-    let (b_results, _) = eval_fn(args[1].clone(), env1);
-
-    let mut results = Vec::new();
-    for a in &a_results {
-        for b in &b_results {
-            match (a.view(), b.view()) {
-                (ValueView::Long(x), ValueView::Long(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(&x, &y)), None));
-                }
-                (ValueView::Float(x), ValueView::Float(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(&x, &y)), None));
-                }
-                (ValueView::Long(x), ValueView::Float(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(&(x as f64), &y)), None));
-                }
-                (ValueView::Float(x), ValueView::Long(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(&x, &(y as f64))), None));
-                }
-                // String comparison (lexicographic)
-                (ValueView::String(x), ValueView::String(y)) => {
-                    results.push((MettaValue::Bool(kind.compare(&x, &y)), None));
-                }
-                _ => {
-                    return Err(ExecError::Runtime(format!(
-                        "Cannot compare: type mismatch between {} and {}",
-                        friendly_type_name(a),
-                        friendly_type_name(b)
-                    )))
-                }
+/// Helper function for numeric comparison operations.
+fn comparison_step<V, F, FL, FF>(
+    state: &mut GroundedState<V>,
+    factory: &F,
+    op_name: &str,
+    long_cmp: FL,
+    float_cmp: FF,
+) -> GroundedWork<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+    FL: Fn(i64, i64) -> bool,
+    FF: Fn(f64, f64) -> bool,
+{
+    match state.step {
+        0 => {
+            if state.args.len() != 2 {
+                return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                    "{} requires 2 arguments, got {}",
+                    op_name,
+                    state.args.len()
+                )));
+            }
+            state.step = 1;
+            GroundedWork::EvalArg {
+                arg_idx: 0,
+                state: state.clone(),
             }
         }
-    }
-    Ok(results)
-}
-
-/// Helper function for equality/inequality operations
-/// Supports comparing all value types, not just numeric
-fn eval_equality(
-    args: &[MettaValue],
-    env: &MettaEnvironment,
-    eval_fn: &EvalFn,
-    is_equal: bool,
-) -> GroundedResult {
-    if args.len() != 2 {
-        return Err(ExecError::IncorrectArgument(format!(
-            "Equality comparison requires 2 arguments, got {}",
-            args.len()
-        )));
-    }
-
-    let (a_results, env1) = eval_fn(args[0].clone(), env.clone());
-    let (b_results, _) = eval_fn(args[1].clone(), env1);
-
-    let mut results = Vec::new();
-    for a in &a_results {
-        for b in &b_results {
-            let equal = values_equal(a, b);
-            let result = if is_equal { equal } else { !equal };
-            results.push((MettaValue::Bool(result), None));
+        1 => {
+            let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+            if let Some(err) = find_error(a_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
+            }
+            state.step = 2;
+            GroundedWork::EvalArg {
+                arg_idx: 1,
+                state: state.clone(),
+            }
         }
+        2 => {
+            let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+            let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
+
+            if let Some(err) = find_error(b_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
+            }
+
+            let mut results = Vec::new();
+            for a in a_results {
+                for b in b_results {
+                    match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+                        (Some(x), _, Some(y), _) => {
+                            results.push((factory.bool(long_cmp(x, y)), None));
+                        }
+                        (_, Some(x), _, Some(y)) => {
+                            results.push((factory.bool(float_cmp(x, y)), None));
+                        }
+                        (Some(x), _, _, Some(y)) => {
+                            results.push((factory.bool(float_cmp(x as f64, y)), None));
+                        }
+                        (_, Some(x), Some(y), _) => {
+                            results.push((factory.bool(float_cmp(x, y as f64)), None));
+                        }
+                        _ => {
+                            // String comparison (lexicographic ordering)
+                            if let (Some(x), Some(y)) = (a.as_string(), b.as_string()) {
+                                let ord_val = match x.cmp(y) {
+                                    std::cmp::Ordering::Less => -1i64,
+                                    std::cmp::Ordering::Equal => 0i64,
+                                    std::cmp::Ordering::Greater => 1i64,
+                                };
+                                results.push((factory.bool(long_cmp(ord_val, 0)), None));
+                                continue;
+                            }
+                            // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                            if a.is_empty() || b.is_empty() {
+                                continue;
+                            }
+                            return GroundedWork::Error(ExecError::NoReduce)
+                        }
+                    }
+                }
+            }
+            GroundedWork::Done(results)
+        }
+        _ => unreachable!("Invalid step {} for {} operation", state.step, op_name),
     }
-    Ok(results)
 }
 
-/// Check if two MettaValues are equal (MeTTa HE-compatible).
+/// Helper function for equality/inequality operations.
 ///
-/// Supports numeric promotion: Long(2) == Float(2.0) → true.
-/// Uses epsilon tolerance for float comparison.
-pub(crate) fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
-    match (a.view(), b.view()) {
-        (ValueView::Long(x), ValueView::Long(y)) => x == y,
-        (ValueView::Float(x), ValueView::Float(y)) => {
-            if x.is_nan() || y.is_nan() {
-                return false;
+/// These support more types than numeric comparisons - any two values can be compared.
+fn equality_step<V, F>(
+    state: &mut GroundedState<V>,
+    factory: &F,
+    op_name: &str,
+    return_true_on_equal: bool,
+) -> GroundedWork<V>
+where
+    V: MettaValueTrait + Clone + PartialEq,
+    F: MettaValueFactory<V>,
+{
+    match state.step {
+        0 => {
+            if state.args.len() != 2 {
+                return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                    "{} requires 2 arguments, got {}",
+                    op_name,
+                    state.args.len()
+                )));
             }
-            (x - y).abs() < f64::EPSILON
-        }
-        // Mixed Long/Float: promote Long to f64 (MeTTa HE compatibility)
-        (ValueView::Long(x), ValueView::Float(y)) => {
-            if y.is_nan() {
-                return false;
+            state.step = 1;
+            GroundedWork::EvalArg {
+                arg_idx: 0,
+                state: state.clone(),
             }
-            (x as f64 - y).abs() < f64::EPSILON
         }
-        (ValueView::Float(x), ValueView::Long(y)) => {
-            if x.is_nan() {
-                return false;
+        1 => {
+            let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+            if let Some(err) = find_error(a_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
             }
-            (x - y as f64).abs() < f64::EPSILON
+            state.step = 2;
+            GroundedWork::EvalArg {
+                arg_idx: 1,
+                state: state.clone(),
+            }
         }
-        (ValueView::Bool(x), ValueView::Bool(y)) => x == y,
-        (ValueView::String(x), ValueView::String(y)) => x == y,
-        (ValueView::Atom(x), ValueView::Atom(y)) => x == y,
-        (ValueView::Unit, ValueView::Unit) => true,
-        // HE compatibility: Unit equals empty SExpr
-        (ValueView::Unit, ValueView::SExpr(items))
-        | (ValueView::SExpr(items), ValueView::Unit) => items.is_empty(),
-        (ValueView::SExpr(x), ValueView::SExpr(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+        2 => {
+            let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+            let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
+
+            if let Some(err) = find_error(b_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
+            }
+
+            let mut results = Vec::new();
+            for a in a_results {
+                for b in b_results {
+                    // MeTTa HE: Empty sentinel → skip (branch annihilation)
+                    if a.is_empty() || b.is_empty() {
+                        continue;
+                    }
+                    let is_equal = numeric_equal_generic(a, b);
+                    let result = if return_true_on_equal { is_equal } else { !is_equal };
+                    results.push((factory.bool(result), None));
+                }
+            }
+            GroundedWork::Done(results)
         }
-        // Different types are not equal
-        _ => false,
+        _ => unreachable!("Invalid step {} for {} operation", state.step, op_name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::models::{GcFactory, MettaValue};
+
+    fn run_comparison<Op: GroundedOperationTCO<MettaValue>>(
+        op: &Op,
+        a: i64,
+        b: i64,
+    ) -> bool {
+        let factory = GcFactory::default();
+        let mut state = GroundedState::new(op.name().to_string(), vec![MettaValue::Long(a), MettaValue::Long(b)]);
+
+        op.execute_step(&mut state, &factory);
+        state.set_arg(0, vec![MettaValue::Long(a)]);
+        state.step = 1;
+
+        op.execute_step(&mut state, &factory);
+        state.set_arg(1, vec![MettaValue::Long(b)]);
+        state.step = 2;
+
+        let work = op.execute_step(&mut state, &factory);
+        match work {
+            GroundedWork::Done(results) => {
+                results[0].0.as_bool().expect("should be bool")
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_less_op() {
+        assert!(run_comparison(&LessOp, 1, 2));
+        assert!(!run_comparison(&LessOp, 2, 1));
+        assert!(!run_comparison(&LessOp, 2, 2));
+    }
+
+    #[test]
+    fn test_less_eq_op() {
+        assert!(run_comparison(&LessEqOp, 1, 2));
+        assert!(!run_comparison(&LessEqOp, 2, 1));
+        assert!(run_comparison(&LessEqOp, 2, 2));
+    }
+
+    #[test]
+    fn test_greater_op() {
+        assert!(!run_comparison(&GreaterOp, 1, 2));
+        assert!(run_comparison(&GreaterOp, 2, 1));
+        assert!(!run_comparison(&GreaterOp, 2, 2));
+    }
+
+    #[test]
+    fn test_greater_eq_op() {
+        assert!(!run_comparison(&GreaterEqOp, 1, 2));
+        assert!(run_comparison(&GreaterEqOp, 2, 1));
+        assert!(run_comparison(&GreaterEqOp, 2, 2));
+    }
+
+    #[test]
+    fn test_equal_op() {
+        assert!(!run_comparison(&EqualOp, 1, 2));
+        assert!(run_comparison(&EqualOp, 2, 2));
+    }
+
+    #[test]
+    fn test_not_equal_op() {
+        assert!(run_comparison(&NotEqualOp, 1, 2));
+        assert!(!run_comparison(&NotEqualOp, 2, 2));
+    }
+
+    // --- Mixed-type comparison tests ---
+
+    fn run_comparison_values<Op: GroundedOperationTCO<MettaValue>>(
+        op: &Op,
+        a: MettaValue,
+        b: MettaValue,
+    ) -> bool {
+        let factory = GcFactory::default();
+        let mut state = GroundedState::new(
+            op.name().to_string(),
+            vec![a.clone(), b.clone()],
+        );
+
+        op.execute_step(&mut state, &factory);
+        state.set_arg(0, vec![a]);
+        state.step = 1;
+
+        op.execute_step(&mut state, &factory);
+        state.set_arg(1, vec![b]);
+        state.step = 2;
+
+        let work = op.execute_step(&mut state, &factory);
+        match work {
+            GroundedWork::Done(results) => {
+                results[0].0.as_bool().expect("should be bool")
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_equal_long_float() {
+        // EqualOp: Long(2) vs Float(2.0) should be true (key HE fix)
+        assert!(run_comparison_values(
+            &EqualOp,
+            MettaValue::Long(2),
+            MettaValue::Float(2.0),
+        ));
+    }
+
+    #[test]
+    fn test_equal_float_long() {
+        // EqualOp: Float(2.0) vs Long(2) should be true (symmetric)
+        assert!(run_comparison_values(
+            &EqualOp,
+            MettaValue::Float(2.0),
+            MettaValue::Long(2),
+        ));
+    }
+
+    #[test]
+    fn test_equal_float_float() {
+        // EqualOp: Float(3.14) vs Float(3.14) should be true
+        assert!(run_comparison_values(
+            &EqualOp,
+            MettaValue::Float(3.14),
+            MettaValue::Float(3.14),
+        ));
+    }
+
+    #[test]
+    fn test_not_equal_long_float_same() {
+        // NotEqualOp: Long(2) vs Float(2.0) should be false (they are equal)
+        assert!(!run_comparison_values(
+            &NotEqualOp,
+            MettaValue::Long(2),
+            MettaValue::Float(2.0),
+        ));
+    }
+
+    #[test]
+    fn test_not_equal_long_float_different() {
+        // NotEqualOp: Long(2) vs Float(2.5) should be true (they differ)
+        assert!(run_comparison_values(
+            &NotEqualOp,
+            MettaValue::Long(2),
+            MettaValue::Float(2.5),
+        ));
+    }
+
+    #[test]
+    fn test_less_float_float() {
+        // LessOp: Float(1.5) vs Float(2.5) should be true
+        assert!(run_comparison_values(
+            &LessOp,
+            MettaValue::Float(1.5),
+            MettaValue::Float(2.5),
+        ));
+    }
+
+    #[test]
+    fn test_less_long_float() {
+        // LessOp: Long(1) vs Float(2.5) should be true (mixed type)
+        assert!(run_comparison_values(
+            &LessOp,
+            MettaValue::Long(1),
+            MettaValue::Float(2.5),
+        ));
+    }
+
+    #[test]
+    fn test_greater_eq_float_long() {
+        // GreaterEqOp: Float(5.0) vs Long(5) should be true
+        assert!(run_comparison_values(
+            &GreaterEqOp,
+            MettaValue::Float(5.0),
+            MettaValue::Long(5),
+        ));
+    }
+
+    // --- String comparison tests ---
+
+    fn run_string_comparison<Op: GroundedOperationTCO<MettaValue>>(
+        op: &Op,
+        a: &str,
+        b: &str,
+    ) -> bool {
+        run_comparison_values(
+            op,
+            MettaValue::String(a),
+            MettaValue::String(b),
+        )
+    }
+
+    #[test]
+    fn test_less_string() {
+        assert!(run_string_comparison(&LessOp, "apple", "banana"));
+        assert!(!run_string_comparison(&LessOp, "banana", "apple"));
+        assert!(!run_string_comparison(&LessOp, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_less_eq_string() {
+        assert!(run_string_comparison(&LessEqOp, "apple", "banana"));
+        assert!(!run_string_comparison(&LessEqOp, "banana", "apple"));
+        assert!(run_string_comparison(&LessEqOp, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_greater_string() {
+        assert!(!run_string_comparison(&GreaterOp, "apple", "banana"));
+        assert!(run_string_comparison(&GreaterOp, "banana", "apple"));
+        assert!(!run_string_comparison(&GreaterOp, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_greater_eq_string() {
+        assert!(!run_string_comparison(&GreaterEqOp, "apple", "banana"));
+        assert!(run_string_comparison(&GreaterEqOp, "banana", "apple"));
+        assert!(run_string_comparison(&GreaterEqOp, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_string_comparison_empty_strings() {
+        // Empty string is lexicographically less than any non-empty string
+        assert!(run_string_comparison(&LessOp, "", "a"));
+        assert!(!run_string_comparison(&LessOp, "a", ""));
+        assert!(!run_string_comparison(&LessOp, "", ""));
+        assert!(run_string_comparison(&LessEqOp, "", ""));
+    }
+
+    #[test]
+    fn test_string_comparison_prefix() {
+        // "abc" < "abcd" (prefix is less than extended form)
+        assert!(run_string_comparison(&LessOp, "abc", "abcd"));
+        assert!(!run_string_comparison(&GreaterOp, "abc", "abcd"));
     }
 }

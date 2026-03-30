@@ -1,6 +1,6 @@
 //! Grounded operations for lazy evaluation.
 //!
-//! This module provides the `GroundedOperation` trait and implementations for
+//! This module provides the `GroundedOperationTCO` trait and implementations for
 //! built-in operations that receive unevaluated arguments and evaluate them internally.
 //! This matches Hyperon Experimental's (HE) `execute_bindings()` pattern.
 //!
@@ -21,52 +21,34 @@
 //! // then computes [1+10, 2+10] = [11, 12]
 //! ```
 
-mod arithmetic;
-mod comparison;
-pub mod generic_arithmetic;
-pub mod generic_comparison;
-pub mod generic_logical;
-pub mod generic_registry;
-pub mod generic_state;
-pub mod generic_traits;
-mod logical;
-mod state;
-#[cfg(test)]
-mod tests;
+pub mod arithmetic;
+pub mod comparison;
+pub mod logical;
+pub mod registry;
+pub mod state;
 mod traits;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
-use super::environment::MettaEnvironment;
-use super::models::{MettaValue, ValueView};
+use super::models::MettaValue;
 
-// Re-export generic types (active code path)
-pub use generic_arithmetic::{
-    AddOpGeneric, ClampOpGeneric, DivOpGeneric, ModOpGeneric, MulOpGeneric, SafeDivOpGeneric,
-    SubOpGeneric,
+// Re-export operation types
+pub use arithmetic::{
+    AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp,
 };
-pub use generic_comparison::{
-    EqualOpGeneric, GreaterEqOpGeneric, GreaterOpGeneric, LessEqOpGeneric, LessOpGeneric,
-    NotEqualOpGeneric,
+pub use comparison::{
+    EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp,
 };
-pub use generic_logical::{AndOpGeneric, NotOpGeneric, OrOpGeneric, XorOpGeneric};
-pub use generic_registry::{
-    execute_generic_grounded_op, get_generic_registry, has_generic_grounded_op,
-    GenericGroundedRegistry,
+pub use logical::{AndOp, NotOp, OrOp, XorOp};
+pub use registry::{
+    execute_grounded_op, get_grounded_registry, has_grounded_op,
+    GroundedRegistry,
 };
-pub use generic_state::{
-    find_error_generic, friendly_type_name_generic, GenericGroundedState, GenericGroundedWork,
+pub use state::{
+    find_error, friendly_type_name, GroundedState, GroundedWork,
 };
-pub use generic_traits::GenericGroundedOperationTCO;
-
-// Re-export legacy types (used by proptests for multi-tier correctness verification)
-pub use arithmetic::{AddOp, DivOp, ModOp, MulOp, SubOp};
-pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
-pub use logical::{AndOp, NotOp, OrOp};
-pub use state::{GroundedState, GroundedWork};
-pub use traits::{EvalFn, GroundedOperation, GroundedOperationTCO};
+pub use traits::GroundedOperationTCO;
 
 /// Bindings from pattern matching (variable name -> value)
 pub type Bindings = HashMap<String, MettaValue>;
@@ -104,71 +86,3 @@ impl fmt::Display for ExecError {
 }
 
 impl std::error::Error for ExecError {}
-
-/// Check if any result is an error and return it if so
-/// Used for error propagation through grounded operations
-pub(crate) fn find_error(results: &[MettaValue]) -> Option<&MettaValue> {
-    results.iter().find(|v| v.is_error())
-}
-
-/// Helper function to get a friendly type name for error messages
-pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
-    match value.view() {
-        ValueView::Long(_) => "Number (integer)",
-        ValueView::Float(_) => "Number (float)",
-        ValueView::Bool(_) => "Bool",
-        ValueView::Unit => "Expression",
-        ValueView::Empty => "Empty",
-        ValueView::String(_) => "String",
-        ValueView::Atom(_) => "Symbol",
-        ValueView::SExpr(_) => "Expression",
-        ValueView::Error(_, _) => "Error",
-        ValueView::Type(_) => "Type",
-        ValueView::Conjunction(_) => "Conjunction",
-        ValueView::Space(_) => "Space",
-        ValueView::State(_) => "State",
-        ValueView::Quoted(_) => "Quoted expression",
-        ValueView::Memo(_) => "Memo",
-    }
-}
-
-/// Registry of grounded operations, keyed by name.
-///
-/// Legacy: Only used by proptests for multi-tier correctness verification.
-/// Active evaluation uses `GenericGroundedRegistry` with static dispatch.
-pub struct GroundedRegistry {
-    operations: HashMap<String, Arc<dyn GroundedOperation>>,
-}
-
-impl GroundedRegistry {
-    /// Create a new empty registry
-    pub fn new() -> Self {
-        GroundedRegistry {
-            operations: HashMap::new(),
-        }
-    }
-
-    /// Register a grounded operation
-    pub fn register(&mut self, op: Arc<dyn GroundedOperation>) {
-        self.operations.insert(op.name().to_string(), op);
-    }
-
-    /// Look up a grounded operation by name
-    pub fn get(&self, name: &str) -> Option<Arc<dyn GroundedOperation>> {
-        self.operations.get(name).cloned()
-    }
-}
-
-impl Default for GroundedRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clone for GroundedRegistry {
-    fn clone(&self) -> Self {
-        GroundedRegistry {
-            operations: self.operations.clone(),
-        }
-    }
-}

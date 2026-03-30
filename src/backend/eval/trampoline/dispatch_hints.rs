@@ -539,7 +539,7 @@ pub fn clear_operator_cache() {
 use phf::phf_set;
 
 /// Union of all head symbols that are reducible in `eval_sexpr_step_generic`
-/// (special forms) and `has_generic_grounded_op` (arithmetic/comparison ops).
+/// (special forms) and `has_grounded_op` (arithmetic/comparison ops).
 ///
 /// An S-expression `(head ...)` is NOT in normal form if `head` is in this set,
 /// because the trampoline will dispatch it for evaluation.
@@ -584,7 +584,7 @@ pub(crate) static REDUCIBLE_HEADS: phf::Set<&'static str> = phf_set! {
     "assertEqualToResult", "assertAlphaEqualToResult",
     "assertEqualToResultMsg", "assertAlphaEqualToResultMsg",
     "pragma!",
-    // === Grounded operations (has_generic_grounded_op) ===
+    // === Grounded operations (has_grounded_op) ===
     "+", "-", "*", "/", "%", "min", "max",
     "<", "<=", ">", ">=", "==", "!=",
     "and", "or", "not", "xor",
@@ -751,7 +751,7 @@ mod tests {
             assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing eager form: {}", op);
         }
 
-        // Check has_generic_grounded_op coverage
+        // Check has_grounded_op coverage
         let generic_grounded = [
             "+", "-", "*", "/", "%", "min", "max",
             "<", "<=", ">", ">=", "==", "!=",
@@ -760,8 +760,8 @@ mod tests {
         ];
         for op in &generic_grounded {
             assert!(
-                crate::backend::grounded::has_generic_grounded_op(op),
-                "has_generic_grounded_op doesn't recognize: {}", op
+                crate::backend::grounded::has_grounded_op(op),
+                "has_grounded_op doesn't recognize: {}", op
             );
             assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing generic grounded op: {}", op);
         }

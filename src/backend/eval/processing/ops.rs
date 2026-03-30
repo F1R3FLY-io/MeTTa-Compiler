@@ -7,7 +7,7 @@
 use smallvec::{SmallVec, smallvec};
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::grounded::{execute_generic_grounded_op, has_generic_grounded_op, GenericGroundedState, GenericGroundedWork};
+use crate::backend::grounded::{execute_grounded_op, has_grounded_op, GroundedState, GroundedWork};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 use crate::backend::models::{MettaValue, GcFactory};
@@ -227,21 +227,21 @@ pub fn process_single_combination_generic(
     if let Some(first) = evaled_items.first() {
         if let Some(op) = first.as_atom() {
             // First, check for grounded operations using generic registry
-            if has_generic_grounded_op(op) {
+            if has_grounded_op(op) {
                 let args: Vec<MettaValue> = evaled_items[1..].to_vec();
-                let mut state = GenericGroundedState::new(op.to_string(), args);
+                let mut state = GroundedState::new(op.to_string(), args);
 
-                if let Some(work) = execute_generic_grounded_op(op, &mut state, factory) {
+                if let Some(work) = execute_grounded_op(op, &mut state, factory) {
                     match work {
-                        GenericGroundedWork::Done(results) => {
+                        GroundedWork::Done(results) => {
                             let values: SmallVec<[MettaValue; 2]> = results.into_iter().map(|(v, _)| v).collect();
                             return GenericProcessedSExpr::Done((values, unified_env));
                         }
-                        GenericGroundedWork::EvalArg { .. } => {
+                        GroundedWork::EvalArg { .. } => {
                             // Grounded op needs argument evaluation - shouldn't happen here
                             // as args are already evaluated. Return as-is for now.
                         }
-                        GenericGroundedWork::Error(e) => {
+                        GroundedWork::Error(e) => {
                             let err = factory.error(&format!("{:?}", e), factory.atom("GroundedError"));
                             return GenericProcessedSExpr::Done((smallvec![err], unified_env));
                         }

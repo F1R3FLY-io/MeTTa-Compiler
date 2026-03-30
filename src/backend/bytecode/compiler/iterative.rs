@@ -1706,7 +1706,7 @@ impl Compiler {
             // semantics requiring full trampoline context for comparisons/ranking.
             // They intentionally fall through to tree-walker via rule dispatch.
             // /safe and clamp are handled by the grounded op TCO state machine
-            // (GenericGroundedOperationTCO) without needing dedicated opcodes.
+            // (GroundedOperationTCO) without needing dedicated opcodes.
 
             // ================================================================
             // Higher-order list operations

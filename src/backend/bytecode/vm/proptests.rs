@@ -3640,11 +3640,13 @@ mod tests {
 mod multi_tier_tests {
     use super::*;
 
-    use crate::backend::environment::MettaEnvironment;
     use crate::backend::grounded::{
-        AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperation, LessEqOp,
-        LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
+        AddOp, AndOp, DivOp, EqualOp, GroundedOperationTCO,
+        GroundedState, GroundedWork, GreaterEqOp, GreaterOp,
+        LessEqOp, LessOp, ModOp, MulOp, NotEqualOp,
+        NotOp, OrOp, SubOp,
     };
+    use crate::backend::models::GcFactory;
 
     // =========================================================================
     // Tier Definitions and Helpers
@@ -3654,40 +3656,76 @@ mod multi_tier_tests {
     #[allow(dead_code)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Tier {
-        /// Tree-walker tier: Grounded operations via GroundedOp trait
+        /// Tree-walker tier: Grounded operations via GroundedOperationTCO
         Grounded,
         /// Bytecode VM tier: Opcode execution
         BytecodeVM,
     }
 
-    /// Mock eval function for grounded operations (no recursive evaluation)
-    fn mock_eval(value: MettaValue, env: MettaEnvironment) -> (Vec<MettaValue>, MettaEnvironment) {
-        (vec![value], env)
+    /// Drive a generic TCO grounded operation to completion.
+    ///
+    /// For proptests, arguments are already concrete values, so when the state
+    /// machine requests `EvalArg(idx)`, we "evaluate" by returning the original
+    /// argument at that index as-is (wrapping it in a single-element Vec).
+    fn drive_tco<Op>(
+        op: &Op,
+        args: Vec<MettaValue>,
+    ) -> Result<MettaValue, String>
+    where
+        Op: GroundedOperationTCO<MettaValue>,
+    {
+        let factory = GcFactory::default();
+        let original_args = args.clone();
+        let mut state = GroundedState::new(op.name().to_string(), args);
+
+        loop {
+            let work = op.execute_step(&mut state, &factory);
+            match work {
+                GroundedWork::Done(results) => {
+                    return Ok(results
+                        .into_iter()
+                        .next()
+                        .map(|(v, _)| v)
+                        .unwrap_or(MettaValue::Unit()));
+                }
+                GroundedWork::EvalArg {
+                    arg_idx,
+                    state: returned_state,
+                } => {
+                    // Restore the returned state (contains updated step counter)
+                    state = returned_state;
+                    // "Evaluate" the argument by returning the original concrete value
+                    let arg_val = original_args[arg_idx].clone();
+                    state.set_arg(arg_idx, vec![arg_val]);
+                }
+                GroundedWork::Error(e) => {
+                    return Err(format!("grounded error: {:?}", e));
+                }
+            }
+        }
     }
 
-    /// Execute a binary operation via grounded operation (tree-walker tier)
-    fn run_grounded_binary<Op: GroundedOperation>(
+    /// Execute a binary operation via generic TCO grounded operation (tree-walker tier)
+    fn run_grounded_binary<Op>(
         op: &Op,
         a: MettaValue,
         b: MettaValue,
-    ) -> Result<MettaValue, String> {
-        let env = MettaEnvironment::default();
-        let args = vec![a, b];
-        op.execute_raw(&args, &env, &mock_eval)
-            .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Unit()))
-            .map_err(|e| format!("grounded error: {:?}", e))
+    ) -> Result<MettaValue, String>
+    where
+        Op: GroundedOperationTCO<MettaValue>,
+    {
+        drive_tco(op, vec![a, b])
     }
 
-    /// Execute a unary operation via grounded operation (tree-walker tier)
-    fn run_grounded_unary<Op: GroundedOperation>(
+    /// Execute a unary operation via generic TCO grounded operation (tree-walker tier)
+    fn run_grounded_unary<Op>(
         op: &Op,
         a: MettaValue,
-    ) -> Result<MettaValue, String> {
-        let env = MettaEnvironment::default();
-        let args = vec![a];
-        op.execute_raw(&args, &env, &mock_eval)
-            .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Unit()))
-            .map_err(|e| format!("grounded error: {:?}", e))
+    ) -> Result<MettaValue, String>
+    where
+        Op: GroundedOperationTCO<MettaValue>,
+    {
+        drive_tco(op, vec![a])
     }
 
     /// Execute a binary operation via bytecode VM tier
@@ -4110,57 +4148,80 @@ mod three_tier_tests {
     use crate::backend::bytecode::jit::{JitCompiler, JitContext, JitValue};
     use crate::backend::bytecode::opcodes::Opcode;
     use crate::backend::bytecode::BytecodeVM;
-    use crate::backend::environment::MettaEnvironment;
     use crate::backend::grounded::{
-        AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperation, LessEqOp,
-        LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
+        AddOp, AndOp, DivOp, EqualOp, GroundedOperationTCO,
+        GroundedState, GroundedWork, GreaterEqOp, GreaterOp,
+        LessEqOp, LessOp, ModOp, MulOp, NotEqualOp,
+        NotOp, OrOp, SubOp,
     };
-    use crate::backend::models::{MettaValue, MettaValueInner};
+    use crate::backend::models::{GcFactory, MettaValue, MettaValueInner};
 
     // =========================================================================
     // Helper Functions
     // =========================================================================
 
-    /// Mock eval function for grounded operations (no recursive evaluation)
-    fn mock_eval(value: MettaValue, env: MettaEnvironment) -> (Vec<MettaValue>, MettaEnvironment) {
-        (vec![value], env)
+    /// Drive a generic TCO grounded operation to completion.
+    ///
+    /// For tests, arguments are already concrete values, so when the state
+    /// machine requests `EvalArg(idx)`, we "evaluate" by returning the original
+    /// argument at that index as-is (wrapping it in a single-element Vec).
+    fn drive_tco<Op>(
+        op: &Op,
+        args: Vec<MettaValue>,
+    ) -> Result<MettaValue, String>
+    where
+        Op: GroundedOperationTCO<MettaValue>,
+    {
+        let factory = GcFactory::default();
+        let original_args = args.clone();
+        let mut state = GroundedState::new(op.name().to_string(), args);
+
+        loop {
+            let work = op.execute_step(&mut state, &factory);
+            match work {
+                GroundedWork::Done(results) => {
+                    return Ok(results
+                        .into_iter()
+                        .next()
+                        .map(|(v, _)| v)
+                        .unwrap_or(MettaValue::Unit()));
+                }
+                GroundedWork::EvalArg {
+                    arg_idx,
+                    state: returned_state,
+                } => {
+                    state = returned_state;
+                    let arg_val = original_args[arg_idx].clone();
+                    state.set_arg(arg_idx, vec![arg_val]);
+                }
+                GroundedWork::Error(e) => {
+                    return Err(format!("grounded error: {:?}", e));
+                }
+            }
+        }
     }
 
-    /// Execute a binary operation via grounded operation (Tier 0)
-    fn run_grounded_binary<Op: GroundedOperation>(
+    /// Execute a binary operation via generic TCO grounded operation (Tier 0)
+    fn run_grounded_binary<Op>(
         op: &Op,
         a: MettaValue,
         b: MettaValue,
-    ) -> Result<MettaValue, String> {
-        let env = MettaEnvironment::default();
-        let args = vec![a, b];
-        op.execute_raw(&args, &env, &mock_eval)
-            .map(|results| {
-                results
-                    .into_iter()
-                    .next()
-                    .map(|(v, _)| v)
-                    .unwrap_or(MettaValue::Unit())
-            })
-            .map_err(|e| format!("grounded error: {:?}", e))
+    ) -> Result<MettaValue, String>
+    where
+        Op: GroundedOperationTCO<MettaValue>,
+    {
+        drive_tco(op, vec![a, b])
     }
 
-    /// Execute a unary operation via grounded operation (Tier 0)
-    fn run_grounded_unary<Op: GroundedOperation>(
+    /// Execute a unary operation via generic TCO grounded operation (Tier 0)
+    fn run_grounded_unary<Op>(
         op: &Op,
         a: MettaValue,
-    ) -> Result<MettaValue, String> {
-        let env = MettaEnvironment::default();
-        let args = vec![a];
-        op.execute_raw(&args, &env, &mock_eval)
-            .map(|results| {
-                results
-                    .into_iter()
-                    .next()
-                    .map(|(v, _)| v)
-                    .unwrap_or(MettaValue::Unit())
-            })
-            .map_err(|e| format!("grounded error: {:?}", e))
+    ) -> Result<MettaValue, String>
+    where
+        Op: GroundedOperationTCO<MettaValue>,
+    {
+        drive_tco(op, vec![a])
     }
 
     /// Execute a binary operation via bytecode VM (Tier 1)

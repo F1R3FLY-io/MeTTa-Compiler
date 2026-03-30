@@ -1,102 +1,65 @@
 //! Traits for grounded operations.
 //!
-//! Defines the core traits that grounded operations must implement:
-//! - `GroundedOperation` - Standard lazy evaluation trait
-//! - `GroundedOperationTCO` - Tail-call optimized variant
+//! Defines the core traits that grounded operations can implement to work
+//! with any value type implementing `MettaValueTrait`:
+//!
+//! - `GroundedOperationTCO<V>` - Tail-call optimized variant
+//!
+//! ## Design
+//!
+//! By parameterizing over the value type `V`, operations can work with both
+//! heap-allocated (`MettaValue`) and arena-allocated (`MettaValue`) types without
+//! conversion at boundaries.
+//!
+//! ## Implementation Pattern
+//!
+//! Operations use `MettaValueTrait` methods instead of pattern matching on
+//! `MettaValueInner`:
+//!
+//! ```ignore
+//! // Before (concrete type):
+//! match (a.inner(), b.inner()) {
+//!     (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+//!         results.push((MettaValue::Long(x + y), None));
+//!     }
+//! }
+//!
+//! // After (generic type):
+//! if let (Some(x), Some(y)) = (a.as_long(), b.as_long()) {
+//!     results.push((factory.long(x + y), None));
+//! }
+//! ```
 
-use super::{MettaEnvironment, GroundedResult, GroundedState, GroundedWork, MettaValue};
-
-/// Function type for evaluating MeTTa expressions
-/// Used by grounded operations to evaluate their arguments when needed
-pub type EvalFn = dyn Fn(MettaValue, MettaEnvironment) -> (Vec<MettaValue>, MettaEnvironment) + Send + Sync;
-
-/// HE-compatible trait for grounded (built-in) operations.
-///
-/// Operations receive RAW (unevaluated) arguments and evaluate them internally
-/// when concrete values are needed. This matches HE's lazy evaluation semantics.
-///
-/// # Implementing a Grounded Operation
-///
-/// ```ignore
-/// struct AddOp;
-///
-/// impl GroundedOperation for AddOp {
-///     fn name(&self) -> &str { "+" }
-///
-///     fn execute_raw(
-///         &self,
-///         args: &[MettaValue],
-///         env: &Environment,
-///         eval_fn: &EvalFn,
-///     ) -> GroundedResult {
-///         if args.len() != 2 {
-///             return Err(ExecError::IncorrectArgument(
-///                 format!("+ requires 2 arguments, got {}", args.len())
-///             ));
-///         }
-///
-///         // Evaluate arguments internally
-///         let (a_results, _) = eval_fn(args[0].clone(), env.clone());
-///         let (b_results, _) = eval_fn(args[1].clone(), env.clone());
-///
-///         // Compute Cartesian product of results
-///         let mut results = Vec::new();
-///         for a in &a_results {
-///             for b in &b_results {
-///                 if let (MettaValue::Long(x), MettaValue::Long(y)) = (a, b) {
-///                     results.push((MettaValue::Long(x + y), None));
-///                 } else {
-///                     return Err(ExecError::NoReduce);
-///                 }
-///             }
-///         }
-///         Ok(results)
-///     }
-/// }
-/// ```
-pub trait GroundedOperation: Send + Sync {
-    /// The name of this operation (e.g., "+", "-", "and")
-    fn name(&self) -> &str;
-
-    /// Execute the operation with unevaluated arguments.
-    ///
-    /// # Arguments
-    /// * `args` - The unevaluated argument expressions
-    /// * `env` - The current environment for evaluation
-    /// * `eval_fn` - Function to evaluate sub-expressions when needed
-    ///
-    /// # Returns
-    /// * `Ok(results)` - List of (value, optional_bindings) pairs
-    /// * `Err(NoReduce)` - Operation not applicable, try other rules
-    /// * `Err(...)` - Actual error during execution
-    fn execute_raw(
-        &self,
-        args: &[MettaValue],
-        env: &MettaEnvironment,
-        eval_fn: &EvalFn,
-    ) -> GroundedResult;
-}
+use super::state::{GroundedState, GroundedWork};
+use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
 /// TCO-compatible trait for grounded operations.
 ///
-/// Unlike `GroundedOperation`, this trait does NOT receive an `eval_fn`.
-/// Instead, operations return `GroundedWork::EvalArg` to request argument
-/// evaluation, and the trampoline handles it.
-///
-/// # State Machine Pattern
+/// This trait is parameterized over the value type `V`,
+/// enabling operations to work with both heap and arena allocation strategies.
 ///
 /// Operations are implemented as state machines:
 /// - Step 0: Validate args, request first argument evaluation
 /// - Step 1: Process first arg results, request second argument (or compute)
 /// - Step 2+: Continue until `GroundedWork::Done` or `GroundedWork::Error`
 ///
-/// # Example
+/// ## Factory Parameter
+///
+/// The `execute_step` method takes a factory parameter for constructing
+/// result values. This allows the operation to create values in the correct type
+/// without knowing the concrete implementation.
+///
+/// ## Example
 ///
 /// ```ignore
-/// impl GroundedOperationTCO for AddOpTCO {
+/// impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AddOp {
 ///     fn name(&self) -> &str { "+" }
 ///
-///     fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+///     fn execute_step<F: MettaValueFactory<V>>(
+///         &self,
+///         state: &mut GroundedState<V>,
+///         factory: &F,
+///     ) -> GroundedWork<V> {
 ///         match state.step {
 ///             0 => {
 ///                 if state.args.len() != 2 {
@@ -110,10 +73,17 @@ pub trait GroundedOperation: Send + Sync {
 ///                 GroundedWork::EvalArg { arg_idx: 1, state: state.clone() }
 ///             }
 ///             2 => {
-///                 // Compute result from evaluated args
+///                 // Compute result using trait methods
 ///                 let a = state.get_arg(0).unwrap();
 ///                 let b = state.get_arg(1).unwrap();
-///                 // ... compute Cartesian product ...
+///                 let mut results = Vec::new();
+///                 for av in a {
+///                     for bv in b {
+///                         if let (Some(x), Some(y)) = (av.as_long(), bv.as_long()) {
+///                             results.push((factory.long(x + y), None));
+///                         }
+///                     }
+///                 }
 ///                 GroundedWork::Done(results)
 ///             }
 ///             _ => unreachable!()
@@ -121,21 +91,31 @@ pub trait GroundedOperation: Send + Sync {
 ///     }
 /// }
 /// ```
-pub trait GroundedOperationTCO: Send + Sync {
+pub trait GroundedOperationTCO<V: MettaValueTrait + Clone>: Send + Sync {
     /// The name of this operation (e.g., "+", "-", "and")
     fn name(&self) -> &str;
 
-    /// Execute one step of the operation.
+    /// Execute one step of the operation using generic types.
     ///
     /// Called initially with `state.step == 0` and empty `state.evaluated_args`.
     /// Called again after each `EvalArg` request with the results added.
     ///
     /// # Arguments
     /// * `state` - Mutable state that persists across steps
+    /// * `factory` - Factory for constructing result values
     ///
     /// # Returns
     /// * `Done(results)` - Operation complete, return these values
     /// * `EvalArg { arg_idx, state }` - Evaluate argument at index, then call again
     /// * `Error(e)` - Operation failed with error
-    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork;
+    fn execute_step<F: MettaValueFactory<V>>(
+        &self,
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V>;
+}
+
+#[cfg(test)]
+mod tests {
+    // Tests will be added when we implement concrete generic operations
 }

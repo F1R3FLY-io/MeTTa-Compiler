@@ -18,7 +18,7 @@
 //! - `E: Clone` - The environment type (Environment or GenericEnvironment<V>)
 
 use crate::backend::environment::MettaEnvironment;
-use crate::backend::grounded::GenericGroundedState;
+use crate::backend::grounded::GroundedState;
 use crate::backend::models::{GenericBindings, MettaValueTrait};
 
 /// Type of memo operation for StartMemoOp
@@ -56,10 +56,10 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     ///
     /// ## Zero-Conversion Design
     ///
-    /// Uses `GenericGroundedState<V>` to store arguments in their native type,
+    /// Uses `GroundedState<V>` to store arguments in their native type,
     /// eliminating conversions between heap and arena types during execution.
     StartGroundedOp {
-        state: GenericGroundedState<V>,
+        state: GroundedState<V>,
         env: E,
         depth: usize,
     },

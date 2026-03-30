@@ -176,12 +176,25 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
     pub fn lookup(&mut self, expr_hash: u64, depth: u32) -> TableLookup<V> {
         let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         if let Some(entry) = self.entries.get_mut(&expr_hash) {
-            // Stale: mutation occurred since this entry was tabled — evict and re-evaluate
+            // Stale epoch: a mutation occurred since this entry was tabled.
             if entry.mutation_epoch != current_epoch {
-                self.entries.remove(&expr_hash);
-                self.total_misses += 1;
-                self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch));
-                return TableLookup::Absent;
+                match entry.state {
+                    TableEntryState::Complete => {
+                        // Stale cached result — evict and re-evaluate.
+                        self.entries.remove(&expr_hash);
+                        self.total_misses += 1;
+                        self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch));
+                        return TableLookup::Absent;
+                    }
+                    TableEntryState::Active => {
+                        // Active entries are cycle-detection sentinels — preserve them
+                        // even across epoch boundaries. Evicting would break cycle
+                        // detection for recursive rules that trigger mutations
+                        // (e.g., PLN backward chaining with println!/add-atom).
+                        self.total_cycles += 1;
+                        return TableLookup::Cycle(entry.results.clone());
+                    }
+                }
             }
             entry.hit_count += 1;
             match entry.state {

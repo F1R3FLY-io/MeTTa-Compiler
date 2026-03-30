@@ -3843,7 +3843,9 @@ where
         // Add the rule (lhs=pattern, rhs=body)
         env.add_rule(pattern, body);
 
-        // Push Unit to indicate success
+        // Push Unit to indicate success (VM-level convention).
+        // The compiler emits Pop after DefineRule to match tree-walker
+        // semantics (rule definitions return empty).
         self.push(self.make_unit());
         Ok(())
     }

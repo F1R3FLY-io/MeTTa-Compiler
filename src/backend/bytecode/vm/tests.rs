@@ -3004,7 +3004,7 @@ mod generic_vm_tests {
         builder.emit_u16(Opcode::PushConstant, pattern_idx);
         builder.emit_u16(Opcode::PushConstant, body_idx);
         builder.emit(Opcode::DefineRule);
-        builder.emit(Opcode::Pop); // Pop the Unit from DefineRule
+        builder.emit(Opcode::Pop); // Pop Unit from DefineRule
 
         // Now dispatch (greet world)
         let call_expr = f.sexpr(vec![f.atom("greet"), f.atom("world")]);
@@ -4558,7 +4558,7 @@ fn test_vm_define_rule_with_env() {
     ]));
     builder.emit_u16(Opcode::PushConstant, body);
 
-    // Define the rule
+    // Define the rule (pushes Unit)
     builder.emit(Opcode::DefineRule);
     builder.emit(Opcode::Return);
 
@@ -4567,7 +4567,7 @@ fn test_vm_define_rule_with_env() {
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
-    // Should return Unit
+    // DefineRule pushes Unit; Return pops and returns it
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], MettaValue::Unit());
 }
@@ -4583,6 +4583,7 @@ fn test_vm_define_rule_no_env() {
     builder.emit_u16(Opcode::PushConstant, pattern);
     builder.emit_u16(Opcode::PushConstant, body);
     builder.emit(Opcode::DefineRule);
+        builder.emit(Opcode::Pop); // Pop Unit from DefineRule
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
@@ -4728,7 +4729,7 @@ fn test_vm_dispatch_rules_single_match() {
     builder.emit_u16(Opcode::PushConstant, pattern);
     builder.emit_u16(Opcode::PushConstant, body);
     builder.emit(Opcode::DefineRule);
-    builder.emit(Opcode::Pop); // Pop Unit
+        builder.emit(Opcode::Pop); // Pop Unit from DefineRule
 
     // Now call (inc 5)
     let call_expr = builder.add_constant(MettaValue::SExpr(vec![

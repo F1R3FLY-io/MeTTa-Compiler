@@ -753,15 +753,16 @@ where
                 Ok(Some(()))
             }
 
-            // Rule definition
+            // Rule definition: (= pattern body)
+            // Emit DefineRule opcode which pops body then pattern,
+            // calls env.add_rule(pattern, body), and pushes Unit.
+            // Pop the Unit to match tree-walker semantics (empty result).
             "=" => {
                 self.check_arity("=", args.len(), 2)?;
-                let eq_val = self.factory.atom("=");
-                let idx = self.builder.add_constant(eq_val);
-                self.builder.emit_u16(Opcode::PushAtom, idx);
-                self.compile_quoted(&args[0])?;
-                self.compile_quoted(&args[1])?;
-                self.builder.emit_byte(Opcode::MakeSExpr, 3);
+                self.compile_quoted(&args[0])?; // Push pattern
+                self.compile_quoted(&args[1])?; // Push body
+                self.builder.emit(Opcode::DefineRule);
+                self.builder.emit(Opcode::Pop); // Discard Unit — rule defs return empty
                 Ok(Some(()))
             }
 

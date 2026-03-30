@@ -188,6 +188,16 @@ where
                             results.push((factory.bool(float_cmp(x, y as f64)), None));
                         }
                         _ => {
+                            // String comparison (lexicographic ordering)
+                            if let (Some(x), Some(y)) = (a.as_string(), b.as_string()) {
+                                let ord_val = match x.cmp(y) {
+                                    std::cmp::Ordering::Less => -1i64,
+                                    std::cmp::Ordering::Equal => 0i64,
+                                    std::cmp::Ordering::Greater => 1i64,
+                                };
+                                results.push((factory.bool(long_cmp(ord_val, 0)), None));
+                                continue;
+                            }
                             // MeTTa HE: Empty sentinel → skip (branch annihilation)
                             if a.is_empty() || b.is_empty() {
                                 continue;
@@ -446,5 +456,63 @@ mod tests {
             MettaValue::Float(5.0),
             MettaValue::Long(5),
         ));
+    }
+
+    // --- String comparison tests ---
+
+    fn run_string_comparison<Op: GenericGroundedOperationTCO<MettaValue>>(
+        op: &Op,
+        a: &str,
+        b: &str,
+    ) -> bool {
+        run_comparison_values(
+            op,
+            MettaValue::String(a),
+            MettaValue::String(b),
+        )
+    }
+
+    #[test]
+    fn test_less_string() {
+        assert!(run_string_comparison(&LessOpGeneric, "apple", "banana"));
+        assert!(!run_string_comparison(&LessOpGeneric, "banana", "apple"));
+        assert!(!run_string_comparison(&LessOpGeneric, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_less_eq_string() {
+        assert!(run_string_comparison(&LessEqOpGeneric, "apple", "banana"));
+        assert!(!run_string_comparison(&LessEqOpGeneric, "banana", "apple"));
+        assert!(run_string_comparison(&LessEqOpGeneric, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_greater_string() {
+        assert!(!run_string_comparison(&GreaterOpGeneric, "apple", "banana"));
+        assert!(run_string_comparison(&GreaterOpGeneric, "banana", "apple"));
+        assert!(!run_string_comparison(&GreaterOpGeneric, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_greater_eq_string() {
+        assert!(!run_string_comparison(&GreaterEqOpGeneric, "apple", "banana"));
+        assert!(run_string_comparison(&GreaterEqOpGeneric, "banana", "apple"));
+        assert!(run_string_comparison(&GreaterEqOpGeneric, "apple", "apple"));
+    }
+
+    #[test]
+    fn test_string_comparison_empty_strings() {
+        // Empty string is lexicographically less than any non-empty string
+        assert!(run_string_comparison(&LessOpGeneric, "", "a"));
+        assert!(!run_string_comparison(&LessOpGeneric, "a", ""));
+        assert!(!run_string_comparison(&LessOpGeneric, "", ""));
+        assert!(run_string_comparison(&LessEqOpGeneric, "", ""));
+    }
+
+    #[test]
+    fn test_string_comparison_prefix() {
+        // "abc" < "abcd" (prefix is less than extended form)
+        assert!(run_string_comparison(&LessOpGeneric, "abc", "abcd"));
+        assert!(!run_string_comparison(&GreaterOpGeneric, "abc", "abcd"));
     }
 }

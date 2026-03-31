@@ -27,7 +27,7 @@ pub use gc_allocator::{
     register_root_provider, register_temporary_roots, release_session,
     request_gc, set_backpressure_level,
     trigger_gc_cycle, try_register_env_roots,
-    EvalGuard, GcFactory, RootProvider, SafepointRootHandle,
+    EvalGuard, GcFactory, GcHoldGuard, RootProvider, SafepointRootHandle,
     SessionGuard, SlabAllocator, MAX_BACKPRESSURE,
 };
 pub use gc_cron::{GcCronSingleton, CronHandle};

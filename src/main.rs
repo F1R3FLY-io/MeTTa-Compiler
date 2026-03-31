@@ -372,6 +372,10 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         let should_output = expr.is_sexpr();
 
         let guard = SessionGuard::enter();
+        // Hold ACTIVE_EVALUATORS > 0 across eval+format to prevent
+        // session-release GC from freeing result values between
+        // eval() returning (EvalGuard drops) and formatting.
+        let gc_hold = GcHoldGuard::enter();
 
         // Use trace-aware eval when a trace collector is active.
         #[cfg(feature = "eval-trace")]
@@ -429,9 +433,11 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
             output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }
 
-        // _result_roots dropped here — unregisters temporary roots.
-        // Drop guard triggers async release_session() on background thread.
+        // Drop order: result_roots first (unregister temporary roots),
+        // then gc_hold (allow session-release GC to run),
+        // then guard (enqueue async release_session).
         drop(_result_roots);
+        drop(gc_hold);
         drop(guard);
     }
     timings.mark("all_evals");
@@ -620,6 +626,7 @@ fn run_repl(options: &Options) {
                             let should_output = expr.is_sexpr();
 
                             let guard = SessionGuard::enter();
+                            let gc_hold = GcHoldGuard::enter();
 
                             let (results, updated_env) = eval(expr, env, &state);
                             env = updated_env;
@@ -647,9 +654,8 @@ fn run_repl(options: &Options) {
                                 println!("{}", highlighted);
                             }
 
-                            // _result_roots dropped here — unregisters temporary roots.
-                            // Drop guard triggers async release_session()
                             drop(_result_roots);
+                            drop(gc_hold);
                             drop(guard);
                         }
 

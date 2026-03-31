@@ -2818,6 +2818,47 @@ pub fn active_evaluator_count() -> u32 {
     ACTIVE_EVALUATORS.load(Ordering::Acquire)
 }
 
+/// Lightweight RAII guard that keeps `ACTIVE_EVALUATORS > 0`, preventing
+/// session-release GC from running. Unlike `EvalGuard`, does NOT touch
+/// `EVAL_GUARD_DEPTH` (not an actual eval). Use this to protect result
+/// values between `eval()` returning and result formatting/consumption.
+pub struct GcHoldGuard;
+
+impl GcHoldGuard {
+    /// Increment ACTIVE_EVALUATORS, blocking briefly if GC snapshot is in progress.
+    #[inline]
+    pub fn enter() -> Self {
+        const GC_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        loop {
+            ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);
+            if !GC_IN_PROGRESS.load(Ordering::Acquire) {
+                break;
+            }
+            ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+            let mut lock = GC_PROGRESS_MUTEX.lock();
+            while GC_IN_PROGRESS.load(Ordering::Acquire) {
+                let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
+                if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+            drop(lock);
+        }
+        GcHoldGuard
+    }
+}
+
+impl Drop for GcHoldGuard {
+    #[inline]
+    fn drop(&mut self) {
+        let prev = ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            let _lock = QUIESCENT_MUTEX.lock();
+            QUIESCENT_CONDVAR.notify_all();
+        }
+    }
+}
+
 /// RAII guard that sets `GC_IN_PROGRESS = true` on creation and clears it on drop.
 /// Ensures the flag is always cleared, even if the GC snapshot path panics.
 pub(super) struct GcInProgressGuard;

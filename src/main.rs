@@ -398,11 +398,40 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
             .filter(|v| !v.is_empty())
             .collect();
 
+        // Root results against GC between eval() and format_results().
+        //
+        // After eval() returns, EvalGuard is dropped (ACTIVE_EVALUATORS == 0).
+        // A pending SessionRelease from a PREVIOUS iteration may be waiting for
+        // quiescence on a GC pool worker thread. When ACTIVE_EVALUATORS hits 0,
+        // that worker wakes, traces the surviving set, and frees values from the
+        // previous session that are NOT in the surviving set.
+        //
+        // Problem: thread-local caches (EVAL_MEMO, MATCH_RESULT_CACHE, subgoal
+        // table, thunk table) may hold MettaValues from the previous session.
+        // If the current eval() returned cached values from those caches, the
+        // results contain MettaValues with the previous session's context_id.
+        // Those values are NOT in the surviving set (trace_surviving_set() cannot
+        // access thread-local caches from the worker thread), so the session
+        // release frees them. When format_results() dereferences the freed slab
+        // slots, ASAN reports use-after-poison.
+        //
+        // Fix: register the results as temporary safepoint roots. The session
+        // release worker merges safepoint roots into the surviving set via
+        // trace_safepoint_live_set(), so registered values are promoted to
+        // persistent (context_id=0) instead of being freed.
+        let _result_roots = if !filtered_results.is_empty() {
+            Some(register_temporary_roots(filtered_results.clone()))
+        } else {
+            None
+        };
+
         if should_output {
             output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }
 
-        // Drop guard triggers async release_session() on background thread
+        // _result_roots dropped here — unregisters temporary roots.
+        // Drop guard triggers async release_session() on background thread.
+        drop(_result_roots);
         drop(guard);
     }
     timings.mark("all_evals");
@@ -601,6 +630,16 @@ fn run_repl(options: &Options) {
                                 .filter(|v| !v.is_empty())
                                 .collect();
 
+                            // Root results against GC between eval() and formatting.
+                            // See the comment in eval_metta() for the full race description:
+                            // session release from a prior iteration can free cached values
+                            // that are part of the current results.
+                            let _result_roots = if !filtered_results.is_empty() {
+                                Some(register_temporary_roots(filtered_results.clone()))
+                            } else {
+                                None
+                            };
+
                             if should_output {
                                 let output = format_results(&filtered_results);
                                 let highlighted =
@@ -608,7 +647,9 @@ fn run_repl(options: &Options) {
                                 println!("{}", highlighted);
                             }
 
+                            // _result_roots dropped here — unregisters temporary roots.
                             // Drop guard triggers async release_session()
+                            drop(_result_roots);
                             drop(guard);
                         }
 

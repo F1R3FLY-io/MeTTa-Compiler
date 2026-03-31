@@ -64,14 +64,68 @@ pub use step::{
 // Arena-based Evaluation with Bytecode/JIT Tiering
 // =============================================================================
 
+use std::cell::RefCell;
+
 use smallvec::SmallVec;
 
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, SafepointRootHandle};
 
 /// Type alias for arena evaluation result.
 /// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap
 /// allocation for the common single-result case.
 pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
+
+// =============================================================================
+// Thread-Local Cache Root Snapshot
+// =============================================================================
+//
+// Thread-local caches (EVAL_MEMO, MATCH_RESULT_CACHE, subgoal table, thunk
+// table) hold MettaValue references that persist across eval() calls. During
+// intra-eval safepoints, these are collected via collect_eval_memo_roots() etc.
+// and included in the temporary root set.
+//
+// However, BETWEEN eval() calls (when ACTIVE_EVALUATORS == 0), the session
+// release GC runs on a background worker thread and cannot access thread-local
+// caches. Its surviving set (from trace_surviving_set → collect_all_roots_readonly)
+// only includes environment roots and safepoint roots — NOT cache roots.
+//
+// If a previous session's values exist in thread-local caches and the session
+// release frees them, any subsequent eval that hits the cache returns dangling
+// MettaValues → use-after-poison in format_result.
+//
+// Fix: Before the EvalGuard drops (transitioning to quiescent state), snapshot
+// all thread-local cache roots into the safepoint root registry. The
+// SafepointRootHandle is stored in a thread-local so it persists until the
+// next eval() call replaces it. This ensures cache roots are visible to the
+// session release GC via trace_safepoint_live_set().
+
+thread_local! {
+    /// Holds the SafepointRootHandle for thread-local cache roots.
+    /// Replaced at the end of each eval() call. The handle keeps cache roots
+    /// registered as safepoint roots until the next eval() replaces it.
+    static CACHE_ROOT_HANDLE: RefCell<Option<SafepointRootHandle>> = const { RefCell::new(None) };
+}
+
+/// Snapshot all thread-local cache roots into the safepoint root registry.
+///
+/// Called from eval() just before the EvalGuard drops. Returns a
+/// SafepointRootHandle that keeps the roots registered. The caller stores
+/// this handle in CACHE_ROOT_HANDLE (replacing the previous one).
+fn snapshot_cache_roots() -> Option<SafepointRootHandle> {
+    use crate::backend::models::register_temporary_roots;
+
+    let mut roots = Vec::with_capacity(256);
+    trampoline::dispatch_hints::collect_eval_memo_roots(&mut roots);
+    trampoline::dispatch_hints::collect_match_result_roots(&mut roots);
+    cesk::tabling::collect_subgoal_roots(&mut roots);
+    cesk::thunk::collect_thunk_roots(&mut roots);
+
+    if roots.is_empty() {
+        None
+    } else {
+        Some(register_temporary_roots(roots))
+    }
+}
 
 /// Evaluate an MettaValue with bytecode/JIT tiering.
 ///
@@ -122,9 +176,28 @@ pub fn eval(
     // Scope the EvalGuard so it drops after eval completes.
     let result = {
         let _guard = EvalGuard::enter();
-        eval_inner(value, env, state)
+        let r = eval_inner(value, env, state);
+
+        // Snapshot thread-local cache roots into the safepoint root registry
+        // BEFORE the EvalGuard drops (while ACTIVE_EVALUATORS > 0).
+        //
+        // This ensures cache roots are visible to session release GC via
+        // trace_safepoint_live_set(). Without this, cached MettaValues from
+        // previous sessions are invisible to the session release worker (which
+        // runs on a different thread and cannot access thread-locals), causing
+        // use-after-poison when the cache returns freed values.
+        //
+        // The handle replaces the previous one — old roots are unregistered.
+        let new_handle = snapshot_cache_roots();
+        CACHE_ROOT_HANDLE.with(|h| {
+            *h.borrow_mut() = new_handle;
+        });
+
+        r
     };
     // _guard dropped here — ACTIVE_EVALUATORS decremented.
+    // CACHE_ROOT_HANDLE holds the cache roots in the safepoint registry,
+    // so they're visible to session release GC during quiescence.
 
     // Phase 10.5: Run type fixpoint if rules were added during this eval.
     // O(1) atomic check; no-op when no new types were registered.
@@ -163,7 +236,15 @@ pub fn eval_with_trace(
 
     let result = {
         let _guard = EvalGuard::enter();
-        eval_inner_with_trace(value, env, state, collector)
+        let r = eval_inner_with_trace(value, env, state, collector);
+
+        // Snapshot cache roots before EvalGuard drops (same rationale as eval()).
+        let new_handle = snapshot_cache_roots();
+        CACHE_ROOT_HANDLE.with(|h| {
+            *h.borrow_mut() = new_handle;
+        });
+
+        r
     };
 
     result.1.maybe_run_type_fixpoint();

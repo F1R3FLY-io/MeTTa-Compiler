@@ -1277,17 +1277,22 @@ where
 
             if is_catch_all && is_last_arm {
                 // Last arm with catch-all: no need for JumpIfFalse
+                self.context.begin_scope();
                 if pattern.is_variable() {
-                    // Bind the variable (MatchBind always succeeds for $var)
-                    self.builder.emit(Opcode::Dup);
-                    self.compile_quoted(pattern)?;
-                    self.builder.emit(Opcode::MatchBind);
-                    self.builder.emit(Opcode::Pop); // pop the `true` bool
+                    // Bind the variable as a compile-time local so the body
+                    // can reference it via LoadLocal (not PushVariable).
+                    self.bind_pattern(pattern)?;
+                } else {
+                    // Wildcard or other catch-all: just pop scrutinee
+                    self.builder.emit(Opcode::Pop);
                 }
-                // Pop scrutinee, compile body
-                self.builder.emit(Opcode::Pop);
                 self.in_tail_position = saved_tail;
                 self.compile(body)?;
+                let local_count = self.context.end_scope();
+                for _ in 0..local_count {
+                    self.builder.emit(Opcode::Swap);
+                    self.builder.emit(Opcode::Pop);
+                }
             } else {
                 // Standard arm: Dup, PushConstant(pattern), MatchBind, JumpIfFalse
                 self.builder.emit(Opcode::Dup);
@@ -1295,10 +1300,22 @@ where
                 self.builder.emit(Opcode::MatchBind);
                 let next_arm = self.builder.emit_jump(Opcode::JumpIfFalse);
 
-                // Match succeeded: pop scrutinee, compile body
-                self.builder.emit(Opcode::Pop);
+                // Match succeeded: bind pattern variables as locals so the body
+                // can reference them via LoadLocal. Then compile body.
+                self.context.begin_scope();
+                if pattern.is_variable() {
+                    // Scrutinee is still on stack — store as local
+                    self.bind_pattern(pattern)?;
+                } else {
+                    self.builder.emit(Opcode::Pop); // pop scrutinee
+                }
                 self.in_tail_position = saved_tail;
                 self.compile(body)?;
+                let local_count = self.context.end_scope();
+                for _ in 0..local_count {
+                    self.builder.emit(Opcode::Swap);
+                    self.builder.emit(Opcode::Pop);
+                }
 
                 if !is_last_arm {
                     // Jump to end (skip remaining arms)

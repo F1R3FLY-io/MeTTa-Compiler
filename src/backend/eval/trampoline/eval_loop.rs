@@ -1476,8 +1476,10 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                 // I-4: Subgoal tabling — check if this expression has been
                 // previously evaluated (Complete) or is currently being evaluated
-                // (Active → cycle detection). Only for S-expressions at depth >= 2.
-                if is_sexpr && depth >= 2 {
+                // (Active → cycle detection). Only for S-expressions at depth >= 2
+                // that don't contain variables (variable expressions are context-
+                // dependent and must not be cached by content hash).
+                if is_sexpr && depth >= 2 && !value.has_variables_fast() {
                     let tabling_hash = value.hash_value();
                     let lookup = crate::backend::eval::cesk::with_subgoal_table(|t| {
                         t.lookup(tabling_hash, depth as u32)

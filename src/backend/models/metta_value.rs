@@ -240,7 +240,9 @@ fn hash_value_for_trait_inner<H: Hasher>(inner: &MettaValueInner, hasher: &mut H
         MettaValueInner::Empty => 9u8.hash(hasher),
         MettaValueInner::Quoted(_) => 10u8.hash(hasher),
         MettaValueInner::Spanned(_, _) => 11u8.hash(hasher),
-        _ => 10u8.hash(hasher), // Type, Conjunction, Space, State, Memo
+        MettaValueInner::Space(handle) => { 12u8.hash(hasher); handle.id.hash(hasher); }
+        MettaValueInner::State(id) => { 13u8.hash(hasher); id.hash(hasher); }
+        _ => 14u8.hash(hasher), // Type, Conjunction, Memo
     }
 }
 

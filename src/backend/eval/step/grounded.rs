@@ -93,7 +93,7 @@ pub fn extract_return_type<V: MettaValueTrait + Clone>(typ: &V) -> Option<V> {
 ///
 /// MeTTa HE parity: only operators with arrow types trigger applicative evaluation.
 /// If the operator has no type or a non-function type, returns false.
-fn should_pre_eval_by_type<V, F>(
+pub fn should_pre_eval_by_type<V, F>(
     op: &str,
     env: &GenericEnvironment<V, F>,
 ) -> bool

@@ -1112,78 +1112,50 @@ where
             }
 
             // List operations - native generic implementations (zero conversion)
-            "car-atom" => {
-                let results = eval_car_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "cdr-atom" => {
-                let results = eval_cdr_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "cons-atom" => {
-                let results = eval_cons_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "decons-atom" => {
-                let results = eval_decons_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "size-atom" => {
-                let results = eval_size_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "max-atom" => {
-                let results = eval_max_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "index-atom" => {
-                let results = eval_index_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "min-atom" => {
-                let results = eval_min_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-
-            // Tuple operations - native generic implementations
-            "tuple-concat" => {
-                let results = eval_tuple_concat_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "tuple-count" => {
-                let results = eval_tuple_count_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "without" => {
-                let results = eval_without_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "element-of" => {
-                let results = eval_element_of_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "range" => {
-                let results = eval_range_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "reverse-atom" => {
-                let results = eval_reverse_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "flatten-atom" => {
-                let results = eval_flatten_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "zip-atom" => {
-                let results = eval_zip_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "take-atom" => {
-                let results = eval_take_atom_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "drop-atom" => {
-                let results = eval_drop_atom_generic(&items, ctx.factory());
+            //
+            // MeTTa HE semantics: list/tuple operations evaluate their arguments
+            // before operating on them (applicative order). Without this pre-evaluation,
+            // reducible S-expression arguments (like `(collapse ...)`) would be treated
+            // as structural tuples instead of being evaluated first. This is critical
+            // for PLN's BestCandidate which passes `(collapse ...)` to car-atom/cdr-atom.
+            "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom"
+            | "max-atom" | "min-atom" | "index-atom"
+            | "tuple-concat" | "tuple-count" | "without" | "element-of"
+            | "range" | "reverse-atom" | "flatten-atom" | "zip-atom"
+            | "take-atom" | "drop-atom" => {
+                // Check if any arguments are reducible S-expressions that need
+                // pre-evaluation before the list operation can proceed.
+                let reducible_indices = list_op_reducible_arg_indices(&items, &env);
+                if !reducible_indices.is_empty() {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: reducible_indices,
+                        env,
+                        depth,
+                    };
+                }
+                // All arguments are in normal form — proceed with the operation.
+                let results = match op {
+                    "car-atom" => eval_car_atom_generic(&items, ctx.factory()),
+                    "cdr-atom" => eval_cdr_atom_generic(&items, ctx.factory()),
+                    "cons-atom" => eval_cons_atom_generic(&items, ctx.factory()),
+                    "decons-atom" => eval_decons_atom_generic(&items, ctx.factory()),
+                    "size-atom" => eval_size_atom_generic(&items, ctx.factory()),
+                    "max-atom" => eval_max_atom_generic(&items, ctx.factory()),
+                    "min-atom" => eval_min_atom_generic(&items, ctx.factory()),
+                    "index-atom" => eval_index_atom_generic(&items, ctx.factory()),
+                    "tuple-concat" => eval_tuple_concat_generic(&items, ctx.factory()),
+                    "tuple-count" => eval_tuple_count_generic(&items, ctx.factory()),
+                    "without" => eval_without_generic(&items, ctx.factory()),
+                    "element-of" => eval_element_of_generic(&items, ctx.factory()),
+                    "range" => eval_range_generic(&items, ctx.factory()),
+                    "reverse-atom" => eval_reverse_atom_generic(&items, ctx.factory()),
+                    "flatten-atom" => eval_flatten_atom_generic(&items, ctx.factory()),
+                    "zip-atom" => eval_zip_atom_generic(&items, ctx.factory()),
+                    "take-atom" => eval_take_atom_generic(&items, ctx.factory()),
+                    "drop-atom" => eval_drop_atom_generic(&items, ctx.factory()),
+                    _ => unreachable!("list op dispatch mismatch"),
+                };
                 return GenericEvalStep::Done((SmallVec::from_vec(results), env));
             }
 
@@ -1808,7 +1780,19 @@ where
             }
 
             // Set operations — generic multiset semantics
+            //
+            // Like list operations, set operations must evaluate reducible
+            // arguments before operating. E.g., `(unique-atom (collapse ...))`.
             "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom" => {
+                let reducible_indices = list_op_reducible_arg_indices(&items, &env);
+                if !reducible_indices.is_empty() {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: reducible_indices,
+                        env,
+                        depth,
+                    };
+                }
                 return crate::backend::eval::set_ops::eval_set_op_generic(
                     items, env, ctx,
                 );
@@ -2024,6 +2008,78 @@ where
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Identify arguments to a list/tuple operation that are reducible S-expressions
+/// needing pre-evaluation before the operation can proceed.
+///
+/// This ensures MeTTa HE semantic parity: list operations like `car-atom`,
+/// `cdr-atom`, `size-atom`, etc. evaluate their arguments before operating on
+/// them. Without this, reducible S-expression arguments (e.g., `(collapse ...)`,
+/// `(superpose ...)`, or user-defined functions that produce lists) would be
+/// treated as structural tuples instead of being evaluated first.
+///
+/// An argument is considered reducible if it is an S-expression whose head:
+/// - Starts with `$` (variable — may resolve to a function)
+/// - Is a grounded operation (e.g., `+`, `==`)
+/// - Is an eager special form (e.g., `collapse`, `superpose`, `map-atom`)
+/// - Has a `(-> ...)` type signature (declared function)
+///
+/// ## Why Not Use the Bloom Filter
+///
+/// Unlike `find_grounded_arg_indices_generic` (Step 2 in eval_sexpr_step_inner),
+/// this function is called from Step 1 (special form dispatch). The fixpoint
+/// detection in `CollectGroundedArg` handles bloom filter false positives by
+/// falling through to Steps 3-4 (rule matching → data constructor). However,
+/// Steps 3-4 would incorrectly return `(car-atom (a b c))` as a data
+/// constructor when `car-atom` should still execute. Since the parent operator
+/// is a special form (not a user rule), the fixpoint fallback is wrong.
+///
+/// By restricting to deterministic checks (grounded ops, eager special forms,
+/// type-declared functions), we guarantee that any argument we mark for
+/// pre-evaluation WILL change after evaluation, avoiding both infinite loops
+/// and incorrect data constructor fallback.
+///
+/// Returns a vector of 1-based indices into `items` for arguments needing
+/// pre-evaluation. Returns empty if all arguments are already in normal form.
+fn list_op_reducible_arg_indices(
+    items: &[MettaValue],
+    env: &MettaEnvironment,
+) -> Vec<usize> {
+    use crate::backend::eval::step::grounded::should_pre_eval_by_type;
+    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
+
+    let mut indices = Vec::new();
+    // Skip index 0 (the operator itself), check all arguments
+    for (i, item) in items.iter().enumerate().skip(1) {
+        if let Some(sub_items) = item.as_sexpr() {
+            if let Some(first) = sub_items.first() {
+                if let Some(head) = first.as_atom() {
+                    // Variables as heads need evaluation (the var may resolve
+                    // to a function)
+                    if head.starts_with('$') {
+                        indices.push(i);
+                    }
+                    // Grounded ops (e.g. +, ==) always produce a result
+                    // different from the input S-expression
+                    else if is_grounded_op(head) {
+                        indices.push(i);
+                    }
+                    // Eager special forms (collapse, superpose, map-atom, etc.)
+                    // always produce a result different from the input
+                    else if is_eager_special_form(head) {
+                        indices.push(i);
+                    }
+                    // Type-driven: operator has (-> ...) type signature,
+                    // indicating it's a declared function that should evaluate
+                    else if should_pre_eval_by_type(head, env) {
+                        indices.push(i);
+                    }
+                }
+            }
+        }
+    }
+    indices
+}
 
 /// Extract a variable name (atom starting with `$`) from a value, with a
 /// helpful error if the value is not a valid variable.

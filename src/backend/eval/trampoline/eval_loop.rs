@@ -6159,10 +6159,14 @@ fn process_continuation<C: EvalContext>(
                     expected_type: None,
                 });
             } else {
-                // Try to unify with each pattern2 result - NO conversion needed
+                // Try to unify with each pattern2 result - bidirectional.
+                // MeTTa's unify is symmetric: variables in either argument
+                // should bind. Try val1-as-pattern first, then val2-as-pattern.
                 let mut all_bindings = Vec::new();
                 for p2_result in &pattern2_results {
-                    if let Some(bindings) = pattern_match(&val1, p2_result) {
+                    if let Some(bindings) = pattern_match(&val1, p2_result)
+                        .or_else(|| pattern_match(p2_result, &val1))
+                    {
                         all_bindings.push(bindings);
                     }
                 }

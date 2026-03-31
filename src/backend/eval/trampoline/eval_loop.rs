@@ -5647,8 +5647,7 @@ fn process_continuation<C: EvalContext>(
                             // Non-module spaces use SpaceHandle's generic collapse
                             let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
-                                pattern_match(&pattern2, atom).is_some()
-                                    || pattern_match(atom, &pattern2).is_some()
+                                crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, atom).is_some()
                             })
                         };
                         let result_value = ctx.factory().bool(exists);
@@ -5679,13 +5678,7 @@ fn process_continuation<C: EvalContext>(
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for (generic_value, count) in &matches {
-                                    if let Some(bindings) = pattern_match(&pattern2, generic_value) {
-                                        found_match = true;
-                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
-                                        for _ in 0..*count {
-                                            bodies_to_eval.push(generic_body.clone());
-                                        }
-                                    } else if let Some(bindings) = pattern_match(generic_value, &pattern2) {
+                                    if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, generic_value) {
                                         found_match = true;
                                         let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                         for _ in 0..*count {
@@ -5758,13 +5751,7 @@ fn process_continuation<C: EvalContext>(
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for m in &matches {
-                                    if let Some(bindings) = pattern_match(&pattern2, &m.value) {
-                                        found_match = true;
-                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
-                                        for _ in 0..m.count {
-                                            bodies_to_eval.push(generic_body.clone());
-                                        }
-                                    } else if let Some(bindings) = pattern_match(&m.value, &pattern2) {
+                                    if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, &m.value) {
                                         found_match = true;
                                         let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                         for _ in 0..m.count {
@@ -5870,13 +5857,7 @@ fn process_continuation<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for (generic_value, count) in &matches {
-                            if let Some(bindings) = pattern_match(&pattern2, generic_value) {
-                                found_match = true;
-                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
-                                for _ in 0..*count {
-                                    bodies_to_eval.push(generic_body.clone());
-                                }
-                            } else if let Some(bindings) = pattern_match(generic_value, &pattern2) {
+                            if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, generic_value) {
                                 found_match = true;
                                 let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..*count {
@@ -5922,13 +5903,7 @@ fn process_continuation<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) = pattern_match(&pattern2, &m.value) {
-                                found_match = true;
-                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
-                                for _ in 0..m.count {
-                                    bodies_to_eval.push(generic_body.clone());
-                                }
-                            } else if let Some(bindings) = pattern_match(&m.value, &pattern2) {
+                            if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, &m.value) {
                                 found_match = true;
                                 let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
                                 for _ in 0..m.count {
@@ -6034,8 +6009,7 @@ fn process_continuation<C: EvalContext>(
                         } else {
                             let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
-                                pattern_match(&pattern, atom).is_some()
-                                    || pattern_match(atom, &pattern).is_some()
+                                crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern, atom).is_some()
                             })
                         };
                         work_stack.push(WorkItem::Resume {
@@ -6060,15 +6034,7 @@ fn process_continuation<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) = pattern_match(&pattern, &m.value) {
-                                found_match = true;
-                                let instantiated =
-                                    apply_bindings(&success_body, &bindings, ctx.factory());
-                                for _ in 0..m.count {
-                                    bodies_to_eval.push(instantiated.clone());
-                                }
-                            } else if let Some(bindings) = pattern_match(&m.value, &pattern)
-                            {
+                            if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern, &m.value) {
                                 found_match = true;
                                 let instantiated =
                                     apply_bindings(&success_body, &bindings, ctx.factory());
@@ -6159,14 +6125,11 @@ fn process_continuation<C: EvalContext>(
                     expected_type: None,
                 });
             } else {
-                // Try to unify with each pattern2 result - bidirectional.
-                // MeTTa's unify is symmetric: variables in either argument
-                // should bind. Try val1-as-pattern first, then val2-as-pattern.
+                // WAM union-find bidirectional unification: handles variables
+                // on both sides, occurs check, and conflict detection.
                 let mut all_bindings = Vec::new();
                 for p2_result in &pattern2_results {
-                    if let Some(bindings) = pattern_match(&val1, p2_result)
-                        .or_else(|| pattern_match(p2_result, &val1))
-                    {
+                    if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&val1, p2_result) {
                         all_bindings.push(bindings);
                     }
                 }

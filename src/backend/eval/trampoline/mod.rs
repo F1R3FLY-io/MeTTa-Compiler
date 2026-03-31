@@ -38,6 +38,7 @@ mod types;
 pub mod engine;
 pub(crate) mod dispatch_hints;
 pub mod session_context;
+pub mod unification;
 
 // Primary entry points
 pub use arena_engine::{

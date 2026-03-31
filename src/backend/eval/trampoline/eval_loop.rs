@@ -1177,6 +1177,11 @@ fn eval_trampoline_inner<C: EvalContext>(
     resume_continuations: Option<Vec<Continuation>>,
     resume_reductions: u64,
 ) -> crate::backend::eval::cesk::EvalOutcome {
+    // Increment eval generation for depth-aware subgoal tabling.
+    // Each trampoline entry gets a unique generation so sibling branches
+    // and cross-trampoline calls don't trigger false cycle detection.
+    crate::backend::eval::cesk::increment_eval_generation();
+
     // Debug tracing controlled by environment variable (cached — one syscall per process)
     let debug_eval = is_debug_eval();
     let mut eval_count: u64 = 0;
@@ -1481,8 +1486,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // dependent and must not be cached by content hash).
                 if is_sexpr && depth >= 2 && !value.has_variables_fast() {
                     let tabling_hash = value.hash_value();
+                    let cont_pos = continuations.len() as u32;
                     let lookup = crate::backend::eval::cesk::with_subgoal_table(|t| {
-                        t.lookup(tabling_hash, depth as u32)
+                        t.lookup(tabling_hash, depth as u32, cont_pos)
                     });
                     match lookup {
                         crate::backend::eval::cesk::TableLookup::Complete(cached) => {
@@ -1498,12 +1504,53 @@ fn eval_trampoline_inner<C: EvalContext>(
                             continue;
                         }
                         crate::backend::eval::cesk::TableLookup::Absent => {
-                            // Push CompleteSubgoal continuation so results are cached
+                            // Push CompleteSubgoal continuation so results are cached.
+                            // The cont_stack_pos passed to lookup records THIS position.
                             continuations.push(Continuation::CompleteSubgoal {
                                 expr_hash: tabling_hash,
                                 env: env.clone(),
                                 depth,
                             });
+                        }
+                        crate::backend::eval::cesk::TableLookup::Bypass => {
+                            // Active entry from a different generation —
+                            // evaluate normally without tabling.
+                        }
+                        crate::backend::eval::cesk::TableLookup::PossibleCycle {
+                            partial_results, cont_stack_pos,
+                        } => {
+                            // Stack-validated cycle detection: check if the
+                            // CompleteSubgoal for this hash is still on the
+                            // continuation stack at the recorded position.
+                            let is_true_cycle = (cont_stack_pos as usize) < continuations.len()
+                                && matches!(
+                                    &continuations[cont_stack_pos as usize],
+                                    Continuation::CompleteSubgoal { expr_hash: h, .. }
+                                    if *h == tabling_hash
+                                );
+
+                            if is_true_cycle {
+                                // True cycle: return partial results
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::from_vec(partial_results.into_vec()), env),
+                                });
+                                continue;
+                            } else {
+                                // Stale Active entry: CompleteSubgoal already
+                                // fired or was displaced. Abandon and re-evaluate.
+                                crate::backend::eval::cesk::with_subgoal_table(|t| {
+                                    t.abandon(tabling_hash);
+                                });
+                                let new_cont_pos = continuations.len() as u32;
+                                crate::backend::eval::cesk::with_subgoal_table(|t| {
+                                    t.lookup(tabling_hash, depth as u32, new_cont_pos);
+                                });
+                                continuations.push(Continuation::CompleteSubgoal {
+                                    expr_hash: tabling_hash,
+                                    env: env.clone(),
+                                    depth,
+                                });
+                            }
                         }
                     }
                 }

@@ -53,12 +53,37 @@
 //! Default capacity: 1024 entries. Auto-grows via HashMap. Entries are evicted
 //! based on LRU order when capacity is exceeded (future enhancement).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use smallvec::SmallVec;
 
 use crate::backend::models::{MettaValue, MettaValueTrait};
+
+// ============================================================================
+// Eval Generation Counter
+// ============================================================================
+
+thread_local! {
+    /// Monotonic counter incremented on each trampoline entry.
+    /// Used to distinguish true cycles (same generation, deeper depth)
+    /// from sibling branch re-entries (different generation or same depth).
+    static EVAL_GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Get the current eval generation (thread-local).
+pub fn current_eval_generation() -> u64 {
+    EVAL_GENERATION.with(|g| g.get())
+}
+
+/// Increment and return the new eval generation (called on trampoline entry).
+pub fn increment_eval_generation() -> u64 {
+    EVAL_GENERATION.with(|g| {
+        let new = g.get().wrapping_add(1);
+        g.set(new);
+        new
+    })
+}
 
 // ============================================================================
 // Table Entry
@@ -89,23 +114,36 @@ pub struct TableEntry<V: MettaValueTrait> {
     pub hit_count: u32,
 
     /// Evaluation depth at which this subgoal was first tabled.
-    /// Used for cycle detection diagnostics.
+    /// Used for depth-aware cycle detection: true cycles re-enter
+    /// at GREATER depth within the same generation.
     pub origin_depth: u32,
 
+    /// Eval generation when this entry was created.
+    /// Together with origin_depth, distinguishes true cycles
+    /// (same generation + deeper) from sibling branch re-entries
+    /// (different generation or equal/lesser depth).
+    pub origin_generation: u64,
+
     /// Mutation epoch when this entry was created/completed.
-    /// Used to invalidate stale entries after impure operations
-    /// (change-state!, add-atom, etc.) modify the environment.
     pub mutation_epoch: u64,
+
+    /// Position in the continuation stack where `CompleteSubgoal` was pushed.
+    /// Used for stack-validated cycle detection: before returning Cycle,
+    /// the caller checks if `CompleteSubgoal` is still at this position.
+    /// If not (fired or displaced), the Active entry is stale.
+    pub cont_stack_pos: u32,
 }
 
 impl<V: MettaValueTrait> TableEntry<V> {
-    fn new_active(depth: u32, epoch: u64) -> Self {
+    fn new_active(depth: u32, epoch: u64, generation: u64, cont_stack_pos: u32) -> Self {
         Self {
             state: TableEntryState::Active,
             results: SmallVec::new(),
             hit_count: 0,
             origin_depth: depth,
+            origin_generation: generation,
             mutation_epoch: epoch,
+            cont_stack_pos,
         }
     }
 }
@@ -128,6 +166,21 @@ pub enum TableLookup<V: MettaValueTrait> {
     /// Returns any partial results accumulated so far.
     /// The caller should use these as the result and NOT re-evaluate.
     Cycle(SmallVec<[V; 2]>),
+
+    /// Subgoal is Active but from a different eval context (sibling branch
+    /// or different trampoline generation). NOT a true cycle — caller should
+    /// evaluate normally WITHOUT tabling this occurrence.
+    Bypass,
+
+    /// Subgoal is Active from the same generation at greater depth.
+    /// MIGHT be a true cycle, but needs stack validation: caller must check
+    /// that `CompleteSubgoal` for this hash is still on the continuation
+    /// stack at `cont_stack_pos`. If yes → true cycle (use partial results).
+    /// If no → stale Active entry (abandon and re-evaluate).
+    PossibleCycle {
+        partial_results: SmallVec<[V; 2]>,
+        cont_stack_pos: u32,
+    },
 }
 
 /// Thread-local subgoal table for memoizing intermediate derivation results.
@@ -173,29 +226,36 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
     /// - `Cycle(partial)` if currently being evaluated — cycle detected
     ///
     /// On `Absent`, automatically creates an `Active` entry to detect future cycles.
-    pub fn lookup(&mut self, expr_hash: u64, depth: u32) -> TableLookup<V> {
+    pub fn lookup(&mut self, expr_hash: u64, depth: u32, cont_stack_pos: u32) -> TableLookup<V> {
         let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+        let generation = current_eval_generation();
+
         if let Some(entry) = self.entries.get_mut(&expr_hash) {
             // Stale epoch: a mutation occurred since this entry was tabled.
             if entry.mutation_epoch != current_epoch {
                 match entry.state {
                     TableEntryState::Complete => {
-                        // Stale cached result — evict and re-evaluate.
                         self.entries.remove(&expr_hash);
                         self.total_misses += 1;
-                        self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch));
+                        self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch, generation, cont_stack_pos));
                         return TableLookup::Absent;
                     }
                     TableEntryState::Active => {
-                        // Active entries are cycle-detection sentinels — preserve them
-                        // even across epoch boundaries. Evicting would break cycle
-                        // detection for recursive rules that trigger mutations
-                        // (e.g., PLN backward chaining with println!/add-atom).
-                        self.total_cycles += 1;
-                        return TableLookup::Cycle(entry.results.clone());
+                        if entry.origin_generation == generation && depth > entry.origin_depth {
+                            // Might be a true cycle — let caller validate via stack position.
+                            return TableLookup::PossibleCycle {
+                                partial_results: entry.results.clone(),
+                                cont_stack_pos: entry.cont_stack_pos,
+                            };
+                        }
+                        self.entries.remove(&expr_hash);
+                        self.total_misses += 1;
+                        self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch, generation, cont_stack_pos));
+                        return TableLookup::Absent;
                     }
                 }
             }
+
             entry.hit_count += 1;
             match entry.state {
                 TableEntryState::Complete => {
@@ -203,13 +263,20 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
                     TableLookup::Complete(entry.results.clone())
                 }
                 TableEntryState::Active => {
-                    self.total_cycles += 1;
-                    TableLookup::Cycle(entry.results.clone())
+                    if entry.origin_generation == generation && depth > entry.origin_depth {
+                        // Might be a true cycle — let caller validate via stack position.
+                        TableLookup::PossibleCycle {
+                            partial_results: entry.results.clone(),
+                            cont_stack_pos: entry.cont_stack_pos,
+                        }
+                    } else {
+                        TableLookup::Bypass
+                    }
                 }
             }
         } else {
             self.total_misses += 1;
-            self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch));
+            self.entries.insert(expr_hash, TableEntry::new_active(depth, current_epoch, generation, cont_stack_pos));
             TableLookup::Absent
         }
     }
@@ -453,7 +520,7 @@ mod tests {
         let expr = f().sexpr(vec![f().atom("f"), make_long(1)]);
         let hash = hash_expr(&expr);
 
-        match table.lookup(hash, 0) {
+        match table.lookup(hash, 0, 0) {
             TableLookup::Absent => {} // Expected
             other => panic!("Expected Absent, got {:?}", other),
         }
@@ -470,14 +537,14 @@ mod tests {
         let hash = hash_expr(&expr);
 
         // First lookup: Absent (creates Active entry)
-        table.lookup(hash, 0);
+        table.lookup(hash, 0, 0);
 
-        // Second lookup: Cycle (re-entry while Active)
-        match table.lookup(hash, 1) {
-            TableLookup::Cycle(results) => {
-                assert!(results.is_empty()); // No partial results yet
+        // Second lookup at deeper depth: PossibleCycle (needs stack validation)
+        match table.lookup(hash, 1, 0) {
+            TableLookup::PossibleCycle { partial_results, .. } => {
+                assert!(partial_results.is_empty()); // No partial results yet
             }
-            other => panic!("Expected Cycle, got {:?}", other),
+            other => panic!("Expected PossibleCycle, got {:?}", other),
         }
     }
 
@@ -488,7 +555,7 @@ mod tests {
         let hash = hash_expr(&expr);
 
         // First lookup: Absent
-        table.lookup(hash, 0);
+        table.lookup(hash, 0, 0);
 
         // Complete with results
         let results = smallvec::smallvec![make_long(42)];
@@ -496,7 +563,7 @@ mod tests {
         assert!(table.is_complete(hash));
 
         // Subsequent lookup: Complete (cache hit)
-        match table.lookup(hash, 0) {
+        match table.lookup(hash, 0, 0) {
             TableLookup::Complete(results) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].as_long(), Some(42));
@@ -511,19 +578,19 @@ mod tests {
         let hash = 12345u64;
 
         // First lookup: Absent
-        table.lookup(hash, 0);
+        table.lookup(hash, 0, 0);
 
         // Add partial results while Active
         table.add_partial_results(hash, &[make_long(1), make_long(2)]);
 
-        // Cycle re-entry should return partial results
-        match table.lookup(hash, 1) {
-            TableLookup::Cycle(results) => {
-                assert_eq!(results.len(), 2);
-                assert_eq!(results[0].as_long(), Some(1));
-                assert_eq!(results[1].as_long(), Some(2));
+        // Re-entry at deeper depth should return PossibleCycle with partial results
+        match table.lookup(hash, 1, 0) {
+            TableLookup::PossibleCycle { partial_results, .. } => {
+                assert_eq!(partial_results.len(), 2);
+                assert_eq!(partial_results[0].as_long(), Some(1));
+                assert_eq!(partial_results[1].as_long(), Some(2));
             }
-            other => panic!("Expected Cycle with partial results, got {:?}", other),
+            other => panic!("Expected PossibleCycle with partial results, got {:?}", other),
         }
     }
 
@@ -532,7 +599,7 @@ mod tests {
         let mut table = SubgoalTable::<MettaValue>::new();
         let hash = 99999u64;
 
-        table.lookup(hash, 0);
+        table.lookup(hash, 0, 0);
         assert!(table.is_active(hash));
 
         table.abandon(hash);
@@ -540,7 +607,7 @@ mod tests {
         assert_eq!(table.len(), 0);
 
         // Next lookup should be Absent again
-        match table.lookup(hash, 0) {
+        match table.lookup(hash, 0, 0) {
             TableLookup::Absent => {}
             other => panic!("Expected Absent after abandon, got {:?}", other),
         }
@@ -554,13 +621,13 @@ mod tests {
         let hash2 = 222u64;
         let hash3 = 333u64;
 
-        table.lookup(hash1, 0);
+        table.lookup(hash1, 0, 0);
         table.complete(hash1, smallvec::smallvec![make_long(1)]);
 
-        table.lookup(hash2, 0);
+        table.lookup(hash2, 0, 0);
         table.complete(hash2, smallvec::smallvec![make_long(2), make_long(3)]);
 
-        table.lookup(hash3, 0); // Still active
+        table.lookup(hash3, 0, 0); // Still active
 
         assert!(table.is_complete(hash1));
         assert!(table.is_complete(hash2));
@@ -572,13 +639,13 @@ mod tests {
     fn test_stats() {
         let mut table = SubgoalTable::<MettaValue>::new();
 
-        table.lookup(1, 0); // miss
+        table.lookup(1, 0, 0); // miss
         table.complete(1, smallvec::smallvec![make_long(1)]);
-        table.lookup(1, 0); // hit
-        table.lookup(1, 0); // hit
+        table.lookup(1, 0, 0); // hit
+        table.lookup(1, 0, 0); // hit
 
-        table.lookup(2, 0); // miss
-        table.lookup(2, 1); // cycle
+        table.lookup(2, 0, 0); // miss
+        table.lookup(2, 1, 0); // possible cycle (stack validation needed)
 
         let stats = table.stats();
         assert_eq!(stats.total_entries, 2);
@@ -586,13 +653,14 @@ mod tests {
         assert_eq!(stats.active_entries, 1);
         assert_eq!(stats.total_hits, 2);
         assert_eq!(stats.total_misses, 2);
-        assert_eq!(stats.total_cycles, 1);
+        // PossibleCycle doesn't increment total_cycles (caller decides after validation)
+        assert_eq!(stats.total_cycles, 0);
     }
 
     #[test]
     fn test_clear() {
         let mut table = SubgoalTable::<MettaValue>::new();
-        table.lookup(1, 0);
+        table.lookup(1, 0, 0);
         table.complete(1, smallvec::smallvec![make_long(1)]);
 
         table.clear();
@@ -604,9 +672,9 @@ mod tests {
     #[test]
     fn test_invalidate_all() {
         let mut table = SubgoalTable::<MettaValue>::new();
-        table.lookup(1, 0);
+        table.lookup(1, 0, 0);
         table.complete(1, smallvec::smallvec![make_long(1)]);
-        table.lookup(2, 0);
+        table.lookup(2, 0, 0);
 
         table.invalidate_all();
         assert!(table.is_empty());
@@ -615,9 +683,9 @@ mod tests {
     #[test]
     fn test_collect_roots() {
         let mut table = SubgoalTable::<MettaValue>::new();
-        table.lookup(1, 0);
+        table.lookup(1, 0, 0);
         table.add_partial_results(1, &[make_long(10)]);
-        table.lookup(2, 0);
+        table.lookup(2, 0, 0);
         table.complete(2, smallvec::smallvec![make_long(20), make_long(30)]);
 
         let mut roots = Vec::new();
@@ -629,12 +697,12 @@ mod tests {
     fn test_thread_local_access() {
         with_subgoal_table(|table| {
             table.clear();
-            table.lookup(42, 0);
+            table.lookup(42, 0, 0);
             table.complete(42, smallvec::smallvec![make_long(99)]);
         });
 
         with_subgoal_table(|table| {
-            match table.lookup(42, 0) {
+            match table.lookup(42, 0, 0) {
                 TableLookup::Complete(results) => {
                     assert_eq!(results[0].as_long(), Some(99));
                 }
@@ -647,7 +715,7 @@ mod tests {
     #[test]
     fn test_stats_display() {
         let mut table = SubgoalTable::<MettaValue>::new();
-        table.lookup(1, 0);
+        table.lookup(1, 0, 0);
         table.complete(1, smallvec::smallvec![make_long(1)]);
 
         let stats = table.stats();

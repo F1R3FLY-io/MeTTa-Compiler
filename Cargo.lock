@@ -578,6 +578,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "counter"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d458e66999348f56fd3ffcfbb7f7951542075ca8359687c703de6500c1ddccd"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2442,6 +2451,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "multiset"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce8738c9ddd350996cb8b8b718192851df960803764bcdaa3afb44a63b1ddb5c"
+
+[[package]]
 name = "nanorand"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3319,7 +3334,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?branch=f1r3node_dependecies#1ff2110c2158ec13cef46035c6ccc8f5984fdd09"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d25f953a#d25f953a3e5dbfd4b0f1e953b496810da99fa41d"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -3334,7 +3349,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?branch=f1r3node_dependecies#1ff2110c2158ec13cef46035c6ccc8f5984fdd09"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d25f953a#d25f953a3e5dbfd4b0f1e953b496810da99fa41d"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -3343,7 +3358,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?branch=f1r3node_dependecies#1ff2110c2158ec13cef46035c6ccc8f5984fdd09"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d25f953a#d25f953a3e5dbfd4b0f1e953b496810da99fa41d"
 dependencies = [
  "anyhow",
  "quote",
@@ -3387,6 +3402,7 @@ dependencies = [
  "blake3",
  "bytes",
  "chrono",
+ "counter",
  "dashmap",
  "futures",
  "heed",
@@ -3395,6 +3411,7 @@ dependencies = [
  "lazy_static",
  "metrics 0.23.1",
  "monadic",
+ "multiset",
  "once_cell",
  "proptest",
  "proptest-derive",

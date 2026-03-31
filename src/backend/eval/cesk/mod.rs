@@ -71,7 +71,7 @@ pub use reductions::{ReductionCounter, EvalOutcome, SuspendedEval, reduction_bud
 pub use speculative_match::{MatchCandidate, should_speculate, chunk_candidates};
 pub use striped_queue::{StripedQueue, StripedTask, current_worker_id, set_worker_id};
 pub use thread_local_region::{ThreadLocalRegion, RegionGuard, with_thread_local_region, is_thread_region_active};
-pub use tabling::{SubgoalTable, TableLookup, with_subgoal_table, clear_subgoal_table, invalidate_subgoal_table};
+pub use tabling::{SubgoalTable, TableLookup, with_subgoal_table, clear_subgoal_table, invalidate_subgoal_table, current_eval_generation, increment_eval_generation};
 pub use thunk::{ThunkTable, ThunkLookup, with_thunk_table, clear_thunk_table};
 pub use rete_incremental::with_incremental_index;
 pub use adaptive_indexing::with_adaptive_registry;

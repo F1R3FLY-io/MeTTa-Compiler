@@ -1567,7 +1567,20 @@ fn eval_trampoline_inner<C: EvalContext>(
                             } else { false }
                         } else { false }
                     } else { false };
-                    if has_compilable_head {
+                    // Skip tiered dispatch if any argument is a grounded sub-expression
+                    // that needs pre-evaluation (e.g., (+ 1 1)). The bytecode VM
+                    // would dispatch the rule with unevaluated arguments, binding
+                    // $var = (+ 1 1) instead of $var = 2. The tree-walker's Step 2
+                    // correctly pre-evaluates these before rule matching.
+                    let has_grounded_args = if has_compilable_head {
+                        if let Some(items) = value.as_sexpr() {
+                            items.iter().skip(1).any(|arg| {
+                                super::engine::binding_value_needs_eval(arg)
+                            })
+                        } else { false }
+                    } else { false };
+
+                    if has_compilable_head && !has_grounded_args {
                         // Merged: increment per-slot exec counter AND read cached compilation hash
                         // in a single thread-local + generation check (vs 2× for separate calls).
                         let compilation_hash = crate::backend::bytecode::tiered_cache::increment_and_get_hash(value.inner_ptr());
@@ -3193,6 +3206,21 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // ── Stretch Goal 1: Binding-aware deterministic chain ──
                     //
+                    // Guard: if any binding value is a grounded sub-expression
+                    // (e.g., (+ 1 1)), skip SG1 and deferred chain fast paths.
+                    // The materialization fallback pushes as WorkItem::Eval,
+                    // going through eval_sexpr_step_generic Step 2 which
+                    // pre-evaluates grounded args before rule matching.
+                    if bindings.iter().any(|(_, val)| {
+                        super::engine::binding_value_needs_eval(val)
+                    }) {
+                        let materialized = apply_bindings(&template, &bindings, ctx.factory());
+                        work_stack.push(WorkItem::Eval {
+                            value: materialized, env, depth, is_tail_call, expected_type,
+                        });
+                        continue;
+                    }
+
                     // For user-defined deterministic functions, try to chain
                     // through multiple rule applications without returning to
                     // the full trampoline dispatch loop. This saves 2-3 trampoline

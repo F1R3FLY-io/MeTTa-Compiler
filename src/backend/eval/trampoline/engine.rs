@@ -912,6 +912,25 @@ pub enum SwitchResult {
 /// - `factory`: The factory for constructing new values
 ///
 /// # Returns
+/// Check if a binding value is a grounded sub-expression that needs
+/// pre-evaluation before rule dispatch (e.g., `(+ 1 1)` should become `2`).
+///
+/// Used by the `EvalWithBindings` handler to detect when SG1/deferred-chain
+/// fast paths must be bypassed in favor of the materialization path, which
+/// goes through Step 2 (applicative pre-evaluation of grounded args).
+#[inline]
+pub fn binding_value_needs_eval(value: &MettaValue) -> bool {
+    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
+    if let Some(items) = value.as_sexpr() {
+        if let Some(first) = items.first() {
+            if let Some(head) = first.as_atom() {
+                return is_grounded_op(head) || is_eager_special_form(head);
+            }
+        }
+    }
+    false
+}
+
 ///
 /// - `SwitchResult::Match(template, bindings)` if a pattern matches
 /// - `SwitchResult::NoMatch` if no pattern matches

@@ -281,6 +281,45 @@ fn print_kind_details(kind: &TraceEventKind) {
         TraceEventKind::WorkPoolWorkerUnblocked { worker_id } => {
             println!("  WorkPoolWorkerUnblocked {{ worker: {} }}", worker_id);
         }
+        TraceEventKind::LetBindingStep { pattern, evaluated_value, success, bindings, form, pair_index } => {
+            print!("  LetBindingStep {{ form: {form}, ");
+            if let Some(idx) = pair_index { print!("pair: {idx}, "); }
+            print!("pattern: {pattern}, value: {evaluated_value}, success: {success}");
+            if !bindings.is_empty() {
+                print!(", bindings: {{ ");
+                for (i, (k, v)) in bindings.iter().enumerate() {
+                    if i > 0 { print!(", "); }
+                    print!("{k} = {v}");
+                }
+                print!(" }}");
+            }
+            println!(" }}");
+        }
+        TraceEventKind::ArgumentPreEvalResult { arg_index, before, after, changed } => {
+            println!("  ArgumentPreEvalResult {{ arg[{arg_index}]: {before} => {after}, changed: {changed} }}");
+        }
+        TraceEventKind::TablingDecision { expr_hash, decision, result_count } => {
+            print!("  TablingDecision {{ hash: {expr_hash:#x}, decision: {decision}");
+            if let Some(n) = result_count { print!(", results: {n}"); }
+            println!(" }}");
+        }
+        TraceEventKind::BindingsApplied { template, bindings, result } => {
+            print!("  BindingsApplied {{ template: {template}");
+            if !bindings.is_empty() {
+                print!(", bindings: {{ ");
+                for (i, (k, v)) in bindings.iter().enumerate() {
+                    if i > 0 { print!(", "); }
+                    print!("{k} = {v}");
+                }
+                print!(" }}");
+            }
+            println!(", result: {result} }}");
+        }
+        TraceEventKind::RuleSelected { selected_rhs, selected_index, total_matches, rule_span } => {
+            print!("  RuleSelected {{ index: {selected_index}/{total_matches}, rhs: {selected_rhs}");
+            if let Some(span) = rule_span { print!(", span: {}:{}", span.start_row, span.start_col); }
+            println!(" }}");
+        }
     }
 }
 

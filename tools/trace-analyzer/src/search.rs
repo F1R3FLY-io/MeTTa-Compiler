@@ -72,6 +72,27 @@ fn kind_matches_pattern(kind: &TraceEventKind, pattern: &str) -> bool {
         | TraceEventKind::WorkPoolMonitorTick { .. }
         | TraceEventKind::WorkPoolWorkerBlocked { .. }
         | TraceEventKind::WorkPoolWorkerUnblocked { .. } => false,
+        TraceEventKind::LetBindingStep { pattern: pat, evaluated_value, form, bindings, .. } => {
+            let p = pat.to_string();
+            let v = evaluated_value.to_string();
+            p.contains(pattern) || v.contains(pattern)
+                || form.contains(pattern)
+                || bindings.iter().any(|(k, bv)| k.contains(pattern) || bv.to_string().contains(pattern))
+        }
+        TraceEventKind::ArgumentPreEvalResult { before, after, .. } => {
+            before.to_string().contains(pattern) || after.to_string().contains(pattern)
+        }
+        TraceEventKind::TablingDecision { decision, .. } => {
+            decision.to_string().contains(pattern) || pattern == "TablingDecision"
+        }
+        TraceEventKind::BindingsApplied { template, result, bindings, .. } => {
+            template.to_string().contains(pattern)
+                || result.to_string().contains(pattern)
+                || bindings.iter().any(|(k, bv)| k.contains(pattern) || bv.to_string().contains(pattern))
+        }
+        TraceEventKind::RuleSelected { selected_rhs, .. } => {
+            selected_rhs.to_string().contains(pattern) || pattern == "RuleSelected"
+        }
         _ => false,
     }
 }

@@ -128,6 +128,11 @@ fn event_name(kind: &TraceEventKind) -> String {
         TraceEventKind::WorkPoolMonitorTick { .. } => "WP:Tick".to_string(),
         TraceEventKind::WorkPoolWorkerBlocked { worker_id, .. } => format!("WP:WorkerBlocked[{worker_id}]"),
         TraceEventKind::WorkPoolWorkerUnblocked { worker_id, .. } => format!("WP:WorkerUnblocked[{worker_id}]"),
+        TraceEventKind::LetBindingStep { form, .. } => format!("LetBindingStep:{form}"),
+        TraceEventKind::ArgumentPreEvalResult { arg_index, .. } => format!("ArgPreEval[{arg_index}]"),
+        TraceEventKind::TablingDecision { decision, .. } => format!("Tabling:{decision}"),
+        TraceEventKind::BindingsApplied { .. } => "BindingsApplied".to_string(),
+        TraceEventKind::RuleSelected { selected_index, total_matches, .. } => format!("RuleSelected:{selected_index}/{total_matches}"),
     }
 }
 
@@ -158,5 +163,9 @@ fn event_category(kind: &TraceEventKind) -> &'static str {
         | TraceEventKind::WorkPoolMonitorTick { .. }
         | TraceEventKind::WorkPoolWorkerBlocked { .. }
         | TraceEventKind::WorkPoolWorkerUnblocked { .. } => "workpool",
+        TraceEventKind::LetBindingStep { .. } | TraceEventKind::BindingsApplied { .. } => "binding",
+        TraceEventKind::ArgumentPreEvalResult { .. } => "preeval",
+        TraceEventKind::TablingDecision { .. } => "tabling",
+        TraceEventKind::RuleSelected { .. } => "rule",
     }
 }

@@ -209,5 +209,10 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::WorkPoolMonitorTick { .. } => "WorkPoolMonitorTick",
         TraceEventKind::WorkPoolWorkerBlocked { .. } => "WorkPoolWorkerBlocked",
         TraceEventKind::WorkPoolWorkerUnblocked { .. } => "WorkPoolWorkerUnblocked",
+        TraceEventKind::LetBindingStep { .. } => "LetBindingStep",
+        TraceEventKind::ArgumentPreEvalResult { .. } => "ArgumentPreEvalResult",
+        TraceEventKind::TablingDecision { .. } => "TablingDecision",
+        TraceEventKind::BindingsApplied { .. } => "BindingsApplied",
+        TraceEventKind::RuleSelected { .. } => "RuleSelected",
     }
 }

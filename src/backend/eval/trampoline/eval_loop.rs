@@ -1485,6 +1485,23 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Step 1: Cycle detection via active evaluation set.
                     // True cycle = expression is on its own call stack.
                     if crate::backend::eval::cesk::is_actively_evaluating(tabling_hash) {
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            if let Some(tc) = ctx.trace_collector() {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    depth as u32,
+                                    crate::backend::trace::trace_value_generic(&value),
+                                    vec![],
+                                    None,
+                                    trace_format::TraceEventKind::TablingDecision {
+                                        expr_hash: tabling_hash,
+                                        decision: trace_format::TablingDecisionKind::CycleDetected,
+                                        result_count: Some(0),
+                                    },
+                                );
+                            }
+                        }
                         work_stack.push(WorkItem::Resume {
                             result: (SmallVec::new(), env),
                         });
@@ -1497,12 +1514,46 @@ fn eval_trampoline_inner<C: EvalContext>(
                     });
                     match lookup {
                         crate::backend::eval::cesk::TableLookup::Complete(cached) => {
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&value),
+                                        cached.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                        None,
+                                        trace_format::TraceEventKind::TablingDecision {
+                                            expr_hash: tabling_hash,
+                                            decision: trace_format::TablingDecisionKind::CacheHit,
+                                            result_count: Some(cached.len() as u32),
+                                        },
+                                    );
+                                }
+                            }
                             work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::from_vec(cached.into_vec()), env),
                             });
                             continue;
                         }
                         crate::backend::eval::cesk::TableLookup::Absent => {
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                if let Some(tc) = ctx.trace_collector() {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        depth as u32,
+                                        crate::backend::trace::trace_value_generic(&value),
+                                        vec![],
+                                        None,
+                                        trace_format::TraceEventKind::TablingDecision {
+                                            expr_hash: tabling_hash,
+                                            decision: trace_format::TablingDecisionKind::CacheMiss,
+                                            result_count: None,
+                                        },
+                                    );
+                                }
+                            }
                             // First evaluation: mark active, push CompleteSubgoal.
                             crate::backend::eval::cesk::mark_eval_active(tabling_hash);
                             continuations.push(Continuation::CompleteSubgoal {
@@ -3010,6 +3061,25 @@ fn eval_trampoline_inner<C: EvalContext>(
                         || bindings.iter().any(|(_, val)| super::engine::binding_value_needs_eval(val))
                     {
                         let materialized = apply_bindings(&template, &bindings, ctx.factory());
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            if let Some(tc) = ctx.trace_collector() {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    depth as u32,
+                                    crate::backend::trace::trace_value_generic(&template),
+                                    vec![crate::backend::trace::trace_value_generic(&materialized)],
+                                    None,
+                                    trace_format::TraceEventKind::BindingsApplied {
+                                        template: crate::backend::trace::trace_value_generic(&template),
+                                        bindings: bindings.iter()
+                                            .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                            .collect(),
+                                        result: crate::backend::trace::trace_value_generic(&materialized),
+                                    },
+                                );
+                            }
+                        }
                         work_stack.push(WorkItem::Eval {
                             value: materialized, env, depth, is_tail_call, expected_type,
                         });
@@ -8016,7 +8086,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::CompleteSubgoal {
             expr_hash,
             env: _,
-            depth: _,
+            depth,
         } => {
             let (result_values, result_env) = result;
 
@@ -8032,6 +8102,26 @@ fn process_continuation<C: EvalContext>(
                 crate::backend::eval::cesk::with_subgoal_table(|t| {
                     t.complete(expr_hash, cached);
                 });
+            }
+
+            #[cfg(feature = "eval-trace")]
+            {
+                if let Some(tc) = ctx.trace_collector() {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        crate::backend::trace::trace_value_generic(
+                            &result_values.first().copied().unwrap_or_else(|| ctx.factory().unit())
+                        ),
+                        result_values.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        None,
+                        trace_format::TraceEventKind::TablingDecision {
+                            expr_hash,
+                            decision: trace_format::TablingDecisionKind::CompleteStore,
+                            result_count: Some(result_values.len() as u32),
+                        },
+                    );
+                }
             }
 
             work_stack.push(WorkItem::Resume {

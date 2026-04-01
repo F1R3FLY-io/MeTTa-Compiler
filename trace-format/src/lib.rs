@@ -10,14 +10,17 @@
 pub use postcard;
 use serde::{Deserialize, Serialize};
 
-/// Magic bytes identifying a MeTTaTron trace file (format v2).
-pub const TRACE_MAGIC: [u8; 8] = *b"MTRACE\x00\x02";
+/// Magic bytes identifying a MeTTaTron trace file (format v3).
+pub const TRACE_MAGIC: [u8; 8] = *b"MTRACE\x00\x03";
 
 /// Magic bytes for format v1 (accepted by reader for backward compatibility).
 pub const TRACE_MAGIC_V1: [u8; 8] = *b"MTRACE\x00\x01";
 
+/// Magic bytes for format v2 (accepted by reader for backward compatibility).
+pub const TRACE_MAGIC_V2: [u8; 8] = *b"MTRACE\x00\x02";
+
 /// Current trace format version.
-pub const TRACE_FORMAT_VERSION: u32 = 2;
+pub const TRACE_FORMAT_VERSION: u32 = 3;
 
 /// Serialize a value to postcard bytes.
 pub fn serialize<T: serde::Serialize>(value: &T) -> Vec<u8> {
@@ -58,6 +61,30 @@ pub enum TraceValue {
     Type(Box<TraceValue>),
     Empty,
     Quoted(Box<TraceValue>),
+}
+
+/// Kind of tabling decision for the TablingDecision trace event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TablingDecisionKind {
+    /// True cycle detected (expression on its own call stack).
+    CycleDetected,
+    /// Cache hit — returning previously computed Complete results.
+    CacheHit,
+    /// Cache miss — first evaluation, marking active.
+    CacheMiss,
+    /// Evaluation complete — storing results in cache.
+    CompleteStore,
+}
+
+impl std::fmt::Display for TablingDecisionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CycleDetected => write!(f, "cycle-detected"),
+            Self::CacheHit => write!(f, "cache-hit"),
+            Self::CacheMiss => write!(f, "cache-miss"),
+            Self::CompleteStore => write!(f, "complete-store"),
+        }
+    }
 }
 
 impl std::fmt::Display for TraceValue {
@@ -510,6 +537,68 @@ pub enum TraceEventKind {
     WorkPoolWorkerUnblocked {
         /// Worker thread index
         worker_id: u32,
+    },
+
+    // ---- Binding & Memoization Diagnostics ----
+
+    /// Per-binding event in let/let* showing the pattern match result.
+    LetBindingStep {
+        /// The pattern being matched (e.g., `$x`, `($a $b)`).
+        pattern: TraceValue,
+        /// The evaluated value being matched against.
+        evaluated_value: TraceValue,
+        /// Whether the pattern match succeeded.
+        success: bool,
+        /// Resulting bindings from the pattern match.
+        bindings: Vec<(String, TraceValue)>,
+        /// "let" or "let*"
+        form: String,
+        /// For let*, which binding pair index (0-based).
+        pair_index: Option<u32>,
+    },
+
+    /// Result of pre-evaluating a grounded argument (Step 2 / CollectGroundedArg).
+    ArgumentPreEvalResult {
+        /// Index of the argument in the parent S-expression (0-based).
+        arg_index: u16,
+        /// The unevaluated argument expression.
+        before: TraceValue,
+        /// The evaluated result.
+        after: TraceValue,
+        /// Whether the argument changed (false = fixpoint, returned unchanged).
+        changed: bool,
+    },
+
+    /// Subgoal tabling system decision.
+    TablingDecision {
+        /// Hash of the expression.
+        expr_hash: u64,
+        /// What happened: CycleDetected, CacheHit, CacheMiss, CompleteStore
+        decision: TablingDecisionKind,
+        /// Number of cached results (for CacheHit and CompleteStore).
+        result_count: Option<u32>,
+    },
+
+    /// When `apply_bindings` instantiates a template with bindings.
+    BindingsApplied {
+        /// The template before substitution.
+        template: TraceValue,
+        /// The bindings being applied.
+        bindings: Vec<(String, TraceValue)>,
+        /// The result after substitution.
+        result: TraceValue,
+    },
+
+    /// When dispatching from matched rules, which rule was selected.
+    RuleSelected {
+        /// The selected rule's RHS.
+        selected_rhs: TraceValue,
+        /// Index of the selected rule among matches (0-based).
+        selected_index: u32,
+        /// Total number of matching rules.
+        total_matches: u32,
+        /// Source span of the selected rule definition.
+        rule_span: Option<TraceSpan>,
     },
 }
 

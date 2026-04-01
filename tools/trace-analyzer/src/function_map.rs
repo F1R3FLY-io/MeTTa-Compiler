@@ -333,7 +333,12 @@ pub fn classify_trace_event(kind: &TraceEventKind) -> TraceCategory {
         | TraceEventKind::WorkPoolCompensatoryAction { .. }
         | TraceEventKind::WorkPoolMonitorTick { .. }
         | TraceEventKind::WorkPoolWorkerBlocked { .. }
-        | TraceEventKind::WorkPoolWorkerUnblocked { .. } => TraceCategory::Other,
+        | TraceEventKind::WorkPoolWorkerUnblocked { .. }
+        | TraceEventKind::LetBindingStep { .. }
+        | TraceEventKind::ArgumentPreEvalResult { .. }
+        | TraceEventKind::TablingDecision { .. }
+        | TraceEventKind::BindingsApplied { .. }
+        | TraceEventKind::RuleSelected { .. } => TraceCategory::Other,
     }
 }
 

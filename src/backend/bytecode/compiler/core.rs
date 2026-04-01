@@ -1256,11 +1256,28 @@ where
             return self.compile_case_fallback(args);
         };
 
+        // Install case barrier to catch failing scrutinees. If the scrutinee
+        // produces zero results (Fail), the barrier redirects execution to
+        // push the `Empty` atom, matching MeTTa HE case semantics.
+        let barrier_jump = self.builder.emit_jump(Opcode::CaseBarrierBegin);
+
         // Compile scrutinee (not in tail position — it's an input)
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
         self.compile(scrutinee)?;
         self.in_tail_position = saved_tail;
+
+        // Scrutinee succeeded: remove barrier
+        self.builder.emit(Opcode::CaseBarrierEnd);
+        let skip_handler = self.builder.emit_jump(Opcode::Jump);
+
+        // Handler: push Empty atom (reached when scrutinee fails)
+        self.builder.patch_jump(barrier_jump);
+        let empty_atom = self.factory.atom("Empty");
+        let empty_idx = self.builder.add_constant(empty_atom);
+        self.builder.emit_u16(Opcode::PushConstant, empty_idx);
+
+        self.builder.patch_jump(skip_handler);
 
         if pairs.is_empty() {
             // No arms: pop scrutinee, push empty

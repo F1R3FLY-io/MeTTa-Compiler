@@ -2067,6 +2067,14 @@ impl JitCompiler {
                 return handlers::compile_commit(&mut nondet_ctx, codegen, chunk, offset);
             }
 
+            // Case barrier opcodes: the JIT delegates case evaluation to the
+            // runtime via eval_case_func_id, which handles Empty semantics.
+            // These opcodes only affect the bytecode VM's op_fail path.
+            // Case barrier opcodes: the JIT delegates case to runtime.
+            // These only affect the bytecode VM's op_fail path.
+            Opcode::CaseBarrierBegin | Opcode::CaseBarrierEnd => {
+                return Ok(());
+            }
             Opcode::Backtrack => {
                 let mut nondet_ctx = handlers::NondetHandlerContext {
                     module: &mut self.module,

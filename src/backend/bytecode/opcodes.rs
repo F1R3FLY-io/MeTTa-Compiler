@@ -161,6 +161,13 @@ pub enum Opcode {
     Commit = 0x6B,
     /// Force immediate backtracking
     Backtrack = 0x6C,
+    /// Case scrutinee fail barrier begin: saves state, installs handler for Empty.
+    /// Operand: i16 relative offset to handler that pushes the Empty atom.
+    /// When `Fail` fires during scrutinee evaluation, the barrier catches it,
+    /// restores state, and jumps to the handler which pushes `Empty`.
+    CaseBarrierBegin = 0x6D,
+    /// Case scrutinee fail barrier end: removes the barrier (scrutinee succeeded).
+    CaseBarrierEnd = 0x6E,
 
     // === Pattern Matching (0x70-0x8F) ===
     /// Full pattern match: [pattern, value] -> [bool]
@@ -601,6 +608,7 @@ impl Opcode {
             | Self::ConsAtom
             | Self::Guard
             | Self::Backtrack
+            | Self::CaseBarrierEnd
             | Self::TupleConcat
             | Self::TupleCount
             | Self::Without
@@ -666,6 +674,7 @@ impl Opcode {
             | Self::Fork
             | Self::Collect
             | Self::CollapseBegin
+            | Self::CaseBarrierBegin
             | Self::JumpIfIdentical => 2,
 
             // 3-byte immediate (2-byte head_index + 1-byte arity)
@@ -749,6 +758,8 @@ impl Opcode {
             Self::Guard => "guard",
             Self::Commit => "commit",
             Self::Backtrack => "backtrack",
+            Self::CaseBarrierBegin => "case_barrier_begin",
+            Self::CaseBarrierEnd => "case_barrier_end",
             Self::Match => "match",
             Self::MatchBind => "match_bind",
             Self::MatchHead => "match_head",
@@ -897,6 +908,7 @@ impl Opcode {
                 | Self::JumpIfFalseShort
                 | Self::JumpIfTrueShort
                 | Self::CollapseBegin
+                | Self::CaseBarrierBegin
                 | Self::JumpIfIdentical
         )
     }
@@ -1015,6 +1027,8 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x6A] = Some(Opcode::Guard);
     table[0x6B] = Some(Opcode::Commit);
     table[0x6C] = Some(Opcode::Backtrack);
+    table[0x6D] = Some(Opcode::CaseBarrierBegin);
+    table[0x6E] = Some(Opcode::CaseBarrierEnd);
 
     // Pattern matching
     table[0x70] = Some(Opcode::Match);

@@ -220,6 +220,22 @@ where
     /// results instead of re-matching + re-evaluating all RHS bodies.
     /// Key: expression hash via hash_value(). Value: pre-evaluated results.
     pub(crate) dispatch_memo: std::collections::HashMap<u64, (u64, Vec<V>)>,
+
+    /// Case scrutinee fail barrier frames. When `Fail` fires during a case
+    /// scrutinee evaluation, the nearest barrier catches it, restores state,
+    /// and jumps to the handler which pushes `Empty`.
+    case_barrier_frames: Vec<CaseBarrierFrame>,
+}
+
+/// Frame for case scrutinee fail barriers.
+#[derive(Debug, Clone)]
+struct CaseBarrierFrame {
+    handler_ip: usize,
+    choice_point_floor: usize,
+    value_stack_height: usize,
+    call_stack_height: usize,
+    bindings_stack_height: usize,
+    saved_unreduced: bool,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
@@ -273,6 +289,7 @@ where
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
+            case_barrier_frames: Vec::new(),
         }
     }
 
@@ -302,6 +319,7 @@ where
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
+            case_barrier_frames: Vec::new(),
         }
     }
 
@@ -334,6 +352,7 @@ where
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
+            case_barrier_frames: Vec::new(),
         }
     }
 
@@ -1360,6 +1379,8 @@ where
             Opcode::Guard => return self.op_guard(),
             Opcode::Commit => self.op_commit(),
             Opcode::Backtrack => return self.op_fail(),
+            Opcode::CaseBarrierBegin => self.op_case_barrier_begin()?,
+            Opcode::CaseBarrierEnd => self.op_case_barrier_end()?,
 
             // === Advanced Calls ===
             Opcode::CallNative => self.op_call_native()?,
@@ -3417,8 +3438,15 @@ where
 
     fn op_fail(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         trace!(target: "mettatron::vm::nondet", ip = self.ip, choice_points = self.choice_points.len(), "fail");
-        // Backtrack to most recent choice point
-        while let Some(mut cp) = self.choice_points.pop() {
+
+        // Respect case barrier floor: don't backtrack past the barrier scope
+        let barrier_floor = self.case_barrier_frames.last()
+            .map(|b| b.choice_point_floor)
+            .unwrap_or(0);
+
+        // Backtrack to most recent choice point (above barrier floor)
+        while self.choice_points.len() > barrier_floor {
+            let mut cp = self.choice_points.pop().expect("len > floor");
             // Restore state
             self.value_stack.truncate(cp.value_stack_height);
             self.call_stack.truncate(cp.call_stack_height);
@@ -3478,8 +3506,42 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        // No more choice points - return collected results
+        // No choice points above barrier floor. Check case barrier.
+        if let Some(barrier) = self.case_barrier_frames.pop() {
+            // Restore state from barrier and jump to handler (pushes Empty)
+            self.value_stack.truncate(barrier.value_stack_height);
+            self.call_stack.truncate(barrier.call_stack_height);
+            self.bindings_stack.truncate(barrier.bindings_stack_height);
+            self.choice_points.truncate(barrier.choice_point_floor);
+            self.unreduced = barrier.saved_unreduced;
+            self.ip = barrier.handler_ip;
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        // No more choice points or barriers - return collected results
         Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
+    }
+
+    fn op_case_barrier_begin(&mut self) -> VmResult<()> {
+        let offset = self.read_u16()? as i16;
+        let jump_from = self.ip;
+        let handler_ip = (jump_from as isize + offset as isize) as usize;
+        self.case_barrier_frames.push(CaseBarrierFrame {
+            handler_ip,
+            choice_point_floor: self.choice_points.len(),
+            value_stack_height: self.value_stack.len(),
+            call_stack_height: self.call_stack.len(),
+            bindings_stack_height: self.bindings_stack.len(),
+            saved_unreduced: self.unreduced,
+        });
+        Ok(())
+    }
+
+    fn op_case_barrier_end(&mut self) -> VmResult<()> {
+        self.case_barrier_frames.pop().ok_or_else(|| {
+            VmError::Runtime("CaseBarrierEnd without matching CaseBarrierBegin".into())
+        })?;
+        Ok(())
     }
 
     fn op_cut(&mut self) {

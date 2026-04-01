@@ -154,7 +154,7 @@ impl IncrementalIndex {
         let to_invalidate = self.compute_invalidation_set(mutation);
         let mut count = 0;
         for hash in &to_invalidate {
-            table.abandon(*hash);
+            table.remove_entry(*hash);
             count += 1;
         }
         count

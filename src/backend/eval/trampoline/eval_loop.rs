@@ -1479,7 +1479,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // (Active → cycle detection). Only for S-expressions at depth >= 2
                 // that don't contain variables (variable expressions are context-
                 // dependent and must not be cached by content hash).
-                if is_sexpr && depth >= 2 && !value.has_variables_fast() {
+                // Also require should_memoize: impure expressions (those
+                // calling add-atom, change-state!, etc.) must not be tabled
+                // because repeated calls must re-execute their side effects.
+                if is_sexpr && depth >= 2 && !value.has_variables_fast() && should_memoize(&value) {
                     let tabling_hash = value.hash_value();
 
                     // Step 1: Cycle detection via active evaluation set.
@@ -1560,6 +1563,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 expr_hash: tabling_hash,
                                 env: env.clone(),
                                 depth,
+                                start_epoch: mutation_epoch(),
                             });
                         }
                     }
@@ -7323,7 +7327,10 @@ fn process_continuation<C: EvalContext>(
                 // Use to_display_string() - prints strings without quotes
                 println!("{}", atom_result.to_display_string());
             }
-            increment_mutation_epoch();
+            // NOTE: println! does NOT increment mutation epoch — it's a pure
+            // output operation that doesn't change evaluation state. Only
+            // state-modifying operations (add-atom, change-state!, etc.)
+            // should increment the epoch.
 
             work_stack.push(WorkItem::Resume {
                 result: (smallvec![ctx.factory().unit()], env_after),
@@ -8087,16 +8094,19 @@ fn process_continuation<C: EvalContext>(
             expr_hash,
             env: _,
             depth,
+            start_epoch,
         } => {
             let (result_values, result_env) = result;
 
             // Unmark from active evaluation set — this expression is
-            // no longer on the call stack. Must happen BEFORE storing
-            // Complete results so subsequent lookups find Complete, not cycle.
+            // no longer on the call stack.
             crate::backend::eval::cesk::unmark_eval_active(expr_hash);
 
-            // Store results in the subgoal table for future cache hits.
-            {
+            // Only cache if no mutations occurred during evaluation.
+            // If the epoch changed, the expression (or something it
+            // transitively called) performed a side effect — caching
+            // would suppress re-execution on future calls.
+            if start_epoch == mutation_epoch() {
                 let cached: smallvec::SmallVec<[MettaValue; 2]> =
                     result_values.iter().cloned().collect();
                 crate::backend::eval::cesk::with_subgoal_table(|t| {

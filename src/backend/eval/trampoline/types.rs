@@ -744,6 +744,10 @@ pub enum Continuation {
         env: MettaEnvironment,
         /// Evaluation depth.
         depth: usize,
+        /// Mutation epoch when evaluation started (before any side effects).
+        /// If the epoch changed during evaluation, the result is impure and
+        /// must NOT be cached (it would suppress re-execution of side effects).
+        start_epoch: u64,
     },
 
     /// I-6: Complete a thunk after evaluation finishes.

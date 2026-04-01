@@ -2996,6 +2996,26 @@ fn eval_trampoline_inner<C: EvalContext>(
                         None
                     };
 
+                    // ── Grounded sub-expression guard ──
+                    //
+                    // If the template is a user-defined function call with arguments
+                    // whose heads are grounded ops (e.g., (f (+ 1 $x) ...)), OR if
+                    // any binding value is a grounded sub-expression, materialize and
+                    // push as WorkItem::Eval. This goes through eval_step_generic
+                    // Step 2 which pre-evaluates grounded args before rule matching.
+                    //
+                    // Special forms (if, let, chain, case, etc.) handle their own
+                    // argument evaluation, so they're excluded.
+                    if super::engine::template_has_grounded_arg_heads(&template)
+                        || bindings.iter().any(|(_, val)| super::engine::binding_value_needs_eval(val))
+                    {
+                        let materialized = apply_bindings(&template, &bindings, ctx.factory());
+                        work_stack.push(WorkItem::Eval {
+                            value: materialized, env, depth, is_tail_call, expected_type,
+                        });
+                        continue;
+                    }
+
                     // ── `let` with lazy body: the key optimization ──
                     //
                     // For `(let pattern value_expr body)` with pending bindings B:
@@ -3206,21 +3226,6 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // ── Stretch Goal 1: Binding-aware deterministic chain ──
                     //
-                    // Guard: if any binding value is a grounded sub-expression
-                    // (e.g., (+ 1 1)), skip SG1 and deferred chain fast paths.
-                    // The materialization fallback pushes as WorkItem::Eval,
-                    // going through eval_sexpr_step_generic Step 2 which
-                    // pre-evaluates grounded args before rule matching.
-                    if bindings.iter().any(|(_, val)| {
-                        super::engine::binding_value_needs_eval(val)
-                    }) {
-                        let materialized = apply_bindings(&template, &bindings, ctx.factory());
-                        work_stack.push(WorkItem::Eval {
-                            value: materialized, env, depth, is_tail_call, expected_type,
-                        });
-                        continue;
-                    }
-
                     // For user-defined deterministic functions, try to chain
                     // through multiple rule applications without returning to
                     // the full trampoline dispatch loop. This saves 2-3 trampoline

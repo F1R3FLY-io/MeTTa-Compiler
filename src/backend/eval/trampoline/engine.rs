@@ -912,19 +912,76 @@ pub enum SwitchResult {
 /// - `factory`: The factory for constructing new values
 ///
 /// # Returns
-/// Check if a binding value is a grounded sub-expression that needs
-/// pre-evaluation before rule dispatch (e.g., `(+ 1 1)` should become `2`).
+/// Check if a value contains a grounded sub-expression at any depth
+/// that needs pre-evaluation before rule dispatch (e.g., `(+ 1 1)`,
+/// `((+ 1 1) $x)`, `(f (collapse ...))`).
 ///
-/// Used by the `EvalWithBindings` handler to detect when SG1/deferred-chain
-/// fast paths must be bypassed in favor of the materialization path, which
-/// goes through Step 2 (applicative pre-evaluation of grounded args).
-#[inline]
+/// Used by the `EvalWithBindings` handler and tiered dispatch guard to
+/// detect when SG1/deferred-chain fast paths must be bypassed in favor
+/// of the materialization path (Step 2 pre-evaluation).
 pub fn binding_value_needs_eval(value: &MettaValue) -> bool {
     use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
     if let Some(items) = value.as_sexpr() {
         if let Some(first) = items.first() {
             if let Some(head) = first.as_atom() {
-                return is_grounded_op(head) || is_eager_special_form(head);
+                if is_grounded_op(head) || is_eager_special_form(head) {
+                    return true;
+                }
+            }
+        }
+        // Recursively check children
+        for item in items {
+            if binding_value_needs_eval(item) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if a template S-expression has direct arguments whose heads are
+/// grounded ops or eager special forms (e.g., `(f (+ 1 $x) ...)` where
+/// `(+ 1 $x)` has grounded head `+`). These need pre-evaluation before
+/// the expression is dispatched to rule matching.
+///
+/// Only checks user-defined function templates — special forms (if, let,
+/// chain, case, etc.) evaluate their arguments through their own handlers.
+pub fn template_has_grounded_arg_heads(template: &MettaValue) -> bool {
+    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
+
+    if let Some(items) = template.as_sexpr() {
+        // Check if the head is a user-defined function (not a special form)
+        if let Some(first) = items.first() {
+            if let Some(head) = first.as_atom() {
+                // Skip special forms — they handle their own argument evaluation
+                if matches!(head,
+                    "if" | "let" | "let*" | "chain" | "case" | "switch"
+                    | "unify" | "match" | "match-or"
+                    | "superpose" | "collapse" | "collapse-bind"
+                    | "map-atom" | "filter-atom" | "foldl-atom"
+                    | "add-atom" | "remove-atom" | "get-atoms"
+                    | "new-state" | "get-state" | "change-state!"
+                    | "println!" | "trace!" | "nop"
+                    | "quote" | "unquote" | "eval"
+                    | "!" | "sealed" | "atom-subst"
+                    | "new-space" | "bind!" | "import!" | "include"
+                    | "error" | "is-error" | "catch"
+                    | "=" | ":" | ":<"
+                ) {
+                    return false;
+                }
+            }
+        }
+        // Check arguments (skip head at index 0)
+        for item in items.iter().skip(1) {
+            if let Some(sub_items) = item.as_sexpr() {
+                if let Some(first) = sub_items.first() {
+                    if let Some(op) = first.as_atom() {
+                        if is_grounded_op(op) || is_eager_special_form(op) {
+                            return true;
+                        }
+                    }
+                }
             }
         }
     }

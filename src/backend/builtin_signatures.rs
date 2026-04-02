@@ -79,6 +79,31 @@ pub enum TypeExpr {
     IO(Box<TypeExpr>),
 }
 
+impl TypeExpr {
+    /// Check if this type expression is monadic (IO, StateMonad, etc.).
+    pub fn is_monadic(&self) -> bool {
+        matches!(self, TypeExpr::IO(_) | TypeExpr::StateMonad(_))
+    }
+
+    /// Check if this is specifically an IO type.
+    pub fn is_io(&self) -> bool {
+        matches!(self, TypeExpr::IO(_))
+    }
+
+    /// If this is an arrow type, check if its return type is monadic.
+    pub fn is_arrow_returning_monadic(&self) -> bool {
+        matches!(self, TypeExpr::Arrow(_, ret) if ret.is_monadic())
+    }
+
+    /// Extract the inner type if this is monadic.
+    pub fn monadic_inner(&self) -> Option<&TypeExpr> {
+        match self {
+            TypeExpr::IO(inner) | TypeExpr::StateMonad(inner) => Some(inner),
+            _ => None,
+        }
+    }
+}
+
 /// Helper to create arrow types more concisely
 fn arrow(args: Vec<TypeExpr>, ret: TypeExpr) -> TypeExpr {
     TypeExpr::Arrow(args, Box::new(ret))

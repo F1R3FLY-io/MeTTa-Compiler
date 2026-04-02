@@ -127,7 +127,9 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
+    let env = (*env).clone();
 
     drop(_frame_guard);
 
@@ -172,7 +174,9 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
+    let env = (*env).clone();
 
     drop(_frame_guard);
 
@@ -220,7 +224,9 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
+    let env = (*env).clone();
 
     drop(_frame_guard);
 
@@ -259,7 +265,9 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
+    let env = (*env).clone();
 
     drop(_frame_guard);
 
@@ -302,6 +310,7 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
@@ -347,6 +356,7 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
@@ -396,6 +406,7 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),
@@ -439,6 +450,7 @@ where
     };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
     // expected-results is a list literal — extract its children as expected results
     let expected_results: Vec<MettaValue> = match items[2].as_sexpr() {
         Some(children) => children.to_vec(),

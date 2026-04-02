@@ -604,6 +604,46 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
         // Different types = not equivalent
         false
     }
+
+    // ── Monadic type detection ──
+
+    /// Check if this value represents a monadic type like `(IO X)` or `(StateMonad X)`.
+    fn is_monadic_type(&self) -> bool {
+        if let Some(items) = self.as_sexpr() {
+            if items.len() == 2 {
+                if let Some(head) = items[0].as_atom() {
+                    return crate::backend::eval::monad_registry::is_monadic_constructor(head);
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if this value represents an IO type `(IO X)`.
+    fn is_io_type(&self) -> bool {
+        if let Some(items) = self.as_sexpr() {
+            if items.len() == 2 {
+                if let Some(head) = items[0].as_atom() {
+                    return crate::backend::eval::monad_registry::is_io_constructor(head);
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if this is an arrow type returning a monadic type: `(-> ... (IO X))`.
+    fn is_arrow_returning_monadic(&self) -> bool {
+        if let Some(items) = self.as_sexpr() {
+            if items.len() > 1 {
+                if let Some(head) = items[0].as_atom() {
+                    if head == "->" {
+                        return items[items.len() - 1].is_monadic_type();
+                    }
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Trait for constructing MettaValue instances.

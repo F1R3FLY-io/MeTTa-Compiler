@@ -159,14 +159,22 @@ where
                             let mut bindings = HashMap::new();
                             for (i, param_type_expr) in param_types.iter().enumerate() {
                                 if i < actual_args.len() {
+                                    // Skip validation when the formal parameter type is
+                                    // Undefined — it accepts any argument type. Pattern
+                                    // match on TypeExpr::Undefined directly.
+                                    if matches!(param_type_expr, TypeExpr::Undefined) {
+                                        continue;
+                                    }
                                     let arg_type = infer_type_generic(&actual_args[i], factory, env);
                                     // Skip validation for unconstrained types:
                                     // - %Undefined% (untyped atom)
-                                    // - Type($x) (type variable wrapper)
                                     // - $x (variable atom)
-                                    let is_unconstrained = arg_type.as_atom() == Some("%Undefined%")
-                                        || arg_type.as_atom().map_or(false, |n| n.starts_with('$'))
-                                        || arg_type.as_type().and_then(|inner| inner.as_atom()).map_or(false, |n| n.starts_with('$'));
+                                    // - Type($x) (type variable wrapper)
+                                    let is_unconstrained = match arg_type.inner_raw() {
+                                        MettaValueInner::Atom(n) => *n == "%Undefined%" || n.starts_with('$'),
+                                        MettaValueInner::Type(inner) => inner.as_atom().map_or(false, |n| n.starts_with('$')),
+                                        _ => false,
+                                    };
                                     if !is_unconstrained {
                                         let param_type_val = type_expr_to_generic(param_type_expr, factory);
                                         if !match_types_with_bindings(&param_type_val, &arg_type, &mut bindings) {
@@ -549,31 +557,60 @@ where
     F: MettaValueFactory<V> + Clone,
 {
     match op {
-        // (let $var expr body) → type(body)
+        // (let pattern expr body) → type(body), wrapped in IO if expr is monadic
         "let" if items.len() == 4 => {
+            let expr = &items[2];
             let body = &items[3];
-            let types = infer_types_with_cycle_check(body, factory, env, seen);
-            let filtered = filter_undefined(&types);
+            let body_types = infer_types_with_cycle_check(body, factory, env, seen);
+            let filtered = filter_undefined(&body_types);
             if filtered.is_empty() {
                 None
             } else {
-                Some((filtered, "control-flow-let"))
+                // If the bound expression has monadic type, the whole let is monadic
+                let expr_types = infer_types_with_cycle_check(expr, factory, env, seen);
+                let has_monadic = expr_types.iter().any(|t| t.is_monadic_type());
+                if has_monadic {
+                    let wrapped = wrap_types_in_io(&filtered, factory);
+                    Some((wrapped, "control-flow-let"))
+                } else {
+                    Some((filtered, "control-flow-let"))
+                }
             }
         }
 
-        // (let* (bindings...) body) → type(body)
+        // (let* (bindings...) body) → type(body), wrapped in IO if any binding is monadic
         "let*" if items.len() == 3 => {
+            let bindings_expr = &items[1];
             let body = &items[2];
-            let types = infer_types_with_cycle_check(body, factory, env, seen);
-            let filtered = filter_undefined(&types);
+            let body_types = infer_types_with_cycle_check(body, factory, env, seen);
+            let filtered = filter_undefined(&body_types);
             if filtered.is_empty() {
                 None
             } else {
-                Some((filtered, "control-flow-let*"))
+                // Check if any binding value has monadic type (IO, StateMonad, etc.)
+                let has_monadic = if let Some(pairs) = bindings_expr.as_sexpr() {
+                    pairs.iter().any(|pair| {
+                        if let Some(pair_items) = pair.as_sexpr() {
+                            if pair_items.len() == 2 {
+                                let val_types = infer_types_with_cycle_check(
+                                    &pair_items[1], factory, env, seen,
+                                );
+                                return val_types.iter().any(|t| t.is_monadic_type());
+                            }
+                        }
+                        false
+                    })
+                } else { false };
+                if has_monadic {
+                    let wrapped = wrap_types_in_io(&filtered, factory);
+                    Some((wrapped, "control-flow-let*"))
+                } else {
+                    Some((filtered, "control-flow-let*"))
+                }
             }
         }
 
-        // (if cond then else) → type(then) ∪ type(else)
+        // (if cond then else) → type(then) ∪ type(else), wrapped in IO if cond is monadic
         "if" if items.len() == 4 => {
             let then_branch = &items[2];
             let else_branch = &items[3];
@@ -585,11 +622,16 @@ where
             if combined.is_empty() {
                 None
             } else {
-                Some((combined, "control-flow-if"))
+                let cond_types = infer_types_with_cycle_check(&items[1], factory, env, seen);
+                if cond_types.iter().any(|t| t.is_monadic_type()) {
+                    Some((wrap_types_in_io(&combined, factory), "control-flow-if"))
+                } else {
+                    Some((combined, "control-flow-if"))
+                }
             }
         }
 
-        // (if-reducible expr then else) → type(then) ∪ type(else)
+        // (if-reducible expr then else) → type(then) ∪ type(else), wrapped in IO if expr is monadic
         "if-reducible" if items.len() == 4 => {
             let then_branch = &items[2];
             let else_branch = &items[3];
@@ -601,11 +643,16 @@ where
             if combined.is_empty() {
                 None
             } else {
-                Some((combined, "control-flow-if-reducible"))
+                let scrutinee_types = infer_types_with_cycle_check(&items[1], factory, env, seen);
+                if scrutinee_types.iter().any(|t| t.is_monadic_type()) {
+                    Some((wrap_types_in_io(&combined, factory), "control-flow-if-reducible"))
+                } else {
+                    Some((combined, "control-flow-if-reducible"))
+                }
             }
         }
 
-        // (case expr ((pat1 body1) (pat2 body2) ...)) → ∪ type(body_i)
+        // (case expr ((pat1 body1) (pat2 body2) ...)) → ∪ type(body_i), wrapped in IO if scrutinee is monadic
         "case" if items.len() == 3 => {
             if let Some(branches) = items[2].as_sexpr() {
                 let mut combined: Vec<V> = Vec::new();
@@ -623,15 +670,19 @@ where
                 if combined.is_empty() {
                     None
                 } else {
-                    Some((combined, "control-flow-case"))
+                    let scrutinee_types = infer_types_with_cycle_check(&items[1], factory, env, seen);
+                    if scrutinee_types.iter().any(|t| t.is_monadic_type()) {
+                        Some((wrap_types_in_io(&combined, factory), "control-flow-case"))
+                    } else {
+                        Some((combined, "control-flow-case"))
+                    }
                 }
             } else {
                 None
             }
         }
 
-        // (chain expr $var body) → type(body)
-        // Semantically identical to `let` for type purposes.
+        // (chain expr $var body) → type(body), wrapped in IO if expr is monadic
         "chain" if items.len() == 4 => {
             let body = &items[3];
             let types = infer_types_with_cycle_check(body, factory, env, seen);
@@ -639,7 +690,12 @@ where
             if filtered.is_empty() {
                 None
             } else {
-                Some((filtered, "control-flow-chain"))
+                let expr_types = infer_types_with_cycle_check(&items[1], factory, env, seen);
+                if expr_types.iter().any(|t| t.is_monadic_type()) {
+                    Some((wrap_types_in_io(&filtered, factory), "control-flow-chain"))
+                } else {
+                    Some((filtered, "control-flow-chain"))
+                }
             }
         }
 
@@ -1087,24 +1143,51 @@ pub fn is_meta_type(name: &str) -> bool {
 }
 
 /// Check if a type is an IO monad type: `(IO X)`.
+/// Delegates to `MettaValueTrait::is_io_type()` which uses the monad registry.
+#[inline]
 pub fn is_io_type<V: MettaValueTrait>(typ: &V) -> bool {
-    if let Some(items) = typ.as_sexpr() {
-        if items.len() == 2 {
-            if let Some(head) = items[0].as_atom() {
-                return head == "IO";
-            }
+    typ.is_io_type()
+}
+
+/// Check if a type is any monadic effect type: `(IO X)`, `(StateMonad X)`, etc.
+/// Delegates to `MettaValueTrait::is_monadic_type()` which uses the monad registry.
+#[inline]
+pub fn is_monadic_type<V: MettaValueTrait>(typ: &V) -> bool {
+    typ.is_monadic_type()
+}
+
+/// Check if a type is an arrow returning any monadic type: `(-> ... (IO X))`, `(-> ... (StateMonad X))`.
+/// Delegates to `MettaValueTrait::is_arrow_returning_monadic()` which uses the monad registry.
+#[inline]
+pub fn is_arrow_returning_monadic<V: MettaValueTrait>(typ: &V) -> bool {
+    typ.is_arrow_returning_monadic()
+}
+
+/// Wrap each type in `(IO ...)` unless already monadic-wrapped.
+fn wrap_types_in_io<V, F>(types: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    types.iter().map(|t| {
+        if t.is_monadic_type() {
+            t.clone()
+        } else {
+            factory.sexpr(vec![factory.atom("IO"), t.clone()])
         }
-    }
-    false
+    }).collect()
 }
 
 /// Check if a type is an arrow type returning IO: `(-> ... (IO X))`.
+/// Delegates to `MettaValueTrait::is_arrow_returning_monadic()` for IO specifically.
+#[inline]
 pub fn is_arrow_returning_io<V: MettaValueTrait>(typ: &V) -> bool {
+    // For backwards compatibility, check arrow returning specifically IO
     if let Some(items) = typ.as_sexpr() {
         if items.len() > 1 {
             if let Some(head) = items[0].as_atom() {
                 if head == "->" {
-                    return is_io_type(&items[items.len() - 1]);
+                    return items[items.len() - 1].is_io_type();
                 }
             }
         }

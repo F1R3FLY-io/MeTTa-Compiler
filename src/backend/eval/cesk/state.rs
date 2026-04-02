@@ -111,7 +111,7 @@ impl SeckState {
         let mut work_stack = Vec::with_capacity(32);
         work_stack.push(WorkItem::Eval {
             value,
-            env,
+            env: std::sync::Arc::new(env),
             depth: 0,
             is_tail_call: false,
             expected_type: None,
@@ -266,7 +266,7 @@ mod tests {
         let mut state = SeckState::new(f.long(42), env());
 
         state.push_continuation(Continuation::ProcessIsError {
-            env: env(),
+            env: std::sync::Arc::new(env()),
             depth: 0,
         });
         assert_eq!(state.continuation_depth(), 2); // Done + ProcessIsError

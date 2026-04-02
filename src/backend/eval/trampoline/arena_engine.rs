@@ -268,7 +268,7 @@ mod tests {
         let exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in exprs {
             let (results, new_env) = eval_trampoline(expr, env, &state);
-            env = new_env;
+            env = (*new_env).clone();
             all_results.extend(results);
         }
         all_results

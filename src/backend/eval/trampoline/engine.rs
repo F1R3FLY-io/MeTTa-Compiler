@@ -561,7 +561,7 @@ pub fn try_match_rules_with_bindings(
 // ============================================================================
 
 use super::dispatch_hints::{
-    operator_cache_get, is_normal_form_bounded, REDUCIBLE_HEADS,
+    operator_cache_get, is_normal_form_bounded, is_reducible_head,
 };
 
 /// Try to evaluate a deterministic chain of user-defined rule applications
@@ -596,7 +596,7 @@ pub fn try_deterministic_chain(
 
     let head = items[0].as_atom()?;
     if head.starts_with('$') { return None; } // Variable head
-    if REDUCIBLE_HEADS.contains(head) { return None; } // Special form / grounded op
+    if is_reducible_head(head) { return None; } // Special form / grounded op
 
     let arity = items.len() - 1;
     let cache_entry = operator_cache_get(head, arity)?;
@@ -620,7 +620,7 @@ pub fn try_deterministic_chain(
         };
 
         if next_head.starts_with('$') { return Some(current); }
-        if REDUCIBLE_HEADS.contains(next_head) { return None; } // Need trampoline for special forms
+        if is_reducible_head(next_head) { return None; } // Need trampoline for special forms
 
         let next_arity = next_items.len() - 1;
         let next_cache = match operator_cache_get(next_head, next_arity) {
@@ -746,7 +746,7 @@ pub fn try_deferred_deterministic_chain(
 
     // Head must not be a special form or grounded op
     if head.starts_with('$') { return None; }
-    if REDUCIBLE_HEADS.contains(head) { return None; }
+    if is_reducible_head(head) { return None; }
 
     let arity = items.len() - 1;
     let cache_entry = operator_cache_get(head, arity)?;
@@ -785,7 +785,7 @@ pub fn try_deferred_deterministic_chain(
             };
 
             if next_head.starts_with('$') { break; }
-            if REDUCIBLE_HEADS.contains(next_head) { break; }
+            if is_reducible_head(next_head) { break; }
 
             let next_arity = next_items.len() - 1;
             let next_cache = match operator_cache_get(next_head, next_arity) {
@@ -929,10 +929,16 @@ pub fn binding_value_needs_eval(value: &MettaValue) -> bool {
                 }
             }
         }
-        // Recursively check children
-        for item in items {
-            if binding_value_needs_eval(item) {
-                return true;
+        // Shallow check: only inspect direct children (not fully recursive).
+        // Deeply nested grounded sub-expressions like (f (g (+ 1 1))) will be
+        // pre-evaluated when (g (+ 1 1)) is itself evaluated through Step 2.
+        for item in items.iter().skip(1) {
+            if let Some(sub_items) = item.as_sexpr() {
+                if let Some(head) = sub_items.first().and_then(|h| h.as_atom()) {
+                    if is_grounded_op(head) || is_eager_special_form(head) {
+                        return true;
+                    }
+                }
             }
         }
     }

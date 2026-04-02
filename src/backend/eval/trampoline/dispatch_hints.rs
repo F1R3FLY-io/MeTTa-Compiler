@@ -304,50 +304,13 @@ pub fn should_memoize<V: MettaValueTrait>(value: &V) -> bool {
     }
 }
 
-/// Check if a value tree contains any IO-producing sub-expression at any depth,
-/// by checking the inferred types of sub-expression heads against the IO type.
-pub fn contains_io_operation(
-    value: &MettaValue,
-    env: &crate::backend::eval::trampoline::MettaEnvironment,
-) -> bool {
-    if let Some(items) = value.as_sexpr() {
-        if let Some(head) = items.first().and_then(|h| h.as_atom()) {
-            // Check if this head has an IO return type
-            if env.has_inferred_type(head) {
-                let inferred = env.get_inferred_fn_types(head);
-                for t in &inferred {
-                    if crate::backend::eval::types::is_io_type(t)
-                        || crate::backend::eval::types::is_arrow_returning_io(t)
-                    {
-                        return true;
-                    }
-                }
-            }
-            // Also check builtin signatures for IO return type
-            if let Some(sig) = crate::backend::builtin_signatures::get_signature(head) {
-                if let crate::backend::builtin_signatures::TypeExpr::Arrow(_, ret) = &sig.type_sig {
-                    if matches!(**ret, crate::backend::builtin_signatures::TypeExpr::IO(_)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Recurse into children
-        for item in items {
-            if contains_io_operation(item, env) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Environment-aware memoization check that also rejects expressions
-/// whose head has an inferred IO return type (transitively impure).
+/// whose head has an inferred monadic return type (transitively impure).
 ///
 /// This catches user-defined functions like `(treat_step "tt")` that
 /// call `println!` in their body — Phase 10 inference propagates the
-/// `(IO Unit)` return type from `println!` through the function chain.
+/// `(IO Unit)` return type from `println!` through the function chain,
+/// including through let*/let/if/case/chain control flow forms.
 pub fn should_memoize_with_env(
     value: &MettaValue,
     env: &crate::backend::eval::trampoline::MettaEnvironment,
@@ -357,23 +320,14 @@ pub fn should_memoize_with_env(
     }
     if let Some(items) = value.as_sexpr() {
         if let Some(head) = items.first().and_then(|h| h.as_atom()) {
-            // Check 1: inferred IO return type (from Phase 10)
+            // Inferred monadic return type (from Phase 10).
+            // O(1) bloom filter check + DashMap lookup.
             if env.has_inferred_type(head) {
                 let inferred_types = env.get_inferred_fn_types(head);
                 for t in &inferred_types {
-                    if crate::backend::eval::types::is_io_type(t)
-                        || crate::backend::eval::types::is_arrow_returning_io(t)
-                    {
+                    if t.is_monadic_type() || t.is_arrow_returning_monadic() {
                         return false;
                     }
-                }
-            }
-            // Check 2: direct sub-expressions contain IO operations
-            // This catches cases where IO is in a discarded position
-            // (e.g., (let* (($_ (println! x))) result)).
-            for item in items.iter().skip(1) {
-                if contains_io_operation(item, env) {
-                    return false;
                 }
             }
         }
@@ -640,8 +594,6 @@ pub fn clear_operator_cache() {
 // without speculation. Combined with the existing NORMAL_FORM_BLOOM filter
 // (Phase 9.5), this short-circuits the trampoline for cold and hot paths.
 
-use phf::phf_set;
-
 /// Union of all head symbols that are reducible in `eval_sexpr_step_generic`
 /// (special forms) and `has_grounded_op` (arithmetic/comparison ops).
 ///
@@ -651,57 +603,59 @@ use phf::phf_set;
 /// Maintained in sync with `eval_sexpr_step_generic` match arms,
 /// `GROUNDED_OPS`, `SPECIAL_FORMS_REDISPATCH`, and `EAGER_SPECIAL_FORMS`
 /// via the `reducible_heads_covers_all_known_sets` test below.
-pub(crate) static REDUCIBLE_HEADS: phf::Set<&'static str> = phf_set! {
-    // === Special forms (eval_sexpr_step_generic match arms) ===
-    "=", "!", "quote", "unquote",
-    "if", "if-reducible", "if-equal",
-    "error", "Error", "is-error", "catch",
-    "eval", "function", "return", "chain",
-    "match", "match-or", "case",
-    "switch", "switch-minimal", "switch-internal",
-    "let", "let*", "unify", "sealed", "atom-subst",
-    ":<", ":",
-    "get-type", "check-type", "validate-atom", "get-type-space",
-    "is-function", "type-cast", "metta",
-    "match-types", "match-type-or", "first-from-pair",
-    "map-atom", "filter-atom", "foldl-atom",
-    "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
-    "max-atom", "min-atom", "index-atom",
-    "tuple-concat", "tuple-count", "without", "element-of",
-    "range", "reverse-atom", "flatten-atom", "zip-atom",
-    "take-atom", "drop-atom", "sort-tuple", "best-candidate",
-    "new-space", "add-atom", "remove-atom",
-    "collapse", "collapse-bind", "superpose", "amb",
-    "guard", "commit", "backtrack",
-    "get-atoms",
-    "new-state", "get-state", "change-state!",
-    "new-memo", "memo", "memo-first", "clear-memo!", "memo-stats",
-    "bind!", "println!", "trace!", "nop",
-    "repr", "format-args",
-    "empty", "get-metatype",
-    "include", "import!", "mod-space!", "print-mods!",
-    "exec", "coalg", "lookup", "rulify",
-    "=alpha",
-    "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
-    "assertEqual", "assertAlphaEqual",
-    "assertEqualMsg", "assertAlphaEqualMsg",
-    "assertEqualToResult", "assertAlphaEqualToResult",
-    "assertEqualToResultMsg", "assertAlphaEqualToResultMsg",
-    "pragma!",
-    // === Grounded operations (has_grounded_op) ===
-    "+", "-", "*", "/", "%", "min", "max",
-    "<", "<=", ">", ">=", "==", "!=",
-    "and", "or", "not", "xor",
-    "/safe", "clamp",
-    // === Extended grounded ops (GROUNDED_OPS PHF in helpers.rs) ===
-    "pow", "abs", "floor", "ceil", "round", "sqrt",
-    "floor-div",
-    "pow-math", "sqrt-math", "abs-math", "log-math", "trunc-math",
-    "ceil-math", "floor-math", "round-math",
-    "sin-math", "asin-math", "cos-math", "acos-math",
-    "tan-math", "atan-math",
-    "isnan-math", "isinf-math",
-};
+#[inline(always)]
+pub(crate) fn is_reducible_head(head: &str) -> bool {
+    matches!(head,
+        // === Special forms (eval_sexpr_step_generic match arms) ===
+        "=" | "!" | "quote" | "unquote"
+        | "if" | "if-reducible" | "if-equal"
+        | "error" | "Error" | "is-error" | "catch"
+        | "eval" | "function" | "return" | "chain"
+        | "match" | "match-or" | "case"
+        | "switch" | "switch-minimal" | "switch-internal"
+        | "let" | "let*" | "unify" | "sealed" | "atom-subst"
+        | ":<" | ":"
+        | "get-type" | "check-type" | "validate-atom" | "get-type-space"
+        | "is-function" | "type-cast" | "metta"
+        | "match-types" | "match-type-or" | "first-from-pair"
+        | "map-atom" | "filter-atom" | "foldl-atom"
+        | "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom"
+        | "max-atom" | "min-atom" | "index-atom"
+        | "tuple-concat" | "tuple-count" | "without" | "element-of"
+        | "range" | "reverse-atom" | "flatten-atom" | "zip-atom"
+        | "take-atom" | "drop-atom" | "sort-tuple" | "best-candidate"
+        | "new-space" | "add-atom" | "remove-atom"
+        | "collapse" | "collapse-bind" | "superpose" | "amb"
+        | "guard" | "commit" | "backtrack"
+        | "get-atoms"
+        | "new-state" | "get-state" | "change-state!"
+        | "new-memo" | "memo" | "memo-first" | "clear-memo!" | "memo-stats"
+        | "bind!" | "println!" | "trace!" | "nop"
+        | "repr" | "format-args"
+        | "empty" | "get-metatype"
+        | "include" | "import!" | "mod-space!" | "print-mods!"
+        | "exec" | "coalg" | "lookup" | "rulify"
+        | "=alpha"
+        | "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        | "assertEqual" | "assertAlphaEqual"
+        | "assertEqualMsg" | "assertAlphaEqualMsg"
+        | "assertEqualToResult" | "assertAlphaEqualToResult"
+        | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg"
+        | "pragma!"
+        // === Grounded operations ===
+        | "+" | "-" | "*" | "/" | "%" | "min" | "max"
+        | "<" | "<=" | ">" | ">=" | "==" | "!="
+        | "and" | "or" | "not" | "xor"
+        | "/safe" | "clamp"
+        | "pow" | "abs" | "floor" | "ceil" | "round" | "sqrt"
+        | "floor-div"
+        | "pow-math" | "sqrt-math" | "abs-math" | "log-math" | "trunc-math"
+        | "ceil-math" | "floor-math" | "round-math"
+        | "sin-math" | "asin-math" | "cos-math" | "acos-math"
+        | "tan-math" | "atan-math"
+        | "isnan-math" | "isinf-math"
+    )
+}
 
 /// Check if a value is in normal form with bounded recursion.
 ///
@@ -733,7 +687,7 @@ pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin +
         };
         // Head must not be variable, special form, or grounded op
         if head.starts_with('$') { return false; }
-        if REDUCIBLE_HEADS.contains(head) { return false; }
+        if is_reducible_head(head) { return false; }
         // Head must not have user-defined rules
         if env.may_have_rules_for(head, items.len() - 1) { return false; }
         // Check children within depth budget
@@ -808,7 +762,7 @@ mod tests {
         ];
         for op in &grounded_ops {
             assert!(is_grounded_op(op), "GROUNDED_OPS has '{}' but is_grounded_op doesn't recognize it", op);
-            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing grounded op: {}", op);
+            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing grounded op: {}", op);
         }
 
         // Check SPECIAL_FORMS_REDISPATCH coverage
@@ -834,7 +788,7 @@ mod tests {
         ];
         for op in &special_forms {
             assert!(needs_special_form_redispatch(op), "SPECIAL_FORMS_REDISPATCH has '{}' but needs_special_form_redispatch doesn't recognize it", op);
-            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing special form: {}", op);
+            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing special form: {}", op);
         }
 
         // Check EAGER_SPECIAL_FORMS coverage
@@ -852,7 +806,7 @@ mod tests {
         ];
         for op in &eager_forms {
             assert!(is_eager_special_form(op), "EAGER_SPECIAL_FORMS has '{}' but is_eager_special_form doesn't recognize it", op);
-            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing eager form: {}", op);
+            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing eager form: {}", op);
         }
 
         // Check has_grounded_op coverage
@@ -867,7 +821,7 @@ mod tests {
                 crate::backend::grounded::has_grounded_op(op),
                 "has_grounded_op doesn't recognize: {}", op
             );
-            assert!(REDUCIBLE_HEADS.contains(op), "REDUCIBLE_HEADS missing generic grounded op: {}", op);
+            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing generic grounded op: {}", op);
         }
     }
 }

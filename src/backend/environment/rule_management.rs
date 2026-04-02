@@ -231,6 +231,11 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// Pre-compiled bytecode for the RHS body (compile-on-add).
     /// Type-erased to avoid propagating Send+Sync+'static bounds through RuleEntry<V>.
     pub compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// Whether the RHS transitively contains monadic effect operations
+    /// (IO, StateMonad, or other effect types). Computed at rule insertion
+    /// time by checking the inferred RHS type. Functions with monadic
+    /// effects must not be memoized — repeated calls must re-execute.
+    pub has_monadic_effect: bool,
 }
 
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
@@ -1770,6 +1775,10 @@ where
                     } else {
                         None
                     };
+                // Check if the inferred RHS type is monadic (IO, StateMonad, etc.)
+                let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
+                    t.is_monadic_type() || t.is_arrow_returning_monadic()
+                });
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
                     rhs_has_variables: rhs.contains_variables(),
@@ -1785,6 +1794,7 @@ where
                     rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
                     global_rule_index: 0, // Assigned by RuleIndex::add_rule
                     compiled_rhs,
+                    has_monadic_effect,
                 };
                 // Phase 4a: Pre-seed tiered cache so first RHS evaluation
                 // immediately triggers bytecode compilation (no warmup delay)
@@ -1849,6 +1859,10 @@ where
                 } else {
                     None
                 };
+            // Check if the inferred RHS type is monadic (IO, StateMonad, etc.)
+            let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
+                t.is_monadic_type() || t.is_arrow_returning_monadic()
+            });
             let entry = RuleEntry {
                 lhs: lhs.clone(),
                 rhs_has_variables: rhs.contains_variables(),
@@ -1864,6 +1878,7 @@ where
                 rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
                 global_rule_index: 0, // Assigned by RuleIndex::add_rule
                 compiled_rhs,
+                has_monadic_effect,
             };
             // Phase 4a: Pre-seed tiered cache for wide MORK path
             crate::backend::bytecode::tiered_cache::global_tiered_cache()
@@ -2967,6 +2982,10 @@ impl MettaEnvironment {
                             } else {
                                 None
                             };
+                        // Check if the inferred RHS type is monadic (IO, StateMonad, etc.)
+                        let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
+                            t.is_monadic_type() || t.is_arrow_returning_monadic()
+                        });
                         let entry = RuleEntry {
                             lhs: lhs.clone(),
                             rhs_has_variables: rhs.contains_variables(),
@@ -2982,6 +3001,7 @@ impl MettaEnvironment {
                             rule_index_in_group: 0,
                             global_rule_index: 0, // Assigned by RuleIndex::add_rule
                             compiled_rhs,
+                            has_monadic_effect,
                         };
 
                         // Phase 4a: Pre-seed tiered cache for bulk path

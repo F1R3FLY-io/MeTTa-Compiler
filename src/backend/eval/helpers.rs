@@ -9,132 +9,52 @@
 
 use std::borrow::Cow;
 
-use phf::phf_set;
 use tracing::trace;
 
 use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
-/// Grounded operations that should be evaluated eagerly (before pattern matching).
-/// Uses compile-time perfect hash for O(1) lookup.
-static GROUNDED_OPS: phf::Set<&'static str> = phf_set! {
-    // Basic arithmetic
-    "+", "-", "*", "/", "%", "min", "max",
-    // Math functions (short names)
-    "pow", "abs", "floor", "ceil", "round", "sqrt",
-    // Math functions (full names from try_eval_builtin)
-    "floor-div",
-    "pow-math", "sqrt-math", "abs-math", "log-math", "trunc-math",
-    "ceil-math", "floor-math", "round-math",
-    // Trigonometric functions
-    "sin-math", "asin-math", "cos-math", "acos-math",
-    "tan-math", "atan-math",
-    // Float classification
-    "isnan-math", "isinf-math",
-    // Comparison operations
-    "<", "<=", ">", ">=", "==", "!=",
-    // Boolean operations
-    "not", "and", "or", "xor",
-    // Type operations that return concrete values
-    "get-type", "get-metatype", "validate-atom", "get-type-space",
-    // Atom/expression manipulation operations (all return immediate values)
-    "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
-    "max-atom", "min-atom", "index-atom",
-    // Tuple operations (all return immediate values)
-    "tuple-concat", "tuple-count", "without", "element-of",
-    "range", "reverse-atom", "flatten-atom", "zip-atom", "take-atom", "drop-atom",
-    // Higher-order tuple operations (iterate via trampoline)
-    "sort-tuple", "best-candidate",
-    // Safe arithmetic utilities
-    "/safe", "clamp",
-};
-
-/// Set of operations that need re-dispatch through eval_sexpr_step after
-/// Cartesian product argument evaluation. Uses compile-time perfect hash
-/// for O(1) lookup.
-///
-/// These are special forms that:
-/// 1. Have dedicated dispatch in eval_sexpr_step
-/// 2. Are NOT already handled by try_eval_builtin (arithmetic ops)
-/// 3. Need special argument handling (lazy args, iteration, etc.)
-static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
-    // Higher-order list operations (iterate over elements)
-    "map-atom", "filter-atom", "foldl-atom",
-    // Higher-order tuple operations (iterate via trampoline)
-    "sort-tuple", "best-candidate",
-    // Control flow (lazy branch evaluation)
-    "if", "if-equal", "if-reducible", "case", "switch", "switch-minimal", "switch-internal",
-    // Binding forms (special scoping)
-    "let", "let*", "unify",
-    // Sequencing/continuation forms
-    "chain", "function", "return",
-    // Pattern/substitution forms
-    "sealed", "atom-subst", "match", "match-or",
-    // Error handling (special flow)
-    "catch", "is-error",
-    // Evaluation control
-    "eval", "quote", "unquote",
-    // Space operations that need special handling
-    "collapse", "collapse-bind", "amb", "guard",
-    // State operations
-    "new-state", "get-state", "change-state!",
-    // I/O operations
-    "println!", "trace!",
-    // Set operations
-    "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
-    // Alpha equivalence
-    "=alpha",
-    // Type matching (HE stdlib parity)
-    "match-types",
-    // Testing/assertion operations
-    "assertEqual", "assertAlphaEqual",
-    "assertEqualMsg", "assertAlphaEqualMsg",
-    "assertEqualToResult", "assertAlphaEqualToResult",
-    "assertEqualToResultMsg", "assertAlphaEqualToResultMsg",
-};
-
-/// Special forms that should be evaluated BEFORE being passed to user-defined rules.
-/// These are special forms that produce values and need eager evaluation when used
-/// as arguments to other expressions.
-///
-/// This is critical for MeTTa HE semantic alignment. In MeTTa HE, map-atom is a
-/// regular rule that gets evaluated through normal rule application. In MeTTaTron,
-/// it's a special form. To maintain semantic equivalence, we need to evaluate these
-/// special forms eagerly when they appear as arguments.
-///
-/// Example: For `(get-expr-size (map-atom (a b) $v ($v x)))`:
-/// - MeTTa HE: map-atom is a rule, evaluated as part of normal rule application
-/// - MeTTaTron: Without eager evaluation, map-atom would be passed unevaluated
-///   to get-expr-size, causing semantic mismatch
-static EAGER_SPECIAL_FORMS: phf::Set<&'static str> = phf_set! {
-    // Higher-order list operations (produce list values)
-    "map-atom", "filter-atom", "foldl-atom",
-    // Higher-order tuple operations (produce values)
-    "sort-tuple", "best-candidate",
-    // Evaluation control that produces values
-    "eval", "unquote",
-    // Space operations that produce values
-    "collapse", "collapse-bind", "superpose",
-    // State operations that produce values
-    "get-state",
-    // Error handling that produces values
-    "catch",
-    // Other value-producing special forms
-    "get-metatype", "validate-atom", "get-type-space",
-    // String operations
-    "repr", "format-args",
-    // Set operations (produce list values)
-    "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
-    // Alpha equivalence (produces Bool value)
-    "=alpha",
-};
-
 /// Check if an operation needs re-dispatch through eval_sexpr_step after
 /// Cartesian product argument evaluation.
 ///
-/// Inlined to eliminate function call overhead - compiles to just the phf hash lookup.
+/// Uses `matches!()` for compiler-generated jump table — faster than PHF
+/// runtime hash+probe on the hot evaluation path.
 #[inline(always)]
 pub fn needs_special_form_redispatch(op: &str) -> bool {
-    SPECIAL_FORMS_REDISPATCH.contains(op)
+    matches!(op,
+        // Higher-order list operations (iterate over elements)
+        "map-atom" | "filter-atom" | "foldl-atom"
+        // Higher-order tuple operations (iterate via trampoline)
+        | "sort-tuple" | "best-candidate"
+        // Control flow (lazy branch evaluation)
+        | "if" | "if-equal" | "if-reducible" | "case" | "switch" | "switch-minimal" | "switch-internal"
+        // Binding forms (special scoping)
+        | "let" | "let*" | "unify"
+        // Sequencing/continuation forms
+        | "chain" | "function" | "return"
+        // Pattern/substitution forms
+        | "sealed" | "atom-subst" | "match" | "match-or"
+        // Error handling (special flow)
+        | "catch" | "is-error"
+        // Evaluation control
+        | "eval" | "quote" | "unquote"
+        // Space operations that need special handling
+        | "collapse" | "collapse-bind" | "amb" | "guard"
+        // State operations
+        | "new-state" | "get-state" | "change-state!"
+        // I/O operations
+        | "println!" | "trace!"
+        // Set operations
+        | "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        // Alpha equivalence
+        | "=alpha"
+        // Type matching (HE stdlib parity)
+        | "match-types"
+        // Testing/assertion operations
+        | "assertEqual" | "assertAlphaEqual"
+        | "assertEqualMsg" | "assertAlphaEqualMsg"
+        | "assertEqualToResult" | "assertAlphaEqualToResult"
+        | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg"
+    )
 }
 
 /// Check if an operation is a special form that should be evaluated eagerly
@@ -144,15 +64,64 @@ pub fn needs_special_form_redispatch(op: &str) -> bool {
 /// (like map-atom) are evaluated before being passed to user-defined rules.
 #[inline(always)]
 pub fn is_eager_special_form(op: &str) -> bool {
-    EAGER_SPECIAL_FORMS.contains(op)
+    matches!(op,
+        // Higher-order list operations (produce list values)
+        "map-atom" | "filter-atom" | "foldl-atom"
+        // Higher-order tuple operations (produce values)
+        | "sort-tuple" | "best-candidate"
+        // Evaluation control that produces values
+        | "eval" | "unquote"
+        // Space operations that produce values
+        | "collapse" | "collapse-bind" | "superpose"
+        // State operations that produce values
+        | "get-state"
+        // Error handling that produces values
+        | "catch"
+        // Other value-producing special forms
+        | "get-metatype" | "validate-atom" | "get-type-space"
+        // String operations
+        | "repr" | "format-args"
+        // Set operations (produce list values)
+        | "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        // Alpha equivalence (produces Bool value)
+        | "=alpha"
+    )
 }
 
 /// Check if an atom name is a grounded operation that should be eagerly evaluated.
-///
-/// Inlined to eliminate function call overhead - compiles to just the phf hash lookup.
 #[inline(always)]
 pub fn is_grounded_op(name: &str) -> bool {
-    GROUNDED_OPS.contains(name)
+    matches!(name,
+        // Basic arithmetic
+        "+" | "-" | "*" | "/" | "%" | "min" | "max"
+        // Math functions (short names)
+        | "pow" | "abs" | "floor" | "ceil" | "round" | "sqrt"
+        // Math functions (full names from try_eval_builtin)
+        | "floor-div"
+        | "pow-math" | "sqrt-math" | "abs-math" | "log-math" | "trunc-math"
+        | "ceil-math" | "floor-math" | "round-math"
+        // Trigonometric functions
+        | "sin-math" | "asin-math" | "cos-math" | "acos-math"
+        | "tan-math" | "atan-math"
+        // Float classification
+        | "isnan-math" | "isinf-math"
+        // Comparison operations
+        | "<" | "<=" | ">" | ">=" | "==" | "!="
+        // Boolean operations
+        | "not" | "and" | "or" | "xor"
+        // Type operations that return concrete values
+        | "get-type" | "get-metatype" | "validate-atom" | "get-type-space"
+        // Atom/expression manipulation operations (all return immediate values)
+        | "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom"
+        | "max-atom" | "min-atom" | "index-atom"
+        // Tuple operations (all return immediate values)
+        | "tuple-concat" | "tuple-count" | "without" | "element-of"
+        | "range" | "reverse-atom" | "flatten-atom" | "zip-atom" | "take-atom" | "drop-atom"
+        // Higher-order tuple operations (iterate via trampoline)
+        | "sort-tuple" | "best-candidate"
+        // Safe arithmetic utilities
+        | "/safe" | "clamp"
+    )
 }
 
 

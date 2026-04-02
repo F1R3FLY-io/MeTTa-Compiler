@@ -23,11 +23,15 @@ use crate::backend::models::{GenericBindings, MemoHandle, MettaValue};
 // Import Cartesian product iterator
 use super::super::processing::GenericCartesianProductIter;
 
+use super::context::SharedEnv;
+
 /// Evaluation result: (results, environment)
 ///
 /// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap allocation
 /// for the common single-result case (93%+ of evaluations produce 1 result).
-pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
+/// The environment is Arc-wrapped for O(1) sharing across continuations and work items,
+/// eliminating the 8.7% CPU overhead from per-step clone/drop of MettaEnvironment.
+pub type EvalResult = (SmallVec<[MettaValue; 2]>, SharedEnv);
 
 /// Work item representing pending evaluation work.
 ///
@@ -39,7 +43,7 @@ pub enum WorkItem {
     /// Evaluate a value and send result to continuation at stack top
     Eval {
         value: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
         /// If true, this is a tail call - don't increment depth
         is_tail_call: bool,
@@ -64,7 +68,7 @@ pub enum WorkItem {
     EvalWithBindings {
         template: MettaValue,
         bindings: GenericBindings<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
         is_tail_call: bool,
         expected_type: Option<MettaValue>,
@@ -96,7 +100,7 @@ pub enum Continuation {
     CollectSExpr {
         remaining: std::vec::IntoIter<MettaValue>,
         collected: Vec<EvalResult>,
-        original_env: MettaEnvironment,
+        original_env: SharedEnv,
         depth: usize,
     },
 
@@ -104,7 +108,7 @@ pub enum Continuation {
     ProcessRuleMatches {
         remaining_matches: std::vec::IntoIter<(MettaValue, GenericBindings<MettaValue>)>,
         results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
         /// Span correlation ID for the current branch (format v2).
         #[cfg(feature = "eval-trace")]
@@ -128,7 +132,7 @@ pub enum Continuation {
         /// Results accumulated so far.
         results: Vec<MettaValue>,
         /// Environment for evaluation.
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth.
         depth: usize,
     },
@@ -138,7 +142,7 @@ pub enum Continuation {
         state: GroundedState<MettaValue>,
         /// The arg index whose evaluation result is pending.
         pending_arg_idx: usize,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -147,7 +151,7 @@ pub enum Continuation {
         combinations: GenericCartesianProductIter<MettaValue>,
         results: Vec<MettaValue>,
         pending_rule_matches: Vec<(MettaValue, GenericBindings<MettaValue>)>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -162,7 +166,7 @@ pub enum Continuation {
         /// This enables O(N) instead of O(N^2) work for nested `let*` chains.
         outer_bindings: Option<GenericBindings<MettaValue>>,
         results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -176,7 +180,7 @@ pub enum Continuation {
         grounded_indices: Vec<usize>,
         current_idx: usize,
         evaluated_results: Vec<Vec<MettaValue>>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -185,7 +189,7 @@ pub enum Continuation {
     CollectApplicativeResults {
         remaining: std::vec::IntoIter<MettaValue>,
         results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -195,7 +199,7 @@ pub enum Continuation {
         var_name: String,
         template: MettaValue,
         collected_results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -206,7 +210,7 @@ pub enum Continuation {
         var_name: String,
         predicate: MettaValue,
         filtered_results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -216,7 +220,7 @@ pub enum Continuation {
         acc_var_name: String,
         item_var_name: String,
         operation: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -228,7 +232,7 @@ pub enum Continuation {
         /// When present, the taken branch is evaluated via EvalWithBindings
         /// instead of Eval, avoiding materialization of the untaken branch.
         outer_bindings: Option<GenericBindings<MettaValue>>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -239,19 +243,19 @@ pub enum Continuation {
         /// When present, case templates are evaluated via EvalWithBindings
         /// instead of Eval, deferring binding application to the matched arm.
         outer_bindings: Option<GenericBindings<MettaValue>>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing (eval expr)
     ProcessEvalEval {
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing (return value)
     ProcessReturn {
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -263,7 +267,7 @@ pub enum Continuation {
         /// When present, chain body is evaluated via EvalWithBindings after
         /// composing the chain variable binding with outer_bindings.
         outer_bindings: Option<GenericBindings<MettaValue>>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -275,27 +279,27 @@ pub enum Continuation {
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         outer_bindings: Option<GenericBindings<MettaValue>>,
         results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing function loop
     ProcessFunction {
         iteration_count: usize,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing is-error
     ProcessIsError {
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing catch
     ProcessCatch {
         default: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -303,7 +307,7 @@ pub enum Continuation {
     ProcessConjunction {
         remaining_goals: std::vec::IntoIter<MettaValue>,
         accumulated_results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -312,7 +316,7 @@ pub enum Continuation {
         pattern2: MettaValue,
         success_body: MettaValue,
         failure_body: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -323,7 +327,7 @@ pub enum Continuation {
         success_body: MettaValue,
         failure_body: MettaValue,
         all_results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -333,7 +337,7 @@ pub enum Continuation {
         pattern2: MettaValue,
         success_body: MettaValue,
         failure_body: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -341,19 +345,19 @@ pub enum Continuation {
     ProcessUnifyBodies {
         remaining_bodies: std::vec::IntoIter<MettaValue>,
         results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing collapse
     ProcessCollapse {
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing collapse-bind
     ProcessCollapseBind {
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -369,7 +373,7 @@ pub enum Continuation {
         /// Whether this is for collapse-bind (vs plain collapse)
         is_bind: bool,
         /// Environment
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth
         depth: usize,
     },
@@ -378,20 +382,20 @@ pub enum Continuation {
     ProcessAmb {
         remaining_alts: std::vec::IntoIter<MettaValue>,
         results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing guard
     ProcessGuard {
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing get-atoms
     ProcessGetAtoms {
         space_ref: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -400,7 +404,7 @@ pub enum Continuation {
         memo_ref: MettaValue,
         expr: MettaValue,
         first_only: bool,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -409,7 +413,7 @@ pub enum Continuation {
         memo_handle: MemoHandle,
         expr: MettaValue,
         first_only: bool,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -417,7 +421,7 @@ pub enum Continuation {
     ProcessNewMemoName {
         name_arg: MettaValue,
         size_arg: Option<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -425,7 +429,7 @@ pub enum Continuation {
     ProcessNewMemoSize {
         name: String,
         size_arg: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -433,7 +437,7 @@ pub enum Continuation {
     ProcessMemoOp {
         memo_ref: MettaValue,
         is_clear: bool,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -442,7 +446,7 @@ pub enum Continuation {
         space_arg: MettaValue,
         pattern: MettaValue,
         template: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -450,7 +454,7 @@ pub enum Continuation {
     ProcessMatchTemplates {
         remaining_templates: std::vec::IntoIter<MettaValue>,
         results: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -458,7 +462,7 @@ pub enum Continuation {
     ProcessAddAtomSpace {
         space_ref: MettaValue,
         atom: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -468,7 +472,7 @@ pub enum Continuation {
     // ProcessAddAtomAtom {
     //     space_handle: SpaceHandle,
     //     atom: MettaValue,
-    //     env: MettaEnvironment,
+    //     env: SharedEnv,
     //     depth: usize,
     //     parent_cont: usize,
     // },
@@ -477,7 +481,7 @@ pub enum Continuation {
     ProcessRemoveAtomSpace {
         space_ref: MettaValue,
         atom: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -487,7 +491,7 @@ pub enum Continuation {
     // ProcessRemoveAtomAtom {
     //     space_handle: SpaceHandle,
     //     atom: MettaValue,
-    //     env: MettaEnvironment,
+    //     env: SharedEnv,
     //     depth: usize,
     //     parent_cont: usize,
     // },
@@ -495,14 +499,14 @@ pub enum Continuation {
     /// Processing new-state
     ProcessNewState {
         initial_value: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing get-state
     ProcessGetState {
         state_ref: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -510,7 +514,7 @@ pub enum Continuation {
     ProcessChangeStateRef {
         state_ref: MettaValue,
         new_value: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -518,14 +522,14 @@ pub enum Continuation {
     ProcessChangeStateValue {
         state_value: MettaValue,
         new_value: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing repr
     ProcessRepr {
         atom: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -533,7 +537,7 @@ pub enum Continuation {
     ProcessFormatArgsString {
         format_arg: MettaValue,
         args_arg: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -541,14 +545,14 @@ pub enum Continuation {
     ProcessFormatArgsArgs {
         format_str: String,
         args_arg: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing println
     ProcessPrintln {
         atom: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -556,28 +560,28 @@ pub enum Continuation {
     ProcessTraceMessage {
         message: MettaValue,
         value_expr: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing trace value
     ProcessTraceValue {
         value_expr: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing get-metatype
     ProcessGetMetatype {
         atom: MettaValue,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
     /// Processing bind
     ProcessBind {
         token: String,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -590,7 +594,7 @@ pub enum Continuation {
         /// Branch to evaluate if expr is irreducible
         else_branch: MettaValue,
         /// Environment
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth
         depth: usize,
     },
@@ -606,7 +610,7 @@ pub enum Continuation {
         /// Template to instantiate
         template: MettaValue,
         /// Environment
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth
         depth: usize,
     },
@@ -630,7 +634,7 @@ pub enum Continuation {
         /// Comparator expression template
         comparator: MettaValue,
         /// Environment
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth
         depth: usize,
     },
@@ -651,7 +655,7 @@ pub enum Continuation {
         /// Rank function expression template
         rank_fn: MettaValue,
         /// Environment
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth
         depth: usize,
     },
@@ -661,7 +665,7 @@ pub enum Continuation {
         remaining_atoms: std::vec::IntoIter<MettaValue>,
         cases: MettaValue,
         collected: Vec<MettaValue>,
-        env: MettaEnvironment,
+        env: SharedEnv,
         depth: usize,
     },
 
@@ -678,7 +682,7 @@ pub enum Continuation {
         /// Case patterns to match against
         cases: MettaValue,
         /// Environment
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth
         depth: usize,
     },
@@ -696,7 +700,7 @@ pub enum Continuation {
         /// the result must not be cached (a side effect occurred transitively).
         mutation_epoch: u64,
         /// Environment (for result forwarding)
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth
         depth: usize,
     },
@@ -726,7 +730,7 @@ pub enum Continuation {
         /// Accumulated bindings from resolved pattern matches + outer context.
         accumulated_bindings: GenericBindings<MettaValue>,
         /// Environment for evaluation.
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth.
         depth: usize,
         /// Whether this is a tail call.
@@ -741,7 +745,7 @@ pub enum Continuation {
         /// Content hash of the expression being tabled.
         expr_hash: u64,
         /// Environment (for result forwarding).
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth.
         depth: usize,
         /// Mutation epoch when evaluation started (before any side effects).
@@ -756,7 +760,7 @@ pub enum Continuation {
         /// Content hash of the (template, bindings) pair.
         thunk_hash: u64,
         /// Environment (for result forwarding).
-        env: MettaEnvironment,
+        env: SharedEnv,
         /// Evaluation depth.
         depth: usize,
         /// Mutation epoch when evaluation started.
@@ -1280,8 +1284,8 @@ mod tests {
         global_factory()
     }
 
-    fn env() -> MettaEnvironment {
-        MettaEnvironment::new(factory())
+    fn env() -> SharedEnv {
+        std::sync::Arc::new(MettaEnvironment::new(factory()))
     }
 
     #[test]

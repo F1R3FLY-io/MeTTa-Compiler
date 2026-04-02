@@ -21,6 +21,7 @@
 //! with arena-allocated `MettaValue` values.
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -53,7 +54,7 @@ fn get_drop_sender() -> &'static std::sync::mpsc::Sender<Vec<SharedEnvArc>> {
 use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
-use super::context::{EvalContext, MettaEnvironment};
+use super::context::{EvalContext, MettaEnvironment, SharedEnv};
 use crate::backend::models::gc_allocator::RootProvider;
 use super::engine::{
     apply_bindings, eval_switch, is_boolean_check_pattern, pattern_match,
@@ -100,7 +101,7 @@ use super::dispatch_hints::{
     mutation_epoch, increment_mutation_epoch,
 };
 use super::engine::{try_deterministic_chain, try_match_rules_with_bindings};
-use super::dispatch_hints::REDUCIBLE_HEADS;
+use super::dispatch_hints::is_reducible_head;
 
 // =============================================================================
 // WPDS Context Hashing (Layer 3)
@@ -319,6 +320,9 @@ fn dispatch_rule_matches<C: EvalContext>(
     continuations: &mut Vec<Continuation>,
     demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
 ) {
+    // Wrap bare env in Arc for O(1) sharing across WorkItem/Continuation fields.
+    let env: SharedEnv = Arc::new(env);
+
     debug_assert!(!matches.is_empty(), "dispatch_rule_matches called with empty matches");
 
     // ── Single-match fast path ──
@@ -370,7 +374,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
                 });
-            } else if is_normal_form_bounded(&rhs, &env, 2) {
+            } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
@@ -380,7 +384,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 // a deterministic operator, chain through without pushing to the
                 // work stack. This eliminates trampoline pop/dispatch/push overhead
                 // for chains of deterministic user-defined functions.
-                if let Some(chained) = try_deterministic_chain(&rhs, &env, ctx.factory()) {
+                if let Some(chained) = try_deterministic_chain(&rhs, &*env, ctx.factory()) {
                     // The chain resolved one or more steps. The result still needs
                     // evaluation (may be a special form, nondeterministic, etc.)
                     work_stack.push(WorkItem::Eval {
@@ -486,7 +490,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             })
             .collect();
 
-        let metta_env = env.clone();
+        let metta_env = (*env).clone();
 
         // Trace: NondeterministicFork (parallel)
         #[cfg(feature = "eval-trace")]
@@ -632,7 +636,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
                 });
-            } else if is_normal_form_bounded(&rhs, &env, 2) {
+            } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![rhs], env),
@@ -1126,7 +1130,7 @@ pub fn eval_trampoline<C: EvalContext>(
     loop {
         match outcome {
             crate::backend::eval::cesk::EvalOutcome::Complete(results, env) => {
-                return (results, env);
+                return (results, Arc::new(env));
             }
             crate::backend::eval::cesk::EvalOutcome::Yielded(suspended) => {
                 // Resume from suspended state with a fresh reduction budget
@@ -1156,7 +1160,7 @@ fn resume_trampoline_inner<C: EvalContext>(
 
     eval_trampoline_inner(
         ctx.factory().unit(), // Dummy value — unused since work_stack is pre-populated
-        env,
+        (*env).clone(),
         ctx,
         Some(suspended.work_stack),
         Some(suspended.continuations),
@@ -1227,7 +1231,7 @@ fn eval_trampoline_inner<C: EvalContext>(
             let mut ws = Vec::with_capacity(32);
             ws.push(WorkItem::Eval {
                 value,
-                env: env.clone(),
+                env: Arc::new(env.clone()),
                 depth: 0,
                 is_tail_call: false,
                 expected_type: None,
@@ -1482,7 +1486,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Also require should_memoize: impure expressions (those
                 // calling add-atom, change-state!, etc.) must not be tabled
                 // because repeated calls must re-execute their side effects.
-                if is_sexpr && depth >= 2 && !value.has_variables_fast() && should_memoize_with_env(&value, &env) {
+                if is_sexpr && depth >= 2 && !value.has_variables_fast() && should_memoize_with_env(&value, &*env) {
                     let tabling_hash = value.hash_value();
 
                     // Step 1: Cycle detection via active evaluation set.
@@ -1572,7 +1576,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
-                let memo_hash = if is_sexpr && should_memoize_with_env(&value, &env) {
+                let memo_hash = if is_sexpr && should_memoize_with_env(&value, &*env) {
                     let h = value.hash_value();
                     if let Some(cached_results) = eval_memo_get(h) {
                         // Cache hit — skip evaluation entirely.
@@ -1665,7 +1669,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 }
                             }
                             work_stack.push(WorkItem::Resume {
-                                result: (SmallVec::from_vec(results), new_env),
+                                result: (SmallVec::from_vec(results), Arc::new(new_env)),
 
                             });
                             continue; // Skip eval_step_generic — compiled code handled it
@@ -1691,27 +1695,29 @@ fn eval_trampoline_inner<C: EvalContext>(
                 let input_ptr = if is_sexpr { value.inner_ptr() } else { std::ptr::null() };
 
                 // Perform one step of evaluation using generic step function
-                let step_result = eval_step_generic(value, env.clone(), depth, ctx);
+                let step_result = eval_step_generic(value, (*env).clone(), depth, ctx);
                 let _ = is_tail_call; // Used to determine depth in push sites
                 trace!(target: "mettatron::backend::eval::eval_trampoline", ?step_result);
 
                 // Process the step result
                 match step_result {
                     // Direct result - resume continuation
-                    GenericEvalStep::Done(result) => {
+                    GenericEvalStep::Done((values, step_env)) => {
                         // Phase 9.5: Fixpoint detection — if eval returned
                         // the same S-expression (by pointer), memoize it
                         if !input_ptr.is_null()
-                            && result.0.len() == 1
-                            && result.0[0].inner_ptr() == input_ptr
+                            && values.len() == 1
+                            && values[0].inner_ptr() == input_ptr
                         {
-                            memoize_normal_form(&result.0[0]);
+                            memoize_normal_form(&values[0]);
                         }
+                        let result = (values, Arc::new(step_env));
                         work_stack.push(WorkItem::Resume { result });
                     }
 
                     // Need to evaluate S-expression sub-items
-                    GenericEvalStep::EvalSExpr { items, env, depth } => {
+                    GenericEvalStep::EvalSExpr { items, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if items.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().sexpr(vec![])], env),
@@ -1740,7 +1746,8 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start a TCO grounded operation
                     // Uses static dispatch - works with any V: MettaValueTrait (NO conversion)
-                    GenericEvalStep::StartGroundedOp { state, env, depth } => {
+                    GenericEvalStep::StartGroundedOp { state, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         let mut state = state;
                         // Use static dispatch - monomorphized for each value type
                         // Clone op_name to avoid borrow conflict with mutable state
@@ -1887,7 +1894,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start let binding
-                    GenericEvalStep::StartLetBinding { pattern, value_expr, body, env, depth } => {
+                    GenericEvalStep::StartLetBinding { pattern, value_expr, body, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessLet {
                             pending_values: None,
                             pattern,
@@ -1908,7 +1916,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate if branch (TCO)
-                    GenericEvalStep::EvalIfBranch { branch, env, depth } => {
+                    GenericEvalStep::EvalIfBranch { branch, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         work_stack.push(WorkItem::Eval {
                             value: branch,
                             env,
@@ -1921,7 +1930,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Evaluate rule matches with unevaluated arguments (lazy evaluation)
                     // Note: matches are now in generic type (V, GenericBindings<V>, Option<V>)
                     // Phase 8.7: Prune matches whose rhs_type is incompatible with expected_type
-                    GenericEvalStep::EvalRuleMatchesLazy { mut matches, env, depth } => {
+                    GenericEvalStep::EvalRuleMatchesLazy { mut matches, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         // 8.7: Branch pruning — filter out matches whose rhs_type
                         // is known to be incompatible with the expected_type
                         if let Some(ref expected) = expected_type {
@@ -1978,12 +1988,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let matches_deque: Vec<_> = matches.into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                 .collect();
-                            dispatch_rule_matches(matches_deque, SmallVec::new(), env, depth, ctx, &mut work_stack, &mut continuations, None);
+                            dispatch_rule_matches(matches_deque, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, None);
                         }
                     }
 
                     // Evaluate grounded arguments
-                    GenericEvalStep::EvalGroundedArgs { items, grounded_indices, env, depth } => {
+                    GenericEvalStep::EvalGroundedArgs { items, grounded_indices, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if grounded_indices.is_empty() {
                             work_stack.push(WorkItem::Eval {
                                 value: ctx.factory().sexpr(items),
@@ -2023,7 +2034,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start map-atom
-                    GenericEvalStep::StartMapAtom { elements, var_name, template, env, depth } => {
+                    GenericEvalStep::StartMapAtom { elements, var_name, template, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().sexpr(vec![])], env),
@@ -2058,7 +2070,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start filter-atom
-                    GenericEvalStep::StartFilterAtom { elements, var_name, predicate, env, depth } => {
+                    GenericEvalStep::StartFilterAtom { elements, var_name, predicate, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().sexpr(vec![])], env),
@@ -2095,7 +2108,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start foldl-atom
-                    GenericEvalStep::StartFoldlAtom { elements, init, acc_var_name, item_var_name, operation, env, depth } => {
+                    GenericEvalStep::StartFoldlAtom { elements, init, acc_var_name, item_var_name, operation, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![init], env),
@@ -2132,7 +2146,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start sort-tuple (insertion sort via trampoline)
-                    GenericEvalStep::StartSortTuple { elements, var1_name, var2_name, comparator, env, depth } => {
+                    GenericEvalStep::StartSortTuple { elements, var1_name, var2_name, comparator, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if elements.len() <= 1 {
                             // 0 or 1 elements — already sorted
                             work_stack.push(WorkItem::Resume {
@@ -2177,7 +2192,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start best-candidate (linear scan via trampoline)
-                    GenericEvalStep::StartBestCandidate { elements, var_name, rank_fn, env, depth } => {
+                    GenericEvalStep::StartBestCandidate { elements, var_name, rank_fn, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             // Empty tuple — return Unit
                             work_stack.push(WorkItem::Resume {
@@ -2214,7 +2230,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate if condition
-                    GenericEvalStep::EvalIfCondition { condition, then_branch, else_branch, env, depth } => {
+                    GenericEvalStep::EvalIfCondition { condition, then_branch, else_branch, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         // Fast path: literal Bool condition — skip continuation + work item
                         if let Some(is_true) = condition.as_bool() {
                             let branch = if is_true { then_branch } else { else_branch };
@@ -2246,7 +2263,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate case atom
-                    GenericEvalStep::EvalCaseAtom { atom, cases, env, depth } => {
+                    GenericEvalStep::EvalCaseAtom { atom, cases, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCaseAtom {
                             cases,
                             outer_bindings: None,
@@ -2264,7 +2282,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Switch: pattern match WITHOUT evaluating atom
-                    GenericEvalStep::SwitchAtom { atom, cases, env, depth } => {
+                    GenericEvalStep::SwitchAtom { atom, cases, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         // Switch does NOT evaluate atom - pattern match directly
                         match eval_switch(&atom, &cases, ctx.factory()) {
                             SwitchResult::Match(template, _bindings) => {
@@ -2292,7 +2311,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate eval
-                    GenericEvalStep::EvalEval { arg, env, depth } => {
+                    GenericEvalStep::EvalEval { arg, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessEvalEval {
                             env: env.clone(),
                             depth,
@@ -2308,7 +2328,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate return
-                    GenericEvalStep::EvalReturn { value, env, depth } => {
+                    GenericEvalStep::EvalReturn { value, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessReturn {
                             env: env.clone(),
                             depth,
@@ -2324,7 +2345,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start chain
-                    GenericEvalStep::StartChain { expr, var, body, env, depth } => {
+                    GenericEvalStep::StartChain { expr, var, body, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessChainExpr {
                             var,
                             body,
@@ -2343,7 +2365,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start function
-                    GenericEvalStep::StartFunction { expr, env, depth } => {
+                    GenericEvalStep::StartFunction { expr, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessFunction {
                             iteration_count: 1,
                             env: env.clone(),
@@ -2360,7 +2383,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate is-error
-                    GenericEvalStep::EvalIsError { expr, env, depth } => {
+                    GenericEvalStep::EvalIsError { expr, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessIsError {
                             env: env.clone(),
                             depth,
@@ -2376,7 +2400,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start catch
-                    GenericEvalStep::StartCatch { expr, default, env, depth } => {
+                    GenericEvalStep::StartCatch { expr, default, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCatch {
                             default,
                             env: env.clone(),
@@ -2393,7 +2418,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start conjunction
-                    GenericEvalStep::StartConjunction { goals, env, depth } => {
+                    GenericEvalStep::StartConjunction { goals, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if goals.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![ctx.factory().unit()], env),
@@ -2429,7 +2455,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start unify
-                    GenericEvalStep::StartUnify { pattern1, pattern2, success_body, failure_body, env, depth } => {
+                    GenericEvalStep::StartUnify { pattern1, pattern2, success_body, failure_body, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessUnifyPattern1 {
                             pattern2,
                             success_body,
@@ -2448,7 +2475,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start collapse
-                    GenericEvalStep::StartCollapse { expr, env, depth } => {
+                    GenericEvalStep::StartCollapse { expr, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCollapse {
                             env: env.clone(),
                             depth,
@@ -2464,7 +2492,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start collapse-bind
-                    GenericEvalStep::StartCollapseBind { expr, env, depth } => {
+                    GenericEvalStep::StartCollapseBind { expr, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCollapseBind {
                             env: env.clone(),
                             depth,
@@ -2480,7 +2509,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start amb
-                    GenericEvalStep::StartAmb { alternatives, env, depth } => {
+                    GenericEvalStep::StartAmb { alternatives, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         if alternatives.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), env),
@@ -2532,7 +2562,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     }
                                 }
 
-                                let metta_env = env.clone();
+                                let metta_env = (*env).clone();
                                 let results = parallel_branch_eval(
                                     alternatives, metta_env, par_budget, current_depth,
                                 );
@@ -2565,7 +2595,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start guard
-                    GenericEvalStep::StartGuard { condition, env, depth } => {
+                    GenericEvalStep::StartGuard { condition, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGuard {
                             env: env.clone(),
                             depth,
@@ -2581,7 +2612,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start get-atoms
-                    GenericEvalStep::StartGetAtoms { space_ref, env, depth } => {
+                    GenericEvalStep::StartGetAtoms { space_ref, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGetAtoms {
                             space_ref: space_ref.clone(),
                             env: env.clone(),
@@ -2598,7 +2630,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start memo
-                    GenericEvalStep::StartMemo { memo_ref, expr, first_only, env, depth } => {
+                    GenericEvalStep::StartMemo { memo_ref, expr, first_only, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessMemoTable {
                             memo_ref: memo_ref.clone(),
                             expr,
@@ -2617,7 +2650,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start new-memo
-                    GenericEvalStep::StartNewMemo { name_arg, size_arg, env, depth } => {
+                    GenericEvalStep::StartNewMemo { name_arg, size_arg, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessNewMemoName {
                             name_arg: name_arg.clone(),
                             size_arg,
@@ -2635,7 +2669,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start memo operation
-                    GenericEvalStep::StartMemoOp { memo_ref, op_type, env, depth } => {
+                    GenericEvalStep::StartMemoOp { memo_ref, op_type, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         let is_clear = matches!(op_type, super::super::step::MemoOpType::Clear);
                         continuations.push(Continuation::ProcessMemoOp {
                             memo_ref: memo_ref.clone(),
@@ -2654,7 +2689,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start match
-                    GenericEvalStep::StartMatch { space_arg, pattern, template, env, depth } => {
+                    GenericEvalStep::StartMatch { space_arg, pattern, template, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessMatchSpace {
                             space_arg: space_arg.clone(),
                             pattern,
@@ -2673,7 +2709,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start add-atom
-                    GenericEvalStep::StartAddAtom { space_ref, atom, env, depth } => {
+                    GenericEvalStep::StartAddAtom { space_ref, atom, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessAddAtomSpace {
                             space_ref: space_ref.clone(),
                             atom,
@@ -2691,7 +2728,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start remove-atom
-                    GenericEvalStep::StartRemoveAtom { space_ref, atom, env, depth } => {
+                    GenericEvalStep::StartRemoveAtom { space_ref, atom, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessRemoveAtomSpace {
                             space_ref: space_ref.clone(),
                             atom,
@@ -2709,7 +2747,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start new-state
-                    GenericEvalStep::StartNewState { initial_value, env, depth } => {
+                    GenericEvalStep::StartNewState { initial_value, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessNewState {
                             initial_value: initial_value.clone(),
                             env: env.clone(),
@@ -2726,7 +2765,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start get-state
-                    GenericEvalStep::StartGetState { state_ref, env, depth } => {
+                    GenericEvalStep::StartGetState { state_ref, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGetState {
                             state_ref: state_ref.clone(),
                             env: env.clone(),
@@ -2743,7 +2783,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start change-state
-                    GenericEvalStep::StartChangeState { state_ref, new_value, env, depth } => {
+                    GenericEvalStep::StartChangeState { state_ref, new_value, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessChangeStateRef {
                             state_ref: state_ref.clone(),
                             new_value,
@@ -2761,7 +2802,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start repr
-                    GenericEvalStep::StartRepr { atom, env, depth } => {
+                    GenericEvalStep::StartRepr { atom, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessRepr {
                             atom: atom.clone(),
                             env: env.clone(),
@@ -2778,7 +2820,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start format-args
-                    GenericEvalStep::StartFormatArgs { format_arg, args_arg, env, depth } => {
+                    GenericEvalStep::StartFormatArgs { format_arg, args_arg, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessFormatArgsString {
                             format_arg: format_arg.clone(),
                             args_arg,
@@ -2796,7 +2839,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start println
-                    GenericEvalStep::StartPrintln { atom, env, depth } => {
+                    GenericEvalStep::StartPrintln { atom, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessPrintln {
                             atom: atom.clone(),
                             env: env.clone(),
@@ -2813,7 +2857,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start trace
-                    GenericEvalStep::StartTrace { message, value_expr, env, depth } => {
+                    GenericEvalStep::StartTrace { message, value_expr, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessTraceMessage {
                             message: message.clone(),
                             value_expr,
@@ -2831,7 +2876,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start get-metatype
-                    GenericEvalStep::StartGetMetatype { atom, env, depth } => {
+                    GenericEvalStep::StartGetMetatype { atom, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGetMetatype {
                             atom: atom.clone(),
                             env: env.clone(),
@@ -2848,7 +2894,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start bind
-                    GenericEvalStep::StartBind { token, atom_expr, env, depth } => {
+                    GenericEvalStep::StartBind { token, atom_expr, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessBind {
                             token,
                             env: env.clone(),
@@ -2865,7 +2912,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start if-reducible: evaluate expr, then compare to original
-                    GenericEvalStep::EvalIfReducible { expr, then_branch, else_branch, env, depth } => {
+                    GenericEvalStep::EvalIfReducible { expr, then_branch, else_branch, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessIfReducible {
                             original_expr: expr.clone(),
                             then_branch,
@@ -2884,7 +2932,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start match-or: evaluate space, then match with default fallback
-                    GenericEvalStep::StartMatchOr { space_arg, pattern, default, template, env, depth } => {
+                    GenericEvalStep::StartMatchOr { space_arg, pattern, default, template, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessMatchOrSpace {
                             space_arg: space_arg.clone(),
                             pattern,
@@ -3346,13 +3395,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Falls through to materialization if any candidate lacks a
                     // structural matcher (MORK matching needs concrete expressions).
                     if let Some(head_name) = resolved_head_atom {
-                        if !REDUCIBLE_HEADS.contains(head_name) {
+                        if !is_reducible_head(head_name) {
                             let arity = items.len() - 1;
                             if let Some(matches) = try_match_rules_with_bindings(
                                 &template, &bindings, head_name, arity, &env, ctx.factory(),
                             ) {
                                 if !matches.is_empty() {
-                                    dispatch_rule_matches(matches, SmallVec::new(), env, depth, ctx, &mut work_stack, &mut continuations, None);
+                                    dispatch_rule_matches(matches, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, None);
                                     continue;
                                 }
                                 // matches is empty → no rule matched → self-evaluating
@@ -3424,8 +3473,8 @@ fn eval_trampoline_inner<C: EvalContext>(
     }
 
     // Return final result as EvalOutcome::Complete
-    let (results, final_env) = final_result.unwrap_or_else(|| (SmallVec::new(), env));
-    crate::backend::eval::cesk::EvalOutcome::Complete(results, final_env)
+    let (results, final_env) = final_result.unwrap_or_else(|| (SmallVec::new(), Arc::new(env)));
+    crate::backend::eval::cesk::EvalOutcome::Complete(results, (*final_env).clone())
 }
 
 /// Process a continuation with generic value types.
@@ -3459,18 +3508,23 @@ fn process_continuation<C: EvalContext>(
             if remaining.len() == 0 {
                 // All items evaluated, process collected results
                 // Use generic version - zero conversion needed!
-                let processed = process_collected_sexpr_generic(collected, original_env.clone(), depth, ctx.factory());
+                // Unwrap SharedEnv → bare MettaEnvironment for process_collected_sexpr_generic
+                let collected_bare: Vec<(SmallVec<[MettaValue; 2]>, MettaEnvironment)> = collected
+                    .into_iter()
+                    .map(|(vals, shared_env)| (vals, (*shared_env).clone()))
+                    .collect();
+                let processed = process_collected_sexpr_generic(collected_bare, (*original_env).clone(), depth, ctx.factory());
 
                 match processed {
                     GenericProcessedSExpr::Done((results, env)) => {
                         work_stack.push(WorkItem::Resume {
-                            result: (results, env),
+                            result: (results, Arc::new(env)),
                         });
                     }
                     GenericProcessedSExpr::EvalRuleMatches { matches, env, depth, base_results } => {
                         if matches.is_empty() {
                             work_stack.push(WorkItem::Resume {
-                                result: (base_results, env),
+                                result: (base_results, Arc::new(env)),
                             });
                         } else {
                             // Dispatch via unified parallel/sequential gate
@@ -3478,6 +3532,7 @@ fn process_continuation<C: EvalContext>(
                         }
                     }
                     GenericProcessedSExpr::EvalCombinations { combinations, env, depth } => {
+                        let env: SharedEnv = Arc::new(env);
                         continuations.push(Continuation::ProcessCombinations {
                             combinations,
                             results: Vec::with_capacity(8),
@@ -3494,7 +3549,7 @@ fn process_continuation<C: EvalContext>(
                         let sexpr = ctx.factory().sexpr(items);
                         work_stack.push(WorkItem::Eval {
                             value: sexpr,
-                            env,
+                            env: Arc::new(env),
                             depth: redispatch_depth,
                             is_tail_call: false,
                             expected_type: None,
@@ -3898,7 +3953,7 @@ fn process_continuation<C: EvalContext>(
                     });
 
                     // Dispatch rule matches (parallel or sequential)
-                    dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations, None);
+                    dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None);
                 }
             } else {
                 // All combinations processed - results already contains generic values
@@ -4055,7 +4110,7 @@ fn process_continuation<C: EvalContext>(
                     };
 
                     if par_budget > 0 {
-                        let metta_env = result_env.clone();
+                        let metta_env = (*result_env).clone();
                         let par_results = parallel_branch_eval(
                             instantiated_bodies, metta_env, par_budget, current_depth,
                         );
@@ -4326,7 +4381,7 @@ fn process_continuation<C: EvalContext>(
                                     all_matches_with_types.into_iter()
                                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                         .collect();
-                                dispatch_rule_matches(matches_deque, SmallVec::new(), result_env, depth, ctx, work_stack, continuations, None);
+                                dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None);
                             } else {
                                 // Step 4: No rules matched — return as data constructor
                                 work_stack.push(WorkItem::Resume {
@@ -6359,7 +6414,7 @@ fn process_continuation<C: EvalContext>(
 
             if par_budget > 0 {
                 let metta_items: Vec<MettaValue> = expr_results.into_vec();
-                let metta_env = result_env.clone();
+                let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
                     metta_items, metta_env, par_budget, current_depth, depth,
@@ -6443,7 +6498,7 @@ fn process_continuation<C: EvalContext>(
 
             if par_budget > 0 {
                 let metta_items: Vec<MettaValue> = expr_results.into_vec();
-                let metta_env = result_env.clone();
+                let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
                     metta_items, metta_env, par_budget, current_depth, depth,
@@ -6817,7 +6872,7 @@ fn process_continuation<C: EvalContext>(
                             let forked_env = env_after.fork_for_nondeterminism();
                             work_stack.push(WorkItem::Eval {
                                 value: first_template,
-                                env: forked_env,
+                                env: Arc::new(forked_env),
                                 depth,
                                 is_tail_call: true,
                                 expected_type: None,
@@ -6865,7 +6920,7 @@ fn process_continuation<C: EvalContext>(
 
                 work_stack.push(WorkItem::Eval {
                     value: next_template,
-                    env: env.fork_for_nondeterminism(),
+                    env: Arc::new(env.fork_for_nondeterminism()),
                     depth,
                     is_tail_call: true,
                     expected_type: None,
@@ -6903,7 +6958,7 @@ fn process_continuation<C: EvalContext>(
                         // NOT the SpaceHandle, so atoms must live in the environment.
                         // add_to_space() handles routing: rules → add_rule() (PathMap + RuleIndex),
                         // type assertions → types HashMap, all atoms → PathMap.
-                        env_after.add_to_space(&atom);
+                        Arc::make_mut(&mut env_after).add_to_space(&atom);
                     } else {
                         // Named space: add to SpaceHandle (match queries SpaceHandle
                         // for non-&self spaces via handle.collapse_generic()).
@@ -6993,7 +7048,7 @@ fn process_continuation<C: EvalContext>(
                         // environment, so removals must target the environment.
                         // remove_from_space() handles routing: rules → De Bruijn removal
                         // + RuleIndex sync, type assertions → types HashMap, all atoms → PathMap.
-                        env_after.remove_from_space(&atom);
+                        Arc::make_mut(&mut env_after).remove_from_space(&atom);
                     } else {
                         // Named space: remove from SpaceHandle
                         handle.remove_atom_generic(&atom);
@@ -7070,7 +7125,7 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // Use create_state directly - values are already V
-                let state_id = env_after.create_state(&init_results[0]);
+                let state_id = Arc::make_mut(&mut env_after).create_state(&init_results[0]);
                 increment_mutation_epoch();
                 let state_value = ctx.factory().state(state_id);
                 work_stack.push(WorkItem::Resume {
@@ -7194,7 +7249,7 @@ fn process_continuation<C: EvalContext>(
                 // Get the state ID from state_value
                 if let Some(state_id) = state_value.as_state() {
                     // Use change_state directly - values are already V
-                    env_after.change_state(state_id, &value_results[0]);
+                    Arc::make_mut(&mut env_after).change_state(state_id, &value_results[0]);
                     increment_mutation_epoch();
                     let result_state = ctx.factory().state(state_id);
                     work_stack.push(WorkItem::Resume {
@@ -7442,7 +7497,7 @@ fn process_continuation<C: EvalContext>(
                     result: (smallvec![err], env_after),
                 });
             } else {
-                env_after.register_token(&token, atom_results[0].clone());
+                Arc::make_mut(&mut env_after).register_token(&token, atom_results[0].clone());
                 increment_mutation_epoch();
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![ctx.factory().unit()], env_after),
@@ -7614,7 +7669,7 @@ fn process_continuation<C: EvalContext>(
                             let forked_env = env_after.fork_for_nondeterminism();
                             work_stack.push(WorkItem::Eval {
                                 value: first_template,
-                                env: forked_env,
+                                env: Arc::new(forked_env),
                                 depth,
                                 is_tail_call: true,
                                 expected_type: None,
@@ -7675,7 +7730,7 @@ fn process_continuation<C: EvalContext>(
                             let forked_env = env_after.fork_for_nondeterminism();
                             work_stack.push(WorkItem::Eval {
                                 value: first_template,
-                                env: forked_env,
+                                env: Arc::new(forked_env),
                                 depth,
                                 is_tail_call: true,
                                 expected_type: None,

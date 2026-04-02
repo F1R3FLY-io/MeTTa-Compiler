@@ -254,14 +254,14 @@ mod tests {
         let f = factory();
         let current = WorkItem::Eval {
             value: f.long(42),
-            env: env(),
+            env: std::sync::Arc::new(env()),
             depth: 0,
             is_tail_call: false,
             expected_type: None,
         };
         let stack: Vec<WorkItem> = vec![
             WorkItem::Resume {
-                result: (smallvec![f.long(1), f.long(2)], env()),
+                result: (smallvec![f.long(1), f.long(2)], std::sync::Arc::new(env())),
             },
         ];
 
@@ -277,7 +277,7 @@ mod tests {
             Continuation::Done,
             Continuation::ProcessCatch {
                 default: f.atom("fallback"),
-                env: env(),
+                env: std::sync::Arc::new(env()),
                 depth: 0,
             },
         ];
@@ -296,7 +296,7 @@ mod tests {
 
         let current = WorkItem::Eval {
             value: f.long(20),
-            env: env(),
+            env: std::sync::Arc::new(env()),
             depth: 0,
             is_tail_call: false,
             expected_type: None,

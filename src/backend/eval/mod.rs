@@ -9,6 +9,7 @@ pub mod cesk;
 pub(crate) mod frame_chain;
 pub(crate) mod freshening;
 mod helpers;
+pub mod monad_registry;
 pub(crate) mod space_match;
 mod list_ops;
 pub(crate) mod alpha_equiv;
@@ -523,7 +524,7 @@ fn eval_inner(
                 let mut all_single = true;
                 for arg in &items[1..] {
                     let (results, new_env) = eval_trampoline(arg.clone(), current_env, state);
-                    current_env = new_env;
+                    current_env = (*new_env).clone();
                     if results.len() == 1 {
                         arg_values.push(results.into_iter().next().expect("len checked"));
                     } else {
@@ -613,7 +614,7 @@ fn eval_inner(
                 for result in results {
                     let (sub_results, sub_env) = eval_trampoline(result, final_env, state);
                     final_results.extend(sub_results);
-                    final_env = sub_env;
+                    final_env = (*sub_env).clone();
                 }
                 return (final_results, final_env);
             }
@@ -623,7 +624,8 @@ fn eval_inner(
     // Tier 0: Tree-walker interpreter (cold code or fallback)
     #[cfg(feature = "track-stats")]
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
-    eval_trampoline(value, env, state)
+    let (results, shared_env) = eval_trampoline(value, env, state);
+    (results, (*shared_env).clone())
 }
 
 /// Execute JIT-compiled code for arena expression with environment threading.

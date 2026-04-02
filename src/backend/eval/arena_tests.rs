@@ -18,7 +18,7 @@ mod tests {
         let source_exprs: Vec<_> = state.source().iter().copied().collect();
         for expr in source_exprs {
             let (results, new_env) = eval_trampoline(expr, env, &state);
-            env = new_env;
+            env = (*new_env).clone();
             for result in &results {
                 all_results.push(result.to_string());
             }

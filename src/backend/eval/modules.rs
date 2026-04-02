@@ -143,7 +143,7 @@ where
                 if let Some("!") = sexpr_items[0].as_atom() {
                     let inner = sexpr_items[1].clone();
                     let (results, new_env) = eval_trampoline(inner, env, ctx);
-                    env = new_env;
+                    env = (*new_env).clone();
                     if let Some(r) = results.into_iter().last() {
                         last_result = r;
                     }
@@ -307,7 +307,7 @@ where
                 if let Some("!") = sexpr_items[0].as_atom() {
                     let inner = sexpr_items[1].clone();
                     let (_results, new_env) = eval_trampoline(inner, env, ctx);
-                    env = new_env;
+                    env = (*new_env).clone();
                     continue;
                 }
             }

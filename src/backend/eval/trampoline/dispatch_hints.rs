@@ -230,7 +230,7 @@ fn is_impure_head(head: &str) -> bool {
         head,
         "add-atom" | "remove-atom" | "get-atoms"
             | "new-state" | "change-state!" | "get-state"
-            | "match" | "match-or"
+            | "match" | "match-or" | "unify"
             | "import!" | "include"
             | "println!" | "trace!" | "nop"
             | "new-space" | "mod-space!"

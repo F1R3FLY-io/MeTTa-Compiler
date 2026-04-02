@@ -2987,6 +2987,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 thunk_hash,
                                 env: env.clone(),
                                 depth,
+                                start_epoch: mutation_epoch(),
                             });
                         }
                     }
@@ -7327,10 +7328,12 @@ fn process_continuation<C: EvalContext>(
                 // Use to_display_string() - prints strings without quotes
                 println!("{}", atom_result.to_display_string());
             }
-            // NOTE: println! does NOT increment mutation epoch — it's a pure
-            // output operation that doesn't change evaluation state. Only
-            // state-modifying operations (add-atom, change-state!, etc.)
-            // should increment the epoch.
+            // println! is an observable side effect — expressions containing
+            // it must not be cached, or repeated calls would suppress output.
+            // Incrementing the epoch ensures that any cache (eval_memo, tabling,
+            // thunk) that wraps a println!-containing evaluation sees an epoch
+            // change and skips caching.
+            increment_mutation_epoch();
 
             work_stack.push(WorkItem::Resume {
                 result: (smallvec![ctx.factory().unit()], env_after),
@@ -8144,11 +8147,12 @@ fn process_continuation<C: EvalContext>(
             thunk_hash,
             env: _,
             depth: _,
+            start_epoch,
         } => {
             let (result_values, result_env) = result;
 
-            // Store results in the thunk table for future cache hits.
-            {
+            // Only cache if no mutations occurred during evaluation.
+            if start_epoch == mutation_epoch() {
                 let cached: smallvec::SmallVec<[MettaValue; 2]> =
                     result_values.iter().cloned().collect();
                 crate::backend::eval::cesk::with_thunk_table(|t| {

@@ -759,6 +759,8 @@ pub enum Continuation {
         env: MettaEnvironment,
         /// Evaluation depth.
         depth: usize,
+        /// Mutation epoch when evaluation started.
+        start_epoch: u64,
     },
 }
 

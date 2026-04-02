@@ -74,6 +74,10 @@ pub struct Thunk<V: MettaValueTrait> {
 
     /// Number of times this thunk has been accessed.
     pub access_count: u32,
+
+    /// Mutation epoch when this thunk was evaluated.
+    /// Used to detect stale entries after space mutations.
+    pub mutation_epoch: u64,
 }
 
 impl<V: MettaValueTrait> Thunk<V> {
@@ -83,6 +87,7 @@ impl<V: MettaValueTrait> Thunk<V> {
             state: ThunkState::Suspended,
             results: SmallVec::new(),
             access_count: 0,
+            mutation_epoch: 0,
         }
     }
 }
@@ -158,6 +163,15 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
                     ThunkLookup::Blackhole
                 }
                 ThunkState::Evaluated => {
+                    // Check mutation epoch — stale entries from before a
+                    // space mutation must not be returned.
+                    let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+                    if thunk.mutation_epoch != current_epoch {
+                        // Stale — evict and treat as new
+                        self.entries.remove(&expr_hash);
+                        self.entries.insert(expr_hash, Thunk::new_suspended());
+                        return ThunkLookup::Absent;
+                    }
                     self.total_hits += 1;
                     ThunkLookup::Evaluated(thunk.results.clone())
                 }
@@ -179,6 +193,7 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
         if let Some(thunk) = self.entries.get_mut(&expr_hash) {
             thunk.state = ThunkState::Evaluated;
             thunk.results = results;
+            thunk.mutation_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         }
     }
 

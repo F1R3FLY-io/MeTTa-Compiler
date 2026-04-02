@@ -282,37 +282,103 @@ pub fn increment_mutation_epoch() {
 #[inline]
 pub fn should_memoize<V: MettaValueTrait>(value: &V) -> bool {
     if let Some(items) = value.as_sexpr() {
-        // Allow zero-arity function calls (items.len() == 1, e.g. `(kbstatic)`)
-        // to be memoized. Only reject truly empty S-expressions (len == 0 → Unit).
         if items.is_empty() {
             return false;
         }
-        // Expressions containing variables produce context-dependent results
-        // (the same expression text evaluates differently depending on which
-        // bindings are active in the enclosing let/pattern match). Memoizing
-        // these by content hash would conflate different binding contexts.
         if value.has_variables_fast() {
             return false;
         }
         if let Some(head) = items.first().and_then(|h| h.as_atom()) {
-            // Skip impure operations
             if is_impure_head(head) {
                 return false;
             }
-            // `!` and `eval` are transparent wrappers — their purity
-            // depends on the inner expression, so recurse.
             if (head == "!" || head == "eval") && items.len() == 2 {
                 return should_memoize(&items[1]);
             }
             true
         } else {
-            // Variable-headed S-expressions — don't memoize (result depends
-            // on which rules match the resolved head)
             false
         }
     } else {
         false
     }
+}
+
+/// Check if a value tree contains any IO-producing sub-expression at any depth,
+/// by checking the inferred types of sub-expression heads against the IO type.
+pub fn contains_io_operation(
+    value: &MettaValue,
+    env: &crate::backend::eval::trampoline::MettaEnvironment,
+) -> bool {
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head) = items.first().and_then(|h| h.as_atom()) {
+            // Check if this head has an IO return type
+            if env.has_inferred_type(head) {
+                let inferred = env.get_inferred_fn_types(head);
+                for t in &inferred {
+                    if crate::backend::eval::types::is_io_type(t)
+                        || crate::backend::eval::types::is_arrow_returning_io(t)
+                    {
+                        return true;
+                    }
+                }
+            }
+            // Also check builtin signatures for IO return type
+            if let Some(sig) = crate::backend::builtin_signatures::get_signature(head) {
+                if let crate::backend::builtin_signatures::TypeExpr::Arrow(_, ret) = &sig.type_sig {
+                    if matches!(**ret, crate::backend::builtin_signatures::TypeExpr::IO(_)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Recurse into children
+        for item in items {
+            if contains_io_operation(item, env) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Environment-aware memoization check that also rejects expressions
+/// whose head has an inferred IO return type (transitively impure).
+///
+/// This catches user-defined functions like `(treat_step "tt")` that
+/// call `println!` in their body — Phase 10 inference propagates the
+/// `(IO Unit)` return type from `println!` through the function chain.
+pub fn should_memoize_with_env(
+    value: &MettaValue,
+    env: &crate::backend::eval::trampoline::MettaEnvironment,
+) -> bool {
+    if !should_memoize(value) {
+        return false;
+    }
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head) = items.first().and_then(|h| h.as_atom()) {
+            // Check 1: inferred IO return type (from Phase 10)
+            if env.has_inferred_type(head) {
+                let inferred_types = env.get_inferred_fn_types(head);
+                for t in &inferred_types {
+                    if crate::backend::eval::types::is_io_type(t)
+                        || crate::backend::eval::types::is_arrow_returning_io(t)
+                    {
+                        return false;
+                    }
+                }
+            }
+            // Check 2: direct sub-expressions contain IO operations
+            // This catches cases where IO is in a discarded position
+            // (e.g., (let* (($_ (println! x))) result)).
+            for item in items.iter().skip(1) {
+                if contains_io_operation(item, env) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Look up cached evaluation results for an expression hash.

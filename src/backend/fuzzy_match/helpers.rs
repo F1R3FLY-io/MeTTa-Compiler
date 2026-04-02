@@ -151,6 +151,9 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnviro
             actual.view(),
             ValueView::Atom(_) | ValueView::SExpr(_)
         ),
+
+        // IO type - transparent at runtime (IO X matches what X matches)
+        TypeExpr::IO(inner) => type_matches(actual, inner, _env),
     }
 }
 

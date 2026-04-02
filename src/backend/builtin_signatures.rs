@@ -71,6 +71,12 @@ pub enum TypeExpr {
     Bindings,
     /// Expression that will be evaluated (for quote/eval)
     Expr,
+    /// IO monad type with result type: (IO $t)
+    /// Marks operations that perform observable side effects (output, tracing).
+    /// IO is a compile-time type marker — at runtime, IO-producing operations
+    /// return their inner value directly. The IO wrapper tells the caching
+    /// system "don't cache expressions that produce this type."
+    IO(Box<TypeExpr>),
 }
 
 /// Helper to create arrow types more concisely
@@ -87,6 +93,11 @@ fn list(elem: TypeExpr) -> TypeExpr {
 /// Helper to create StateMonad types
 fn state_monad(elem: TypeExpr) -> TypeExpr {
     TypeExpr::StateMonad(Box::new(elem))
+}
+
+/// Helper to create IO monad types
+fn io(elem: TypeExpr) -> TypeExpr {
+    TypeExpr::IO(Box::new(elem))
 }
 
 /// Signature definition for a built-in operation
@@ -488,11 +499,12 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
         // I/O and debugging (HE-aligned)
         // ====================================================================
         // println!: (-> %Undefined% Unit)
+        // println!: (-> %Undefined% (IO Unit)) — observable output side effect
         BuiltinSignature { name: "println!", min_arity: 1, max_arity: 1,
-            type_sig: arrow(vec![Undefined], Unit) },
-        // trace!: (-> %Undefined% Atom %Undefined%)
+            type_sig: arrow(vec![Undefined], io(Unit)) },
+        // trace!: (-> %Undefined% Atom (IO %Undefined%)) — stderr output side effect
         BuiltinSignature { name: "trace!", min_arity: 2, max_arity: 2,
-            type_sig: arrow(vec![Undefined, Atom], Undefined) },
+            type_sig: arrow(vec![Undefined, Atom], io(Undefined)) },
         // repr: (-> $a String)
         BuiltinSignature { name: "repr", min_arity: 1, max_arity: 1,
             type_sig: arrow(vec![Var("a")], String) },
@@ -1043,7 +1055,11 @@ mod tests {
     fn test_return_type_io() {
         let sig = get_signature("println!").unwrap();
         let ret = get_return_type(&sig.type_sig).unwrap();
-        assert_eq!(*ret, TypeExpr::Unit);
+        assert_eq!(*ret, TypeExpr::IO(Box::new(TypeExpr::Unit)));
+
+        let sig = get_signature("trace!").unwrap();
+        let ret = get_return_type(&sig.type_sig).unwrap();
+        assert_eq!(*ret, TypeExpr::IO(Box::new(TypeExpr::Undefined)));
 
         let sig = get_signature("repr").unwrap();
         let ret = get_return_type(&sig.type_sig).unwrap();

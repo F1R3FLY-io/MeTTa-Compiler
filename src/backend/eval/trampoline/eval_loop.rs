@@ -94,7 +94,7 @@ use super::dispatch_hints::{
     invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form,
     is_normal_form_bounded,
     derive_arg_expected_type,
-    should_memoize, eval_memo_get, eval_memo_put,
+    should_memoize, should_memoize_with_env, eval_memo_get, eval_memo_put,
     clear_eval_memo, clear_match_result_cache,
     collect_eval_memo_roots, collect_match_result_roots,
     mutation_epoch, increment_mutation_epoch,
@@ -1482,7 +1482,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Also require should_memoize: impure expressions (those
                 // calling add-atom, change-state!, etc.) must not be tabled
                 // because repeated calls must re-execute their side effects.
-                if is_sexpr && depth >= 2 && !value.has_variables_fast() && should_memoize(&value) {
+                if is_sexpr && depth >= 2 && !value.has_variables_fast() && should_memoize_with_env(&value, &env) {
                     let tabling_hash = value.hash_value();
 
                     // Step 1: Cycle detection via active evaluation set.
@@ -1572,7 +1572,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
-                let memo_hash = if is_sexpr && should_memoize(&value) {
+                let memo_hash = if is_sexpr && should_memoize_with_env(&value, &env) {
                     let h = value.hash_value();
                     if let Some(cached_results) = eval_memo_get(h) {
                         // Cache hit — skip evaluation entirely.
@@ -7328,12 +7328,12 @@ fn process_continuation<C: EvalContext>(
                 // Use to_display_string() - prints strings without quotes
                 println!("{}", atom_result.to_display_string());
             }
-            // println! is an observable side effect — expressions containing
-            // it must not be cached, or repeated calls would suppress output.
-            // Incrementing the epoch ensures that any cache (eval_memo, tabling,
-            // thunk) that wraps a println!-containing evaluation sees an epoch
-            // change and skips caching.
-            increment_mutation_epoch();
+            // println! does NOT increment mutation_epoch — it's an IO effect,
+            // not a state mutation. Caching of println!-containing expressions
+            // is prevented by the IO type system: println! has return type
+            // (IO Unit), which propagates through user-defined functions via
+            // Phase 10 inference. should_memoize_with_env checks the inferred
+            // IO type and refuses to memoize.
 
             work_stack.push(WorkItem::Resume {
                 result: (smallvec![ctx.factory().unit()], env_after),

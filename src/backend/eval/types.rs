@@ -867,6 +867,10 @@ where
             let elem_type = type_expr_to_generic(elem, factory);
             factory.sexpr(vec![factory.atom("StateMonad"), elem_type])
         }
+        TypeExpr::IO(elem) => {
+            let elem_type = type_expr_to_generic(elem, factory);
+            factory.sexpr(vec![factory.atom("IO"), elem_type])
+        }
         TypeExpr::Arrow(args, ret) => {
             let mut items = vec![factory.atom("->")];
             for arg in args {
@@ -1080,6 +1084,32 @@ where
 /// operations like `match`, `let`, `case`, etc. use `Atom` parameters.
 pub fn is_meta_type(name: &str) -> bool {
     matches!(name, "Atom" | "Symbol" | "Variable" | "Expression" | "Grounded")
+}
+
+/// Check if a type is an IO monad type: `(IO X)`.
+pub fn is_io_type<V: MettaValueTrait>(typ: &V) -> bool {
+    if let Some(items) = typ.as_sexpr() {
+        if items.len() == 2 {
+            if let Some(head) = items[0].as_atom() {
+                return head == "IO";
+            }
+        }
+    }
+    false
+}
+
+/// Check if a type is an arrow type returning IO: `(-> ... (IO X))`.
+pub fn is_arrow_returning_io<V: MettaValueTrait>(typ: &V) -> bool {
+    if let Some(items) = typ.as_sexpr() {
+        if items.len() > 1 {
+            if let Some(head) = items[0].as_atom() {
+                if head == "->" {
+                    return is_io_type(&items[items.len() - 1]);
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Bidirectional type matching with variable binding.

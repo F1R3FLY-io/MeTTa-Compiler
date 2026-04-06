@@ -182,6 +182,8 @@ pub use helpers::{
 pub use pattern_matching::{
     jit_runtime_match_arity, jit_runtime_match_head, jit_runtime_pattern_match,
     jit_runtime_pattern_match_bind, jit_runtime_unify, jit_runtime_unify_bind,
+    jit_runtime_unify_deep, jit_runtime_u_check_sexpr, jit_runtime_u_check_arity,
+    jit_runtime_u_get_child,
 };
 
 // Space operations

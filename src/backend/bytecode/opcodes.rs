@@ -31,6 +31,41 @@ pub enum Opcode {
     /// Pop N elements from stack
     PopN = 0x07,
 
+    // === Compiled Unification Opcodes (0x08-0x0F) ===
+    // Emitted by the compiler for known patterns. Subject on TOS.
+
+    /// Check TOS is S-expression; jump to fail_offset on failure.
+    /// Operands: fail_offset: i16
+    /// Stack: [subj] -> [subj] (peek)
+    UCheckSExpr = 0x08,
+    /// Check S-expr length == arity; jump to fail_offset on mismatch.
+    /// Operands: arity: u8, fail_offset: i16
+    /// Stack: [subj] -> [subj] (peek)
+    UCheckArity = 0x09,
+    /// Pop, check atom equals constant; jump to fail_offset on mismatch.
+    /// Operands: const_idx: u16, fail_offset: i16
+    /// Stack: [atom] -> []
+    UCheckAtom = 0x0A,
+    /// Peek S-expr, push children[index].
+    /// Operands: index: u8
+    /// Stack: [sexpr] -> [sexpr, child]
+    UGetChild = 0x0B,
+    /// Pop, bind var (or check consistency if already bound); trail the binding.
+    /// Operands: name_idx: u16, fail_offset: i16
+    /// Stack: [value] -> []
+    UBindVar = 0x0C,
+    /// Pop, check Long equals constant; jump to fail_offset on mismatch.
+    /// Operands: const_idx: u16, fail_offset: i16
+    /// Stack: [value] -> []
+    UCheckLong = 0x0D,
+    /// Pop, structural equality against constant; jump to fail_offset on mismatch.
+    /// Operands: const_idx: u16, fail_offset: i16
+    /// Stack: [value] -> []
+    UCheckValue = 0x0E,
+    /// Pop and discard (wildcard match). No binding, no check.
+    /// Stack: [value] -> []
+    UWildcard = 0x0F,
+
     // === Value Creation (0x10-0x2F) ===
     /// Push Bool(true)
     PushTrue = 0x11,
@@ -64,6 +99,27 @@ pub enum Opcode {
     PushVariable = 0x1F,
     /// Cons-atom: prepend head to tail S-expression
     ConsAtom = 0x20,
+
+    // === Trail Operations (0x21-0x22) ===
+    /// Push current trail height onto trail-mark stack (for later undo).
+    /// Used before compiled unification sequences that might need rollback.
+    TrailMark = 0x21,
+    /// Pop trail-mark; undo all bindings made since that mark.
+    /// Used when a compiled unification sequence fails.
+    TrailUndo = 0x22,
+    /// Full bidirectional M-M unification with occurs check and trail.
+    /// Operands: fail_offset: i16
+    /// Stack: [a, b] -> [] on success; jump to fail on failure.
+    /// All new bindings are trailed.
+    UnifyDeep = 0x23,
+    /// Like UnifyDeep but installs bindings into current binding frame.
+    /// Operands: fail_offset: i16
+    /// Stack: [a, b] -> [] on success; jump to fail on failure.
+    UnifyDeepBind = 0x24,
+    /// Check if variable occurs in term (occurs check).
+    /// Operands: fail_offset: i16
+    /// Stack: [var, term] -> [] on success; jump to fail if var occurs in term.
+    OccursCheck = 0x25,
 
     // === Variable Operations (0x30-0x3F) ===
     /// Load value from local slot, index is next byte
@@ -606,6 +662,9 @@ impl Opcode {
             | Self::MorkInsert
             | Self::MorkDelete
             | Self::ConsAtom
+            | Self::UWildcard
+            | Self::TrailMark
+            | Self::TrailUndo
             | Self::Guard
             | Self::Backtrack
             | Self::CaseBarrierEnd
@@ -638,7 +697,8 @@ impl Opcode {
             | Self::MatchHead
             | Self::MatchArity
             | Self::GetElement
-            | Self::CollectN => 1,
+            | Self::CollectN
+            | Self::UGetChild => 1,
 
             // 2-byte immediate
             Self::PushLong
@@ -675,14 +735,24 @@ impl Opcode {
             | Self::Collect
             | Self::CollapseBegin
             | Self::CaseBarrierBegin
-            | Self::JumpIfIdentical => 2,
+            | Self::JumpIfIdentical
+            | Self::UCheckSExpr
+            | Self::UnifyDeep
+            | Self::UnifyDeepBind
+            | Self::OccursCheck => 2,
 
             // 3-byte immediate (2-byte head_index + 1-byte arity)
             Self::Call
             | Self::TailCall
             | Self::CallNative
             | Self::CallExternal
-            | Self::CallCached => 3,
+            | Self::CallCached
+            | Self::UCheckArity => 3,
+
+            Self::UCheckAtom
+            | Self::UBindVar
+            | Self::UCheckLong
+            | Self::UCheckValue => 4,
         }
     }
 
@@ -713,6 +783,19 @@ impl Opcode {
             Self::PushEmpty => "push_empty",
             Self::PushVariable => "push_var",
             Self::ConsAtom => "cons_atom",
+            Self::UCheckSExpr => "u_check_sexpr",
+            Self::UCheckArity => "u_check_arity",
+            Self::UCheckAtom => "u_check_atom",
+            Self::UGetChild => "u_get_child",
+            Self::UBindVar => "u_bind_var",
+            Self::UCheckLong => "u_check_long",
+            Self::UCheckValue => "u_check_value",
+            Self::UWildcard => "u_wildcard",
+            Self::TrailMark => "trail_mark",
+            Self::TrailUndo => "trail_undo",
+            Self::UnifyDeep => "unify_deep",
+            Self::UnifyDeepBind => "unify_deep_bind",
+            Self::OccursCheck => "occurs_check",
             Self::LoadLocal => "load_local",
             Self::StoreLocal => "store_local",
             Self::LoadBinding => "load_binding",
@@ -959,6 +1042,16 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x06] = Some(Opcode::DupN);
     table[0x07] = Some(Opcode::PopN);
 
+    // Compiled unification
+    table[0x08] = Some(Opcode::UCheckSExpr);
+    table[0x09] = Some(Opcode::UCheckArity);
+    table[0x0A] = Some(Opcode::UCheckAtom);
+    table[0x0B] = Some(Opcode::UGetChild);
+    table[0x0C] = Some(Opcode::UBindVar);
+    table[0x0D] = Some(Opcode::UCheckLong);
+    table[0x0E] = Some(Opcode::UCheckValue);
+    table[0x0F] = Some(Opcode::UWildcard);
+
     // Value creation
     table[0x11] = Some(Opcode::PushTrue);
     table[0x12] = Some(Opcode::PushFalse);
@@ -976,6 +1069,11 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x1E] = Some(Opcode::PushEmpty);
     table[0x1F] = Some(Opcode::PushVariable);
     table[0x20] = Some(Opcode::ConsAtom);
+    table[0x21] = Some(Opcode::TrailMark);
+    table[0x22] = Some(Opcode::TrailUndo);
+    table[0x23] = Some(Opcode::UnifyDeep);
+    table[0x24] = Some(Opcode::UnifyDeepBind);
+    table[0x25] = Some(Opcode::OccursCheck);
 
     // Variable operations
     table[0x30] = Some(Opcode::LoadLocal);
@@ -1237,8 +1335,8 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         // Test that gaps in the opcode space return None
-        assert!(Opcode::from_byte(0x08).is_none()); // Gap in stack ops
-        assert!(Opcode::from_byte(0x21).is_none()); // Gap after value creation (0x20 is ConsAtom)
+        assert!(Opcode::from_byte(0x10).is_none()); // Gap between compiled unification and value creation
+        assert!(Opcode::from_byte(0x26).is_none()); // Gap after unification ops (0x25 is OccursCheck)
     }
 
     #[test]

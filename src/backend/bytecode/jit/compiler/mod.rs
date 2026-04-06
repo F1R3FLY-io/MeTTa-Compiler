@@ -2416,7 +2416,12 @@ impl JitCompiler {
             }
 
             Opcode::EvalIfReducible | Opcode::EvalMatchOr
-            | Opcode::JumpIfIdentical | Opcode::MatchSelf | Opcode::MatchSelfOr => {
+            | Opcode::JumpIfIdentical | Opcode::MatchSelf | Opcode::MatchSelfOr
+            | Opcode::TrailMark | Opcode::TrailUndo
+            | Opcode::UCheckSExpr | Opcode::UCheckArity | Opcode::UCheckAtom
+            | Opcode::UGetChild | Opcode::UBindVar | Opcode::UCheckLong
+            | Opcode::UCheckValue | Opcode::UWildcard
+            | Opcode::UnifyDeep | Opcode::UnifyDeepBind | Opcode::OccursCheck => {
                 return Err(JitError::NotCompilable(
                     format!("Opcode {:?} not yet JIT-compiled — falls back to bytecode VM", op),
                 ));

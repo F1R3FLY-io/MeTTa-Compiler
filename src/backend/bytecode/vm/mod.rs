@@ -58,7 +58,7 @@ pub use types::{VmConfig, VmError, VmResult};
 // Generic types
 pub use types::{
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
-    GenericCollapseFrame,
+    GenericCollapseFrame, TrailEntry,
     Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseFrame,
 };
 
@@ -221,6 +221,20 @@ where
     /// Key: expression hash via hash_value(). Value: pre-evaluated results.
     pub(crate) dispatch_memo: std::collections::HashMap<u64, (u64, Vec<V>)>,
 
+    /// Trail for fine-grained undo of bindings during backtracking.
+    ///
+    /// Each entry records a binding that was made (either new or overwrite),
+    /// enabling precise undo when `op_fail` backtracks to a choice point.
+    /// Complements the coarse `bindings_stack.truncate()` mechanism.
+    pub(crate) trail: Vec<TrailEntry<V>>,
+
+    /// Trail mark stack for `TrailMark`/`TrailUndo` opcode pairs.
+    ///
+    /// `TrailMark` pushes the current trail height; `TrailUndo` pops and
+    /// unwinds the trail to that height. Used by compiled unification
+    /// sequences to undo partial bindings on match failure.
+    pub(crate) trail_marks: Vec<usize>,
+
     /// Case scrutinee fail barrier frames. When `Fail` fires during a case
     /// scrutinee evaluation, the nearest barrier catches it, restores state,
     /// and jumps to the handler which pushes `Empty`.
@@ -289,6 +303,8 @@ where
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
+            trail: Vec::new(),
+            trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
         }
     }
@@ -319,6 +335,8 @@ where
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
+            trail: Vec::new(),
+            trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
         }
     }
@@ -352,6 +370,8 @@ where
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
+            trail: Vec::new(),
+            trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
         }
     }
@@ -670,6 +690,46 @@ where
     pub fn pop_binding_frame(&mut self) {
         if self.bindings_stack.len() > 1 {
             self.bindings_stack.pop();
+        }
+    }
+
+    // === Trail Operations ===
+
+    /// Unwind the trail from its current length back to `target_height`,
+    /// undoing each binding in reverse order.
+    ///
+    /// This restores bindings to their state at the time the trail mark was
+    /// created, enabling fine-grained undo within surviving binding frames.
+    fn unwind_trail(&mut self, target_height: usize) {
+        while self.trail.len() > target_height {
+            if let Some(entry) = self.trail.pop() {
+                match entry {
+                    TrailEntry::NewBinding { frame_index, name } => {
+                        // Remove the binding from the frame
+                        if let Some(frame) = self.bindings_stack.get_mut(frame_index) {
+                            frame.remove(name);
+                        }
+                    }
+                    TrailEntry::Rebinding { frame_index, name, old_value } => {
+                        // Restore the old value
+                        if let Some(frame) = self.bindings_stack.get_mut(frame_index) {
+                            frame.set(name.to_string(), old_value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Push a trail mark (saves current trail height for later undo).
+    fn trail_mark(&mut self) {
+        self.trail_marks.push(self.trail.len());
+    }
+
+    /// Pop a trail mark and unwind the trail to that height.
+    fn trail_undo(&mut self) {
+        if let Some(height) = self.trail_marks.pop() {
+            self.unwind_trail(height);
         }
     }
 
@@ -1250,6 +1310,16 @@ where
             Opcode::AssertType => self.op_assert_type()?,
 
             // === Pattern Matching ===
+            // Compiled unification opcodes
+            Opcode::UCheckSExpr => self.op_u_check_sexpr()?,
+            Opcode::UCheckArity => self.op_u_check_arity()?,
+            Opcode::UCheckAtom => self.op_u_check_atom()?,
+            Opcode::UGetChild => self.op_u_get_child()?,
+            Opcode::UBindVar => self.op_u_bind_var()?,
+            Opcode::UCheckLong => self.op_u_check_long()?,
+            Opcode::UCheckValue => self.op_u_check_value()?,
+            Opcode::UWildcard => self.op_u_wildcard()?,
+
             Opcode::Match => self.op_match()?,
             Opcode::MatchBind => self.op_match_bind()?,
             Opcode::MatchHead => self.op_match_head()?,
@@ -1359,6 +1429,11 @@ where
                 return Err(VmError::Halted);
             }
             Opcode::ConsAtom => self.op_cons_atom()?,
+            Opcode::TrailMark => self.trail_mark(),
+            Opcode::TrailUndo => self.trail_undo(),
+            Opcode::UnifyDeep => self.op_unify_deep()?,
+            Opcode::UnifyDeepBind => self.op_unify_deep_bind()?,
+            Opcode::OccursCheck => self.op_occurs_check()?,
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
             Opcode::FoldlAtom => self.op_foldl_atom()?,
@@ -2062,10 +2137,157 @@ where
         Ok(())
     }
 
+    // =========================================================================
+    // Compiled Unification Opcodes (0x08-0x0F)
+    // =========================================================================
+
+    /// UCheckSExpr: Check TOS is S-expression; jump to fail_offset on failure.
+    fn op_u_check_sexpr(&mut self) -> VmResult<()> {
+        let offset = self.read_i16()?;
+        let top = self.peek()?;
+        if top.as_sexpr().is_none() && !top.is_unit() {
+            // Not an S-expression — jump to fail target
+            let jump_from = self.ip;
+            self.ip = (jump_from as isize + offset as isize) as usize;
+        }
+        Ok(())
+    }
+
+    /// UCheckArity: Check S-expr length; jump to fail_offset on mismatch.
+    fn op_u_check_arity(&mut self) -> VmResult<()> {
+        let expected_arity = self.read_u8()? as usize;
+        let offset = self.read_i16()?;
+        let top = self.peek()?;
+        let matches = if let Some(items) = top.as_sexpr() {
+            items.len() == expected_arity
+        } else if top.is_unit() {
+            expected_arity == 0
+        } else {
+            false
+        };
+        if !matches {
+            let jump_from = self.ip;
+            self.ip = (jump_from as isize + offset as isize) as usize;
+        }
+        Ok(())
+    }
+
+    /// UCheckAtom: Pop, check atom equals constant; jump on mismatch.
+    fn op_u_check_atom(&mut self) -> VmResult<()> {
+        let const_idx = self.read_u16()?;
+        let offset = self.read_i16()?;
+        let value = self.pop()?;
+        let expected = self.chunk.get_constant(const_idx)
+            .ok_or(VmError::InvalidConstant(const_idx))?;
+        let matches = if let (Some(v_name), Some(e_name)) = (value.as_atom(), expected.as_atom()) {
+            v_name == e_name
+        } else {
+            false
+        };
+        if !matches {
+            let jump_from = self.ip;
+            self.ip = (jump_from as isize + offset as isize) as usize;
+        }
+        Ok(())
+    }
+
+    /// UGetChild: Peek S-expr, push children[index].
+    fn op_u_get_child(&mut self) -> VmResult<()> {
+        let index = self.read_u8()? as usize;
+        let top = self.peek()?;
+        if let Some(items) = top.as_sexpr() {
+            if index < items.len() {
+                let child = items[index].clone();
+                self.push(child);
+                return Ok(());
+            }
+        }
+        Err(VmError::TypeError {
+            expected: "S-expression with sufficient arity",
+            got: "invalid index or non-S-expression",
+        })
+    }
+
+    /// UBindVar: Pop, bind var (or check consistency); trail the binding.
+    fn op_u_bind_var(&mut self) -> VmResult<()> {
+        let name_idx = self.read_u16()?;
+        let offset = self.read_i16()?;
+        let value = self.pop()?;
+        let name_val = self.chunk.get_constant(name_idx)
+            .ok_or(VmError::InvalidConstant(name_idx))?;
+        let var_name = name_val.as_atom().ok_or(VmError::TypeError {
+            expected: "atom (variable name)",
+            got: "non-atom constant",
+        })?;
+
+        // Check if variable is already bound in the current frame
+        if let Some(frame) = self.bindings_stack.last() {
+            if let Some(existing) = frame.get(var_name) {
+                // Consistency check: existing binding must equal new value
+                if existing != &value {
+                    let jump_from = self.ip;
+                    self.ip = (jump_from as isize + offset as isize) as usize;
+                    return Ok(());
+                }
+                // Consistent — no need to rebind
+                return Ok(());
+            }
+        }
+
+        // New binding — trail it and store
+        let frame_index = self.bindings_stack.len().saturating_sub(1);
+        self.trail.push(TrailEntry::NewBinding {
+            frame_index,
+            name: var_name,
+        });
+        self.set_binding(var_name.to_string(), value);
+        Ok(())
+    }
+
+    /// UCheckLong: Pop, check Long equals constant; jump on mismatch.
+    fn op_u_check_long(&mut self) -> VmResult<()> {
+        let const_idx = self.read_u16()?;
+        let offset = self.read_i16()?;
+        let value = self.pop()?;
+        let expected = self.chunk.get_constant(const_idx)
+            .ok_or(VmError::InvalidConstant(const_idx))?;
+        let matches = if let (Some(v_long), Some(e_long)) = (value.as_long(), expected.as_long()) {
+            v_long == e_long
+        } else {
+            false
+        };
+        if !matches {
+            let jump_from = self.ip;
+            self.ip = (jump_from as isize + offset as isize) as usize;
+        }
+        Ok(())
+    }
+
+    /// UCheckValue: Pop, structural equality against constant; jump on mismatch.
+    fn op_u_check_value(&mut self) -> VmResult<()> {
+        let const_idx = self.read_u16()?;
+        let offset = self.read_i16()?;
+        let value = self.pop()?;
+        let expected = self.chunk.get_constant(const_idx)
+            .ok_or(VmError::InvalidConstant(const_idx))?;
+        if !value.structurally_equivalent(expected) {
+            let jump_from = self.ip;
+            self.ip = (jump_from as isize + offset as isize) as usize;
+        }
+        Ok(())
+    }
+
+    /// UWildcard: Pop and discard (wildcard match).
+    fn op_u_wildcard(&mut self) -> VmResult<()> {
+        self.pop()?;
+        Ok(())
+    }
+
     fn op_unify(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let unified = self.unify_generic(&a, &b).is_some();
+        // Use the corrected M-M generic core for bidirectional unification
+        let unified = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b).is_some();
         self.push(self.make_bool(unified));
         Ok(())
     }
@@ -2074,13 +2296,65 @@ where
         let b = self.pop()?;
         let a = self.pop()?;
 
-        if let Some(bindings) = self.unify_generic(&a, &b) {
-            for (name, val) in bindings {
-                self.set_binding(name, val);
+        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b) {
+            for (name, val) in bindings.iter() {
+                self.set_binding(name.to_string(), val.clone());
             }
             self.push(self.make_bool(true));
         } else {
             self.push(self.make_bool(false));
+        }
+        Ok(())
+    }
+
+    // =========================================================================
+    // Runtime Unification Opcodes (UnifyDeep, UnifyDeepBind, OccursCheck)
+    // =========================================================================
+
+    /// UnifyDeep: Full bidirectional M-M unification with fail-offset jump.
+    fn op_unify_deep(&mut self) -> VmResult<()> {
+        let offset = self.read_i16()?;
+        let b = self.pop()?;
+        let a = self.pop()?;
+
+        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b) {
+            // Trail all new bindings
+            let frame_index = self.bindings_stack.len().saturating_sub(1);
+            for (name, _val) in bindings.iter() {
+                self.trail.push(TrailEntry::NewBinding {
+                    frame_index,
+                    name,
+                });
+            }
+            // Install bindings in current frame
+            for (name, val) in bindings.iter() {
+                self.set_binding(name.to_string(), val.clone());
+            }
+        } else {
+            let jump_from = self.ip;
+            self.ip = (jump_from as isize + offset as isize) as usize;
+        }
+        Ok(())
+    }
+
+    /// UnifyDeepBind: Like UnifyDeep but installs bindings into current frame.
+    fn op_unify_deep_bind(&mut self) -> VmResult<()> {
+        // Same implementation as UnifyDeep — both install bindings
+        self.op_unify_deep()
+    }
+
+    /// OccursCheck: Check if variable occurs in term; jump if it does.
+    fn op_occurs_check(&mut self) -> VmResult<()> {
+        let offset = self.read_i16()?;
+        let term = self.pop()?;
+        let var = self.pop()?;
+
+        if let Some(var_name) = var.as_atom() {
+            let bindings = crate::backend::models::GenericBindings::new();
+            if crate::backend::eval::bindings::occurs_in_generic_pub(var_name, &term, &bindings) {
+                let jump_from = self.ip;
+                self.ip = (jump_from as isize + offset as isize) as usize;
+            }
         }
         Ok(())
     }
@@ -2624,6 +2898,7 @@ where
                 bindings_stack_height: self.bindings_stack.len(),
                 alternatives,
                 saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
             });
             self.push(first);
         }
@@ -2666,6 +2941,7 @@ where
                 bindings_stack_height: self.bindings_stack.len(),
                 alternatives,
                 saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
             });
             self.push(first);
         }
@@ -2804,6 +3080,7 @@ where
             // Restore state
             self.value_stack.truncate(cp.value_stack_height);
             self.call_stack.truncate(cp.call_stack_height);
+            self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
 
@@ -3424,6 +3701,7 @@ where
                 chunk: Arc::clone(&self.chunk),
                 alternatives: alternatives[1..].to_vec(),
                 saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
             };
             self.choice_points.push(cp);
         }
@@ -3450,6 +3728,7 @@ where
             // Restore state
             self.value_stack.truncate(cp.value_stack_height);
             self.call_stack.truncate(cp.call_stack_height);
+            self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
 
@@ -3643,6 +3922,7 @@ where
             bindings_stack_height: self.bindings_stack.len(),
             alternatives,
             saved_unreduced: self.unreduced,
+            trail_height: self.trail.len(),
         });
 
         // Push first alternative
@@ -4047,6 +4327,7 @@ where
                                 bindings_stack_height: self.bindings_stack.len(),
                                 alternatives,
                                 saved_unreduced: self.unreduced,
+                                trail_height: self.trail.len(),
                             });
                         }
                         self.push(first);
@@ -4288,6 +4569,7 @@ where
                     bindings_stack_height: self.bindings_stack.len(),
                     alternatives,
                     saved_unreduced: self.unreduced,
+                    trail_height: self.trail.len(),
                 });
             }
 
@@ -4594,6 +4876,7 @@ where
                 bindings_stack_height: self.bindings_stack.len(),
                 alternatives,
                 saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
             });
             self.push(first);
         }

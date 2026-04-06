@@ -558,6 +558,399 @@ where
     result_stack.pop().expect("Result stack should not be empty")
 }
 
+// =============================================================================
+// Bidirectional Unification (Martelli-Montanari)
+// =============================================================================
+
+/// Bidirectional unification using the Martelli-Montanari algorithm.
+///
+/// Unlike one-directional `pattern_match_generic` (which only binds variables
+/// on the pattern side), this handles variables on **both sides** simultaneously.
+///
+/// ## Algorithm
+///
+/// Maintains a work stack of `(V, V)` equation pairs. For each pair:
+/// 1. **Deref** both sides through existing bindings (transitive)
+/// 2. **Variable vs anything**: Occurs check, then bind (or verify consistency)
+/// 3. **S-expression decomposition**: Arity check, then push child pairs
+/// 4. **Ground term comparison**: Structural equality
+///
+/// Based on: Martelli & Montanari (1982), "An Efficient Unification Algorithm"
+/// Reference implementation with Rocq proofs: mettail-rust/prattail/src/unification.rs
+///
+/// ## Complexity
+///
+/// O(n * k) where n = total term size and k = number of variables (for consistency
+/// checks). Occurs check adds O(|term|) per binding. For typical MeTTa patterns
+/// with 3-10 variables, this is effectively linear.
+///
+/// ## Examples
+///
+/// ```text
+/// unify((a $x), ($y b))         => Some({$x → b, $y → a})
+/// unify(($x $x), (a a))         => Some({$x → a})
+/// unify(($x $x), (a b))         => None  (variable consistency)
+/// unify($x, (f $x))             => None  (occurs check)
+/// unify((f _ $y), (f anything z)) => Some({$y → z})
+/// ```
+pub fn bidirectional_unify_generic<V: MettaValueTrait + Clone>(
+    a: &V,
+    b: &V,
+) -> Option<GenericBindings<V>> {
+    let mut bindings = GenericBindings::new();
+    if bidirectional_unify_generic_impl(a, b, &mut bindings) {
+        Some(bindings)
+    } else {
+        None
+    }
+}
+
+/// Check if `name` refers to a MeTTa variable (starts with `$`, `&`, or `'`).
+///
+/// Excludes standalone `&` (literal operator) and space references (`&self`, `&kb`, `&stack`).
+#[inline]
+fn is_unification_variable(name: &str) -> bool {
+    (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
+        && name != "&"
+        && name != "&self"
+        && name != "&kb"
+        && name != "&stack"
+}
+
+/// Iterative occurs check: does variable `var_name` appear anywhere in `term`?
+///
+/// Uses an explicit work stack to avoid stack overflow on deeply nested terms.
+/// Returns `true` if `var_name` occurs in `term` (unification would create an
+/// infinite term).
+/// Public wrapper for occurs check (used by VM opcodes).
+pub fn occurs_in_generic_pub<V: MettaValueTrait + Clone>(
+    var_name: &str,
+    term: &V,
+    bindings: &GenericBindings<V>,
+) -> bool {
+    occurs_in_generic(var_name, term, bindings)
+}
+
+fn occurs_in_generic<V: MettaValueTrait + Clone>(
+    var_name: &str,
+    term: &V,
+    bindings: &GenericBindings<V>,
+) -> bool {
+    // Owned work stack (V is Copy for MettaValue, so cloning is zero-cost)
+    let mut work_stack: Vec<V> = Vec::with_capacity(16);
+    work_stack.push(term.clone());
+
+    while let Some(raw) = work_stack.pop() {
+        // Deref through bindings
+        let current = deref_value_owned(&raw, bindings);
+
+        if let Some(name) = current.as_atom() {
+            if name == var_name {
+                return true;
+            }
+            // Don't descend into atoms further
+            continue;
+        }
+
+        if let Some(items) = current.as_sexpr() {
+            for item in items.iter() {
+                work_stack.push(item.clone());
+            }
+            continue;
+        }
+
+        if let Some(goals) = current.as_conjunction() {
+            for goal in goals.iter() {
+                work_stack.push(goal.clone());
+            }
+            continue;
+        }
+
+        if let Some((_msg, details)) = current.as_error() {
+            work_stack.push(details.clone());
+            continue;
+        }
+
+        if let Some(inner) = current.as_type() {
+            work_stack.push(inner.clone());
+        }
+
+        // Ground types (Long, Bool, Float, String, Unit, etc.) cannot contain variables
+    }
+
+    false
+}
+
+/// Internal implementation of Martelli-Montanari bidirectional unification.
+///
+/// Uses an owned work stack of equation pairs `(lhs, rhs)`. Since `V` is
+/// typically Copy (MettaValue is 8 bytes), cloning is zero-cost.
+/// Bindings are accumulated in the `bindings` parameter.
+fn bidirectional_unify_generic_impl<V: MettaValueTrait + Clone>(
+    a: &V,
+    b: &V,
+    bindings: &mut GenericBindings<V>,
+) -> bool {
+    // Owned work stack — V is Copy for MettaValue so cloning is zero-cost.
+    let mut work_stack: Vec<(V, V)> = Vec::with_capacity(16);
+    work_stack.push((a.clone(), b.clone()));
+
+    while let Some((lhs_raw, rhs_raw)) = work_stack.pop() {
+        // Step 1: Dereference both sides through existing bindings (transitive)
+        let lhs = deref_value_owned(&lhs_raw, bindings);
+        let rhs = deref_value_owned(&rhs_raw, bindings);
+
+        // Step 2: Trivial identity
+        if lhs == rhs {
+            continue;
+        }
+
+        // Step 3: Wildcards (match anything without binding)
+        if let Some(name) = lhs.as_atom() {
+            if name == "_" {
+                continue;
+            }
+        }
+        if let Some(name) = rhs.as_atom() {
+            if name == "_" {
+                continue;
+            }
+        }
+
+        // Step 4: Variable on LHS
+        if let Some(l_name) = lhs.as_atom() {
+            if is_unification_variable(l_name) {
+                // Already bound? Push (existing_value, rhs) for consistency check
+                if let Some(existing) = bindings.get(l_name) {
+                    let existing = existing.clone();
+                    work_stack.push((existing, rhs));
+                    continue;
+                }
+
+                // Occurs check: prevent $x = f($x) → infinite terms
+                if occurs_in_generic(l_name, &rhs, bindings) {
+                    return false;
+                }
+
+                // Bind: l_name → rhs
+                bindings.insert(l_name, rhs);
+                continue;
+            }
+        }
+
+        // Step 5: Variable on RHS
+        if let Some(r_name) = rhs.as_atom() {
+            if is_unification_variable(r_name) {
+                // Already bound? Push (existing_value, lhs) for consistency check
+                if let Some(existing) = bindings.get(r_name) {
+                    let existing = existing.clone();
+                    work_stack.push((existing, lhs));
+                    continue;
+                }
+
+                // Occurs check
+                if occurs_in_generic(r_name, &lhs, bindings) {
+                    return false;
+                }
+
+                // Bind: r_name → lhs
+                bindings.insert(r_name, lhs);
+                continue;
+            }
+        }
+
+        // Step 6: Both are non-variable — structural comparison
+
+        // Atoms: must match exactly
+        if let Some(l_name) = lhs.as_atom() {
+            if let Some(r_name) = rhs.as_atom() {
+                if l_name == r_name {
+                    continue;
+                }
+            }
+            // Atom "Empty" matches Empty sentinel
+            if l_name == "Empty" && rhs.is_empty() {
+                continue;
+            }
+            return false;
+        }
+        // RHS atom "Empty" matching LHS Empty sentinel
+        if let Some(r_name) = rhs.as_atom() {
+            if r_name == "Empty" && lhs.is_empty() {
+                continue;
+            }
+            return false;
+        }
+
+        // Ground types
+        if let Some(l_bool) = lhs.as_bool() {
+            if let Some(r_bool) = rhs.as_bool() {
+                if l_bool == r_bool {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_long) = lhs.as_long() {
+            if let Some(r_long) = rhs.as_long() {
+                if l_long == r_long {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_float) = lhs.as_float() {
+            if let Some(r_float) = rhs.as_float() {
+                if l_float.to_bits() == r_float.to_bits() {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_str) = lhs.as_string() {
+            if let Some(r_str) = rhs.as_string() {
+                if l_str == r_str {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        // Unit matches Unit
+        if lhs.is_unit() {
+            if rhs.is_unit() {
+                continue;
+            }
+            // Unit matches empty S-expr
+            if let Some(r_items) = rhs.as_sexpr() {
+                if r_items.is_empty() {
+                    continue;
+                }
+            }
+            return false;
+        }
+        if rhs.is_unit() {
+            // Empty S-expr matches Unit (symmetric)
+            if let Some(l_items) = lhs.as_sexpr() {
+                if l_items.is_empty() {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        // S-expressions: decompose element-wise
+        if let Some(l_items) = lhs.as_sexpr() {
+            if let Some(r_items) = rhs.as_sexpr() {
+                if l_items.len() != r_items.len() {
+                    return false;
+                }
+                if l_items.is_empty() {
+                    continue;
+                }
+                // Push child pairs in reverse order (LIFO → left-to-right processing)
+                for (l, r) in l_items.iter().zip(r_items.iter()).rev() {
+                    work_stack.push((l.clone(), r.clone()));
+                }
+                continue;
+            }
+            return false;
+        }
+
+        // Conjunctions: structural matching
+        if let Some(l_goals) = lhs.as_conjunction() {
+            if let Some(r_goals) = rhs.as_conjunction() {
+                if l_goals.len() != r_goals.len() {
+                    return false;
+                }
+                for (l, r) in l_goals.iter().zip(r_goals.iter()).rev() {
+                    work_stack.push((l.clone(), r.clone()));
+                }
+                continue;
+            }
+            return false;
+        }
+
+        // Errors: structural matching
+        if let Some((l_msg, l_details)) = lhs.as_error() {
+            if let Some((r_msg, r_details)) = rhs.as_error() {
+                if l_msg != r_msg {
+                    return false;
+                }
+                work_stack.push((l_details.clone(), r_details.clone()));
+                continue;
+            }
+            return false;
+        }
+
+        // Space handles
+        if let Some(l_handle) = lhs.as_space() {
+            if let Some(r_handle) = rhs.as_space() {
+                if l_handle.id == r_handle.id {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        // State handles
+        if let Some(l_id) = lhs.as_state() {
+            if let Some(r_id) = rhs.as_state() {
+                if l_id == r_id {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        // Type wrappers
+        if let Some(l_inner) = lhs.as_type() {
+            if let Some(r_inner) = rhs.as_type() {
+                work_stack.push((l_inner.clone(), r_inner.clone()));
+                continue;
+            }
+            return false;
+        }
+
+        // Empty sentinel
+        if lhs.is_empty() && rhs.is_empty() {
+            continue;
+        }
+
+        // Default: no match
+        return false;
+    }
+
+    true // All equation pairs unified successfully
+}
+
+/// Dereference a value through existing bindings transitively (owned version).
+///
+/// Follows binding chains until reaching a non-variable or unbound variable.
+/// Returns an owned value (Clone is zero-cost for Copy types like MettaValue).
+fn deref_value_owned<V: MettaValueTrait + Clone>(
+    val: &V,
+    bindings: &GenericBindings<V>,
+) -> V {
+    let mut current = val.clone();
+    // Limit chain length to prevent infinite loops from buggy bindings
+    for _ in 0..64 {
+        if let Some(name) = current.as_atom() {
+            if is_unification_variable(name) {
+                if let Some(bound) = bindings.get(name) {
+                    current = bound.clone();
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+    current
+}
+
 /// atom-subst: Variable substitution (generic version)
 /// Usage: (atom-subst value $var template)
 pub fn eval_atom_subst_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
@@ -672,6 +1065,587 @@ mod tests {
             assert_eq!(items[0].as_atom(), Some("+"));
             assert_eq!(items[1].as_long(), Some(42));
             assert_eq!(items[2].as_long(), Some(1));
+        }
+    }
+
+    // =========================================================================
+    // Bidirectional Unification (Martelli-Montanari) Tests
+    // =========================================================================
+
+    /// Helper: create an S-expression from a slice of MettaValues
+    fn sexpr(items: Vec<MettaValue>) -> MettaValue {
+        MettaValue::SExpr(items)
+    }
+
+    #[test]
+    fn test_unify_identical_atoms() {
+        let a = MettaValue::sym("foo");
+        let b = MettaValue::sym("foo");
+        let result = bidirectional_unify_generic(&a, &b);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_unify_different_atoms() {
+        let a = MettaValue::sym("foo");
+        let b = MettaValue::sym("bar");
+        let result = bidirectional_unify_generic(&a, &b);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_unify_variable_lhs() {
+        let var = MettaValue::var("x");
+        let val = MettaValue::sym("hello");
+        let result = bidirectional_unify_generic(&var, &val);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$x").unwrap().as_atom(), Some("hello"));
+    }
+
+    #[test]
+    fn test_unify_variable_rhs() {
+        let val = MettaValue::sym("hello");
+        let var = MettaValue::var("x");
+        let result = bidirectional_unify_generic(&val, &var);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$x").unwrap().as_atom(), Some("hello"));
+    }
+
+    #[test]
+    fn test_unify_bidirectional() {
+        // (a $x) unified with ($y b) => {$x -> b, $y -> a}
+        let lhs = sexpr(vec![MettaValue::sym("a"), MettaValue::var("x")]);
+        let rhs = sexpr(vec![MettaValue::var("y"), MettaValue::sym("b")]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$x").unwrap().as_atom(), Some("b"));
+        assert_eq!(bindings.get("$y").unwrap().as_atom(), Some("a"));
+    }
+
+    #[test]
+    fn test_unify_variable_consistency_success() {
+        // ($x $x) unified with (a a) => Some({$x -> a})
+        let pattern = sexpr(vec![MettaValue::var("x"), MettaValue::var("x")]);
+        let value = sexpr(vec![MettaValue::sym("a"), MettaValue::sym("a")]);
+        let result = bidirectional_unify_generic(&pattern, &value);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$x").unwrap().as_atom(), Some("a"));
+    }
+
+    #[test]
+    fn test_unify_variable_consistency_failure() {
+        // ($x $x) unified with (a b) => None
+        let pattern = sexpr(vec![MettaValue::var("x"), MettaValue::var("x")]);
+        let value = sexpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
+        let result = bidirectional_unify_generic(&pattern, &value);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_unify_occurs_check_simple() {
+        // $x unified with (f $x) => None (infinite term)
+        let var = MettaValue::var("x");
+        let term = sexpr(vec![MettaValue::sym("f"), MettaValue::var("x")]);
+        let result = bidirectional_unify_generic(&var, &term);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_unify_occurs_check_nested() {
+        // $x unified with (f (g $x)) => None
+        let var = MettaValue::var("x");
+        let term = sexpr(vec![
+            MettaValue::sym("f"),
+            sexpr(vec![MettaValue::sym("g"), MettaValue::var("x")]),
+        ]);
+        let result = bidirectional_unify_generic(&var, &term);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_unify_occurs_check_success() {
+        // $x unified with (f $y) => Some({$x -> (f $y)})
+        let var = MettaValue::var("x");
+        let term = sexpr(vec![MettaValue::sym("f"), MettaValue::var("y")]);
+        let result = bidirectional_unify_generic(&var, &term);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_unify_all_variable_prefixes() {
+        // (&x 'y $z) vs (a b c) => Some({&x->a, 'y->b, $z->c})
+        let factory = GcFactory::default();
+        let lhs = sexpr(vec![
+            factory.atom("&x"),
+            factory.atom("'y"),
+            MettaValue::var("z"),
+        ]);
+        let rhs = sexpr(vec![
+            MettaValue::sym("a"),
+            MettaValue::sym("b"),
+            MettaValue::sym("c"),
+        ]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("&x").unwrap().as_atom(), Some("a"));
+        assert_eq!(bindings.get("'y").unwrap().as_atom(), Some("b"));
+        assert_eq!(bindings.get("$z").unwrap().as_atom(), Some("c"));
+    }
+
+    #[test]
+    fn test_unify_standalone_ampersand_not_variable() {
+        // (& $x) vs (& 5) => Some({$x -> 5})
+        let factory = GcFactory::default();
+        let lhs = sexpr(vec![factory.atom("&"), MettaValue::var("x")]);
+        let rhs = sexpr(vec![factory.atom("&"), MettaValue::Long(5)]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$x").unwrap().as_long(), Some(5));
+    }
+
+    #[test]
+    fn test_unify_wildcard_lhs() {
+        let wildcard = MettaValue::sym("_");
+        let val = MettaValue::Long(42);
+        let result = bidirectional_unify_generic(&wildcard, &val);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_unify_wildcard_rhs() {
+        let val = MettaValue::Long(42);
+        let wildcard = MettaValue::sym("_");
+        let result = bidirectional_unify_generic(&val, &wildcard);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_unify_wildcard_both_sides() {
+        // (_ $x) vs ($y _) => Some({$x -> _, $y -> _})
+        let lhs = sexpr(vec![MettaValue::sym("_"), MettaValue::var("x")]);
+        let rhs = sexpr(vec![MettaValue::var("y"), MettaValue::sym("_")]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_unify_nested_sexpr() {
+        // (f (g $x) $y) vs (f (g a) b) => Some({$x -> a, $y -> b})
+        let lhs = sexpr(vec![
+            MettaValue::sym("f"),
+            sexpr(vec![MettaValue::sym("g"), MettaValue::var("x")]),
+            MettaValue::var("y"),
+        ]);
+        let rhs = sexpr(vec![
+            MettaValue::sym("f"),
+            sexpr(vec![MettaValue::sym("g"), MettaValue::sym("a")]),
+            MettaValue::sym("b"),
+        ]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$x").unwrap().as_atom(), Some("a"));
+        assert_eq!(bindings.get("$y").unwrap().as_atom(), Some("b"));
+    }
+
+    #[test]
+    fn test_unify_arity_mismatch() {
+        let lhs = sexpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
+        let rhs = sexpr(vec![
+            MettaValue::sym("a"),
+            MettaValue::sym("b"),
+            MettaValue::sym("c"),
+        ]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_unify_empty_sexpr() {
+        let lhs = sexpr(vec![]);
+        let rhs = sexpr(vec![]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_unify_ground_types() {
+        // Long
+        assert!(bidirectional_unify_generic(&MettaValue::Long(42), &MettaValue::Long(42)).is_some());
+        assert!(bidirectional_unify_generic(&MettaValue::Long(42), &MettaValue::Long(43)).is_none());
+
+        // Bool
+        assert!(bidirectional_unify_generic(&MettaValue::Bool(true), &MettaValue::Bool(true)).is_some());
+        assert!(bidirectional_unify_generic(&MettaValue::Bool(true), &MettaValue::Bool(false)).is_none());
+
+        // String
+        assert!(bidirectional_unify_generic(
+            &MettaValue::String("hi".to_string()),
+            &MettaValue::String("hi".to_string()),
+        ).is_some());
+        assert!(bidirectional_unify_generic(
+            &MettaValue::String("hi".to_string()),
+            &MettaValue::String("bye".to_string()),
+        ).is_none());
+    }
+
+    #[test]
+    fn test_unify_type_mismatch() {
+        // Long vs Bool
+        assert!(bidirectional_unify_generic(&MettaValue::Long(1), &MettaValue::Bool(true)).is_none());
+        // Atom vs Long
+        assert!(bidirectional_unify_generic(&MettaValue::sym("a"), &MettaValue::Long(1)).is_none());
+    }
+
+    #[test]
+    fn test_unify_transitive_deref() {
+        // ($x $y $z) vs (a $x $y) => {$x->a, $y->a, $z->a}
+        let lhs = sexpr(vec![
+            MettaValue::var("x"),
+            MettaValue::var("y"),
+            MettaValue::var("z"),
+        ]);
+        let rhs = sexpr(vec![
+            MettaValue::sym("a"),
+            MettaValue::var("x"),
+            MettaValue::var("y"),
+        ]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some(), "Transitive deref unification should succeed");
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$x").unwrap().as_atom(), Some("a"));
+        // $y is bound to $x, which deref's to a — consistency check should pass
+    }
+
+    #[test]
+    fn test_unify_deep_nesting() {
+        // Build a deeply nested term: (f (f (f ... (f $x) ...)))
+        let mut lhs = MettaValue::var("x");
+        let mut rhs = MettaValue::sym("leaf");
+        for _ in 0..100 {
+            lhs = sexpr(vec![MettaValue::sym("f"), lhs]);
+            rhs = sexpr(vec![MettaValue::sym("f"), rhs]);
+        }
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some(), "Deep nesting should not overflow stack");
+        assert_eq!(result.unwrap().get("$x").unwrap().as_atom(), Some("leaf"));
+    }
+
+    #[test]
+    fn test_unify_unit_empty_sexpr_cross_type() {
+        let unit = MettaValue::Unit();
+        let empty = sexpr(vec![]);
+        assert!(bidirectional_unify_generic(&unit, &empty).is_some());
+        assert!(bidirectional_unify_generic(&empty, &unit).is_some());
+    }
+
+    #[test]
+    fn test_unify_variable_to_variable() {
+        // $x vs $y => Some({$x -> $y}) or Some({$y -> $x})
+        let x = MettaValue::var("x");
+        let y = MettaValue::var("y");
+        let result = bidirectional_unify_generic(&x, &y);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        // One of them should be bound
+        assert_eq!(bindings.len(), 1);
+    }
+
+    #[test]
+    fn test_unify_same_variable_both_sides() {
+        // $x vs $x => Some({}) (trivially equal after deref)
+        let x = MettaValue::var("x");
+        let result = bidirectional_unify_generic(&x, &x);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_unify_space_ref_not_variable() {
+        // &self is a space reference, not a variable
+        let factory = GcFactory::default();
+        let lhs = factory.atom("&self");
+        let rhs = MettaValue::sym("foo");
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_none(), "&self should not be treated as a variable");
+    }
+
+    #[test]
+    fn test_unify_complex_bidirectional() {
+        // (f $x (g $y)) vs (f (h $y) (g a))
+        // => {$x -> (h a), $y -> a}  (with transitive deref)
+        let lhs = sexpr(vec![
+            MettaValue::sym("f"),
+            MettaValue::var("x"),
+            sexpr(vec![MettaValue::sym("g"), MettaValue::var("y")]),
+        ]);
+        let rhs = sexpr(vec![
+            MettaValue::sym("f"),
+            sexpr(vec![MettaValue::sym("h"), MettaValue::var("y")]),
+            sexpr(vec![MettaValue::sym("g"), MettaValue::sym("a")]),
+        ]);
+        let result = bidirectional_unify_generic(&lhs, &rhs);
+        assert!(result.is_some());
+        let bindings = result.unwrap();
+        assert_eq!(bindings.get("$y").unwrap().as_atom(), Some("a"));
+        // $x should be bound to (h $y) where $y -> a
+        // The binding stores the value at bind-time: (h $y)
+        // Deref'd, it represents (h a)
+        assert!(bindings.get("$x").is_some());
+    }
+
+    #[test]
+    fn test_is_unification_variable() {
+        assert!(is_unification_variable("$x"));
+        assert!(is_unification_variable("$foo"));
+        assert!(is_unification_variable("&x"));
+        assert!(is_unification_variable("'y"));
+        assert!(!is_unification_variable("&"));
+        assert!(!is_unification_variable("&self"));
+        assert!(!is_unification_variable("&kb"));
+        assert!(!is_unification_variable("&stack"));
+        assert!(!is_unification_variable("foo"));
+        assert!(!is_unification_variable("_"));
+        assert!(!is_unification_variable("42"));
+    }
+
+    #[test]
+    fn test_occurs_in_simple() {
+        let term = sexpr(vec![MettaValue::sym("f"), MettaValue::var("x")]);
+        let bindings = GenericBindings::new();
+        assert!(occurs_in_generic("$x", &term, &bindings));
+        assert!(!occurs_in_generic("$y", &term, &bindings));
+    }
+
+    #[test]
+    fn test_occurs_in_through_bindings() {
+        // $y is bound to (g $x). Does $x occur in $y?
+        let mut bindings = GenericBindings::new();
+        let factory = GcFactory::default();
+        bindings.insert(
+            factory.atom("$y").as_atom().expect("atom"),
+            sexpr(vec![MettaValue::sym("g"), MettaValue::var("x")]),
+        );
+        let term = MettaValue::var("y");
+        assert!(occurs_in_generic("$x", &term, &bindings));
+    }
+
+    #[test]
+    fn test_deref_value_owned_chain() {
+        // $x -> $y -> $z -> 42
+        let factory = GcFactory::default();
+        let mut bindings = GenericBindings::new();
+        bindings.insert(factory.atom("$x").as_atom().expect("atom"), MettaValue::var("y"));
+        bindings.insert(factory.atom("$y").as_atom().expect("atom"), MettaValue::var("z"));
+        bindings.insert(factory.atom("$z").as_atom().expect("atom"), MettaValue::Long(42));
+
+        let result = deref_value_owned(&MettaValue::var("x"), &bindings);
+        assert_eq!(result.as_long(), Some(42));
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::backend::models::MettaValue;
+    use proptest::prelude::*;
+
+    // =========================================================================
+    // Strategy Generators
+    // =========================================================================
+
+    /// Generate arbitrary Long values
+    fn arb_long() -> impl Strategy<Value = MettaValue> {
+        (-10000i64..10000i64).prop_map(MettaValue::Long)
+    }
+
+    /// Generate arbitrary Bool values
+    fn arb_bool() -> impl Strategy<Value = MettaValue> {
+        prop::bool::ANY.prop_map(MettaValue::Bool)
+    }
+
+    /// Generate arbitrary Symbol values (non-variable atoms)
+    fn arb_symbol() -> impl Strategy<Value = MettaValue> {
+        "[a-z]{1,8}".prop_map(|s| MettaValue::sym(&s))
+    }
+
+    /// Generate arbitrary String values
+    fn arb_string() -> impl Strategy<Value = MettaValue> {
+        ".{0,20}".prop_map(MettaValue::String)
+    }
+
+    /// Generate simple ground values (no variables, no S-expressions)
+    fn arb_simple_ground() -> impl Strategy<Value = MettaValue> {
+        prop_oneof![
+            arb_long(),
+            arb_bool(),
+            arb_symbol(),
+            arb_string(),
+            Just(MettaValue::Unit()),
+        ]
+    }
+
+    /// Generate ground MettaValue (no variables) with bounded depth
+    fn arb_ground_value(depth: usize) -> BoxedStrategy<MettaValue> {
+        if depth == 0 {
+            arb_simple_ground().boxed()
+        } else {
+            prop_oneof![
+                arb_simple_ground(),
+                prop::collection::vec(arb_ground_value(depth - 1), 0..4)
+                    .prop_map(MettaValue::SExpr),
+            ]
+            .boxed()
+        }
+    }
+
+    /// Generate arbitrary MettaValue including variables, with bounded depth
+    fn arb_metta_value(depth: usize) -> BoxedStrategy<MettaValue> {
+        if depth == 0 {
+            prop_oneof![
+                arb_simple_ground(),
+                "[a-e]{1,3}".prop_map(|s| MettaValue::var(&s)),
+            ]
+            .boxed()
+        } else {
+            prop_oneof![
+                arb_simple_ground(),
+                "[a-e]{1,3}".prop_map(|s| MettaValue::var(&s)),
+                prop::collection::vec(arb_metta_value(depth - 1), 0..4)
+                    .prop_map(MettaValue::SExpr),
+            ]
+            .boxed()
+        }
+    }
+
+    /// Check if a MettaValue contains any variables
+    fn is_ground(v: &MettaValue) -> bool {
+        let mut stack: Vec<&MettaValue> = vec![v];
+        while let Some(current) = stack.pop() {
+            if let Some(name) = current.as_atom() {
+                if is_unification_variable(name) {
+                    return false;
+                }
+            }
+            if let Some(items) = current.as_sexpr() {
+                for item in items.iter() {
+                    stack.push(item);
+                }
+            }
+        }
+        true
+    }
+
+    // =========================================================================
+    // Property Tests
+    // =========================================================================
+
+    proptest! {
+        /// Reflexivity: any term unifies with itself
+        #[test]
+        fn unify_reflexive(v in arb_metta_value(3)) {
+            let result = bidirectional_unify_generic(&v, &v);
+            prop_assert!(result.is_some(), "Any term should unify with itself: {:?}", v);
+        }
+
+        /// Symmetry: unify(a,b) succeeds iff unify(b,a) succeeds
+        #[test]
+        fn unify_symmetric(a in arb_metta_value(2), b in arb_metta_value(2)) {
+            let ab = bidirectional_unify_generic(&a, &b);
+            let ba = bidirectional_unify_generic(&b, &a);
+            prop_assert_eq!(
+                ab.is_some(), ba.is_some(),
+                "Unification should be symmetric: a={:?}, b={:?}", a, b
+            );
+        }
+
+        /// Ground terms: unify(ground_a, ground_b) = Some({}) iff a == b structurally
+        #[test]
+        fn unify_ground_terms(a in arb_ground_value(2), b in arb_ground_value(2)) {
+            // Only test values we know are ground
+            prop_assume!(is_ground(&a) && is_ground(&b));
+            let result = bidirectional_unify_generic(&a, &b);
+            if a == b {
+                prop_assert!(result.is_some(), "Equal ground terms should unify");
+                prop_assert!(result.unwrap().is_empty(), "Ground unification should produce no bindings");
+            } else {
+                prop_assert!(result.is_none(), "Unequal ground terms should not unify: {:?} vs {:?}", a, b);
+            }
+        }
+
+        /// Variable consistency: ($x $x) only unifies with (a b) when a == b
+        #[test]
+        fn variable_consistency(a in arb_ground_value(2), b in arb_ground_value(2)) {
+            prop_assume!(is_ground(&a) && is_ground(&b));
+            let pattern = MettaValue::SExpr(vec![MettaValue::var("x"), MettaValue::var("x")]);
+            let value = MettaValue::SExpr(vec![a.clone(), b.clone()]);
+            let result = bidirectional_unify_generic(&pattern, &value);
+            if a == b {
+                prop_assert!(result.is_some(), "($x $x) should unify with ({:?} {:?})", a, b);
+            } else {
+                prop_assert!(result.is_none(), "($x $x) should NOT unify with ({:?} {:?})", a, b);
+            }
+        }
+
+        /// Wildcard universality: _ unifies with any term (from either side)
+        #[test]
+        fn wildcard_matches_anything(v in arb_metta_value(3)) {
+            let wildcard = MettaValue::sym("_");
+            prop_assert!(
+                bidirectional_unify_generic(&wildcard, &v).is_some(),
+                "Wildcard should match anything on LHS"
+            );
+            prop_assert!(
+                bidirectional_unify_generic(&v, &wildcard).is_some(),
+                "Wildcard should match anything on RHS"
+            );
+        }
+
+        /// Idempotence: unifying a term with itself produces empty or identity bindings
+        #[test]
+        fn unify_self_produces_no_new_info(v in arb_ground_value(3)) {
+            prop_assume!(is_ground(&v));
+            let result = bidirectional_unify_generic(&v, &v);
+            prop_assert!(result.is_some());
+            prop_assert!(result.unwrap().is_empty(), "Self-unification of ground term should produce no bindings");
+        }
+
+        /// Occurs check: $x never unifies with S-expr containing $x
+        #[test]
+        fn occurs_check_prevents_infinite_terms(
+            wrapper_head in "[a-z]{1,3}".prop_map(|s| MettaValue::sym(&s)),
+            extra_args in prop::collection::vec(arb_ground_value(1), 0..3),
+        ) {
+            let var = MettaValue::var("occ");
+            let mut children = vec![wrapper_head];
+            children.extend(extra_args);
+            children.push(MettaValue::var("occ"));
+            let term = MettaValue::SExpr(children);
+
+            let result = bidirectional_unify_generic(&var, &term);
+            prop_assert!(result.is_none(), "Occurs check should prevent $occ = {:?}", term);
+        }
+
+        /// Single variable binding: $x vs ground_value always succeeds
+        #[test]
+        fn single_var_binds_to_ground(v in arb_ground_value(2)) {
+            prop_assume!(is_ground(&v));
+            let var = MettaValue::var("single");
+            let result = bidirectional_unify_generic(&var, &v);
+            prop_assert!(result.is_some());
+            let bindings = result.unwrap();
+            prop_assert_eq!(bindings.len(), 1);
+            prop_assert_eq!(bindings.get("$single").unwrap(), &v);
         }
     }
 }

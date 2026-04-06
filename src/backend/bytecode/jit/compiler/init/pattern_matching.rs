@@ -24,6 +24,14 @@ pub struct PatternMatchingFuncIds {
     pub unify_func_id: FuncId,
     /// Unify with binding
     pub unify_bind_func_id: FuncId,
+    /// Full bidirectional M-M unification (UnifyDeep)
+    pub unify_deep_func_id: FuncId,
+    /// Check if value is S-expression
+    pub u_check_sexpr_func_id: FuncId,
+    /// Check S-expression arity
+    pub u_check_arity_func_id: FuncId,
+    /// Get child from S-expression
+    pub u_get_child_func_id: FuncId,
 }
 
 /// Trait for pattern matching initialization - zero-cost static dispatch
@@ -59,6 +67,23 @@ impl<T> PatternMatchingInit for T {
         builder.symbol(
             "jit_runtime_unify_bind",
             runtime::jit_runtime_unify_bind as *const u8,
+        );
+        // Compiled unification runtime functions
+        builder.symbol(
+            "jit_runtime_unify_deep",
+            runtime::jit_runtime_unify_deep as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_u_check_sexpr",
+            runtime::jit_runtime_u_check_sexpr as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_u_check_arity",
+            runtime::jit_runtime_u_check_arity as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_u_get_child",
+            runtime::jit_runtime_u_get_child as *const u8,
         );
     }
 
@@ -160,6 +185,34 @@ impl<T> PatternMatchingInit for T {
                 ))
             })?;
 
+        // unify_deep: fn(ctx, a, b, ip) -> bool
+        let unify_deep_func_id = module
+            .declare_function("jit_runtime_unify_deep", Linkage::Import, &unify_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_unify_deep: {}", e))
+            })?;
+
+        // u_check_sexpr: fn(ctx, value, operand, ip) -> bool
+        let u_check_sexpr_func_id = module
+            .declare_function("jit_runtime_u_check_sexpr", Linkage::Import, &match_arity_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_u_check_sexpr: {}", e))
+            })?;
+
+        // u_check_arity: fn(ctx, value, arity, ip) -> bool
+        let u_check_arity_func_id = module
+            .declare_function("jit_runtime_u_check_arity", Linkage::Import, &match_arity_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_u_check_arity: {}", e))
+            })?;
+
+        // u_get_child: fn(ctx, value, index, ip) -> value
+        let u_get_child_func_id = module
+            .declare_function("jit_runtime_u_get_child", Linkage::Import, &match_arity_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_u_get_child: {}", e))
+            })?;
+
         Ok(PatternMatchingFuncIds {
             pattern_match_func_id,
             pattern_match_bind_func_id,
@@ -167,6 +220,10 @@ impl<T> PatternMatchingInit for T {
             match_arity_func_id,
             unify_func_id,
             unify_bind_func_id,
+            unify_deep_func_id,
+            u_check_sexpr_func_id,
+            u_check_arity_func_id,
+            u_get_child_func_id,
         })
     }
 }

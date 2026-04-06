@@ -2470,6 +2470,7 @@ fn test_vm_alternative_index() {
         chunk: chunk_for_cp,
         alternatives: vec![Alternative::Index(alt_offset)],
         saved_unreduced: false,
+        trail_height: vm.trail.len(),
     });
 
     let results = vm.run().expect("VM should succeed");
@@ -7275,4 +7276,316 @@ fn test_vm_struct_eq_long_float_not_equal() {
     let results = vm.run().expect("VM should succeed");
     // StructEq: Long(2) is NOT structurally equivalent to Float(2.0)
     assert_eq!(results[0], MettaValue::Bool(false));
+}
+
+// =============================================================================
+// Compiled Unification Opcode Tests
+// =============================================================================
+
+#[test]
+fn test_u_check_sexpr_basic() {
+    // Push an S-expr, UCheckSExpr should pass (not jump)
+    let mut builder = ChunkBuilder::new("test");
+    let idx = builder.add_constant(MettaValue::SExpr(vec![MettaValue::sym("a")]));
+    builder.emit_u16(Opcode::PushConstant, idx);
+    builder.emit_i16(Opcode::UCheckSExpr, 100); // large offset, should not fire
+    builder.emit(Opcode::Return);
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("should succeed");
+    assert!(results[0].as_sexpr().is_some(), "Subject should remain on stack");
+}
+
+#[test]
+fn test_u_check_sexpr_fail() {
+    // Push an atom (not S-expr), UCheckSExpr should jump to fail which pushes False
+    let mut builder = ChunkBuilder::new("test");
+    let idx = builder.add_constant(MettaValue::Long(42));
+    builder.emit_u16(Opcode::PushConstant, idx);
+    // UCheckSExpr: if fail, jump 3 bytes ahead (skip Pop + PushTrue)
+    builder.emit_i16(Opcode::UCheckSExpr, 2);
+    // Success path: Pop, PushTrue (2 bytes)
+    builder.emit(Opcode::Pop);
+    builder.emit(Opcode::PushTrue);
+    builder.emit(Opcode::Return); // This is the jump target for fail
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("should succeed");
+    // Since we jumped past Pop+PushTrue, we should still have Long(42) on stack
+    assert_eq!(results[0].as_long(), Some(42), "UCheckSExpr should have jumped");
+}
+
+#[test]
+fn test_u_get_child() {
+    let mut builder = ChunkBuilder::new("test");
+    let idx = builder.add_constant(MettaValue::SExpr(vec![
+        MettaValue::sym("a"), MettaValue::Long(42), MettaValue::sym("c"),
+    ]));
+    builder.emit_u16(Opcode::PushConstant, idx);
+    builder.emit_byte(Opcode::UGetChild, 1);
+    builder.emit(Opcode::Swap); // bring child to top, subject second
+    builder.emit(Opcode::Pop); // discard subject
+    builder.emit(Opcode::Return);
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("should succeed");
+    assert_eq!(results[0].as_long(), Some(42));
+}
+
+#[test]
+fn test_u_bind_var_new() {
+    // Bind a new variable via UBindVar
+    let mut builder = ChunkBuilder::new("test");
+    let x_idx = builder.add_constant(MettaValue::sym("$x"));
+    builder.emit(Opcode::PushBindingFrame);
+    builder.emit_byte(Opcode::PushLongSmall, 42);
+    // UBindVar: name_idx(u16) + fail_offset(i16) = 4 bytes
+    builder.emit(Opcode::UBindVar);
+    builder.emit_raw(&x_idx.to_be_bytes());
+    builder.emit_raw(&100i16.to_be_bytes()); // won't fire
+    builder.emit_u16(Opcode::LoadBinding, x_idx);
+    builder.emit(Opcode::Return);
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("should succeed");
+    assert_eq!(results[0].as_long(), Some(42));
+}
+
+#[test]
+fn test_u_bind_var_consistency_fail() {
+    // Bind $x=42, then try UBindVar $x with 99 => consistency fail => jump
+    let mut builder = ChunkBuilder::new("test");
+    let x_idx = builder.add_constant(MettaValue::sym("$x"));
+    builder.emit(Opcode::PushBindingFrame);
+    // First bind
+    builder.emit_byte(Opcode::PushLongSmall, 42);
+    builder.emit(Opcode::UBindVar);
+    builder.emit_raw(&x_idx.to_be_bytes());
+    builder.emit_raw(&100i16.to_be_bytes()); // won't fire (first bind always succeeds)
+    // Second bind with different value
+    builder.emit_byte(Opcode::PushLongSmall, 99);
+    let ubind_ip = builder.current_offset();
+    builder.emit(Opcode::UBindVar);
+    builder.emit_raw(&x_idx.to_be_bytes());
+    builder.emit_raw(&0i16.to_be_bytes()); // placeholder
+    // Success: push true (should NOT be reached)
+    let success_ip = builder.current_offset();
+    builder.emit(Opcode::PushTrue);
+    builder.emit_byte(Opcode::JumpShort, 1); // jump past PushFalse
+    // Fail target — where fail jumps to
+    let fail_ip = builder.current_offset();
+    builder.emit(Opcode::PushFalse);
+    builder.emit(Opcode::Return);
+    // Patch: UBindVar fail_offset is at ubind_ip+3..ubind_ip+5, IP after operands = ubind_ip+5
+    let off = (fail_ip as isize - (ubind_ip + 5) as isize) as i16;
+    builder.code_mut()[ubind_ip + 3..ubind_ip + 5].copy_from_slice(&off.to_be_bytes());
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("should succeed");
+    assert_eq!(results[0], MettaValue::Bool(false), "Consistency check should fail");
+}
+
+/// Helper: emit compiled unification pattern and patch all fail offsets.
+/// Returns (success_push_ip, fail_ip) for further patching.
+fn emit_compiled_unify_pattern(
+    builder: &mut ChunkBuilder,
+    ops: &[(Opcode, Vec<u8>)], // (opcode, raw operands with placeholder fail_offsets
+) -> (usize, usize) {
+    // Collect all opcode positions and their offset sizes for patching
+    let mut patch_sites: Vec<(usize, usize)> = Vec::new(); // (fail_offset_byte_position, ip_after_operands)
+
+    for (opcode, operands) in ops {
+        let op_ip = builder.current_offset();
+        builder.emit(*opcode);
+        builder.emit_raw(operands);
+
+        // Opcodes with fail_offset have it as the last 2 bytes
+        let imm_size = opcode.immediate_size();
+        if imm_size >= 2 && *opcode != Opcode::UGetChild && *opcode != Opcode::UWildcard {
+            // fail_offset is at the last 2 bytes of the operands
+            let fail_offset_pos = op_ip + 1 + imm_size - 2;
+            let ip_after = op_ip + 1 + imm_size;
+            patch_sites.push((fail_offset_pos, ip_after));
+        }
+    }
+
+    // Success path
+    builder.emit(Opcode::Pop); // discard subject
+    builder.emit(Opcode::PushTrue);
+    let jump_past_ip = builder.current_offset();
+    builder.emit_byte(Opcode::JumpShort, 0); // placeholder (1-byte offset)
+
+    // Fail path
+    let fail_ip = builder.current_offset();
+    builder.emit(Opcode::TrailUndo);
+    builder.emit(Opcode::Pop); // discard subject
+    builder.emit(Opcode::PushFalse);
+
+    let end_ip = builder.current_offset();
+    builder.emit(Opcode::Return);
+
+    // Patch all fail offsets to point to fail_ip
+    let code = builder.code_mut();
+    for (offset_pos, ip_after) in &patch_sites {
+        let off = (fail_ip as isize - *ip_after as isize) as i16;
+        code[*offset_pos..*offset_pos + 2].copy_from_slice(&off.to_be_bytes());
+    }
+    // Patch jump past fail (JumpShort uses i8)
+    let off = (end_ip as isize - (jump_past_ip + 2) as isize) as i8;
+    code[jump_past_ip + 1] = off as u8;
+
+    (fail_ip, end_ip)
+}
+
+#[test]
+fn test_compiled_unify_simple_pattern_success() {
+    // Test: match (f $x $y) against (f 1 2) => success, $x=1, $y=2
+    let mut builder = ChunkBuilder::new("test");
+    let subject_idx = builder.add_constant(
+        MettaValue::SExpr(vec![MettaValue::sym("f"), MettaValue::Long(1), MettaValue::Long(2)])
+    );
+    let f_idx = builder.add_constant(MettaValue::sym("f"));
+    let x_idx = builder.add_constant(MettaValue::sym("$x"));
+    let y_idx = builder.add_constant(MettaValue::sym("$y"));
+
+    builder.emit_u16(Opcode::PushConstant, subject_idx);
+    builder.emit(Opcode::PushBindingFrame);
+    builder.emit(Opcode::TrailMark);
+
+    emit_compiled_unify_pattern(&mut builder, &[
+        (Opcode::UCheckSExpr, vec![0, 0]),                     // placeholder i16
+        (Opcode::UCheckArity, vec![3, 0, 0]),                  // u8 arity + placeholder i16
+        (Opcode::UGetChild, vec![0]),                          // index 0
+        (Opcode::UCheckAtom, [f_idx.to_be_bytes().as_slice(), &[0, 0]].concat()), // u16 + placeholder i16
+        (Opcode::UGetChild, vec![1]),
+        (Opcode::UBindVar, [x_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+        (Opcode::UGetChild, vec![2]),
+        (Opcode::UBindVar, [y_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+    ]);
+
+    let chunk_arc = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk_arc);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true), "Pattern (f $x $y) should match (f 1 2)");
+    assert_eq!(vm.get_binding("$x").map(|v| v.as_long()), Some(Some(1)));
+    assert_eq!(vm.get_binding("$y").map(|v| v.as_long()), Some(Some(2)));
+}
+
+#[test]
+fn test_compiled_unify_head_mismatch() {
+    // Test: match (f $x) against (g 1) => fail (head "f" != "g")
+    let mut builder = ChunkBuilder::new("test");
+    let subject_idx = builder.add_constant(
+        MettaValue::SExpr(vec![MettaValue::sym("g"), MettaValue::Long(1)])
+    );
+    let f_idx = builder.add_constant(MettaValue::sym("f"));
+    let x_idx = builder.add_constant(MettaValue::sym("$x"));
+
+    builder.emit_u16(Opcode::PushConstant, subject_idx);
+    builder.emit(Opcode::PushBindingFrame);
+    builder.emit(Opcode::TrailMark);
+
+    emit_compiled_unify_pattern(&mut builder, &[
+        (Opcode::UCheckSExpr, vec![0, 0]),
+        (Opcode::UCheckArity, vec![2, 0, 0]),
+        (Opcode::UGetChild, vec![0]),
+        (Opcode::UCheckAtom, [f_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+        (Opcode::UGetChild, vec![1]),
+        (Opcode::UBindVar, [x_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+    ]);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(false), "Head mismatch should fail");
+}
+
+#[test]
+fn test_compiled_unify_variable_consistency() {
+    // ($x $x) vs (a a) => success; ($x $x) vs (a b) => fail
+    for (val_a, val_b, expected) in [("a", "a", true), ("a", "b", false)] {
+        let mut builder = ChunkBuilder::new("test");
+        let subject_idx = builder.add_constant(
+            MettaValue::SExpr(vec![MettaValue::sym(val_a), MettaValue::sym(val_b)])
+        );
+        let x_idx = builder.add_constant(MettaValue::sym("$x"));
+
+        builder.emit_u16(Opcode::PushConstant, subject_idx);
+        builder.emit(Opcode::PushBindingFrame);
+        builder.emit(Opcode::TrailMark);
+
+        emit_compiled_unify_pattern(&mut builder, &[
+            (Opcode::UCheckSExpr, vec![0, 0]),
+            (Opcode::UCheckArity, vec![2, 0, 0]),
+            (Opcode::UGetChild, vec![0]),
+            (Opcode::UBindVar, [x_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+            (Opcode::UGetChild, vec![1]),
+            (Opcode::UBindVar, [x_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+        ]);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+        let results = vm.run().expect("VM should succeed");
+        assert_eq!(
+            results[0], MettaValue::Bool(expected),
+            "($x $x) vs ({val_a} {val_b}) should be {expected}"
+        );
+    }
+}
+
+#[test]
+fn test_compiled_unify_wildcard() {
+    // (f _ $y) vs (f anything 3) => $y=3
+    let mut builder = ChunkBuilder::new("test");
+    let subject_idx = builder.add_constant(
+        MettaValue::SExpr(vec![MettaValue::sym("f"), MettaValue::sym("anything"), MettaValue::Long(3)])
+    );
+    let f_idx = builder.add_constant(MettaValue::sym("f"));
+    let y_idx = builder.add_constant(MettaValue::sym("$y"));
+
+    builder.emit_u16(Opcode::PushConstant, subject_idx);
+    builder.emit(Opcode::PushBindingFrame);
+    builder.emit(Opcode::TrailMark);
+
+    emit_compiled_unify_pattern(&mut builder, &[
+        (Opcode::UCheckSExpr, vec![0, 0]),
+        (Opcode::UCheckArity, vec![3, 0, 0]),
+        (Opcode::UGetChild, vec![0]),
+        (Opcode::UCheckAtom, [f_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+        (Opcode::UGetChild, vec![1]),
+        (Opcode::UWildcard, vec![]),
+        (Opcode::UGetChild, vec![2]),
+        (Opcode::UBindVar, [y_idx.to_be_bytes().as_slice(), &[0, 0]].concat()),
+    ]);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("VM should succeed");
+    assert_eq!(results[0], MettaValue::Bool(true));
+    assert_eq!(vm.get_binding("$y").map(|v| v.as_long()), Some(Some(3)));
+}
+
+#[test]
+fn test_trail_mark_undo_new_binding() {
+    // TrailMark, bind $x=42 via UBindVar, TrailUndo => $x should be unbound
+    let mut builder = ChunkBuilder::new("test");
+    let x_idx = builder.add_constant(MettaValue::sym("$x"));
+
+    builder.emit(Opcode::PushBindingFrame);
+    builder.emit(Opcode::TrailMark);
+    // Bind $x = 42 via UBindVar
+    builder.emit_byte(Opcode::PushLongSmall, 42);
+    builder.emit(Opcode::UBindVar);
+    builder.emit_raw(&x_idx.to_be_bytes());
+    builder.emit_raw(&100i16.to_be_bytes()); // huge offset, won't fire
+    // TrailUndo — should remove the binding
+    builder.emit(Opcode::TrailUndo);
+    // Check if $x is bound
+    builder.emit_u16(Opcode::HasBinding, x_idx);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("should succeed");
+    assert_eq!(results[0], MettaValue::Bool(false), "TrailUndo should remove the new binding");
 }

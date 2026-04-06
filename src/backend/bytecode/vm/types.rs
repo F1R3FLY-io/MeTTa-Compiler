@@ -190,6 +190,16 @@ where
         self.bindings.push((name, value));
     }
 
+    /// Remove a binding by name. Returns the removed value if it existed.
+    #[inline]
+    pub fn remove(&mut self, name: &str) -> Option<V> {
+        if let Some(pos) = self.bindings.iter().position(|(n, _)| n == name) {
+            Some(self.bindings.remove(pos).1)
+        } else {
+            None
+        }
+    }
+
     /// Check if a binding exists
     #[inline]
     pub fn has(&self, name: &str) -> bool {
@@ -307,6 +317,44 @@ where
     /// Saved `unreduced` flag — prevents inner dispatches from polluting
     /// the outer unreduced state during nondeterministic backtracking.
     pub saved_unreduced: bool,
+    /// Saved trail height for fine-grained binding undo during backtracking.
+    ///
+    /// When backtracking, the trail is unwound from its current length back to
+    /// this saved height, undoing individual bindings that were made since the
+    /// choice point was created. This complements the coarse bindings_stack
+    /// truncation with fine-grained undo within surviving frames.
+    pub trail_height: usize,
+}
+
+// ============================================================================
+// Trail Entry
+// ============================================================================
+
+/// A trail entry recording a binding that was made, enabling undo on backtrack.
+///
+/// Trail entries are cheap: V is typically Copy (MettaValue is 8 bytes).
+/// The trail is unwound in reverse order during `op_fail` to restore the
+/// binding state from before a failed nondeterministic branch.
+#[derive(Debug, Clone)]
+pub enum TrailEntry<V: MettaValueTrait + Clone> {
+    /// A variable was bound for the first time (was previously unbound).
+    /// To undo: remove the binding from the specified frame.
+    NewBinding {
+        /// Index into the bindings_stack
+        frame_index: usize,
+        /// Variable name (interned string)
+        name: &'static str,
+    },
+    /// A variable was rebound (had a previous value).
+    /// To undo: restore the old value in the specified frame.
+    Rebinding {
+        /// Index into the bindings_stack
+        frame_index: usize,
+        /// Variable name (interned string)
+        name: &'static str,
+        /// The previous value to restore
+        old_value: V,
+    },
 }
 
 // ============================================================================

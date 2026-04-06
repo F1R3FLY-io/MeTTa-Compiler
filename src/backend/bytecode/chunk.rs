@@ -657,6 +657,12 @@ where
         self.code.len()
     }
 
+    /// Get mutable access to the bytecode buffer for patching.
+    #[inline]
+    pub fn code_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.code
+    }
+
     /// Emit a single opcode
     pub fn emit(&mut self, opcode: Opcode) {
         self.check_nondeterminism(opcode);

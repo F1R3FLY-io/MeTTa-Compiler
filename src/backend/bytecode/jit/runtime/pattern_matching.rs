@@ -649,34 +649,134 @@ fn pattern_match_bind_impl(
     }
 }
 
-/// Unification implementation (bidirectional)
+/// Unification implementation (bidirectional) using shared Martelli-Montanari core.
+///
+/// Replaces the previous simple recursive matcher that lacked variable
+/// consistency checking, occurs check, and `&`/`'` variable prefix support.
 fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaValue)>) -> bool {
-    match (a.view(), b.view()) {
-        // Variables unify with anything (Atom starting with $)
-        (ValueView::Atom(name), _) if name.starts_with('$') => {
-            bindings.push((name.to_string(), b.clone()));
+    match crate::backend::eval::bindings::bidirectional_unify_generic(a, b) {
+        Some(result_bindings) => {
+            for (name, val) in result_bindings.iter() {
+                bindings.push((name.to_string(), val.clone()));
+            }
             true
         }
-        (_, ValueView::Atom(name)) if name.starts_with('$') => {
-            bindings.push((name.to_string(), a.clone()));
-            true
-        }
-        // Wildcard matches without binding (both directions)
-        (ValueView::Atom(s), _) if s == "_" => true,
-        (_, ValueView::Atom(s)) if s == "_" => true,
-        // Same structure
-        (ValueView::Atom(x), ValueView::Atom(y)) => x == y,
-        (ValueView::Long(x), ValueView::Long(y)) => x == y,
-        (ValueView::Bool(x), ValueView::Bool(y)) => x == y,
-        (ValueView::String(x), ValueView::String(y)) => x == y,
-        (ValueView::Unit, ValueView::Unit) => true,
-        (ValueView::SExpr(xs), ValueView::SExpr(ys)) => {
-            xs.len() == ys.len()
-                && xs
-                    .iter()
-                    .zip(ys.iter())
-                    .all(|(x, y)| unify_impl(x, y, bindings))
-        }
-        _ => false,
+        None => false,
     }
+}
+
+// =============================================================================
+// Compiled Unification Runtime Functions (for JIT-compiled unification opcodes)
+// =============================================================================
+
+/// Runtime function for UnifyDeep opcode: full bidirectional M-M unification.
+///
+/// # Returns
+/// NaN-boxed Bool: true if values unify, false otherwise.
+/// On success, bindings are installed in the current JIT binding frame.
+///
+/// # Safety
+/// The context pointer must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_unify_deep(
+    ctx: *mut JitContext,
+    a: u64,
+    b: u64,
+    _ip: u64,
+) -> u64 {
+    let ctx_ref = match ctx.as_mut() {
+        Some(c) => c,
+        None => return TAG_BOOL, // false
+    };
+
+    let a_val = JitValue::from_raw(a).to_metta();
+    let b_val = JitValue::from_raw(b).to_metta();
+
+    match crate::backend::eval::bindings::bidirectional_unify_generic(&a_val, &b_val) {
+        Some(result_bindings) => {
+            // Install bindings using the same approach as jit_runtime_unify_bind
+            if ctx_ref.binding_frames_count > 0 && !ctx_ref.binding_frames.is_null() {
+                let constants = if !ctx_ref.constants.is_null() && ctx_ref.constants_len > 0 {
+                    std::slice::from_raw_parts(ctx_ref.constants, ctx_ref.constants_len)
+                } else {
+                    &[]
+                };
+
+                for (name, val) in result_bindings.iter() {
+                    if let Some(idx) = lookup_var_index_cached(ctx, name, constants) {
+                        let jit_val = metta_to_jit(&val);
+                        let store_result = jit_runtime_store_binding(ctx, idx as u64, jit_val.to_bits(), 0);
+                        if store_result != 0 {
+                            return TAG_BOOL; // binding failed
+                        }
+                    }
+                }
+            }
+            TAG_BOOL | 1 // true
+        }
+        None => TAG_BOOL, // false
+    }
+}
+
+/// Runtime: check if a NaN-boxed value is an S-expression.
+///
+/// # Returns
+/// NaN-boxed Bool: true if value is S-expr (or unit), false otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_u_check_sexpr(
+    _ctx: *const JitContext,
+    value: u64,
+    _operand: u64,
+    _ip: u64,
+) -> u64 {
+    let val = JitValue::from_raw(value).to_metta();
+    let is_sexpr = val.as_sexpr().is_some() || val.is_unit();
+    if is_sexpr { TAG_BOOL | 1 } else { TAG_BOOL }
+}
+
+/// Runtime: check if S-expr has expected arity.
+///
+/// # Arguments
+/// * `operand` - Expected arity encoded in lower bits
+///
+/// # Returns
+/// NaN-boxed Bool: true if arity matches.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_u_check_arity(
+    _ctx: *const JitContext,
+    value: u64,
+    expected_arity: u64,
+    _ip: u64,
+) -> u64 {
+    let val = JitValue::from_raw(value).to_metta();
+    let arity = expected_arity as usize;
+    let matches = if let Some(items) = val.as_sexpr() {
+        items.len() == arity
+    } else if val.is_unit() {
+        arity == 0
+    } else {
+        false
+    };
+    if matches { TAG_BOOL | 1 } else { TAG_BOOL }
+}
+
+/// Runtime: get child at index from S-expression.
+///
+/// # Returns
+/// NaN-boxed child value, or TAG_UNIT on error.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_u_get_child(
+    _ctx: *const JitContext,
+    value: u64,
+    index: u64,
+    _ip: u64,
+) -> u64 {
+    let val = JitValue::from_raw(value).to_metta();
+    let idx = index as usize;
+    if let Some(items) = val.as_sexpr() {
+        if idx < items.len() {
+            return metta_to_jit(&items[idx]).to_bits();
+        }
+    }
+    TAG_UNIT // error fallback
 }

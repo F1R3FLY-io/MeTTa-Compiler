@@ -506,6 +506,9 @@ where
                     head_arity_bloom: std::sync::Arc::new(RwLock::new(
                         self.shared.atom_space.head_arity_bloom.read().clone(),
                     )),
+                    rule_head_bloom: std::sync::Arc::new(RwLock::new(
+                        self.shared.atom_space.rule_head_bloom.read().clone(),
+                    )),
                     type_bloom: std::sync::Arc::new(RwLock::new(
                         self.shared.atom_space.type_bloom.read().clone(),
                     )),
@@ -811,6 +814,7 @@ where
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
+                rule_head_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(5000))), // Reset (will be rebuilt)
                 type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
                 // Merge wide_btm using same lattice algebra as btm
                 wide_btm: RwLock::new(merge_pathmaps_max(
@@ -1184,6 +1188,7 @@ where
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared.atom_space.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
+                rule_head_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(5000))), // Reset (will be rebuilt)
                 type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
                 // Merge wide_btm from all environments using same lattice algebra as btm
                 wide_btm: RwLock::new({
@@ -2152,6 +2157,21 @@ where
         self.shared
             .atom_space
             .head_arity_bloom
+            .read()
+            .may_contain(head, arity as u8)
+    }
+
+    /// Check if a (head, arity) pair may match a RULE definition (not data atoms).
+    ///
+    /// Uses a bloom filter populated only by `add_rule()`, not by `add-atom()`.
+    /// This distinguishes data constructors like `(Type "$a")` from rule heads
+    /// like `(treat_step $label)`. Used by `is_normal_form_bounded` to avoid
+    /// sending data constructors through the full evaluation pipeline.
+    #[inline]
+    pub fn may_have_rule_head(&self, head: &str, arity: usize) -> bool {
+        self.shared
+            .atom_space
+            .rule_head_bloom
             .read()
             .may_contain(head, arity as u8)
     }

@@ -1892,11 +1892,17 @@ where
             );
         }
 
-        // Update bloom filter with (head, arity) for O(1) match_space() rejection
+        // Update bloom filters with (head, arity) for O(1) rejection
         if let Some(ref head) = head_owned {
             let arity_u8 = arity as u8;
             self.shared
                 .atom_space.head_arity_bloom
+                .write()
+                .insert(head, arity_u8);
+            // Rule-only bloom: used by is_normal_form_bounded to distinguish
+            // data constructors (add-atom) from rule heads (=).
+            self.shared
+                .atom_space.rule_head_bloom
                 .write()
                 .insert(head, arity_u8);
         }
@@ -2895,13 +2901,17 @@ impl MettaEnvironment {
             };
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 if let Some((lhs, rhs)) = extract_rule_parts(&value) {
-                    // Update bloom filter + fuzzy matcher
+                    // Update bloom filters + fuzzy matcher
                     let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());
                     let arity = lhs.get_arity();
                     if let Some(ref head) = head_owned {
                         self.shared.fuzzy_matcher.write().insert(head);
                         self.shared
                             .atom_space.head_arity_bloom
+                            .write()
+                            .insert(head, arity as u8);
+                        self.shared
+                            .atom_space.rule_head_bloom
                             .write()
                             .insert(head, arity as u8);
                     }

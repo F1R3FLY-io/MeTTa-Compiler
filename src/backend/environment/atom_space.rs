@@ -73,8 +73,13 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
     pub(crate) shared_mapping: SharedMappingHandle,
 
     /// Bloom filter for (head_symbol, arity) pairs — enables O(1) match_space() rejection.
-    /// Arc-wrapped so fork is O(1) (Arc::clone).
+    /// Contains BOTH rule heads AND data atom heads. Arc-wrapped so fork is O(1).
     pub(crate) head_arity_bloom: std::sync::Arc<RwLock<HeadArityBloomFilter>>,
+
+    /// Bloom filter for rule heads ONLY — used by `is_normal_form_bounded` to distinguish
+    /// data constructors (not reducible) from rule heads (potentially reducible).
+    /// Only updated by `add_rule()`, never by `add-atom()` for non-rule atoms.
+    pub(crate) rule_head_bloom: std::sync::Arc<RwLock<HeadArityBloomFilter>>,
 
     /// Bloom filter for atom names with type declarations — enables O(1) rejection
     /// in get_type()/get_types_generic() for untyped atoms.
@@ -137,6 +142,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             head_arity_bloom: std::sync::Arc::new(RwLock::new(
                 HeadArityBloomFilter::new(expected_entries),
             )),
+            rule_head_bloom: std::sync::Arc::new(RwLock::new(
+                HeadArityBloomFilter::new(expected_entries / 2),
+            )),
             type_bloom: std::sync::Arc::new(RwLock::new(
                 super::bloom::TypeBloomFilter::new(expected_entries / 10),
             )),
@@ -165,6 +173,7 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             inferred_type_bloom: Arc::clone(&self.inferred_type_bloom),
             shared_mapping: self.shared_mapping.clone(),
             head_arity_bloom: std::sync::Arc::clone(&self.head_arity_bloom),
+            rule_head_bloom: std::sync::Arc::clone(&self.rule_head_bloom),
             type_bloom: std::sync::Arc::clone(&self.type_bloom),
             total_atoms: AtomicUsize::new(self.total_atoms.load(Ordering::Acquire)),
             // Phase 10.5: snapshot generation counters into forked AtomSpace

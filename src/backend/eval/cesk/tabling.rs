@@ -102,6 +102,10 @@ pub struct TableEntry<V: MettaValueTrait> {
 
     /// Mutation epoch when this entry was created.
     pub mutation_epoch: u64,
+
+    /// Scope generation when this entry was created.
+    /// Used for cache isolation between nondeterministic branches.
+    pub scope_gen: u64,
 }
 
 // ============================================================================
@@ -148,8 +152,13 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
 
         if let Some(entry) = self.entries.get_mut(&expr_hash) {
             if entry.mutation_epoch != current_epoch {
-                // Stale — evict
+                // Stale — evict (epoch mismatch)
                 self.entries.remove(&expr_hash);
+                self.total_misses += 1;
+                return TableLookup::Absent;
+            }
+            if !crate::backend::eval::trampoline::dispatch_hints::is_scope_visible(entry.scope_gen) {
+                // Entry from a sibling branch — not visible in current scope
                 self.total_misses += 1;
                 return TableLookup::Absent;
             }
@@ -165,10 +174,12 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
     /// Store completed results for an expression hash.
     pub fn complete(&mut self, expr_hash: u64, results: SmallVec<[V; 2]>) {
         let epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+        let gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
         self.entries.insert(expr_hash, TableEntry {
             results,
             hit_count: 0,
             mutation_epoch: epoch,
+            scope_gen: gen,
         });
     }
 

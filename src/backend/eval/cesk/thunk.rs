@@ -78,16 +78,21 @@ pub struct Thunk<V: MettaValueTrait> {
     /// Mutation epoch when this thunk was evaluated.
     /// Used to detect stale entries after space mutations.
     pub mutation_epoch: u64,
+
+    /// Scope generation when this thunk was evaluated.
+    /// Used for cache isolation between nondeterministic branches.
+    pub scope_gen: u64,
 }
 
 impl<V: MettaValueTrait> Thunk<V> {
-    /// Create a new suspended thunk.
+    /// Create a new suspended thunk, tagged with the current scope generation.
     fn new_suspended() -> Self {
         Self {
             state: ThunkState::Suspended,
             results: SmallVec::new(),
             access_count: 0,
             mutation_epoch: 0,
+            scope_gen: crate::backend::eval::trampoline::dispatch_hints::cache_generation(),
         }
     }
 }
@@ -152,6 +157,15 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
     /// - Error → returns `Error`
     pub fn lookup(&mut self, expr_hash: u64) -> ThunkLookup<V> {
         if let Some(thunk) = self.entries.get_mut(&expr_hash) {
+            // Check scope visibility first — entries from sibling branches
+            // must not be visible regardless of their state. Without this,
+            // leftover Suspended/Blackhole thunks from branch N would corrupt
+            // branch N+1's evaluation by falsely detecting cycles.
+            if !crate::backend::eval::trampoline::dispatch_hints::is_scope_visible(thunk.scope_gen) {
+                self.entries.remove(&expr_hash);
+                self.entries.insert(expr_hash, Thunk::new_suspended());
+                return ThunkLookup::Absent;
+            }
             thunk.access_count += 1;
             match thunk.state {
                 ThunkState::Suspended => {
@@ -194,6 +208,7 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
             thunk.state = ThunkState::Evaluated;
             thunk.results = results;
             thunk.mutation_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+            thunk.scope_gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
         }
     }
 

@@ -248,9 +248,10 @@ thread_local! {
     /// Value: cached evaluation results (SmallVec avoids heap for ≤4 results)
     ///
     /// 8192 entries × ~40 bytes avg = ~320 KB per thread. LRU eviction bounds memory.
-    /// Each entry stores (mutation_epoch, results) so lookups can validate
-    /// freshness without clearing the entire cache on every mutation.
-    static EVAL_MEMO: RefCell<LruCache<u64, (u64, SmallVec<[MettaValue; 4]>), IdentityU64BuildHasher>> =
+    /// Each entry stores (mutation_epoch, scope_gen, results) so lookups can
+    /// validate freshness and scope visibility without clearing the entire
+    /// cache on every mutation or branch transition.
+    static EVAL_MEMO: RefCell<LruCache<u64, (u64, u64, SmallVec<[MettaValue; 4]>), IdentityU64BuildHasher>> =
         RefCell::new(LruCache::with_hasher(NonZeroUsize::new(8192).expect("non-zero"), IdentityU64BuildHasher));
 
     /// Mutation epoch counter for cache correctness.
@@ -262,6 +263,21 @@ thread_local! {
     /// that functions which transitively trigger side effects are not
     /// incorrectly memoized.
     static MUTATION_EPOCH: Cell<u64> = const { Cell::new(0) };
+
+    /// Monotonically increasing scope generation for cache isolation between
+    /// nondeterministic branches. Incremented at each branch boundary.
+    static CACHE_GENERATION: Cell<u64> = const { Cell::new(0) };
+
+    /// Watermark: the generation at the most recent fork point.
+    /// Entries with scope_gen <= watermark are pre-fork (visible to all branches).
+    static SCOPE_WATERMARK: Cell<u64> = const { Cell::new(0) };
+
+    /// Fast-path flag: true when inside a nondeterministic fork.
+    /// When false, is_scope_visible() returns true immediately (no overhead).
+    static FORK_ACTIVE: Cell<bool> = const { Cell::new(false) };
+
+    /// Stack of watermarks for nested forks.
+    static WATERMARK_STACK: RefCell<SmallVec<[u64; 4]>> = RefCell::new(SmallVec::new());
 }
 
 /// Returns the current mutation epoch for this thread.
@@ -275,6 +291,83 @@ pub fn mutation_epoch() -> u64 {
 #[inline]
 pub fn increment_mutation_epoch() {
     MUTATION_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
+/// Restore the mutation epoch to a saved value.
+/// Used by `ProcessRuleMatches` to isolate sequential nondeterministic branches:
+/// each branch starts with the pre-fork epoch so that side effects from branch N
+/// don't invalidate SubgoalTable/eval_memo entries for branch N+1.
+#[inline]
+pub fn set_mutation_epoch(epoch: u64) {
+    MUTATION_EPOCH.with(|e| e.set(epoch));
+}
+
+// ============================================================================
+// Scope Generation — Cache Isolation for Nondeterministic Branches
+// ============================================================================
+//
+// Each nondeterministic fork (ProcessRuleMatches) creates a scope boundary.
+// Cache entries tagged with a generation > watermark AND != current generation
+// are from a sibling branch and must not be visible. Entries with generation
+// <= watermark were created before the fork and are visible to all branches.
+
+/// Returns the current scope generation for this thread.
+#[inline]
+pub fn cache_generation() -> u64 {
+    CACHE_GENERATION.with(|g| g.get())
+}
+
+/// Check whether a cache entry with `entry_gen` is visible in the current scope.
+///
+/// Visible if:
+/// - Not inside a fork (fast path), OR
+/// - Entry was created before the fork (entry_gen <= watermark), OR
+/// - Entry was created in the current branch (entry_gen == current generation)
+#[inline(always)]
+pub fn is_scope_visible(entry_gen: u64) -> bool {
+    if !FORK_ACTIVE.with(|f| f.get()) {
+        return true;
+    }
+    let watermark = SCOPE_WATERMARK.with(|w| w.get());
+    let current = CACHE_GENERATION.with(|g| g.get());
+    entry_gen <= watermark || entry_gen == current
+}
+
+/// Enter a nondeterministic fork scope. Pushes the current generation as a
+/// watermark and advances the generation for the first branch.
+///
+/// Returns the pre-fork generation (to be stored in the continuation and
+/// passed to `leave_fork_scope` on completion).
+#[inline]
+pub fn enter_fork_scope() -> u64 {
+    let pre_fork = CACHE_GENERATION.with(|g| g.get());
+    WATERMARK_STACK.with(|stack| stack.borrow_mut().push(pre_fork));
+    SCOPE_WATERMARK.with(|w| w.set(pre_fork));
+    FORK_ACTIVE.with(|f| f.set(true));
+    CACHE_GENERATION.with(|g| g.set(pre_fork + 1));
+    pre_fork
+}
+
+/// Advance the scope generation for the next branch within a fork.
+/// Called between sequential nondeterministic branches.
+#[inline]
+pub fn next_branch_scope() {
+    CACHE_GENERATION.with(|g| g.set(g.get() + 1));
+}
+
+/// Leave a nondeterministic fork scope. Pops the watermark stack and, if no
+/// outer fork remains, clears the FORK_ACTIVE flag for fast-path bypass.
+#[inline]
+pub fn leave_fork_scope(_pre_fork_gen: u64) {
+    WATERMARK_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        stack.pop();
+        if let Some(&top) = stack.last() {
+            SCOPE_WATERMARK.with(|w| w.set(top));
+        } else {
+            FORK_ACTIVE.with(|f| f.set(false));
+        }
+    });
 }
 
 /// Check if an S-expression should be memoized (pure head, ≥2 items,
@@ -351,8 +444,8 @@ pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
         // get_mut: single hash lookup for the hot path (valid hit).
         // NLL allows pop after the if-let borrow ends.
         let mut stale = false;
-        if let Some((cached_epoch, entries)) = memo.get_mut(&expr_hash) {
-            if *cached_epoch == current_epoch {
+        if let Some((cached_epoch, cached_gen, entries)) = memo.get_mut(&expr_hash) {
+            if *cached_epoch == current_epoch && is_scope_visible(*cached_gen) {
                 return Some(entries.to_vec());
             }
             stale = true;
@@ -368,9 +461,10 @@ pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
 #[inline]
 pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
     let epoch = mutation_epoch();
+    let gen = cache_generation();
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
-        memo_cell.borrow_mut().put(expr_hash, (epoch, entries));
+        memo_cell.borrow_mut().put(expr_hash, (epoch, gen, entries));
     });
 }
 
@@ -381,7 +475,7 @@ pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
 pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
     EVAL_MEMO.with(|memo_cell| {
         let memo = memo_cell.borrow();
-        for (_hash, (_epoch, entries)) in memo.iter() {
+        for (_hash, (_epoch, _gen, entries)) in memo.iter() {
             out.extend_from_slice(entries);
         }
     });
@@ -688,8 +782,10 @@ pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin +
         // Head must not be variable, special form, or grounded op
         if head.starts_with('$') { return false; }
         if is_reducible_head(head) { return false; }
-        // Head must not have user-defined rules
-        if env.may_have_rules_for(head, items.len() - 1) { return false; }
+        // Head must not have user-defined rules.
+        // Uses rule-only bloom (not atom bloom) to avoid false positives
+        // from data constructors added via add-atom (e.g., (Type "$a")).
+        if env.may_have_rule_head(head, items.len() - 1) { return false; }
         // Check children within depth budget
         return items[1..].iter().all(|child| is_child_normal_form(child, env, max_depth));
     }

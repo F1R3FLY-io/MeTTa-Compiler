@@ -258,6 +258,7 @@ mod tests {
             depth: 0,
             is_tail_call: false,
             expected_type: None,
+            demand: None,
         };
         let stack: Vec<WorkItem> = vec![
             WorkItem::Resume {
@@ -300,6 +301,7 @@ mod tests {
             depth: 0,
             is_tail_call: false,
             expected_type: None,
+            demand: None,
         };
         let work_stack: Vec<WorkItem> = vec![];
         let continuations: Vec<Continuation> = vec![

@@ -51,6 +51,11 @@ pub enum WorkItem {
         /// When set, rules whose `rhs_type` is incompatible with this type
         /// are pruned from the match set before evaluation.
         expected_type: Option<MettaValue>,
+        /// Demand from consumer context for branch pruning.
+        /// When `Some(Demand::AtLeast(1))`, nondeterministic dispatch uses lazy
+        /// BranchCoroutine evaluation — stops after first result, eliminating
+        /// 97% of wasted branch exploration in patterns like `match-atom`.
+        demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
     },
     /// Evaluate a template with deferred bindings (lazy binding).
     ///
@@ -67,7 +72,7 @@ pub enum WorkItem {
     /// where each level would otherwise materialize the entire remaining body.
     EvalWithBindings {
         template: MettaValue,
-        bindings: GenericBindings<MettaValue>,
+        bindings: Box<GenericBindings<MettaValue>>,
         env: SharedEnv,
         depth: usize,
         is_tail_call: bool,
@@ -110,6 +115,15 @@ pub enum Continuation {
         results: Vec<MettaValue>,
         env: SharedEnv,
         depth: usize,
+        /// Pre-fork mutation epoch for cache isolation between sequential branches.
+        /// Restored before evaluating each subsequent branch so that side effects
+        /// from branch N don't invalidate caches for branch N+1.
+        pre_fork_epoch: u64,
+        /// Pre-fork scope generation for generation-based cache isolation.
+        /// Used with `enter_fork_scope` / `next_branch_scope` / `leave_fork_scope`
+        /// to isolate cache entries between nondeterministic branches without
+        /// clearing caches.
+        pre_fork_gen: u64,
         /// Span correlation ID for the current branch (format v2).
         #[cfg(feature = "eval-trace")]
         branch_span_id: u64,
@@ -128,7 +142,7 @@ pub enum Continuation {
     /// Evaluates branches one-at-a-time until demand is satisfied.
     ProcessRuleMatchesLazy {
         /// The coroutine managing unevaluated branches.
-        coroutine: crate::backend::eval::cesk::coroutine::BranchCoroutine<MettaValue>,
+        coroutine: Box<crate::backend::eval::cesk::coroutine::BranchCoroutine<MettaValue>>,
         /// Results accumulated so far.
         results: Vec<MettaValue>,
         /// Environment for evaluation.
@@ -139,7 +153,7 @@ pub enum Continuation {
 
     /// Processing TCO grounded operation.
     ProcessGroundedOp {
-        state: GroundedState<MettaValue>,
+        state: Box<GroundedState<MettaValue>>,
         /// The arg index whose evaluation result is pending.
         pending_arg_idx: usize,
         env: SharedEnv,
@@ -148,7 +162,7 @@ pub enum Continuation {
 
     /// Processing lazy Cartesian product combinations.
     ProcessCombinations {
-        combinations: GenericCartesianProductIter<MettaValue>,
+        combinations: Box<GenericCartesianProductIter<MettaValue>>,
         results: Vec<MettaValue>,
         pending_rule_matches: Vec<(MettaValue, GenericBindings<MettaValue>)>,
         env: SharedEnv,
@@ -164,7 +178,7 @@ pub enum Continuation {
         /// these are composed with pattern-match bindings and the body is
         /// evaluated via `EvalWithBindings` instead of `apply_bindings`.
         /// This enables O(N) instead of O(N^2) work for nested `let*` chains.
-        outer_bindings: Option<GenericBindings<MettaValue>>,
+        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
         results: Vec<MettaValue>,
         env: SharedEnv,
         depth: usize,
@@ -231,7 +245,7 @@ pub enum Continuation {
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         /// When present, the taken branch is evaluated via EvalWithBindings
         /// instead of Eval, avoiding materialization of the untaken branch.
-        outer_bindings: Option<GenericBindings<MettaValue>>,
+        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
         env: SharedEnv,
         depth: usize,
     },
@@ -242,7 +256,7 @@ pub enum Continuation {
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         /// When present, case templates are evaluated via EvalWithBindings
         /// instead of Eval, deferring binding application to the matched arm.
-        outer_bindings: Option<GenericBindings<MettaValue>>,
+        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
         env: SharedEnv,
         depth: usize,
     },
@@ -266,7 +280,7 @@ pub enum Continuation {
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         /// When present, chain body is evaluated via EvalWithBindings after
         /// composing the chain variable binding with outer_bindings.
-        outer_bindings: Option<GenericBindings<MettaValue>>,
+        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
         env: SharedEnv,
         depth: usize,
     },
@@ -277,7 +291,7 @@ pub enum Continuation {
         var: MettaValue,
         body: MettaValue,
         /// Deferred outer bindings from EvalWithBindings (Phase C).
-        outer_bindings: Option<GenericBindings<MettaValue>>,
+        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
         results: Vec<MettaValue>,
         env: SharedEnv,
         depth: usize,
@@ -728,7 +742,7 @@ pub enum Continuation {
         /// The body template — kept raw until all bindings are resolved.
         body: MettaValue,
         /// Accumulated bindings from resolved pattern matches + outer context.
-        accumulated_bindings: GenericBindings<MettaValue>,
+        accumulated_bindings: Box<GenericBindings<MettaValue>>,
         /// Environment for evaluation.
         env: SharedEnv,
         /// Evaluation depth.
@@ -1297,6 +1311,7 @@ mod tests {
             depth: 0,
             is_tail_call: false,
             expected_type: None,
+            demand: None,
         };
         let mut roots = Vec::new();
         item.collect_values(&mut roots);

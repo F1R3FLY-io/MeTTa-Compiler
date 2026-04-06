@@ -115,6 +115,7 @@ impl SeckState {
             depth: 0,
             is_tail_call: false,
             expected_type: None,
+            demand: None,
         });
 
         let mut continuations = Vec::with_capacity(64);

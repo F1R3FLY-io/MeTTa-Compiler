@@ -294,6 +294,72 @@ mod tests {
     eval_test!(complex_case, "!(case (+ 1 1) ((1 one) (2 two) (3 three) ($x other)))", &["two"]);
 
     // =========================================================================
+    // Case with nondeterministic scrutinee (demand-driven pruning tests)
+    // These tests exercise the Demand::AtLeast(1) optimization on case scrutinee
+    // evaluation. The case handler sets demand on the scrutinee WorkItem, which
+    // causes dispatch_rule_matches to use BranchCoroutine for lazy evaluation.
+    // =========================================================================
+
+    // Case with nondeterministic scrutinee: overlapping rules where one produces empty.
+    // This is the key mmverify pattern. Rule 1 is a catch-all that produces empty
+    // for the specific input, and Rule 2 matches and produces a real result.
+    // With Demand::AtLeast(1), the empty branch is tried but doesn't satisfy demand,
+    // so the coroutine tries the next branch which succeeds.
+    eval_test!(
+        case_demand_one_empty_one_result,
+        "(= (try-match $x $x) matched)
+         (= (try-match $x $y) (empty))
+         !(case (try-match hello hello) ((matched yes) (Empty no)))",
+        &["yes"]
+    );
+
+    // Case with nondeterministic scrutinee: first rule produces empty, second succeeds
+    // This verifies that AtLeast(1) tries subsequent branches when earlier ones fail
+    eval_test!(
+        case_demand_fallthrough_to_second_rule,
+        "(= (search Nil $t) (empty))
+         (= (search (Cons $h $rest) $t) (if (== $h $t) found (search $rest $t)))
+         !(case (search (Cons a (Cons b Nil)) b) ((found yes) (Empty no)))",
+        &["yes"]
+    );
+
+    // Case with nondeterministic scrutinee matching Empty pattern
+    eval_test!(
+        case_demand_empty_scrutinee_matches_empty_arm,
+        "(= (search Nil $t) (empty))
+         (= (search (Cons $h $rest) $t) (if (== $h $t) found (search $rest $t)))
+         !(case (search (Cons a Nil) b) ((found yes) (Empty no)))",
+        &["no"]
+    );
+
+    // Case with deterministic scrutinee (single rule) - demand pruning not activated
+    eval_test!(
+        case_demand_single_rule_no_pruning,
+        "(= (f $x) (+ $x 1))
+         !(case (f 41) ((42 answer) ($x other)))",
+        &["answer"]
+    );
+
+    // mmverify-like pattern: match-atom with overlapping rules in case
+    // Rule 1 matches specific pattern, Rule 2 is a fallback
+    eval_test!(
+        case_demand_mmverify_pattern,
+        "(= (match-atom (Found $v) $p) $v)
+         (= (match-atom (NotFound) $p) (empty))
+         !(case (match-atom (Found 42) needle) ((42 matched) (Empty missed)))",
+        &["matched"]
+    );
+
+    // Constructor-discriminated rules inside case scrutinee
+    eval_test!(
+        case_demand_constructor_discriminated,
+        "(= (len Nil) 0)
+         (= (len (Cons $h $t)) (+ 1 (len $t)))
+         !(case (len (Cons a (Cons b Nil))) ((0 empty) (1 single) (2 pair) ($n many)))",
+        &["pair"]
+    );
+
+    // =========================================================================
     // Error Handling
     // =========================================================================
 

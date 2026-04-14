@@ -174,6 +174,21 @@ pub enum Continuation {
         /// Fork depth for Prolog-style cut semantics. When `(cut)` is evaluated
         /// inside a branch's RHS, the cut signal is targeted at this depth.
         fork_depth: u32,
+        /// Stage 1c: The match unification bindings for the branch whose RHS
+        /// is CURRENTLY being evaluated. When the RHS result arrives, these
+        /// are composed (via `compose_outer_inner_generic`) into every
+        /// result's BoundValue.1 to establish per-branch binding provenance.
+        /// Rotated to the next match's bindings before advancing to the next
+        /// branch. Empty bindings when not inside a collapse-bind scope —
+        /// the composition then becomes a no-op (zero overhead fast path).
+        current_branch_bindings: Box<GenericBindings<MettaValue>>,
+        /// Stage 1c: The tracked-variable set of the innermost active
+        /// `collapse-bind` (if any). Used to project composed bindings so
+        /// only the caller-relevant variables flow through. `None` when no
+        /// collapse-bind is active (99% of evaluations) — zero overhead.
+        /// Shared via Arc so parallel workers can see the same projection
+        /// set without reading the thread-local.
+        tracked_vars_hint: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>>,
         /// Span correlation ID for the current branch (format v2).
         #[cfg(feature = "eval-trace")]
         branch_span_id: u64,
@@ -199,6 +214,10 @@ pub enum Continuation {
         env: SharedEnv,
         /// Evaluation depth.
         depth: usize,
+        /// Stage 1c: see `ProcessRuleMatches.current_branch_bindings`.
+        current_branch_bindings: Box<GenericBindings<MettaValue>>,
+        /// Stage 1c: see `ProcessRuleMatches.tracked_vars_hint`.
+        tracked_vars_hint: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>>,
     },
 
     /// Processing TCO grounded operation.

@@ -1073,6 +1073,186 @@ where
     }
 }
 
+// ============================================================================
+// Per-branch binding propagation helpers (Stage 1c+)
+// ============================================================================
+//
+// These helpers support MeTTa-HE-faithful per-branch binding propagation
+// through the trampoline evaluator. They operate on `GenericBindings<V>`
+// and are used at rule-match composition sites and at `collapse-bind` scope
+// boundaries. Bindings here encode the variable-substitution context of
+// a specific nondeterministic branch — each `BoundValue`'s `.1` field.
+
+/// Detect whether a `MettaValueTrait` value is a variable atom (starts with
+/// `$`). Variables that appear as VALUES in a binding indicate a chain —
+/// e.g., `{$a: $who}` means $a is aliased to $who (set up by bidirectional
+/// unification when a rule variable met a template variable).
+#[inline]
+pub fn is_variable_value<V: MettaValueTrait>(val: &V) -> bool {
+    val.as_atom().map_or(false, |s| s.starts_with('$'))
+}
+
+/// Unification-style composition of an outer binding set with an inner one.
+///
+/// When a rule-match produces `outer = {$a_ruleX: $template_var}` (the rule
+/// variable is bound to the caller's template variable via bidirectional
+/// unification) and a sub-evaluation of the RHS produces `inner = {$a_ruleX:
+/// ground_value}` (the rule variable gets concretized deep inside the RHS),
+/// the chain `$template_var ↔ $a_ruleX ↔ ground_value` must be resolved so
+/// the final binding set contains `$template_var → ground_value`.
+///
+/// Algorithm (per shared key `k`):
+/// - If only `outer` has `k`: result[k] = outer[k]
+/// - If only `inner` has `k`: result[k] = inner[k]
+/// - If both have `k`:
+///   - If outer[k] is a variable atom `$X`: `$X` is an alias for the value
+///     inner binds to `k`, so add `$X → inner[k]` AND keep `k → inner[k]`.
+///     (Symmetric case for `inner[k]` being a variable alias.)
+///   - If both are equal: use that value.
+///   - Otherwise: ground-value conflict — this branch is inconsistent.
+///     We emit an `Empty` bindings set (the caller treats this as the
+///     branch's bindings being degenerate; the branch's RESULT is still
+///     retained, but with no per-branch bindings recorded). This matches
+///     the pragmatic "preserve the fact that a result was produced"
+///     semantics since MeTTaTron's rule evaluation already performs the
+///     actual substitution up-front via apply_bindings.
+///
+/// After composition, call `apply_chain_generic` to transitively resolve
+/// any newly-introduced chain entries.
+pub fn compose_outer_inner_generic<V, F>(
+    outer: &GenericBindings<V>,
+    inner: &GenericBindings<V>,
+    factory: &F,
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    if outer.is_empty() {
+        return inner.clone();
+    }
+    if inner.is_empty() {
+        return outer.clone();
+    }
+    let _ = factory;
+    let mut result = GenericBindings::new();
+    // First pass: for keys in both, unify their values.
+    for (name, outer_val) in outer.iter() {
+        if let Some(inner_val) = inner.get(name) {
+            // Both bind `name`. Unify.
+            if outer_val == inner_val {
+                result.insert_or_replace(name, outer_val.clone());
+            } else if is_variable_value(outer_val) {
+                // outer: name → $X, inner: name → inner_val. So $X aliases
+                // to inner_val. Record both.
+                if let Some(x_name) = outer_val.as_atom() {
+                    // MettaValueTrait::as_atom returns `&'static str` (atoms
+                    // are interned in the global atom pool).
+                    if let Some(existing) = result.get(x_name) {
+                        if existing != inner_val {
+                            // Conflict on the alias — inconsistent branch,
+                            // drop to empty.
+                            return GenericBindings::new();
+                        }
+                    } else {
+                        result.insert_or_replace(x_name, inner_val.clone());
+                    }
+                }
+                result.insert_or_replace(name, inner_val.clone());
+            } else if is_variable_value(inner_val) {
+                // Symmetric: inner: name → $Y, outer: name → outer_val.
+                if let Some(y_name) = inner_val.as_atom() {
+                    if let Some(existing) = result.get(y_name) {
+                        if existing != outer_val {
+                            return GenericBindings::new();
+                        }
+                    } else {
+                        result.insert_or_replace(y_name, outer_val.clone());
+                    }
+                }
+                result.insert_or_replace(name, outer_val.clone());
+            } else {
+                // Both ground but unequal — inconsistent.
+                return GenericBindings::new();
+            }
+        } else {
+            // Only outer has it.
+            result.insert_or_replace(name, outer_val.clone());
+        }
+    }
+    // Second pass: add inner-only keys.
+    for (name, inner_val) in inner.iter() {
+        if result.get(name).is_none() {
+            result.insert_or_replace(name, inner_val.clone());
+        }
+    }
+    result
+}
+
+/// Transitive chain resolution: for every (v, val) in the bindings, rewrite
+/// `val` via `apply_bindings(val, self)` until a fixed point.
+///
+/// Handles chains like `{$a: $who, $who: a}` → `{$a: a, $who: a}`.
+/// Uses iteration with a max-depth guard (16) to handle pathological cycles
+/// without infinite looping. `apply_bindings_generic` itself handles
+/// transitive substitution, so typically one pass suffices; the loop is a
+/// safeguard for value-level rewrites that don't settle on the first pass.
+pub fn apply_chain_generic<V, F>(bindings: &mut GenericBindings<V>, factory: &F)
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    if bindings.is_empty() || bindings.len() == 1 {
+        // Single entry can't have a chain within this binding set.
+        return;
+    }
+    const MAX_PASSES: usize = 16;
+    let snapshot_keys: Vec<&'static str> = bindings.iter().map(|(k, _)| k).collect();
+    let mut pass = 0;
+    loop {
+        let mut changed = false;
+        for &name in &snapshot_keys {
+            let val = match bindings.get(name) {
+                Some(v) => v.clone(),
+                None => continue,
+            };
+            let resolved = apply_bindings_generic(&val, bindings, factory);
+            if !val.identity_eq(&resolved) && val != resolved {
+                bindings.insert_or_replace(name, resolved);
+                changed = true;
+            }
+        }
+        pass += 1;
+        if !changed || pass >= MAX_PASSES {
+            break;
+        }
+    }
+}
+
+/// Project a binding set to just the tracked-var keys. For each tracked
+/// var, look it up in `self` and copy the resolved value. Tracked vars
+/// that don't appear in `self` are omitted.
+///
+/// Assumes `apply_chain_generic` has already been called on `bindings`,
+/// so values in `bindings` are already transitively resolved. This is
+/// the projection step used at `ProcessCollapseBind` output to emit only
+/// the variables the caller cares about in the `(Bindings …)` sidecar.
+pub fn project_bindings_generic<V: MettaValueTrait + Clone>(
+    bindings: &GenericBindings<V>,
+    keep: &[&'static str],
+) -> GenericBindings<V> {
+    if bindings.is_empty() || keep.is_empty() {
+        return GenericBindings::new();
+    }
+    let mut result = GenericBindings::new();
+    for &v in keep {
+        if let Some(val) = bindings.get(v) {
+            result.insert_or_replace(v, val.clone());
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

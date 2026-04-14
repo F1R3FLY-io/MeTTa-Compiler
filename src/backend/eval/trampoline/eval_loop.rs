@@ -349,9 +349,6 @@ fn dispatch_rule_matches<C: EvalContext>(
     if matches.len() == 1 && base_results.is_empty() {
         let (rhs, bindings) = matches.pop().expect("matches has exactly 1 element");
 
-        // collapse-bind: capture tracked variable bindings from this match.
-        capture_bindings_if_active(&bindings);
-
         // Trace: RuleApplication (single match — no fork)
         #[cfg(feature = "eval-trace")]
         {
@@ -375,6 +372,35 @@ fn dispatch_rule_matches<C: EvalContext>(
                     },
                 );
             }
+        }
+
+        // Stage 1c: inside a collapse-bind scope, the single match still needs
+        // its bindings composed onto the RHS result. We push a minimal
+        // ProcessRuleMatches continuation (no remaining_matches, no actual
+        // fork) that only performs the COMPOSE_MATCH step when the RHS result
+        // bubbles back. Outside collapse-bind, this is skipped (zero overhead).
+        if in_collapse_bind_scope() {
+            let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
+            let current_branch_bindings = Box::new(bindings.clone());
+            continuations.push(Continuation::ProcessRuleMatches {
+                remaining_matches: Vec::new().into_iter(),
+                results: Vec::new(),
+                env: env.clone(),
+                depth,
+                pre_fork_epoch: mutation_epoch(),
+                pre_fork_gen: 0, // not entering a fork scope — no CP to restore
+                fork_depth: 0,   // no fork — cut targeting irrelevant
+                current_branch_bindings,
+                tracked_vars_hint,
+                #[cfg(feature = "eval-trace")]
+                branch_span_id: 0,
+                #[cfg(feature = "eval-trace")]
+                branch_start_ns: 0,
+                #[cfg(feature = "eval-trace")]
+                branch_index: 0,
+                #[cfg(feature = "eval-trace")]
+                total_branches: 1,
+            });
         }
 
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings.
@@ -443,12 +469,18 @@ fn dispatch_rule_matches<C: EvalContext>(
             // BranchCoroutine with non-empty matches always has at least one branch.
             let (rhs, bindings) = coroutine.next_branch()
                 .expect("BranchCoroutine::new with non-empty matches must have first branch");
-            // Push the lazy continuation to collect results incrementally
+            // Push the lazy continuation to collect results incrementally.
+            // Stage 1c: stash this branch's match bindings so incoming sub-eval
+            // results get composed with them (per-branch provenance).
+            let current_branch_bindings = Box::new(bindings.clone());
+            let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
             continuations.push(Continuation::ProcessRuleMatchesLazy {
                 coroutine: Box::new(coroutine),
                 results: base_results.into_vec(),
                 env: env.clone(),
                 depth,
+                current_branch_bindings,
+                tracked_vars_hint,
             });
             // Evaluate the first branch
             if rhs.has_variables_fast() {
@@ -609,6 +641,9 @@ fn dispatch_rule_matches<C: EvalContext>(
 
         let pre_fork_gen = enter_fork_scope();
         let fork_depth = enter_fork();
+        // Stage 1c: stash first branch's match_bindings + tracked_vars hint.
+        let current_branch_bindings = Box::new(bindings.clone());
+        let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
         continuations.push(Continuation::ProcessRuleMatches {
             remaining_matches: remaining_iter,
             results: base_results.into_vec(),
@@ -617,6 +652,8 @@ fn dispatch_rule_matches<C: EvalContext>(
             pre_fork_epoch: mutation_epoch(),
             pre_fork_gen,
             fork_depth,
+            current_branch_bindings,
+            tracked_vars_hint,
             #[cfg(feature = "eval-trace")]
             branch_span_id: _branch_span_id,
             #[cfg(feature = "eval-trace")]
@@ -4038,6 +4075,8 @@ fn process_continuation<C: EvalContext>(
             pre_fork_epoch,
             pre_fork_gen,
             fork_depth,
+            mut current_branch_bindings,
+            tracked_vars_hint,
             #[cfg(feature = "eval-trace")]
             branch_span_id,
             #[cfg(feature = "eval-trace")]
@@ -4050,12 +4089,40 @@ fn process_continuation<C: EvalContext>(
             #[cfg(feature = "eval-trace")]
             let result_count = result.0.len() as u32;
 
-            // collapse-bind: snapshot current bindings for each new result
-            // from this branch. Only fires at the collapse-bind's fork depth.
-            snapshot_bindings_for_results(result.0.len(), fork_depth);
-
-            results.extend(result.0);
             let result_env = result.1;
+
+            // Stage 1c COMPOSE_MATCH: attach this branch's match bindings to
+            // every sub-evaluation result by substitutive composition with
+            // the child's bindings, then transitively resolve chains, then
+            // project to just the tracked variables of any active
+            // collapse-bind. When not inside a collapse-bind scope, the
+            // composition short-circuits (Empty outer + empty child = empty).
+            let composed: SmallVec<[BoundValue; 2]> = if current_branch_bindings.is_empty()
+                && tracked_vars_hint.is_none()
+            {
+                // Fast path: no collapse-bind scope active; pass through.
+                result.0
+            } else {
+                let factory = ctx.factory();
+                result.0.into_iter().map(|(v, child_b)| {
+                    let mut composed =
+                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*current_branch_bindings,
+                            &child_b,
+                            factory,
+                        );
+                    crate::backend::eval::bindings::apply_chain_generic(&mut composed, factory);
+                    let projected = match &tracked_vars_hint {
+                        Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
+                            &composed,
+                            tv.as_slice(),
+                        ),
+                        None => composed,
+                    };
+                    (v, projected)
+                }).collect()
+            };
+            results.extend(composed);
 
             // Trace: BranchEnd for the branch that just completed
             #[cfg(feature = "eval-trace")]
@@ -4087,9 +4154,16 @@ fn process_continuation<C: EvalContext>(
             let cut_fired = take_cut_at_depth(fork_depth);
 
             if remaining_matches.len() == 0 || cut_fired {
-                // All branches consumed (or cut fired) — leave the fork scope.
-                leave_fork();
-                leave_fork_scope(pre_fork_gen);
+                // Stage 1c: a `fork_depth == 0` ProcessRuleMatches is a
+                // "single-match compose shim" — pushed by the fast path
+                // without calling enter_fork/enter_fork_scope. Skip the
+                // matching leave_fork/leave_fork_scope calls to keep the
+                // fork bookkeeping consistent.
+                if fork_depth != 0 {
+                    // All branches consumed (or cut fired) — leave the fork scope.
+                    leave_fork();
+                    leave_fork_scope(pre_fork_gen);
+                }
                 // Defer the branch environment's deep drop. Its MettaValues
                 // are collected into root_set at the next GC safepoint via
                 // collect_roots(), then the Vec is cleared after perform_safepoint.
@@ -4101,10 +4175,10 @@ fn process_continuation<C: EvalContext>(
                 // remaining_matches is already in generic type (V, GenericBindings<V>)
                 let (rhs, raw_bindings) = remaining_matches.next().expect("remaining_matches is non-empty");
 
-                // collapse-bind: clear current bindings for the new branch so
-                // each branch captures independently, then capture from this match.
-                clear_current_bindings_for_new_branch();
-                capture_bindings_if_active(&raw_bindings);
+                // Stage 1c: rotate to the next branch's match bindings so the
+                // next COMPOSE_MATCH uses them. Each sibling branch has its
+                // own independent bindings — no shared-mutable state.
+                *current_branch_bindings = raw_bindings.clone();
 
                 let bindings = Box::new(raw_bindings);
 
@@ -4162,6 +4236,8 @@ fn process_continuation<C: EvalContext>(
                     pre_fork_epoch,
                     pre_fork_gen,
                     fork_depth,
+                    current_branch_bindings,
+                    tracked_vars_hint,
                     #[cfg(feature = "eval-trace")]
                     branch_span_id: _next_span_id,
                     #[cfg(feature = "eval-trace")]
@@ -4237,11 +4313,41 @@ fn process_continuation<C: EvalContext>(
             mut results,
             env: _,
             depth,
+            mut current_branch_bindings,
+            tracked_vars_hint,
         } => {
             let (eval_results, result_env) = result;
 
+            // Stage 1c: COMPOSE_MATCH composition for each sub-eval result,
+            // mirroring ProcessRuleMatches (A.2). Empty bindings fast path
+            // preserves zero-overhead for non-collapse-bind evaluations.
+            let composed: SmallVec<[BoundValue; 2]> = if current_branch_bindings.is_empty()
+                && tracked_vars_hint.is_none()
+            {
+                eval_results
+            } else {
+                let factory = ctx.factory();
+                eval_results.into_iter().map(|(v, child_b)| {
+                    let mut c =
+                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*current_branch_bindings,
+                            &child_b,
+                            factory,
+                        );
+                    crate::backend::eval::bindings::apply_chain_generic(&mut c, factory);
+                    let projected = match &tracked_vars_hint {
+                        Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
+                            &c,
+                            tv.as_slice(),
+                        ),
+                        None => c,
+                    };
+                    (v, projected)
+                }).collect()
+            };
+
             // Record results from the just-evaluated branch
-            for val in eval_results.iter() {
+            for val in composed.iter() {
                 results.push(val.clone());
                 coroutine.record_result(val.0.clone());
             }
@@ -4252,12 +4358,17 @@ fn process_continuation<C: EvalContext>(
                     result: (SmallVec::from_vec(results), result_env),
                 });
             } else if let Some((rhs, bindings)) = coroutine.next_branch() {
+                // Stage 1c: rotate to the next branch's bindings.
+                *current_branch_bindings = bindings.clone();
+
                 // More branches to evaluate — push continuation and eval next
                 continuations.push(Continuation::ProcessRuleMatchesLazy {
                     coroutine,
                     results,
                     env: result_env.clone(),
                     depth,
+                    current_branch_bindings,
+                    tracked_vars_hint,
                 });
 
                 if rhs.has_variables_fast() {

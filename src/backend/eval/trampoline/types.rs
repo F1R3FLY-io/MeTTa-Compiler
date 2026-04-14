@@ -175,13 +175,17 @@ pub enum Continuation {
         /// inside a branch's RHS, the cut signal is targeted at this depth.
         fork_depth: u32,
         /// Stage 1c: The match unification bindings for the branch whose RHS
-        /// is CURRENTLY being evaluated. When the RHS result arrives, these
-        /// are composed (via `compose_outer_inner_generic`) into every
-        /// result's BoundValue.1 to establish per-branch binding provenance.
-        /// Rotated to the next match's bindings before advancing to the next
-        /// branch. Empty bindings when not inside a collapse-bind scope —
-        /// the composition then becomes a no-op (zero overhead fast path).
+        /// is CURRENTLY being evaluated, composed with the outer ambient
+        /// `outer_carrying` (Stage 1d-revised). When the RHS result arrives,
+        /// these are merged into every result's BoundValue.1 to establish
+        /// per-branch binding provenance. Rotated to `compose(outer_carrying,
+        /// next_match_bindings)` before advancing to the next branch.
         current_branch_bindings: Box<GenericBindings<MettaValue>>,
+        /// Stage 1d-revised: ambient bindings from the caller's context
+        /// (e.g., CollectSExpr's merged child bindings). Retained so that
+        /// when rotating to the next branch we can compose anew with that
+        /// branch's match bindings. Empty when no ambient is passed.
+        outer_carrying: Box<GenericBindings<MettaValue>>,
         /// Stage 1c: The tracked-variable set of the innermost active
         /// `collapse-bind` (if any). Used to project composed bindings so
         /// only the caller-relevant variables flow through. `None` when no
@@ -216,6 +220,8 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1c: see `ProcessRuleMatches.current_branch_bindings`.
         current_branch_bindings: Box<GenericBindings<MettaValue>>,
+        /// Stage 1d-revised: see `ProcessRuleMatches.outer_carrying`.
+        outer_carrying: Box<GenericBindings<MettaValue>>,
         /// Stage 1c: see `ProcessRuleMatches.tracked_vars_hint`.
         tracked_vars_hint: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>>,
     },

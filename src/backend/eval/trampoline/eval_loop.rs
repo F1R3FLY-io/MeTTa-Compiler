@@ -336,6 +336,7 @@ fn dispatch_rule_matches<C: EvalContext>(
     work_stack: &mut Vec<WorkItem>,
     continuations: &mut Vec<Continuation>,
     demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
+    outer_carrying: &crate::backend::models::GenericBindings<MettaValue>,
 ) {
     // Wrap bare env in Arc for O(1) sharing across WorkItem/Continuation fields.
     let env: SharedEnv = Arc::new(env);
@@ -379,9 +380,22 @@ fn dispatch_rule_matches<C: EvalContext>(
         // ProcessRuleMatches continuation (no remaining_matches, no actual
         // fork) that only performs the COMPOSE_MATCH step when the RHS result
         // bubbles back. Outside collapse-bind, this is skipped (zero overhead).
-        if in_collapse_bind_scope() {
+        // Stage 1d-revised: the shim's current_branch_bindings = compose of
+        // outer_carrying (ambient from caller, e.g., CollectSExpr's merged
+        // child bindings) with this match's bindings — so the RHS result
+        // gets tagged with the UNION of both.
+        if in_collapse_bind_scope() || !outer_carrying.is_empty() {
             let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
-            let current_branch_bindings = Box::new(bindings.clone());
+            let composed = if outer_carrying.is_empty() {
+                bindings.clone()
+            } else {
+                crate::backend::eval::bindings::compose_outer_inner_generic(
+                    outer_carrying,
+                    &bindings,
+                    ctx.factory(),
+                )
+            };
+            let current_branch_bindings = Box::new(composed);
             continuations.push(Continuation::ProcessRuleMatches {
                 remaining_matches: Vec::new().into_iter(),
                 results: Vec::new(),
@@ -391,6 +405,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 pre_fork_gen: 0, // not entering a fork scope — no CP to restore
                 fork_depth: 0,   // no fork — cut targeting irrelevant
                 current_branch_bindings,
+                outer_carrying: Box::new(outer_carrying.clone()),
                 tracked_vars_hint,
                 #[cfg(feature = "eval-trace")]
                 branch_span_id: 0,
@@ -472,7 +487,14 @@ fn dispatch_rule_matches<C: EvalContext>(
             // Push the lazy continuation to collect results incrementally.
             // Stage 1c: stash this branch's match bindings so incoming sub-eval
             // results get composed with them (per-branch provenance).
-            let current_branch_bindings = Box::new(bindings.clone());
+            // Stage 1d-revised: compose with outer_carrying (caller's ambient).
+            let current_branch_bindings = Box::new(if outer_carrying.is_empty() {
+                bindings.clone()
+            } else {
+                crate::backend::eval::bindings::compose_outer_inner_generic(
+                    outer_carrying, &bindings, ctx.factory(),
+                )
+            });
             let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
             continuations.push(Continuation::ProcessRuleMatchesLazy {
                 coroutine: Box::new(coroutine),
@@ -480,6 +502,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 env: env.clone(),
                 depth,
                 current_branch_bindings,
+                outer_carrying: Box::new(outer_carrying.clone()),
                 tracked_vars_hint,
             });
             // Evaluate the first branch
@@ -642,7 +665,16 @@ fn dispatch_rule_matches<C: EvalContext>(
         let pre_fork_gen = enter_fork_scope();
         let fork_depth = enter_fork();
         // Stage 1c: stash first branch's match_bindings + tracked_vars hint.
-        let current_branch_bindings = Box::new(bindings.clone());
+        // Stage 1d-revised: compose outer_carrying (ambient from the caller's
+        // sexpr construction) with this branch's match bindings so the RHS
+        // result inherits the full ancestry.
+        let current_branch_bindings = Box::new(if outer_carrying.is_empty() {
+            bindings.clone()
+        } else {
+            crate::backend::eval::bindings::compose_outer_inner_generic(
+                outer_carrying, &bindings, ctx.factory(),
+            )
+        });
         let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
         continuations.push(Continuation::ProcessRuleMatches {
             remaining_matches: remaining_iter,
@@ -653,6 +685,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             pre_fork_gen,
             fork_depth,
             current_branch_bindings,
+            outer_carrying: Box::new(outer_carrying.clone()),
             tracked_vars_hint,
             #[cfg(feature = "eval-trace")]
             branch_span_id: _branch_span_id,
@@ -2382,7 +2415,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let matches_deque: Vec<_> = matches.into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                 .collect();
-                            dispatch_rule_matches(matches_deque, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, demand);
+                            dispatch_rule_matches(matches_deque, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, demand, &crate::backend::models::GenericBindings::new());
                         }
                     }
 
@@ -3892,7 +3925,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &template, &bindings, head_name, arity, &env, ctx.factory(),
                             ) {
                                 if !matches.is_empty() {
-                                    dispatch_rule_matches(matches, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, None);
+                                    dispatch_rule_matches(matches, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, None, &crate::backend::models::GenericBindings::new());
                                     continue;
                                 }
                                 // matches is empty → no rule matched → self-evaluating
@@ -4061,6 +4094,7 @@ fn process_continuation<C: EvalContext>(
                                     .map(|v| (v, mb.clone()))
                                     .collect(),
                                 env, depth, ctx, work_stack, continuations, None,
+                                &mb,
                             );
                         }
                     }
@@ -4120,6 +4154,7 @@ fn process_continuation<C: EvalContext>(
             pre_fork_gen,
             fork_depth,
             mut current_branch_bindings,
+            outer_carrying,
             tracked_vars_hint,
             #[cfg(feature = "eval-trace")]
             branch_span_id,
@@ -4222,7 +4257,15 @@ fn process_continuation<C: EvalContext>(
                 // Stage 1c: rotate to the next branch's match bindings so the
                 // next COMPOSE_MATCH uses them. Each sibling branch has its
                 // own independent bindings — no shared-mutable state.
-                *current_branch_bindings = raw_bindings.clone();
+                // Stage 1d-revised: re-compose with outer_carrying so next
+                // branch's RHS results inherit the same ambient ancestry.
+                *current_branch_bindings = if outer_carrying.is_empty() {
+                    raw_bindings.clone()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*outer_carrying, &raw_bindings, ctx.factory(),
+                    )
+                };
 
                 let bindings = Box::new(raw_bindings);
 
@@ -4281,6 +4324,7 @@ fn process_continuation<C: EvalContext>(
                     pre_fork_gen,
                     fork_depth,
                     current_branch_bindings,
+                    outer_carrying,
                     tracked_vars_hint,
                     #[cfg(feature = "eval-trace")]
                     branch_span_id: _next_span_id,
@@ -4358,6 +4402,7 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth,
             mut current_branch_bindings,
+            outer_carrying,
             tracked_vars_hint,
         } => {
             let (eval_results, result_env) = result;
@@ -4403,7 +4448,14 @@ fn process_continuation<C: EvalContext>(
                 });
             } else if let Some((rhs, bindings)) = coroutine.next_branch() {
                 // Stage 1c: rotate to the next branch's bindings.
-                *current_branch_bindings = bindings.clone();
+                // Stage 1d-revised: re-compose with outer_carrying.
+                *current_branch_bindings = if outer_carrying.is_empty() {
+                    bindings.clone()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*outer_carrying, &bindings, ctx.factory(),
+                    )
+                };
 
                 // More branches to evaluate — push continuation and eval next
                 continuations.push(Continuation::ProcessRuleMatchesLazy {
@@ -4412,6 +4464,7 @@ fn process_continuation<C: EvalContext>(
                     env: result_env.clone(),
                     depth,
                     current_branch_bindings,
+                    outer_carrying,
                     tracked_vars_hint,
                 });
 
@@ -4635,7 +4688,7 @@ fn process_continuation<C: EvalContext>(
                     });
 
                     // Dispatch rule matches (parallel or sequential)
-                    dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None);
+                    dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &crate::backend::models::GenericBindings::new());
                 }
             } else {
                 // All combinations processed - results already contains generic values
@@ -5067,7 +5120,7 @@ fn process_continuation<C: EvalContext>(
                                     all_matches_with_types.into_iter()
                                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                         .collect();
-                                dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None);
+                                dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &crate::backend::models::GenericBindings::new());
                             } else {
                                 // Step 4: No rules matched — return as data constructor
                                 work_stack.push(WorkItem::Resume {

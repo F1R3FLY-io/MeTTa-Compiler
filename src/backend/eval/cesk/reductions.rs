@@ -72,7 +72,7 @@ pub fn reduction_budget() -> u32 {
 #[derive(Debug)]
 pub enum EvalOutcome {
     /// Evaluation completed. Contains the final (results, environment).
-    Complete(smallvec::SmallVec<[crate::backend::models::MettaValue; 2]>, crate::backend::environment::MettaEnvironment),
+    Complete(smallvec::SmallVec<[crate::backend::eval::trampoline::types::BoundValue; 2]>, crate::backend::environment::MettaEnvironment),
 
     /// Evaluation yielded after exhausting its reduction budget.
     /// Contains the suspended state for resumption.

@@ -104,8 +104,8 @@ mod tests {
 
         let (results, _env) = eval_trampoline(value, env, &state);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_atom());
-        assert_eq!(results[0].as_atom(), Some("hello"));
+        assert!(results[0].0.is_atom());
+        assert_eq!(results[0].0.as_atom(), Some("hello"));
     }
 
     #[test]
@@ -117,8 +117,8 @@ mod tests {
 
         let (results, _env) = eval_trampoline(value, env, &state);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_long());
-        assert_eq!(results[0].as_long(), Some(42));
+        assert!(results[0].0.is_long());
+        assert_eq!(results[0].0.as_long(), Some(42));
     }
 
     #[test]
@@ -136,8 +136,8 @@ mod tests {
 
         let (results, _env) = eval_trampoline(value, env, &state);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_long());
-        assert_eq!(results[0].as_long(), Some(3));
+        assert!(results[0].0.is_long());
+        assert_eq!(results[0].0.as_long(), Some(3));
     }
 
     // ================================================================
@@ -160,9 +160,9 @@ mod tests {
         let (results, _) = eval_trampoline(value, env, &state);
         assert_eq!(results.len(), 1);
         // Self-evaluating: result carries the original span
-        assert!(results[0].is_spanned());
-        assert_eq!(results[0].as_long(), Some(42));
-        let result_span = results[0].span().expect("should have span");
+        assert!(results[0].0.is_spanned());
+        assert_eq!(results[0].0.as_long(), Some(42));
+        let result_span = results[0].0.span().expect("should have span");
         assert_eq!(result_span.start.byte_offset, 0);
         assert_eq!(result_span.end.byte_offset, 2);
     }
@@ -189,7 +189,7 @@ mod tests {
         let (results, _) = eval_trampoline(value, env, &state);
         assert_eq!(results.len(), 1);
         // The computed result 3 should carry the source expression's span
-        assert_eq!(results[0].as_long(), Some(3));
+        assert_eq!(results[0].0.as_long(), Some(3));
         // Note: grounded ops go through trampoline, so the outer span from
         // eval_step_generic wraps the Done result from the (quote ...) path,
         // but grounded ops return via StartGroundedOp → Resume continuation.
@@ -218,9 +218,9 @@ mod tests {
         let (results, _) = eval_trampoline(value, env, &state);
         assert_eq!(results.len(), 1);
         // (quote hello) returns Done → outer span is attached
-        assert!(results[0].is_spanned());
-        assert!(results[0].is_quoted());
-        let result_span = results[0].span().expect("should have span");
+        assert!(results[0].0.is_spanned());
+        assert!(results[0].0.is_quoted());
+        let result_span = results[0].0.span().expect("should have span");
         assert_eq!(result_span.end.byte_offset, 13);
     }
 
@@ -245,11 +245,11 @@ mod tests {
 
         let (results, _) = eval_trampoline(sexpr, env, &state);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].as_long(), Some(42));
+        assert_eq!(results[0].0.as_long(), Some(42));
         // The then-branch carries its own span (from compilation)
         // After evaluation, the result preserves the branch's span
-        assert!(results[0].is_spanned());
-        let result_span = results[0].span().expect("should have span");
+        assert!(results[0].0.is_spanned());
+        let result_span = results[0].0.span().expect("should have span");
         assert_eq!(result_span.start.byte_offset, 9);
         assert_eq!(result_span.end.byte_offset, 11);
     }
@@ -269,7 +269,7 @@ mod tests {
         for expr in exprs {
             let (results, new_env) = eval_trampoline(expr, env, &state);
             env = (*new_env).clone();
-            all_results.extend(results);
+            all_results.extend(results.into_iter().map(|(v, _)| v));
         }
         all_results
     }

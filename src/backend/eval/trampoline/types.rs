@@ -25,13 +25,60 @@ use super::super::processing::GenericCartesianProductIter;
 
 use super::context::SharedEnv;
 
-/// Evaluation result: (results, environment)
+/// Per-result bound value: a produced `MettaValue` paired with the
+/// variable bindings that were active when it was produced. Mirrors MeTTa
+/// HE's `InterpretedAtom = (Stack, Bindings)` — bindings travel with each
+/// nondeterministic alternative through the evaluation pipeline.
 ///
-/// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap allocation
-/// for the common single-result case (93%+ of evaluations produce 1 result).
-/// The environment is Arc-wrapped for O(1) sharing across continuations and work items,
-/// eliminating the 8.7% CPU overhead from per-step clone/drop of MettaEnvironment.
-pub type EvalResult = (SmallVec<[MettaValue; 2]>, SharedEnv);
+/// For the vast majority of evaluations (all code outside an active
+/// `collapse-bind` scope), the bindings are `GenericBindings::Empty` — a
+/// cheap inline representation with no heap allocation. Within a
+/// `collapse-bind` scope, the bindings reflect the tracked-variable
+/// groundings established during that specific branch's rule unification.
+pub type BoundValue = (MettaValue, GenericBindings<MettaValue>);
+
+/// Evaluation result: (bound_values, environment)
+///
+/// Each element of the `SmallVec` is a `(value, bindings)` pair: the value
+/// produced by a nondeterministic branch and the bindings accumulated
+/// along that branch's rule-matching chain. The parallel structure across
+/// branches is what enables `collapse-bind` to emit correct per-branch
+/// bindings in its output.
+///
+/// Uses SmallVec<[BoundValue; 2]> to inline up to 2 elements, avoiding
+/// heap allocation for the common single-result case (93%+ of evaluations
+/// produce 1 result). The environment is Arc-wrapped for O(1) sharing
+/// across continuations and work items.
+pub type EvalResult = (SmallVec<[BoundValue; 2]>, SharedEnv);
+
+/// Helper: construct a `BoundValue` from a `MettaValue` with empty bindings.
+/// Used by the common no-collapse-bind path where every result has trivial
+/// (empty) bindings.
+#[inline(always)]
+pub fn bv(value: MettaValue) -> BoundValue {
+    (value, GenericBindings::new())
+}
+
+/// Helper: construct a `BoundValue` with specific bindings.
+#[inline(always)]
+pub fn bv_with(value: MettaValue, bindings: GenericBindings<MettaValue>) -> BoundValue {
+    (value, bindings)
+}
+
+/// Helper: wrap a `SmallVec<[MettaValue; 2]>` as a `SmallVec<[BoundValue; 2]>`
+/// with empty bindings on each element. Convenience for call sites that
+/// produce raw values without bindings tracking.
+#[inline]
+pub fn bvs_from_values(values: SmallVec<[MettaValue; 2]>) -> SmallVec<[BoundValue; 2]> {
+    values.into_iter().map(bv).collect()
+}
+
+/// Helper: extract just the values (drop bindings) from a bound result set.
+/// Used by code paths that don't need per-result bindings.
+#[inline]
+pub fn values_of(results: &SmallVec<[BoundValue; 2]>) -> SmallVec<[MettaValue; 2]> {
+    results.iter().map(|(v, _)| v.clone()).collect()
+}
 
 /// Work item representing pending evaluation work.
 ///
@@ -112,7 +159,7 @@ pub enum Continuation {
     /// Processing rule match results with bindings.
     ProcessRuleMatches {
         remaining_matches: std::vec::IntoIter<(MettaValue, GenericBindings<MettaValue>)>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
         /// Pre-fork mutation epoch for cache isolation between sequential branches.
@@ -147,7 +194,7 @@ pub enum Continuation {
         /// The coroutine managing unevaluated branches.
         coroutine: Box<crate::backend::eval::cesk::coroutine::BranchCoroutine<MettaValue>>,
         /// Results accumulated so far.
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         /// Environment for evaluation.
         env: SharedEnv,
         /// Evaluation depth.
@@ -166,7 +213,7 @@ pub enum Continuation {
     /// Processing lazy Cartesian product combinations.
     ProcessCombinations {
         combinations: Box<GenericCartesianProductIter<MettaValue>>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         pending_rule_matches: Vec<(MettaValue, GenericBindings<MettaValue>)>,
         env: SharedEnv,
         depth: usize,
@@ -174,7 +221,7 @@ pub enum Continuation {
 
     /// Processing let binding
     ProcessLet {
-        pending_values: Option<Vec<MettaValue>>,
+        pending_values: Option<Vec<BoundValue>>,
         pattern: MettaValue,
         body: MettaValue,
         /// Outer bindings from an `EvalWithBindings` dispatch. When `Some`,
@@ -182,7 +229,7 @@ pub enum Continuation {
         /// evaluated via `EvalWithBindings` instead of `apply_bindings`.
         /// This enables O(N) instead of O(N^2) work for nested `let*` chains.
         outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -196,7 +243,7 @@ pub enum Continuation {
         items: Vec<MettaValue>,
         grounded_indices: Vec<usize>,
         current_idx: usize,
-        evaluated_results: Vec<Vec<MettaValue>>,
+        evaluated_results: Vec<Vec<BoundValue>>,
         env: SharedEnv,
         depth: usize,
     },
@@ -205,7 +252,7 @@ pub enum Continuation {
     /// combinations produced by nondeterministic grounded arg evaluation.
     CollectApplicativeResults {
         remaining: std::vec::IntoIter<MettaValue>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -215,7 +262,7 @@ pub enum Continuation {
         remaining_elements: std::vec::IntoIter<MettaValue>,
         var_name: String,
         template: MettaValue,
-        collected_results: Vec<MettaValue>,
+        collected_results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -226,7 +273,7 @@ pub enum Continuation {
         remaining_elements: std::vec::IntoIter<MettaValue>,
         var_name: String,
         predicate: MettaValue,
-        filtered_results: Vec<MettaValue>,
+        filtered_results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -295,7 +342,7 @@ pub enum Continuation {
         body: MettaValue,
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -323,7 +370,7 @@ pub enum Continuation {
     /// Processing conjunction
     ProcessConjunction {
         remaining_goals: std::vec::IntoIter<MettaValue>,
-        accumulated_results: Vec<MettaValue>,
+        accumulated_results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -343,7 +390,7 @@ pub enum Continuation {
         pattern2: MettaValue,
         success_body: MettaValue,
         failure_body: MettaValue,
-        all_results: Vec<MettaValue>,
+        all_results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -361,7 +408,7 @@ pub enum Continuation {
     /// Processing unify bodies
     ProcessUnifyBodies {
         remaining_bodies: std::vec::IntoIter<MettaValue>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -383,19 +430,19 @@ pub enum Continuation {
     /// before wrapping in an S-expression tuple. This mirrors HE's use of `metta`
     /// (the full recursive interpreter) inside `collapse`.
     ProcessCollapseEvalResults {
-        /// Remaining unevaluated results to evaluate
-        remaining_raw: std::vec::IntoIter<MettaValue>,
-        /// Fully evaluated results collected so far
-        evaluated: Vec<MettaValue>,
+        /// Remaining unevaluated results (with per-branch bindings) to evaluate.
+        /// Each pair is `(raw_value, carrying_bindings)` — the bindings were
+        /// active for the nondeterministic branch that produced `raw_value`.
+        /// For plain `collapse` (is_bind=false), the bindings are discarded
+        /// after evaluation. For `collapse-bind` (is_bind=true), the bindings
+        /// are encoded into the `(value (Bindings …))` pair output.
+        remaining_raw: std::vec::IntoIter<BoundValue>,
+        /// Fully evaluated results collected so far, paired with the bindings
+        /// they carry. For collapse-bind, these bindings become the sidecar
+        /// `(Bindings …)` in each output pair.
+        evaluated: Vec<BoundValue>,
         /// Whether this is for collapse-bind (vs plain collapse)
         is_bind: bool,
-        /// Per-result binding snapshots from collapse-bind (None for plain collapse).
-        /// When `is_bind` is true, each result is paired with its corresponding
-        /// bindings encoded as `(Bindings ($var val) ...)`. Index i corresponds
-        /// to the i-th raw result from the inner expression evaluation.
-        per_result_bindings: Option<Vec<crate::backend::models::GenericBindings<MettaValue>>>,
-        /// Index into per_result_bindings for the next result to process.
-        bindings_index: usize,
         /// Environment
         env: SharedEnv,
         /// Evaluation depth
@@ -405,7 +452,7 @@ pub enum Continuation {
     /// Processing amb
     ProcessAmb {
         remaining_alts: std::vec::IntoIter<MettaValue>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -477,7 +524,7 @@ pub enum Continuation {
     /// Processing match templates
     ProcessMatchTemplates {
         remaining_templates: std::vec::IntoIter<MettaValue>,
-        results: Vec<MettaValue>,
+        results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -688,7 +735,7 @@ pub enum Continuation {
     ProcessCaseMultiResults {
         remaining_atoms: std::vec::IntoIter<MettaValue>,
         cases: MettaValue,
-        collected: Vec<MettaValue>,
+        collected: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
     },
@@ -699,10 +746,11 @@ pub enum Continuation {
     /// This mirrors HE's `(let $c (collapse $atom) ...)` which invokes the full
     /// interpreter on the scrutinee, ensuring rule applications are completed.
     ProcessCaseEvalScrutineeResults {
-        /// Remaining unevaluated scrutinee results to evaluate
-        remaining_raw: std::vec::IntoIter<MettaValue>,
-        /// Fully evaluated scrutinee results collected so far
-        evaluated: Vec<MettaValue>,
+        /// Remaining unevaluated scrutinee results to evaluate (paired with
+        /// their carrying bindings from nondeterministic branching).
+        remaining_raw: std::vec::IntoIter<BoundValue>,
+        /// Fully evaluated scrutinee results collected so far.
+        evaluated: Vec<BoundValue>,
         /// Case patterns to match against
         cases: MettaValue,
         /// Environment
@@ -826,7 +874,10 @@ impl WorkItem {
                 }
             }
             Self::Resume { result: (values, _), .. } => {
-                out.extend(values.iter().copied());
+                for (v, bindings) in values.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
         }
     }
@@ -883,7 +934,10 @@ impl Continuation {
             Self::CollectSExpr { remaining, collected, .. } => {
                 out.extend(remaining.as_slice().iter().copied());
                 for (vals, _env) in collected {
-                    out.extend(vals.iter().copied());
+                    for (v, bindings) in vals.iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
                 }
             }
 
@@ -892,7 +946,10 @@ impl Continuation {
                     out.push(*rhs);
                     collect_bindings_values(bindings, out);
                 }
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessGroundedOp { state, .. } => {
@@ -901,7 +958,10 @@ impl Continuation {
 
             Self::ProcessCombinations { combinations, results, pending_rule_matches, .. } => {
                 collect_cartesian_values(combinations, out);
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
                 for (rhs, bindings) in pending_rule_matches {
                     out.push(*rhs);
                     collect_bindings_values(bindings, out);
@@ -910,32 +970,47 @@ impl Continuation {
 
             Self::ProcessLet { pending_values, pattern, body, outer_bindings, results, .. } => {
                 if let Some(pending) = pending_values {
-                    out.extend(pending.iter().copied());
+                    for (v, bindings) in pending.iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
                 }
                 out.push(*pattern);
                 out.push(*body);
                 if let Some(ref ob) = outer_bindings {
                     collect_bindings_values(ob, out);
                 }
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::CollectGroundedArg { items, evaluated_results, .. } => {
                 out.extend(items.iter().copied());
                 for result_vec in evaluated_results {
-                    out.extend(result_vec.iter().copied());
+                    for (v, bindings) in result_vec.iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
                 }
             }
 
             Self::CollectApplicativeResults { remaining, results, .. } => {
                 out.extend(remaining.as_slice().iter().copied());
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessMapAtom { remaining_elements, template, collected_results, .. } => {
                 out.extend(remaining_elements.as_slice().iter().copied());
                 out.push(*template);
-                out.extend(collected_results.iter().copied());
+                for (v, bindings) in collected_results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessFilterAtom { current_element, remaining_elements, predicate, filtered_results, .. } => {
@@ -944,7 +1019,10 @@ impl Continuation {
                 }
                 out.extend(remaining_elements.as_slice().iter().copied());
                 out.push(*predicate);
-                out.extend(filtered_results.iter().copied());
+                for (v, bindings) in filtered_results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessFoldlAtom { remaining_elements, operation, .. } => {
@@ -993,7 +1071,10 @@ impl Continuation {
                         out.push(*v);
                     }
                 }
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessFunction { .. } => {}
@@ -1005,7 +1086,10 @@ impl Continuation {
 
             Self::ProcessConjunction { remaining_goals, accumulated_results, .. } => {
                 out.extend(remaining_goals.as_slice().iter().copied());
-                out.extend(accumulated_results.iter().copied());
+                for (v, bindings) in accumulated_results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessUnifyPattern1 { pattern2, success_body, failure_body, .. } => {
@@ -1021,7 +1105,10 @@ impl Continuation {
                 out.push(*pattern2);
                 out.push(*success_body);
                 out.push(*failure_body);
-                out.extend(all_results.iter().copied());
+                for (v, bindings) in all_results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessUnifyPattern2 { val1, pattern2, success_body, failure_body, .. } => {
@@ -1033,27 +1120,32 @@ impl Continuation {
 
             Self::ProcessUnifyBodies { remaining_bodies, results, .. } => {
                 out.extend(remaining_bodies.as_slice().iter().copied());
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessCollapse { .. } => {}
             Self::ProcessCollapseBind { .. } => {}
 
-            Self::ProcessCollapseEvalResults { remaining_raw, evaluated, per_result_bindings, .. } => {
-                out.extend(remaining_raw.as_slice().iter().copied());
-                out.extend(evaluated.iter().copied());
-                if let Some(ref per_result) = per_result_bindings {
-                    for bindings in per_result {
-                        for (_, v) in bindings.iter() {
-                            out.push(v.clone());
-                        }
-                    }
+            Self::ProcessCollapseEvalResults { remaining_raw, evaluated, .. } => {
+                for (v, bindings) in remaining_raw.as_slice().iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                for (v, bindings) in evaluated.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
                 }
             }
 
             Self::ProcessAmb { remaining_alts, results, .. } => {
                 out.extend(remaining_alts.as_slice().iter().copied());
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessGuard { .. } => {}
@@ -1094,7 +1186,10 @@ impl Continuation {
 
             Self::ProcessMatchTemplates { remaining_templates, results, .. } => {
                 out.extend(remaining_templates.as_slice().iter().copied());
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessAddAtomSpace { space_ref, atom, .. } => {
@@ -1189,12 +1284,21 @@ impl Continuation {
             Self::ProcessCaseMultiResults { remaining_atoms, cases, collected, .. } => {
                 out.extend(remaining_atoms.as_slice().iter().copied());
                 out.push(*cases);
-                out.extend(collected.iter().copied());
+                for (v, bindings) in collected.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessCaseEvalScrutineeResults { remaining_raw, evaluated, cases, .. } => {
-                out.extend(remaining_raw.as_slice().iter().copied());
-                out.extend(evaluated.iter().copied());
+                for (v, bindings) in remaining_raw.as_slice().iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                for (v, bindings) in evaluated.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
                 out.push(*cases);
             }
 
@@ -1214,7 +1318,10 @@ impl Continuation {
 
             Self::ProcessRuleMatchesLazy { coroutine, results, .. } => {
                 coroutine.collect_values(out);
-                out.extend(results.iter().copied());
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::CompleteSubgoal { .. } => {
@@ -1340,7 +1447,10 @@ mod tests {
     fn test_work_item_resume_collects_results() {
         let f = factory();
         let item = WorkItem::Resume {
-            result: (smallvec![f.long(1), f.long(2), f.long(3)], env()),
+            result: (
+                smallvec![bv(f.long(1)), bv(f.long(2)), bv(f.long(3))],
+                env(),
+            ),
         };
         let mut roots = Vec::new();
         item.collect_values(&mut roots);
@@ -1364,8 +1474,8 @@ mod tests {
         let cont = Continuation::CollectSExpr {
             remaining: vec![f.long(10), f.long(20)].into_iter(),
             collected: vec![
-                (smallvec![f.long(30)], env()),
-                (smallvec![f.long(40), f.long(50)], env()),
+                (smallvec![bv(f.long(30))], env()),
+                (smallvec![bv(f.long(40)), bv(f.long(50))], env()),
             ],
             original_env: env(),
             depth: 0,
@@ -1397,11 +1507,11 @@ mod tests {
     fn test_continuation_let_collects_pattern_body_results() {
         let f = factory();
         let cont = Continuation::ProcessLet {
-            pending_values: Some(vec![f.atom("a"), f.atom("b")].into()),
+            pending_values: Some(vec![bv(f.atom("a")), bv(f.atom("b"))]),
             pattern: f.atom("$x"),
             body: f.atom("body"),
             outer_bindings: None,
-            results: vec![f.long(1)],
+            results: vec![bv(f.long(1))],
             env: env(),
             depth: 0,
         };
@@ -1442,11 +1552,9 @@ mod tests {
     fn test_continuation_collapse_eval_results() {
         let f = factory();
         let cont = Continuation::ProcessCollapseEvalResults {
-            remaining_raw: vec![f.long(1), f.long(2)].into_iter(),
-            evaluated: vec![f.long(3)],
+            remaining_raw: vec![bv(f.long(1)), bv(f.long(2))].into_iter(),
+            evaluated: vec![bv(f.long(3))],
             is_bind: false,
-            per_result_bindings: None,
-            bindings_index: 0,
             env: env(),
             depth: 0,
         };
@@ -1464,7 +1572,7 @@ mod tests {
             pattern2: f.atom("p2"),
             success_body: f.atom("ok"),
             failure_body: f.atom("fail"),
-            all_results: vec![f.long(99)],
+            all_results: vec![bv(f.long(99))],
             env: env(),
             depth: 0,
         };

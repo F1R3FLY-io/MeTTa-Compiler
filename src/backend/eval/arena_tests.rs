@@ -19,7 +19,7 @@ mod tests {
         for expr in source_exprs {
             let (results, new_env) = eval_trampoline(expr, env, &state);
             env = (*new_env).clone();
-            for result in &results {
+            for (result, _bindings) in &results {
                 all_results.push(result.to_string());
             }
         }

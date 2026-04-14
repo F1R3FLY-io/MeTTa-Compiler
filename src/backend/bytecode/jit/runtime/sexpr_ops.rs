@@ -195,7 +195,7 @@ unsafe fn jit_maybe_pre_eval_structural(
         factory: global_factory(),
     };
     let (results, _) = eval_trampoline(v.clone(), env.clone(), &ctx);
-    results.into_iter().next().unwrap_or(v)
+    results.into_iter().next().map(|(val, _)| val).unwrap_or(v)
 }
 
 /// Runtime function for StructuralHead opcode (`car-atom`).

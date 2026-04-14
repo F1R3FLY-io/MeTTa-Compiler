@@ -748,7 +748,7 @@ mod tests {
 
         // Results should contain [3]
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_long());
-        assert_eq!(results[0].as_long(), Some(3));
+        assert!(results[0].0.is_long());
+        assert_eq!(results[0].0.as_long(), Some(3));
     }
 }

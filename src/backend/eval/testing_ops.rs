@@ -156,6 +156,10 @@ where
 
     drop(_frame_guard);
 
+    // Strip bindings — test ops compare only raw values (mechanical refactor).
+    let actual_results: SmallVec<[MettaValue; 2]> = actual_results.into_iter().map(|(v, _)| v).collect();
+    let expected_results: SmallVec<[MettaValue; 2]> = expected_results.into_iter().map(|(v, _)| v).collect();
+
     // Strip Quoted wrappers before comparing: in PeTTa, (quote X) evaluates
     // to bare X — the quote is purely an evaluation barrier. MeTTaTron's
     // (quote X) evaluates to Quoted(X), a distinct variant. For test
@@ -239,6 +243,9 @@ where
 
     drop(_frame_guard);
 
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
+    let expected_results: Vec<MettaValue> = expected_results.into_iter().map(|(v, _)| v).collect();
+
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
@@ -285,6 +292,9 @@ where
     let env = (*env).clone();
 
     drop(_frame_guard);
+
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
+    let expected_results: Vec<MettaValue> = expected_results.into_iter().map(|(v, _)| v).collect();
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
@@ -336,6 +346,9 @@ where
 
     drop(_frame_guard);
 
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
+    let expected_results: Vec<MettaValue> = expected_results.into_iter().map(|(v, _)| v).collect();
+
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
@@ -376,6 +389,9 @@ where
     let env = (*env).clone();
 
     drop(_frame_guard);
+
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
+    let expected_results: Vec<MettaValue> = expected_results.into_iter().map(|(v, _)| v).collect();
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
@@ -425,6 +441,8 @@ where
 
     drop(_frame_guard);
 
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
+
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
@@ -470,6 +488,8 @@ where
     };
 
     drop(_frame_guard);
+
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
@@ -521,6 +541,8 @@ where
 
     drop(_frame_guard);
 
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
+
     match compare_results_multiset(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
@@ -564,6 +586,8 @@ where
     };
 
     drop(_frame_guard);
+
+    let actual_results: Vec<MettaValue> = actual_results.into_iter().map(|(v, _)| v).collect();
 
     match compare_results_multiset_alpha(&actual_results, &expected_results) {
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),

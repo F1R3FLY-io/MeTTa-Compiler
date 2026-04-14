@@ -34,7 +34,7 @@
 mod arena_engine;
 mod context;
 pub(crate) mod eval_loop;
-mod types;
+pub(crate) mod types;
 pub mod engine;
 pub(crate) mod dispatch_hints;
 pub mod session_context;

@@ -262,7 +262,13 @@ mod tests {
         };
         let stack: Vec<WorkItem> = vec![
             WorkItem::Resume {
-                result: (smallvec![f.long(1), f.long(2)], std::sync::Arc::new(env())),
+                result: (
+                    smallvec![
+                        crate::backend::eval::trampoline::types::bv(f.long(1)),
+                        crate::backend::eval::trampoline::types::bv(f.long(2)),
+                    ],
+                    std::sync::Arc::new(env()),
+                ),
             },
         ];
 

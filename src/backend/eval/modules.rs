@@ -144,7 +144,7 @@ where
                     let inner = sexpr_items[1].clone();
                     let (results, new_env) = eval_trampoline(inner, env, ctx);
                     env = (*new_env).clone();
-                    if let Some(r) = results.into_iter().last() {
+                    if let Some((r, _b)) = results.into_iter().last() {
                         last_result = r;
                     }
                     continue;

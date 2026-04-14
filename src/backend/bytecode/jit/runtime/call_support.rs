@@ -180,7 +180,7 @@ use crate::backend::eval::trampoline::EvalContext;
     let (results, _) = eval_trampoline(arg.clone(), env.clone(), &ctx);
 
     // Take the first result. If it differs from the original, use it.
-    if let Some(first) = results.into_iter().next() {
+    if let Some((first, _b)) = results.into_iter().next() {
         if first != *arg {
             return Some(first);
         }

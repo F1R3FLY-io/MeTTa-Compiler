@@ -4973,7 +4973,7 @@ where
         // Returns (Vec<results>, final_env).
         let (results, _final_env) = eval_trampoline(metta_sub_expr.clone(), metta_env, &ctx);
 
-        if let Some(first) = results.into_iter().next() {
+        if let Some((first, _b)) = results.into_iter().next() {
             // SAFETY: V == MettaValue verified above. Transmute result back.
             Ok(unsafe { std::ptr::read(&first as *const MettaValue as *const V) })
         } else {
@@ -5017,7 +5017,7 @@ where
 
         let (results, _final_env) = eval_trampoline(metta_sub_expr, metta_env, &ctx);
         // SAFETY: V == MettaValue verified above. Vec<MettaValue> → Vec<V>.
-        let metta_results: Vec<MettaValue> = results.into_vec();
+        let metta_results: Vec<MettaValue> = results.into_iter().map(|(v, _)| v).collect();
         unsafe {
             let mut v_results = std::mem::ManuallyDrop::new(metta_results);
             Vec::from_raw_parts(

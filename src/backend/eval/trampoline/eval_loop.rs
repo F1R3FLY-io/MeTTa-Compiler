@@ -61,7 +61,7 @@ use super::engine::{
     try_match_all_rules, try_deferred_deterministic_chain, DeferredChainResult,
     SwitchResult,
 };
-use super::types::{Continuation, EvalResult, WorkItem};
+use super::types::{bv, bv_with, bvs_from_values, values_of, BoundValue, Continuation, EvalResult, WorkItem};
 use super::super::list_ops::substitute_variable_generic;
 use super::super::processing::{
     process_collected_sexpr_generic, GenericProcessedSExpr,
@@ -329,7 +329,7 @@ fn release_budget(n: u32, depth: u32) {
 #[inline]
 fn dispatch_rule_matches<C: EvalContext>(
     mut matches: Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
-    base_results: SmallVec<[MettaValue; 2]>,
+    base_results: SmallVec<[BoundValue; 2]>,
     env: MettaEnvironment,
     depth: usize,
     ctx: &C,
@@ -392,12 +392,12 @@ fn dispatch_rule_matches<C: EvalContext>(
             // Normal-form short-circuit for ground RHS
             if is_memoized_normal_form(&rhs) {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![rhs], env),
+                    result: (smallvec![bv(rhs)], env),
                 });
             } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![rhs], env),
+                    result: (smallvec![bv(rhs)], env),
                 });
             } else {
                 // Phase F: Tight deterministic chain — if the ground RHS is itself
@@ -555,7 +555,7 @@ fn dispatch_rule_matches<C: EvalContext>(
 
         // Merge with base_results from prior branches (e.g., from EvalRuleMatches)
         let mut merged = base_results;
-        merged.extend(results);
+        merged.extend(results.into_iter().map(bv));
 
         work_stack.push(WorkItem::Resume {
             result: (merged, env),
@@ -667,12 +667,12 @@ fn dispatch_rule_matches<C: EvalContext>(
         } else {
             if is_memoized_normal_form(&rhs) {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![rhs], env),
+                    result: (smallvec![bv(rhs)], env),
                 });
             } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![rhs], env),
+                    result: (smallvec![bv(rhs)], env),
                 });
             } else {
                 work_stack.push(WorkItem::Eval {
@@ -1075,7 +1075,7 @@ fn parallel_branch_eval(
             // Store result in pre-allocated slot (no contention per slot)
             {
                 let mut guard = results.lock().expect("results mutex poisoned");
-                guard[slot] = Some(eval_results.into_vec());
+                guard[slot] = Some(eval_results.into_iter().map(|(v, _)| v).collect());
             }
 
             // Decrement barrier; if last task, notify waiter
@@ -1110,7 +1110,7 @@ fn parallel_branch_eval(
     // Store branch 0 results
     {
         let mut guard = results.lock().expect("results mutex poisoned");
-        guard[0] = Some(branch0_results.into_vec());
+        guard[0] = Some(branch0_results.into_iter().map(|(v, _)| v).collect());
     }
 
     // Trace: ParallelDispatch branch0-done
@@ -1316,7 +1316,7 @@ fn parallel_collapse_eval(
             // Store result in pre-allocated slot
             {
                 let mut guard = results.lock().expect("results mutex poisoned");
-                guard[slot] = Some(eval_results.into_vec());
+                guard[slot] = Some(eval_results.into_iter().map(|(v, _)| v).collect());
             }
 
             // Decrement barrier; if last task, notify waiter
@@ -1350,7 +1350,7 @@ fn parallel_collapse_eval(
     // Store item 0 results
     {
         let mut guard = results.lock().expect("results mutex poisoned");
-        guard[0] = Some(item0_results.into_vec());
+        guard[0] = Some(item0_results.into_iter().map(|(v, _)| v).collect());
     }
 
     // Wait for all spawned tasks to complete, with work-stealing
@@ -1864,7 +1864,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 let is_sexpr = value.as_sexpr().is_some();
                 if is_sexpr && is_memoized_normal_form(&value) {
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![value], env),
+                        result: (smallvec![bv(value)], env),
                     });
                     continue;
                 }
@@ -1919,7 +1919,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         trace_format::TraceTier::TreeWalker,
                                         depth as u32,
                                         crate::backend::trace::trace_value_generic(&value),
-                                        cached.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                        cached.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                                         None,
                                         trace_format::TraceEventKind::TablingDecision {
                                             expr_hash: tabling_hash,
@@ -1930,7 +1930,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 }
                             }
                             work_stack.push(WorkItem::Resume {
-                                result: (SmallVec::from_vec(cached.into_vec()), env),
+                                result: (cached.into_iter().map(bv).collect(), env),
                             });
                             continue;
                         }
@@ -1972,7 +1972,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     if let Some(cached_results) = eval_memo_get(h) {
                         // Cache hit — skip evaluation entirely.
                         work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::from_vec(cached_results), env),
+                            result: (cached_results.into_iter().map(bv).collect(), env),
                         });
                         continue;
                     }
@@ -2060,7 +2060,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 }
                             }
                             work_stack.push(WorkItem::Resume {
-                                result: (SmallVec::from_vec(results), Arc::new(new_env)),
+                                result: (results.into_iter().map(bv).collect(), Arc::new(new_env)),
 
                             });
                             continue; // Skip eval_step_generic — compiled code handled it
@@ -2102,7 +2102,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         {
                             memoize_normal_form(&values[0]);
                         }
-                        let result = (values, Arc::new(step_env));
+                        let result = (values.into_iter().map(bv).collect(), Arc::new(step_env));
                         work_stack.push(WorkItem::Resume { result });
                     }
 
@@ -2111,7 +2111,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         let env: SharedEnv = Arc::new(step_env);
                         if items.is_empty() {
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![ctx.factory().sexpr(vec![])], env),
+                                result: (smallvec![bv(ctx.factory().sexpr(vec![]))], env),
                             });
                         } else {
                             let mut items_iter = items.into_iter();
@@ -2174,11 +2174,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                 trace_format::TraceTier::TreeWalker,
                                                 depth as u32,
                                                 input,
-                                                values.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                values.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                                                 None,
                                                 trace_format::TraceEventKind::GroundedOp {
                                                     op_name: op_name.clone(),
-                                                    args: state.args.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                    args: state.args.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                                                 },
                                                 _grounded_start_ns,
                                                 Some(duration),
@@ -2187,7 +2187,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         }
                                     }
                                     work_stack.push(WorkItem::Resume {
-                                        result: (SmallVec::from_vec(values), env),
+                                        result: (values.into_iter().map(bv).collect(), env),
 
                                     });
                                 }
@@ -2239,7 +2239,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                     op_name: op_name.clone(),
                                                     error_kind: error_kind.to_string(),
                                                     message,
-                                                    args: state.args.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                    args: state.args.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                                                 },
                                             );
                                         }
@@ -2254,7 +2254,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             }
                                             let unreduced = ctx.factory().sexpr(expr_parts);
                                             work_stack.push(WorkItem::Resume {
-                                                result: (smallvec![unreduced], env),
+                                                result: (smallvec![bv(unreduced)], env),
                                             });
                                         }
                                         _ => {
@@ -2265,7 +2265,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                 ExecError::NoReduce => unreachable!(),
                                             };
                                             work_stack.push(WorkItem::Resume {
-                                                result: (smallvec![error_value], env),
+                                                result: (smallvec![bv(error_value)], env),
                                             });
                                         }
                                     }
@@ -2281,7 +2281,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 ctx.factory().atom("OperationNotFoundError"),
                             );
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![error_value], env),
+                                result: (smallvec![bv(error_value)], env),
                             });
                         }
                     }
@@ -2435,7 +2435,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![ctx.factory().sexpr(vec![])], env),
+                                result: (smallvec![bv(ctx.factory().sexpr(vec![]))], env),
                             });
                         } else {
                             let mut remaining = elements.into_iter();
@@ -2472,7 +2472,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![ctx.factory().sexpr(vec![])], env),
+                                result: (smallvec![bv(ctx.factory().sexpr(vec![]))], env),
                             });
                         } else {
                             let mut remaining = elements.into_iter();
@@ -2511,7 +2511,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![init], env),
+                                result: (smallvec![bv(init)], env),
                             });
                         } else {
                             let mut remaining = elements.into_iter();
@@ -2551,7 +2551,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         if elements.len() <= 1 {
                             // 0 or 1 elements — already sorted
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![ctx.factory().sexpr(elements)], env),
+                                result: (smallvec![bv(ctx.factory().sexpr(elements))], env),
                             });
                         } else {
                             // Start insertion sort: first element is trivially sorted,
@@ -2598,7 +2598,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         if elements.is_empty() {
                             // Empty tuple — return Unit
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![ctx.factory().unit()], env),
+                                result: (smallvec![bv(ctx.factory().unit())], env),
                             });
                         } else {
                             let mut remaining = elements.into_iter();
@@ -2706,7 +2706,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             }
                             SwitchResult::Error(err) => {
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![err], env),
+                                    result: (smallvec![bv(err)], env),
                                 });
                             }
                             SwitchResult::NoMatch => {
@@ -2836,7 +2836,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         let env: SharedEnv = Arc::new(step_env);
                         if goals.is_empty() {
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![ctx.factory().unit()], env),
+                                result: (smallvec![bv(ctx.factory().unit())], env),
                             });
                         } else if goals.len() == 1 {
                             work_stack.push(WorkItem::Eval {
@@ -3001,7 +3001,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 );
 
                                 work_stack.push(WorkItem::Resume {
-                                    result: (SmallVec::from_vec(results), env),
+                                    result: (results.into_iter().map(bv).collect(), env),
                                 });
                             } else {
                                 // ── Sequential path (original) ──
@@ -3503,7 +3503,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     match lookup {
                         crate::backend::eval::cesk::ThunkLookup::Evaluated(cached) => {
                             work_stack.push(WorkItem::Resume {
-                                result: (SmallVec::from_vec(cached.into_vec()), env),
+                                result: (cached.into_iter().map(bv).collect(), env),
                             });
                             continue;
                         }
@@ -3511,7 +3511,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // Infinite recursion detected — return error
                             let error_val = ctx.factory().error("blackhole", ctx.factory().atom("infinite recursion in EvalWithBindings"));
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![error_val], env),
+                                result: (smallvec![bv(error_val)], env),
                             });
                             continue;
                         }
@@ -3560,7 +3560,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     } else {
                         // Non-variable atom: self-evaluating
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![template], env),
+                            result: (smallvec![bv(template)], env),
                         });
                     }
                     continue;
@@ -3570,7 +3570,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 if let Some(items) = template.as_sexpr() {
                     if items.is_empty() {
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![template], env),
+                            result: (smallvec![bv(template)], env),
                         });
                         continue;
                     }
@@ -3864,7 +3864,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             }
                             DeferredChainResult::Done(value) => {
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![value], env),
+                                    result: (smallvec![bv(value)], env),
                                 });
                             }
                         }
@@ -4002,24 +4002,24 @@ fn process_continuation<C: EvalContext>(
                 // Unwrap SharedEnv → bare MettaEnvironment for process_collected_sexpr_generic
                 let collected_bare: Vec<(SmallVec<[MettaValue; 2]>, MettaEnvironment)> = collected
                     .into_iter()
-                    .map(|(vals, shared_env)| (vals, (*shared_env).clone()))
+                    .map(|(vals, shared_env)| (values_of(&vals), (*shared_env).clone()))
                     .collect();
                 let processed = process_collected_sexpr_generic(collected_bare, (*original_env).clone(), depth, ctx.factory());
 
                 match processed {
                     GenericProcessedSExpr::Done((results, env)) => {
                         work_stack.push(WorkItem::Resume {
-                            result: (results, Arc::new(env)),
+                            result: (results.into_iter().map(bv).collect(), Arc::new(env)),
                         });
                     }
                     GenericProcessedSExpr::EvalRuleMatches { matches, env, depth, base_results } => {
                         if matches.is_empty() {
                             work_stack.push(WorkItem::Resume {
-                                result: (base_results, Arc::new(env)),
+                                result: (base_results.into_iter().map(bv).collect(), Arc::new(env)),
                             });
                         } else {
                             // Dispatch via unified parallel/sequential gate
-                            dispatch_rule_matches(matches, base_results, env, depth, ctx, work_stack, continuations, None);
+                            dispatch_rule_matches(matches, base_results.into_iter().map(bv).collect(), env, depth, ctx, work_stack, continuations, None);
                         }
                     }
                     GenericProcessedSExpr::EvalCombinations { combinations, env, depth } => {
@@ -4249,12 +4249,12 @@ fn process_continuation<C: EvalContext>(
                 } else {
                     if is_memoized_normal_form(&rhs) {
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![rhs], env),
+                            result: (smallvec![bv(rhs)], env),
                         });
                     } else if is_normal_form_bounded(&rhs, &env, 2) {
                         memoize_normal_form(&rhs);
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![rhs], env),
+                            result: (smallvec![bv(rhs)], env),
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -4282,7 +4282,7 @@ fn process_continuation<C: EvalContext>(
             // Record results from the just-evaluated branch
             for val in eval_results.iter() {
                 results.push(val.clone());
-                coroutine.record_result(val.clone());
+                coroutine.record_result(val.0.clone());
             }
 
             if coroutine.is_done() {
@@ -4335,7 +4335,7 @@ fn process_continuation<C: EvalContext>(
             let (result_values, result_env) = result;
 
             // Set evaluated arg using the stored arg_idx from the EvalArg return
-            state.set_arg(pending_arg_idx, result_values.into_vec());
+            state.set_arg(pending_arg_idx, result_values.into_iter().map(|(v, _)| v).collect());
 
             // Try static dispatch first - works with generic type V (NO conversion)
             let op_name = state.op_name.clone();
@@ -4348,7 +4348,7 @@ fn process_continuation<C: EvalContext>(
                             .map(|(v, _)| v)
                             .collect();
                         work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::from_vec(values), result_env),
+                            result: (values.into_iter().map(bv).collect(), result_env),
 
                         });
                     }
@@ -4382,7 +4382,7 @@ fn process_continuation<C: EvalContext>(
                                 }
                                 let unreduced = ctx.factory().sexpr(expr_parts);
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![unreduced], result_env),
+                                    result: (smallvec![bv(unreduced)], result_env),
                                 });
                             }
                             _ => {
@@ -4393,7 +4393,7 @@ fn process_continuation<C: EvalContext>(
                                     ExecError::NoReduce => unreachable!(),
                                 };
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![error_value], result_env),
+                                    result: (smallvec![bv(error_value)], result_env),
                                 });
                             }
                         }
@@ -4407,7 +4407,7 @@ fn process_continuation<C: EvalContext>(
                     ctx.factory().atom("OperationNotFoundError"),
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![error_value], result_env),
+                    result: (smallvec![bv(error_value)], result_env),
                 });
             }
         }
@@ -4466,7 +4466,7 @@ fn process_continuation<C: EvalContext>(
 
                 if all_matches_with_types.is_empty() {
                     // No rule matches - expression is data
-                    results.push(generic_sexpr);
+                    results.push(bv(generic_sexpr));
 
                     continuations.push(Continuation::ProcessCombinations {
                         combinations,
@@ -4533,7 +4533,7 @@ fn process_continuation<C: EvalContext>(
                                 trace_format::TraceTier::TreeWalker,
                                 depth as u32,
                                 crate::backend::trace::trace_value_generic(&pattern),
-                                result_values.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                result_values.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                                 None,
                                 trace_format::TraceEventKind::SpecialForm {
                                     form_name: "let".to_string(),
@@ -4556,7 +4556,7 @@ fn process_continuation<C: EvalContext>(
                     }
 
                     let mut bound_bodies: Vec<BoundBody> = Vec::new();
-                    for value in result_values.iter() {
+                    for (value, _b) in result_values.iter() {
                         // Phase 8.5: Type pre-check for typed patterns
                         if let Some(ref tc) = type_constraint {
                             if get_ground_type(value).is_some() {
@@ -4661,7 +4661,7 @@ fn process_continuation<C: EvalContext>(
 
                         // Merge with accumulated results
                         let mut merged = results;
-                        merged.extend(par_results);
+                        merged.extend(par_results.into_iter().map(bv));
 
                         work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(merged), result_env),
@@ -4701,7 +4701,7 @@ fn process_continuation<C: EvalContext>(
                     // Try next value
                     loop {
                         match remaining_values.pop() {
-                            Some(value) => {
+                            Some((value, _b)) => {
                                 // Phase 8.5: Type pre-check for typed patterns (: $var Type)
                                 // Only apply to ground-type values (Number/Bool/String) where
                                 // type inference is definitive. S-expressions and atoms may
@@ -4869,7 +4869,7 @@ fn process_continuation<C: EvalContext>(
                     let mut changed = false;
                     for (i, grounded_idx) in grounded_indices.iter().enumerate() {
                         if evaluated_results[i].len() != 1
-                            || evaluated_results[i][0] != items[*grounded_idx]
+                            || evaluated_results[i][0].0 != items[*grounded_idx]
                         {
                             changed = true;
                             break;
@@ -4883,7 +4883,7 @@ fn process_continuation<C: EvalContext>(
                         // Build this combination's items
                         let mut combo_items = items.clone();
                         for (i, grounded_idx) in grounded_indices.iter().enumerate() {
-                            combo_items[*grounded_idx] = evaluated_results[i][combo_indices[i]].clone();
+                            combo_items[*grounded_idx] = evaluated_results[i][combo_indices[i]].0.clone();
                         }
                         combinations.push(ctx.factory().sexpr(combo_items));
 
@@ -4932,7 +4932,7 @@ fn process_continuation<C: EvalContext>(
                             } else {
                                 // Step 4: No rules matched — return as data constructor
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![sexpr], result_env),
+                                    result: (smallvec![bv(sexpr)], result_env),
                                 });
                             }
                         } else {
@@ -5021,12 +5021,12 @@ fn process_continuation<C: EvalContext>(
 
             // Add first result from evaluation
             if result_values.is_empty() {
-                collected_results.push(ctx.factory().unit());
+                collected_results.push(bv(ctx.factory().unit()));
             } else {
                 let first_result = result_values.swap_remove(0);
 
                 // Check for error propagation
-                if first_result.is_error() {
+                if first_result.0.is_error() {
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![first_result], result_env),
                     });
@@ -5037,9 +5037,11 @@ fn process_continuation<C: EvalContext>(
 
             if remaining_elements.len() == 0 {
                 // All elements processed - return result list
-                let result_list = ctx.factory().sexpr(collected_results);
+                let result_list = ctx.factory().sexpr(
+                    collected_results.into_iter().map(|(v, _)| v).collect()
+                );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_list], result_env),
+                    result: (smallvec![bv(result_list)], result_env),
                 });
             } else {
                 // More elements to process
@@ -5083,12 +5085,12 @@ fn process_continuation<C: EvalContext>(
 
             // Check predicate result and optionally include current element
             if !result_values.is_empty() {
-                let first_result = result_values.swap_remove(0);
+                let (first_result, _b) = result_values.swap_remove(0);
 
                 // Check for error propagation
                 if first_result.is_error() {
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![first_result], result_env),
+                        result: (smallvec![bv(first_result)], result_env),
                     });
                     return;
                 }
@@ -5101,16 +5103,18 @@ fn process_continuation<C: EvalContext>(
 
                 if should_include {
                     if let Some(elem) = current_element {
-                        filtered_results.push(elem);
+                        filtered_results.push(bv(elem));
                     }
                 }
             }
 
             if remaining_elements.len() == 0 {
                 // All elements processed - return filtered list
-                let result_list = ctx.factory().sexpr(filtered_results);
+                let result_list = ctx.factory().sexpr(
+                    filtered_results.into_iter().map(|(v, _)| v).collect()
+                );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_list], result_env),
+                    result: (smallvec![bv(result_list)], result_env),
                 });
             } else {
                 // More elements to process
@@ -5156,12 +5160,12 @@ fn process_continuation<C: EvalContext>(
             let accumulator = if result_values.is_empty() {
                 ctx.factory().unit()
             } else {
-                let first_result = result_values.swap_remove(0);
+                let (first_result, _b) = result_values.swap_remove(0);
 
                 // Check for error propagation
                 if first_result.is_error() {
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![first_result], result_env),
+                        result: (smallvec![bv(first_result)], result_env),
                     });
                     return;
                 }
@@ -5171,7 +5175,7 @@ fn process_continuation<C: EvalContext>(
             if remaining_elements.len() == 0 {
                 // All elements processed - return final accumulator
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![accumulator], result_env),
+                    result: (smallvec![bv(accumulator)], result_env),
                 });
             } else {
                 // More elements to process
@@ -5220,7 +5224,7 @@ fn process_continuation<C: EvalContext>(
 
             // Extract boolean comparison result
             let cmp_true = cmp_results.first()
-                .and_then(|v| v.as_bool())
+                .and_then(|(v, _)| v.as_bool())
                 .unwrap_or(false);
 
             if cmp_true {
@@ -5270,7 +5274,7 @@ fn process_continuation<C: EvalContext>(
                 // Sorting complete
                 let result_tuple = ctx.factory().sexpr(sorted);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_tuple], result_env),
+                    result: (smallvec![bv(result_tuple)], result_env),
                 });
             } else {
                 let next_current = unsorted.remove(0);
@@ -5319,7 +5323,7 @@ fn process_continuation<C: EvalContext>(
             let (rank_results, result_env) = result;
 
             // Extract numeric rank from evaluation result
-            let current_rank = rank_results.first().and_then(|v| {
+            let current_rank = rank_results.first().and_then(|(v, _)| {
                 v.as_float().or_else(|| v.as_long().map(|l| l as f64))
             });
 
@@ -5333,7 +5337,7 @@ fn process_continuation<C: EvalContext>(
             if remaining.len() == 0 {
                 // Done — return best
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![new_best], result_env),
+                    result: (smallvec![bv(new_best)], result_env),
                 });
             } else {
                 // Evaluate next element's rank
@@ -5374,7 +5378,7 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (cond_results, env_after_cond) = result;
 
-            if let Some(first) = cond_results.first() {
+            if let Some((first, _b)) = cond_results.first() {
                 // Trace: condition-result phase
                 #[cfg(feature = "eval-trace")]
                 {
@@ -5396,7 +5400,7 @@ fn process_continuation<C: EvalContext>(
                 // Check for error in condition
                 if first.is_error() {
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![first.clone()], env_after_cond),
+                        result: (smallvec![bv(first.clone())], env_after_cond),
                     });
                     return;
                 }
@@ -5512,7 +5516,7 @@ fn process_continuation<C: EvalContext>(
                         mat_else,
                     ]);
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![unreduced], env_after_cond),
+                        result: (smallvec![bv(unreduced)], env_after_cond),
                     });
                 }
             } else {
@@ -5548,7 +5552,7 @@ fn process_continuation<C: EvalContext>(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(&cases),
-                        atom_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        atom_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                         None,
                         trace_format::TraceEventKind::SpecialForm {
                             form_name: "case".to_string(),
@@ -5561,7 +5565,7 @@ fn process_continuation<C: EvalContext>(
             // Filter out Empty sentinels
             let filtered_results: Vec<_> = atom_results
                 .into_iter()
-                .filter(|v| !v.is_empty())
+                .filter(|(v, _)| !v.is_empty())
                 .collect();
 
             // Handle case when evaluation returns no results
@@ -5582,7 +5586,7 @@ fn process_continuation<C: EvalContext>(
                     }
                     SwitchResult::Error(err) => {
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![err], atom_env),
+                            result: (smallvec![bv(err)], atom_env),
                         });
                     }
                     SwitchResult::NoMatch => {
@@ -5607,7 +5611,7 @@ fn process_continuation<C: EvalContext>(
             // the already-evaluated results. We mirror this by evaluating each raw
             // scrutinee result before matching.
             let mut remaining_raw = filtered_results.into_iter();
-            let first_raw = remaining_raw.next().expect("filtered_results is non-empty");
+            let (first_raw, _b) = remaining_raw.next().expect("filtered_results is non-empty");
 
             continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
                 remaining_raw,
@@ -5695,7 +5699,7 @@ fn process_continuation<C: EvalContext>(
                     }
                     SwitchResult::Error(err) => {
                         // Collect error and continue
-                        collected.push(err);
+                        collected.push(bv(err));
 
                         continuations.push(Continuation::ProcessCaseMultiResults {
                             remaining_atoms,
@@ -5728,7 +5732,6 @@ fn process_continuation<C: EvalContext>(
                 // All atoms processed
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(collected), env),
-
                 });
             }
         }
@@ -5747,9 +5750,9 @@ fn process_continuation<C: EvalContext>(
             let (eval_results, eval_env) = result;
 
             // Collect non-empty evaluated results
-            evaluated.extend(eval_results.into_iter().filter(|v| !v.is_empty()));
+            evaluated.extend(eval_results.into_iter().filter(|(v, _)| !v.is_empty()));
 
-            if let Some(next_raw) = remaining_raw.next() {
+            if let Some((next_raw, _b)) = remaining_raw.next() {
                 // More raw scrutinee results to evaluate — reuse cont slot
                 continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
                     remaining_raw,
@@ -5785,7 +5788,7 @@ fn process_continuation<C: EvalContext>(
                         }
                         SwitchResult::Error(err) => {
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![err], eval_env),
+                                result: (smallvec![bv(err)], eval_env),
                             });
                         }
                         SwitchResult::NoMatch => {
@@ -5798,7 +5801,7 @@ fn process_continuation<C: EvalContext>(
                 }
 
                 // Match each evaluated result against cases
-                let mut eval_atoms = evaluated.into_iter();
+                let mut eval_atoms = evaluated.into_iter().map(|(v, _)| v).collect::<Vec<_>>().into_iter();
 
                 if let Some(first_atom) = eval_atoms.next() {
                     let is_empty_atom = first_atom.is_empty()
@@ -5859,7 +5862,7 @@ fn process_continuation<C: EvalContext>(
                         }
                         SwitchResult::Error(err) => {
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![err], eval_env),
+                                result: (smallvec![bv(err)], eval_env),
                             });
                         }
                         SwitchResult::NoMatch => {
@@ -5905,7 +5908,7 @@ fn process_continuation<C: EvalContext>(
                 // Single result - evaluate it (TCO)
                 // Unwrap Quoted values: (eval (quote X)) → evaluate X.
                 // Quoted is self-evaluating, so without this unwrap we'd loop.
-                let mut value = eval_results.into_iter().next().unwrap();
+                let (mut value, _b) = eval_results.into_iter().next().unwrap();
                 if let Some(inner) = value.as_quoted() {
                     value = inner;
                 }
@@ -5919,7 +5922,7 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // Multiple results - evaluate each (unwrap Quoted values)
-                let results_vec: Vec<_> = eval_results.into_iter().map(|v| {
+                let results_vec: Vec<_> = eval_results.into_iter().map(|(v, _)| {
                     if let Some(inner) = v.as_quoted() { inner } else { v }
                 }).collect();
                 let mut results_iter = results_vec.into_iter();
@@ -5951,15 +5954,15 @@ fn process_continuation<C: EvalContext>(
             let (arg_results, arg_env) = result;
 
             // Check for errors first - pass through without wrapping
-            if let Some(err) = arg_results.iter().find(|r| r.is_error()) {
+            if let Some((err, _b)) = arg_results.iter().find(|(r, _)| r.is_error()) {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err.clone()], arg_env),
+                    result: (smallvec![bv(err.clone())], arg_env),
                 });
             } else {
                 // Wrap results in return structure: (return value)
                 let return_results: Vec<MettaValue> = arg_results
                     .into_iter()
-                    .map(|r| {
+                    .map(|(r, _)| {
                         ctx.factory().sexpr(vec![
                             ctx.factory().atom("return"),
                             r,
@@ -5967,7 +5970,7 @@ fn process_continuation<C: EvalContext>(
                     })
                     .collect();
                 work_stack.push(WorkItem::Resume {
-                    result: (SmallVec::from_vec(return_results), arg_env),
+                    result: (return_results.into_iter().map(bv).collect(), arg_env),
 
                 });
             }
@@ -5991,7 +5994,7 @@ fn process_continuation<C: EvalContext>(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(&var),
-                        expr_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        expr_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                         None,
                         trace_format::TraceEventKind::SpecialForm {
                             form_name: "chain".to_string(),
@@ -6012,7 +6015,7 @@ fn process_continuation<C: EvalContext>(
                 // Phase C: Compose chain variable binding with outer_bindings
                 // and defer materialization via EvalWithBindings.
                 if let Some(mut ob) = outer_bindings {
-                    ob.insert(var_name, expr_results[0].clone());
+                    ob.insert(var_name, expr_results[0].0.clone());
                     if body.has_variables_fast() {
                         work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
@@ -6036,7 +6039,7 @@ fn process_continuation<C: EvalContext>(
                     let instantiated = substitute_variable_generic(
                         &body,
                         var_name,
-                        &expr_results[0],
+                        &expr_results[0].0,
                         ctx.factory(),
                     );
                     work_stack.push(WorkItem::Eval {
@@ -6050,7 +6053,7 @@ fn process_continuation<C: EvalContext>(
                 }
             } else {
                 // Multiple results - chain evaluates each
-                let mut remaining_values = expr_results.into_vec().into_iter();
+                let mut remaining_values = expr_results.into_iter().map(|(v, _)| v).collect::<Vec<_>>().into_iter();
                 let chain_capacity = remaining_values.len(); // total before consuming first
                 let first = remaining_values.next().unwrap();
 
@@ -6186,7 +6189,7 @@ fn process_continuation<C: EvalContext>(
 
             if eval_results.is_empty() {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![ctx.factory().unit()], current_env),
+                    result: (smallvec![bv(ctx.factory().unit())], current_env),
                 });
             } else {
                 // Helper: check if a value is a (return ...) expression
@@ -6203,13 +6206,13 @@ fn process_continuation<C: EvalContext>(
 
                 // Partition into return values and continue expressions
                 let (final_results, continue_exprs): (Vec<_>, Vec<_>) =
-                    eval_results.into_iter().partition(|r| is_return_expr(r));
+                    eval_results.into_iter().partition(|(r, _)| is_return_expr(r));
 
                 if !final_results.is_empty() {
                     // Extract return values - unwrap (return value) to just value
                     let returns: Vec<MettaValue> = final_results
                         .into_iter()
-                        .map(|r| {
+                        .map(|(r, _)| {
                             if let Some(items) = r.as_sexpr() {
                                 items[1].clone()
                             } else {
@@ -6218,13 +6221,13 @@ fn process_continuation<C: EvalContext>(
                         })
                         .collect();
                     work_stack.push(WorkItem::Resume {
-                        result: (SmallVec::from_vec(returns), current_env),
+                        result: (returns.into_iter().map(bv).collect(), current_env),
 
                     });
                 } else if continue_exprs.is_empty() {
                     // Nothing to continue
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![ctx.factory().unit()], current_env),
+                        result: (smallvec![bv(ctx.factory().unit())], current_env),
                     });
                 } else if iteration_count >= MAX_ITERATIONS {
                     // Hit iteration limit
@@ -6235,7 +6238,7 @@ fn process_continuation<C: EvalContext>(
                 } else {
                     // Continue evaluating
                     if continue_exprs.len() == 1 {
-                        let next_expr = continue_exprs.into_iter().next().unwrap();
+                        let (next_expr, _b) = continue_exprs.into_iter().next().unwrap();
                         continuations.push(Continuation::ProcessFunction {
                             iteration_count: iteration_count + 1,
                             env: current_env.clone(),
@@ -6268,11 +6271,11 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (expr_results, result_env) = result;
 
-            let is_error = expr_results.iter().any(|v| v.is_error());
+            let is_error = expr_results.iter().any(|(v, _)| v.is_error());
             let result_value = ctx.factory().bool(is_error);
 
             work_stack.push(WorkItem::Resume {
-                result: (smallvec![result_value], result_env),
+                result: (smallvec![bv(result_value)], result_env),
             });
         }
 
@@ -6284,7 +6287,7 @@ fn process_continuation<C: EvalContext>(
             let (expr_results, result_env) = result;
 
             // Check if any result is an error
-            let has_error = expr_results.iter().any(|v| v.is_error());
+            let has_error = expr_results.iter().any(|(v, _)| v.is_error());
 
             if has_error {
                 // Evaluate default value
@@ -6320,8 +6323,8 @@ fn process_continuation<C: EvalContext>(
                 return;
             }
 
-            if goal_results.iter().any(|v| v.is_error()) {
-                let error = goal_results.into_iter().find(|v| v.is_error()).unwrap();
+            if goal_results.iter().any(|(v, _)| v.is_error()) {
+                let error = goal_results.into_iter().find(|(v, _)| v.is_error()).unwrap();
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![error], result_env),
                 });
@@ -6348,7 +6351,7 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // All goals evaluated - return last result
-                let final_result = accumulated_results.pop().unwrap_or_else(|| ctx.factory().unit());
+                let final_result = accumulated_results.pop().unwrap_or_else(|| bv(ctx.factory().unit()));
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![final_result], result_env),
                 });
@@ -6376,7 +6379,7 @@ fn process_continuation<C: EvalContext>(
                 });
             } else if pattern1_results.len() == 1 {
                 // Single result - check if it's a Space (special handling)
-                let val1 = pattern1_results.into_iter().next().unwrap();
+                let (val1, _b) = pattern1_results.into_iter().next().unwrap();
 
                 if let Some(handle) = val1.as_space() {
                     // Space unification - match pattern2 against space atoms
@@ -6398,7 +6401,7 @@ fn process_continuation<C: EvalContext>(
                         };
                         let result_value = ctx.factory().bool(exists);
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![result_value], result_env),
+                            result: (smallvec![bv(result_value)], result_env),
                         });
                     } else {
                         // Full space matching with body evaluation
@@ -6582,7 +6585,7 @@ fn process_continuation<C: EvalContext>(
                 }
             } else {
                 // Multiple results - iterate over them
-                let remaining_vec: Vec<_> = pattern1_results.into_iter().collect();
+                let remaining_vec: Vec<_> = pattern1_results.into_iter().map(|(v, _)| v).collect();
                 let mut remaining = remaining_vec.into_iter();
                 let iter_capacity = remaining.len(); // total before consuming first
                 let first = remaining.next().unwrap();
@@ -6771,7 +6774,7 @@ fn process_continuation<C: EvalContext>(
                             })
                         };
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![ctx.factory().bool(exists)], env_after),
+                            result: (smallvec![bv(ctx.factory().bool(exists))], env_after),
                         });
                     } else {
                         // Full match: get matches from appropriate source
@@ -6890,7 +6893,7 @@ fn process_continuation<C: EvalContext>(
                 // WAM union-find bidirectional unification: handles variables
                 // on both sides, occurs check, and conflict detection.
                 let mut all_bindings = Vec::new();
-                for p2_result in &pattern2_results {
+                for (p2_result, _b) in &pattern2_results {
                     if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&val1, p2_result) {
                         all_bindings.push(bindings);
                     }
@@ -6989,7 +6992,7 @@ fn process_continuation<C: EvalContext>(
             if expr_results.is_empty() {
                 let result_list = ctx.factory().sexpr(vec![]);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_list], result_env),
+                    result: (smallvec![bv(result_list)], result_env),
                 });
                 return;
             }
@@ -7010,7 +7013,7 @@ fn process_continuation<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                let metta_items: Vec<MettaValue> = expr_results.into_vec();
+                let metta_items: Vec<MettaValue> = expr_results.into_iter().map(|(v, _)| v).collect();
                 let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
@@ -7039,22 +7042,20 @@ fn process_continuation<C: EvalContext>(
                 }
 
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_list], result_env),
+                    result: (smallvec![bv(result_list)], result_env),
                 });
             } else {
                 // ── Sequential path: evaluate one-at-a-time ──
                 // MeTTa HE collapse semantics: evaluate each result to normal form.
-                let remaining_vec: Vec<MettaValue> = expr_results.into_iter().collect();
+                let remaining_vec: Vec<BoundValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
-                let first_raw = remaining_raw.next().expect("expr_results is non-empty");
+                let (first_raw, _b) = remaining_raw.next().expect("expr_results is non-empty");
 
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: false,
-                    per_result_bindings: None,
-                    bindings_index: 0,
                     env: result_env.clone(),
                     depth,
                 });
@@ -7083,7 +7084,7 @@ fn process_continuation<C: EvalContext>(
             if expr_results.is_empty() {
                 let result_list = ctx.factory().sexpr(vec![]);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_list], result_env),
+                    result: (smallvec![bv(result_list)], result_env),
                 });
                 return;
             }
@@ -7120,7 +7121,7 @@ fn process_continuation<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                let metta_items: Vec<MettaValue> = expr_results.into_vec();
+                let metta_items: Vec<MettaValue> = expr_results.into_iter().map(|(v, _)| v).collect();
                 let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
@@ -7147,21 +7148,21 @@ fn process_continuation<C: EvalContext>(
                 }
 
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_list], result_env),
+                    result: (smallvec![bv(result_list)], result_env),
                 });
+                let _ = per_result_bindings;
             } else {
                 // ── Sequential path ──
-                let remaining_vec: Vec<MettaValue> = expr_results.into_iter().collect();
+                let _ = per_result_bindings;
+                let remaining_vec: Vec<BoundValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
-                let first_raw = remaining_raw.next().expect("expr_results is non-empty");
+                let (first_raw, _b) = remaining_raw.next().expect("expr_results is non-empty");
 
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: true,
-                    per_result_bindings,
-                    bindings_index: 0,
                     env: result_env.clone(),
                     depth,
                 });
@@ -7181,28 +7182,20 @@ fn process_continuation<C: EvalContext>(
             mut remaining_raw,
             mut evaluated,
             is_bind,
-            per_result_bindings,
-            mut bindings_index,
             env: _,
             depth,
         } => {
             let (eval_results, result_env) = result;
 
             // Collect evaluated results (filter empty/pruned branches)
-            // Track how many results were added for bindings_index advancement
-            let prev_count = evaluated.len();
-            evaluated.extend(eval_results.into_iter().filter(|v| !v.is_empty()));
-            let added = evaluated.len() - prev_count;
-            bindings_index += added;
+            evaluated.extend(eval_results.into_iter().filter(|(v, _)| !v.is_empty()));
 
-            if let Some(next_raw) = remaining_raw.next() {
+            if let Some((next_raw, _b)) = remaining_raw.next() {
                 // More results to evaluate — preserve state
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated,
                     is_bind,
-                    per_result_bindings,
-                    bindings_index,
                     env: result_env.clone(),
                     depth,
                 });
@@ -7219,18 +7212,14 @@ fn process_continuation<C: EvalContext>(
                 // All results evaluated — assemble the tuple
                 let result_list = if is_bind {
                     // collapse-bind: wrap each result as (result (Bindings ($var val) ...))
-                    // Use per-result bindings when available, falling back to empty.
-                    let empty_bindings = crate::backend::models::GenericBindings::new();
-                    let pairs: Vec<MettaValue> = evaluated.into_iter().enumerate().map(|(i, result_val)| {
-                        let bindings = per_result_bindings.as_ref()
-                            .and_then(|prb| prb.get(i))
-                            .unwrap_or(&empty_bindings);
-                        let bindings_sexpr = encode_bindings_as_sexpr(bindings, ctx.factory());
+                    // Use per-result bindings from each BoundValue.
+                    let pairs: Vec<MettaValue> = evaluated.into_iter().map(|(result_val, bindings)| {
+                        let bindings_sexpr = encode_bindings_as_sexpr(&bindings, ctx.factory());
                         ctx.factory().sexpr(vec![result_val, bindings_sexpr])
                     }).collect();
                     ctx.factory().sexpr(pairs)
                 } else {
-                    ctx.factory().sexpr(evaluated)
+                    ctx.factory().sexpr(evaluated.into_iter().map(|(v, _)| v).collect())
                 };
 
                 // Trace: collapse-result phase
@@ -7252,7 +7241,7 @@ fn process_continuation<C: EvalContext>(
                 }
 
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![result_list], result_env),
+                    result: (smallvec![bv(result_list)], result_env),
                 });
             }
         }
@@ -7299,25 +7288,26 @@ fn process_continuation<C: EvalContext>(
             let (cond_results, result_env) = result;
 
             match cond_results.first() {
-                Some(v) if v.as_bool() == Some(true) => {
+                Some((v, _)) if v.as_bool() == Some(true) => {
                     // Guard passes - return Unit
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![ctx.factory().unit()], result_env),
+                        result: (smallvec![bv(ctx.factory().unit())], result_env),
                     });
                 }
-                Some(v) if v.as_bool() == Some(false) => {
+                Some((v, _)) if v.as_bool() == Some(false) => {
                     // Guard fails - return empty (nondeterministic failure)
+                    let _ = v;
                     work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 }
-                Some(v) if v.is_error() => {
+                Some((v, _)) if v.is_error() => {
                     // Error propagates
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![v.clone()], result_env),
+                        result: (smallvec![bv(v.clone())], result_env),
                     });
                 }
-                Some(v) => {
+                Some((v, _)) => {
                     // Type error - condition must be Bool
                     let err = ctx.factory().error(
                         &format!(
@@ -7327,7 +7317,7 @@ fn process_continuation<C: EvalContext>(
                         v.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], result_env),
+                        result: (smallvec![bv(err)], result_env),
                     });
                 }
                 None => {
@@ -7352,10 +7342,10 @@ fn process_continuation<C: EvalContext>(
                     space_ref,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], result_env),
+                    result: (smallvec![bv(err)], result_env),
                 });
             } else {
-                let first = &space_results[0];
+                let (first, _) = &space_results[0];
                 if let Some(handle) = first.as_space() {
                     // GENERIC: Use collapse_generic to avoid heap conversion
                     let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
@@ -7367,7 +7357,7 @@ fn process_continuation<C: EvalContext>(
                     } else {
                         // Return all atoms as separate results (superposition)
                         work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::from_vec(atoms), result_env),
+                            result: (atoms.into_iter().map(bv).collect(), result_env),
 
                         });
                     }
@@ -7377,7 +7367,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], result_env),
+                        result: (smallvec![bv(err)], result_env),
                     });
                 }
             }
@@ -7398,10 +7388,10 @@ fn process_continuation<C: EvalContext>(
                     space_arg,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &space_results[0];
+                let (first, _) = &space_results[0];
                 if let Some(handle) = first.as_space() {
                     if handle.is_module_space() || handle.name == "self" {
                         // Phase 8.4: Type-aware match optimization.
@@ -7458,7 +7448,7 @@ fn process_continuation<C: EvalContext>(
                                     trace_format::TraceTier::TreeWalker,
                                     depth as u32,
                                     crate::backend::trace::trace_value_generic(&pattern),
-                                    generic_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    generic_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                                     None,
                                     trace_format::TraceEventKind::SpecialForm {
                                         form_name: "match".to_string(),
@@ -7525,7 +7515,7 @@ fn process_continuation<C: EvalContext>(
                                     trace_format::TraceTier::TreeWalker,
                                     depth as u32,
                                     crate::backend::trace::trace_value_generic(&pattern),
-                                    instantiated_templates.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    instantiated_templates.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                                     None,
                                     trace_format::TraceEventKind::SpecialForm {
                                         form_name: "match".to_string(),
@@ -7581,7 +7571,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -7636,10 +7626,10 @@ fn process_continuation<C: EvalContext>(
                     space_ref,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &space_results[0];
+                let (first, _) = &space_results[0];
                 if let Some(handle) = first.as_space() {
                     // MeTTa HE semantics: add the UNEVALUATED atom to the space.
                     // The atom is NOT evaluated — per HE docs: "Adds atom into the
@@ -7665,7 +7655,7 @@ fn process_continuation<C: EvalContext>(
                     increment_mutation_epoch();
 
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![ctx.factory().unit()], env_after),
+                        result: (smallvec![bv(ctx.factory().unit())], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -7676,7 +7666,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -7727,10 +7717,10 @@ fn process_continuation<C: EvalContext>(
                     space_ref,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &space_results[0];
+                let (first, _) = &space_results[0];
                 if let Some(handle) = first.as_space() {
                     // MeTTa HE semantics: remove the UNEVALUATED atom from the space.
                     // The atom is NOT evaluated — mirrors add-atom behavior.
@@ -7752,7 +7742,7 @@ fn process_continuation<C: EvalContext>(
                     increment_mutation_epoch();
 
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![ctx.factory().unit()], env_after),
+                        result: (smallvec![bv(ctx.factory().unit())], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -7763,7 +7753,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -7815,15 +7805,15 @@ fn process_continuation<C: EvalContext>(
                     initial_value,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
                 // Use create_state directly - values are already V
-                let state_id = Arc::make_mut(&mut env_after).create_state(&init_results[0]);
+                let state_id = Arc::make_mut(&mut env_after).create_state(&init_results[0].0);
                 increment_mutation_epoch();
                 let state_value = ctx.factory().state(state_id);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![state_value], env_after),
+                    result: (smallvec![bv(state_value)], env_after),
                 });
             }
         }
@@ -7841,15 +7831,15 @@ fn process_continuation<C: EvalContext>(
                     state_ref,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &state_results[0];
+                let (first, _) = &state_results[0];
                 if let Some(state_id) = first.as_state() {
                     // Use get_state directly - returns V
                     if let Some(generic_value) = env_after.get_state(state_id) {
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![generic_value], env_after),
+                            result: (smallvec![bv(generic_value)], env_after),
                         });
                     } else {
                         let err = ctx.factory().error(
@@ -7857,7 +7847,7 @@ fn process_continuation<C: EvalContext>(
                             first.clone(),
                         );
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![err], env_after),
+                            result: (smallvec![bv(err)], env_after),
                         });
                     }
                 } else {
@@ -7869,7 +7859,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -7889,10 +7879,10 @@ fn process_continuation<C: EvalContext>(
                     state_ref,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &state_results[0];
+                let (first, _) = &state_results[0];
                 if first.as_state().is_some() {
                     continuations.push(Continuation::ProcessChangeStateValue {
                         state_value: first.clone(),
@@ -7918,7 +7908,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -7938,17 +7928,17 @@ fn process_continuation<C: EvalContext>(
                     new_value,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
                 // Get the state ID from state_value
                 if let Some(state_id) = state_value.as_state() {
                     // Use change_state directly - values are already V
-                    Arc::make_mut(&mut env_after).change_state(state_id, &value_results[0]);
+                    Arc::make_mut(&mut env_after).change_state(state_id, &value_results[0].0);
                     increment_mutation_epoch();
                     let result_state = ctx.factory().state(state_id);
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![result_state], env_after),
+                        result: (smallvec![bv(result_state)], env_after),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -7956,7 +7946,7 @@ fn process_continuation<C: EvalContext>(
                         state_value,
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -7971,12 +7961,12 @@ fn process_continuation<C: EvalContext>(
 
             if atom_results.is_empty() {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![ctx.factory().string("")], env_after),
+                    result: (smallvec![bv(ctx.factory().string(""))], env_after),
                 });
             } else {
-                let repr = atom_results[0].friendly_repr();
+                let repr = atom_results[0].0.friendly_repr();
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![ctx.factory().string(&repr)], env_after),
+                    result: (smallvec![bv(ctx.factory().string(&repr))], env_after),
                 });
             }
         }
@@ -7995,10 +7985,10 @@ fn process_continuation<C: EvalContext>(
                     format_arg,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &format_results[0];
+                let (first, _) = &format_results[0];
                 if let Some(format_str) = first.as_string() {
                     continuations.push(Continuation::ProcessFormatArgsArgs {
                         format_str: format_str.to_string(),
@@ -8024,7 +8014,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -8044,14 +8034,14 @@ fn process_continuation<C: EvalContext>(
                     args_arg,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
                 // Get args as a list - use native generic values directly
-                let args_list: Vec<&MettaValue> = if let Some(items) = args_results[0].as_sexpr() {
+                let args_list: Vec<&MettaValue> = if let Some(items) = args_results[0].0.as_sexpr() {
                     items.iter().collect()
                 } else {
-                    args_results.iter().collect()
+                    args_results.iter().map(|(v, _)| v).collect()
                 };
 
                 // Simple format string substitution using friendly_repr
@@ -8063,7 +8053,7 @@ fn process_continuation<C: EvalContext>(
                 }
 
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![ctx.factory().string(&result_str)], env_after),
+                    result: (smallvec![bv(ctx.factory().string(&result_str))], env_after),
                 });
             }
         }
@@ -8075,7 +8065,7 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (atom_results, env_after) = result;
 
-            for atom_result in &atom_results {
+            for (atom_result, _b) in &atom_results {
                 // Use to_display_string() - prints strings without quotes
                 println!("{}", atom_result.to_display_string());
             }
@@ -8087,7 +8077,7 @@ fn process_continuation<C: EvalContext>(
             // IO type and refuses to memoize.
 
             work_stack.push(WorkItem::Resume {
-                result: (smallvec![ctx.factory().unit()], env_after),
+                result: (smallvec![bv(ctx.factory().unit())], env_after),
             });
         }
 
@@ -8100,7 +8090,7 @@ fn process_continuation<C: EvalContext>(
             let (msg_results, env_after) = result;
 
             // HE semantics: print message on its own line, no prefix
-            if let Some(first) = msg_results.first() {
+            if let Some((first, _)) = msg_results.first() {
                 eprintln!("{}", first.friendly_repr());
             }
 
@@ -8145,10 +8135,10 @@ fn process_continuation<C: EvalContext>(
 
             if atom_results.is_empty() {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![ctx.factory().atom("Undefined")], env_after),
+                    result: (smallvec![bv(ctx.factory().atom("Undefined"))], env_after),
                 });
             } else {
-                let first = &atom_results[0];
+                let (first, _) = &atom_results[0];
                 let metatype = match first.inner_raw() {
                     MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
                     MettaValueInner::Atom(s) if is_variable_str(s) => "Variable",
@@ -8173,7 +8163,7 @@ fn process_continuation<C: EvalContext>(
                 };
 
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![ctx.factory().atom(metatype)], env_after),
+                    result: (smallvec![bv(ctx.factory().atom(metatype))], env_after),
                 });
             }
         }
@@ -8191,13 +8181,13 @@ fn process_continuation<C: EvalContext>(
                     ctx.factory().atom(&token),
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                Arc::make_mut(&mut env_after).register_token(&token, atom_results[0].clone());
+                Arc::make_mut(&mut env_after).register_token(&token, atom_results[0].0.clone());
                 increment_mutation_epoch();
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![ctx.factory().unit()], env_after),
+                    result: (smallvec![bv(ctx.factory().unit())], env_after),
                 });
             }
         }
@@ -8219,7 +8209,7 @@ fn process_continuation<C: EvalContext>(
             let is_irreducible = if eval_results.is_empty() {
                 true
             } else if eval_results.len() == 1 {
-                eval_results[0] == original_expr
+                eval_results[0].0 == original_expr
             } else {
                 // Multiple results means the expression nondeterministically reduced
                 false
@@ -8234,7 +8224,7 @@ fn process_continuation<C: EvalContext>(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(&original_expr),
-                        eval_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        eval_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                         None,
                         trace_format::TraceEventKind::SpecialForm {
                             form_name: "if-reducible".to_string(),
@@ -8307,7 +8297,7 @@ fn process_continuation<C: EvalContext>(
                     demand: None,
                 });
             } else {
-                let first = &space_results[0];
+                let (first, _) = &space_results[0];
                 if let Some(handle) = first.as_space() {
                     if handle.is_module_space() || handle.name == "self" {
                         // &self or module space — use env.match_space
@@ -8452,7 +8442,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -8474,15 +8464,15 @@ fn process_continuation<C: EvalContext>(
                     memo_ref,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &memo_results[0];
+                let (first, _) = &memo_results[0];
                 if let Some(memo_handle) = first.as_memo() {
                     // Check if already cached - use generic lookup
                     if let Some(cached) = memo_handle.lookup_generic(&expr, ctx.factory()) {
                         work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::from_vec(cached), env_after),
+                            result: (cached.into_iter().map(bv).collect(), env_after),
 
                         });
                     } else {
@@ -8513,7 +8503,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -8530,9 +8520,9 @@ fn process_continuation<C: EvalContext>(
 
             // Cache the result using generic store
             if first_only && !expr_results.is_empty() {
-                memo_handle.store_generic(&expr, &expr_results[..1]);
+                let slice = &expr_results[..1]; let _vals: Vec<MettaValue> = slice.iter().map(|(v, _)| v.clone()).collect(); memo_handle.store_generic(&expr, &_vals);
             } else {
-                memo_handle.store_generic(&expr, &expr_results);
+                { let _vals: Vec<MettaValue> = expr_results.iter().map(|(v, _)| v.clone()).collect(); memo_handle.store_generic(&expr, &_vals); };
             }
 
             work_stack.push(WorkItem::Resume {
@@ -8554,10 +8544,10 @@ fn process_continuation<C: EvalContext>(
                     name_arg,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &name_results[0];
+                let (first, _) = &name_results[0];
                 let name = if let Some(s) = first.as_string() {
                     s.to_string()
                 } else if let Some(a) = first.as_atom() {
@@ -8587,7 +8577,7 @@ fn process_continuation<C: EvalContext>(
                     let memo_handle = crate::backend::models::MemoHandle::new(name);
                     let memo_value = ctx.factory().memo(memo_handle);
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![memo_value], env_after),
+                        result: (smallvec![bv(memo_value)], env_after),
                     });
                 }
             }
@@ -8607,14 +8597,14 @@ fn process_continuation<C: EvalContext>(
                     size_arg,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let size = size_results[0].as_long().unwrap_or(1000) as usize;
+                let size = size_results[0].0.as_long().unwrap_or(1000) as usize;
                 let memo_handle = crate::backend::models::MemoHandle::with_max_size(name, size);
                 let memo_value = ctx.factory().memo(memo_handle);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![memo_value], env_after),
+                    result: (smallvec![bv(memo_value)], env_after),
                 });
             }
         }
@@ -8634,15 +8624,15 @@ fn process_continuation<C: EvalContext>(
                     memo_ref,
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![err], env_after),
+                    result: (smallvec![bv(err)], env_after),
                 });
             } else {
-                let first = &memo_results[0];
+                let (first, _) = &memo_results[0];
                 if let Some(memo_handle) = first.as_memo() {
                     if is_clear {
                         memo_handle.clear();
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![ctx.factory().unit()], env_after),
+                            result: (smallvec![bv(ctx.factory().unit())], env_after),
                         });
                     } else {
                         #[cfg(feature = "track-stats")]
@@ -8657,7 +8647,7 @@ fn process_continuation<C: EvalContext>(
                                 ctx.factory().long(stats.2 as i64),
                             ]);
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![stats_sexpr], env_after),
+                                result: (smallvec![bv(stats_sexpr)], env_after),
                             });
                         }
                         #[cfg(not(feature = "track-stats"))]
@@ -8668,7 +8658,7 @@ fn process_continuation<C: EvalContext>(
                                 detail,
                             );
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![err], env_after),
+                                result: (smallvec![bv(err)], env_after),
                             });
                         }
                     }
@@ -8683,7 +8673,7 @@ fn process_continuation<C: EvalContext>(
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![err], env_after),
+                        result: (smallvec![bv(err)], env_after),
                     });
                 }
             }
@@ -8701,7 +8691,7 @@ fn process_continuation<C: EvalContext>(
             // If the epoch advanced, a side effect happened transitively,
             // so the result may depend on mutable state and must not be cached.
             if mutation_epoch() == saved_epoch {
-                eval_memo_put(expr_hash, result_values.as_slice());
+                eval_memo_put(expr_hash, &result_values.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>());
             }
 
             work_stack.push(WorkItem::Resume {
@@ -8737,7 +8727,7 @@ fn process_continuation<C: EvalContext>(
 
             // Deterministic fast path: single result → pattern match + accumulate
             if result_values.len() == 1 {
-                let value = &result_values[0];
+                let (value, _) = &result_values[0];
 
                 if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                     // Compose pattern-match bindings into accumulated
@@ -8814,7 +8804,7 @@ fn process_continuation<C: EvalContext>(
 
                 // For each result value, pattern-match and evaluate the rest
                 let mut bound_bodies: Vec<MettaValue> = Vec::new();
-                for value in result_values.iter() {
+                for (value, _) in result_values.iter() {
                     if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                         let composed = accumulated_bindings.compose(&pm_bindings);
                         let materialized = apply_bindings(&let_body, &composed, ctx.factory());
@@ -8877,7 +8867,7 @@ fn process_continuation<C: EvalContext>(
             // would suppress re-execution on future calls.
             if start_epoch == mutation_epoch() {
                 let cached: smallvec::SmallVec<[MettaValue; 2]> =
-                    result_values.iter().cloned().collect();
+                    result_values.iter().map(|(v, _)| v.clone()).collect();
                 crate::backend::eval::cesk::with_subgoal_table(|t| {
                     t.complete(expr_hash, cached);
                 });
@@ -8890,9 +8880,9 @@ fn process_continuation<C: EvalContext>(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(
-                            &result_values.first().copied().unwrap_or_else(|| ctx.factory().unit())
+                            &result_values.first().map(|(v, _)| v.clone()).unwrap_or_else(|| ctx.factory().unit())
                         ),
-                        result_values.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                        result_values.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
                         None,
                         trace_format::TraceEventKind::TablingDecision {
                             expr_hash,
@@ -8920,7 +8910,7 @@ fn process_continuation<C: EvalContext>(
             // Only cache if no mutations occurred during evaluation.
             if start_epoch == mutation_epoch() {
                 let cached: smallvec::SmallVec<[MettaValue; 2]> =
-                    result_values.iter().cloned().collect();
+                    result_values.iter().map(|(v, _)| v.clone()).collect();
                 crate::backend::eval::cesk::with_thunk_table(|t| {
                     t.update(thunk_hash, cached);
                 });

@@ -399,86 +399,41 @@ impl<'src> MettaParser<'src> {
     }
 
     /// Try to parse atom bytes as a number. Returns `None` if not a number.
+    ///
+    /// Delegates to the unified `literal_classifier::classify_and_parse`
+    /// DFA, which performs single-pass classify-AND-parse over the bytes —
+    /// accumulating the integer value digit-by-digit during the same scan
+    /// that detects float markers and validates shape. Long overflow falls
+    /// through to `None` (caller treats as atom), preserving the previous
+    /// inline-loop semantics. The `&mut emitter` argument is unused for the
+    /// classification step but kept in the signature for API compatibility.
+    ///
+    /// See `src/backend/literal_classifier.rs` for the state machine and
+    /// the test suite that proves shape parity with the encoder.
     fn try_parse_number<E: ParseEmitter>(
         &self,
         bytes: &[u8],
         emitter: &mut E,
         span: Span,
     ) -> Option<Result<E::Output, SyntaxError>> {
-        if bytes.is_empty() {
-            return None;
-        }
-
-        let (is_negative, digits_start) = if bytes[0] == b'-' {
-            if bytes.len() < 2 {
-                return None; // bare `-` is an atom
-            }
-            // Peek at second byte
-            if !bytes[1].is_ascii_digit() {
-                return None; // `-foo` is an atom
-            }
-            (true, 1)
-        } else if bytes[0].is_ascii_digit() {
-            (false, 0)
-        } else {
-            return None; // not a number
+        // SAFETY: bytes are sourced from the parser's already-UTF-8-validated
+        // source buffer; passing through `from_utf8_unchecked` is a zero-cost
+        // cast we use elsewhere in this file for the same reason.
+        let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+        use crate::backend::literal_classifier::{
+            classify_and_parse, ClassifiedLiteral,
         };
-
-        // Scan for float indicators: '.', 'e', 'E'
-        let mut has_dot = false;
-        let mut has_exp = false;
-        let mut i = digits_start;
-
-        while i < bytes.len() {
-            match bytes[i] {
-                b'0'..=b'9' => { i += 1; }
-                b'.' => {
-                    has_dot = true;
-                    i += 1;
-                }
-                b'e' | b'E' => {
-                    has_exp = true;
-                    i += 1;
-                    // Optional sign after exponent
-                    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-                        i += 1;
-                    }
-                }
-                _ => {
-                    // Not a pure number — treat as atom
-                    return None;
-                }
-            }
-        }
-
-        if has_dot || has_exp {
-            // Parse as float
-            // SAFETY: we've verified the bytes contain only ASCII digit/dot/e/E/+/-
-            let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-            match s.parse::<f64>() {
-                Ok(f) => Some(Ok(emitter.emit_float(f, span))),
-                Err(_) => None, // fall back to atom
-            }
-        } else {
-            // Parse as integer using inline digit loop for speed
-            let mut value: i64 = 0;
-            for &b in &bytes[digits_start..] {
-                let digit = (b - b'0') as i64;
-                value = match value.checked_mul(10) {
-                    Some(v) => match v.checked_add(digit) {
-                        Some(v) => v,
-                        None => {
-                            // Overflow: fall back to atom
-                            return None;
-                        }
-                    },
-                    None => return None,
-                };
-            }
-            if is_negative {
-                value = -value;
-            }
-            Some(Ok(emitter.emit_integer(value, span)))
+        match classify_and_parse(s) {
+            ClassifiedLiteral::Long(n) => Some(Ok(emitter.emit_integer(n, span))),
+            ClassifiedLiteral::Float(f) => Some(Ok(emitter.emit_float(f, span))),
+            ClassifiedLiteral::LongOverflow | ClassifiedLiteral::Atom => None,
+            // The parser only calls `try_parse_number` from the leading-digit
+            // dispatch path, so Bool / String literals never appear here in
+            // practice. Treat them as "not a number" so the caller falls
+            // through to the atom path.
+            ClassifiedLiteral::BoolTrue
+            | ClassifiedLiteral::BoolFalse
+            | ClassifiedLiteral::String(_) => None,
         }
     }
 

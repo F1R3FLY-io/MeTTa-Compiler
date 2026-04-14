@@ -104,7 +104,7 @@ fn is_known_pure_head(name: &str) -> bool {
         | ":" | "get-type" | "get-metatype" | "check-type"
         | "validate-atom" | "type-cast"
         // Collection operations
-        | "collapse" | "collapse-bind" | "superpose" | "amb"
+        | "collapse" | "collapse-bind" | "superpose" | "amb" | "ground-with-bindings"
         | "map-atom" | "filter-atom" | "foldl-atom" | "sort-tuple"
         | "best-candidate"
         // Error handling
@@ -118,7 +118,8 @@ fn is_known_pure_head(name: &str) -> bool {
         // Functions
         | "function" | "if-reducible"
         // Sort / set
-        | "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom"
+        | "union-atom" | "intersection-atom" | "subtraction-atom"
     )
 }
 
@@ -133,7 +134,7 @@ fn is_known_impure_head(name: &str) -> bool {
         // I/O
         | "println!" | "print!" | "trace!"
         // Module system
-        | "import!" | "register-module!" | "bind!"
+        | "import!" | "git-import!" | "register-module!" | "bind!"
         // Explicit side-effect marker
         | "nop"
         // Atom space operations (mutating)

@@ -103,7 +103,15 @@ where
 
     #[inline]
     fn emit_conjunction(&mut self, items: Vec<V>, span: Span) -> V {
-        let value = self.factory.conjunction(items);
+        // HE-compatible: keep comma expressions as regular S-expressions
+        // with "," as the head atom. HE treats (,) as an inert symbol;
+        // the Conjunction variant was MM2-specific and caused semantic
+        // divergence (evaluated like Prolog conjunction instead of being
+        // structurally preserved for pattern matching).
+        let mut sexpr_items = Vec::with_capacity(items.len() + 1);
+        sexpr_items.push(self.factory.atom(","));
+        sexpr_items.extend(items);
+        let value = self.factory.sexpr(sexpr_items);
         self.factory.spanned(value, span)
     }
 

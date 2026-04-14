@@ -1,7 +1,7 @@
 //! Thread-safe trace event collector with batched I/O.
 //!
 //! Each thread accumulates events in a thread-local buffer. When the
-//! buffer reaches `BATCH_SIZE` events, or when `finalize()` is called,
+//! buffer reaches `batch_size()` events, or when `finalize()` is called,
 //! the batch is serialized via rkyv and written to the shared output
 //! file under a mutex.
 
@@ -21,7 +21,19 @@ use super::format;
 use crate::backend::models::metta_value::MettaValue;
 
 /// Number of events to buffer per-thread before flushing.
-const BATCH_SIZE: usize = 1024;
+/// Smaller values give faster crash recovery (events reach disk sooner)
+/// at the cost of more frequent I/O. Configurable via METTA_TRACE_BATCH_SIZE
+/// env var (default: 64). Use 1 for maximum crash recovery at the cost of I/O.
+fn batch_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        std::env::var("METTA_TRACE_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(1)
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Thread-local state
@@ -36,7 +48,7 @@ struct ThreadBuffer {
 impl ThreadBuffer {
     fn new(thread_id: u32) -> Self {
         Self {
-            events: Vec::with_capacity(BATCH_SIZE),
+            events: Vec::with_capacity(batch_size()),
             seq: 0,
             thread_id,
         }
@@ -56,6 +68,11 @@ struct SharedState {
     writer: BufWriter<File>,
     file_table: FileTable,
     event_count: u64,
+    /// Byte offset where the footer should be written. Updated after every
+    /// batch flush so that the file always has a valid footer — even if the
+    /// process is killed mid-evaluation. Initialized to the position right
+    /// after the header.
+    footer_start_pos: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +90,13 @@ pub struct TraceCollector {
     next_thread_id: AtomicU64,
     /// Monotonic span correlation ID generator.
     span_id_counter: AtomicU64,
+    /// Maximum events to collect. `None` = unlimited.
+    /// Set via `METTA_TRACE_MAX_EVENTS` env var.
+    max_events: Option<u64>,
+    /// Fast lock-free check: set to `true` when event budget is exhausted.
+    /// Checked at the top of `emit_converted()` to skip further collection
+    /// without acquiring the mutex.
+    budget_exhausted: std::sync::atomic::AtomicBool,
 }
 
 impl TraceCollector {
@@ -98,16 +122,34 @@ impl TraceCollector {
 
         format::write_header(&mut writer, &header)?;
 
+        // Record the byte position right after the header — this is where
+        // the first footer will be written (overwritten as events arrive).
+        use std::io::Seek;
+        let footer_start_pos = writer.stream_position()
+            .unwrap_or(0);
+
+        // Write an initial footer so the file is valid even with 0 events.
+        format::write_footer(&mut writer, 0, &[])?;
+        writer.flush()?;
+
+        // Read event budget from env var
+        let max_events = std::env::var("METTA_TRACE_MAX_EVENTS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+
         let collector = Arc::new(Self {
             shared: Mutex::new(SharedState {
                 writer,
                 file_table: FileTable::new(),
                 event_count: 0,
+                footer_start_pos,
             }),
             start: Instant::now(),
             global_seq: AtomicU64::new(0),
             next_thread_id: AtomicU64::new(0),
             span_id_counter: AtomicU64::new(1), // Start at 1 so 0 is never a valid span ID
+            max_events,
+            budget_exhausted: std::sync::atomic::AtomicBool::new(false),
         });
 
         Ok(collector)
@@ -145,6 +187,11 @@ impl TraceCollector {
         expr_span: Option<TraceSpan>,
         kind: TraceEventKind,
     ) {
+        // Fast-path budget check — single atomic load, no lock.
+        if self.budget_exhausted.load(Ordering::Relaxed) {
+            return;
+        }
+
         let timestamp_ns = self.start.elapsed().as_nanos() as u64;
 
         THREAD_BUF.with(|buf_cell| {
@@ -173,10 +220,10 @@ impl TraceCollector {
 
             buf.events.push(event);
 
-            if buf.events.len() >= BATCH_SIZE {
+            if buf.events.len() >= batch_size() {
                 let batch = std::mem::replace(
                     &mut buf.events,
-                    Vec::with_capacity(BATCH_SIZE),
+                    Vec::with_capacity(batch_size()),
                 );
                 // Drop the RefCell borrow before locking the mutex.
                 drop(buf_opt);
@@ -247,10 +294,10 @@ impl TraceCollector {
 
             buf.events.push(event);
 
-            if buf.events.len() >= BATCH_SIZE {
+            if buf.events.len() >= batch_size() {
                 let batch = std::mem::replace(
                     &mut buf.events,
-                    Vec::with_capacity(BATCH_SIZE),
+                    Vec::with_capacity(batch_size()),
                 );
                 drop(buf_opt);
                 self.flush_batch(batch);
@@ -308,13 +355,52 @@ impl TraceCollector {
 
     /// Flush a batch of events to the shared writer.
     fn flush_batch(&self, batch: Vec<TraceEvent>) {
+        use std::io::Seek;
+
         let mut shared = self.shared.lock().expect("TraceCollector shared lock poisoned");
+
+        // Seek back to overwrite the previous footer so this batch's events
+        // start where the old footer was. This means the file always ends
+        // with a valid footer — even if the process is killed before
+        // finalize() runs.
+        let seek_pos = shared.footer_start_pos;
+        if let Err(e) = shared.writer.seek(std::io::SeekFrom::Start(seek_pos)) {
+            eprintln!("[trace] Failed to seek to footer position: {e}");
+            return;
+        }
+
+        // Write events
         for event in &batch {
             if let Err(e) = format::write_event(&mut shared.writer, event) {
                 eprintln!("[trace] Failed to write event: {e}");
                 return;
             }
             shared.event_count += 1;
+        }
+
+        // Record where the new footer starts
+        shared.footer_start_pos = shared.writer.stream_position().unwrap_or(shared.footer_start_pos);
+
+        // Write footer (will be overwritten on next flush).
+        // Clone file table paths to avoid borrowing shared immutably while
+        // writer is borrowed mutably.
+        let file_table: Vec<String> = shared.file_table.paths().to_vec();
+        let event_count = shared.event_count;
+        if let Err(e) = format::write_footer(&mut shared.writer, event_count, &file_table) {
+            eprintln!("[trace] Failed to write footer: {e}");
+            return;
+        }
+
+        // Ensure bytes are on disk (not just in BufWriter's internal buffer)
+        if let Err(e) = shared.writer.flush() {
+            eprintln!("[trace] Failed to flush writer: {e}");
+        }
+
+        // Check event budget
+        if let Some(max) = self.max_events {
+            if event_count >= max {
+                self.budget_exhausted.store(true, Ordering::Relaxed);
+            }
         }
     }
 }

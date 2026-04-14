@@ -10,8 +10,8 @@
 pub use postcard;
 use serde::{Deserialize, Serialize};
 
-/// Magic bytes identifying a MeTTaTron trace file (format v3).
-pub const TRACE_MAGIC: [u8; 8] = *b"MTRACE\x00\x03";
+/// Magic bytes identifying a MeTTaTron trace file (format v4).
+pub const TRACE_MAGIC: [u8; 8] = *b"MTRACE\x00\x04";
 
 /// Magic bytes for format v1 (accepted by reader for backward compatibility).
 pub const TRACE_MAGIC_V1: [u8; 8] = *b"MTRACE\x00\x01";
@@ -19,8 +19,11 @@ pub const TRACE_MAGIC_V1: [u8; 8] = *b"MTRACE\x00\x01";
 /// Magic bytes for format v2 (accepted by reader for backward compatibility).
 pub const TRACE_MAGIC_V2: [u8; 8] = *b"MTRACE\x00\x02";
 
+/// Magic bytes for format v3 (accepted by reader for backward compatibility).
+pub const TRACE_MAGIC_V3: [u8; 8] = *b"MTRACE\x00\x03";
+
 /// Current trace format version.
-pub const TRACE_FORMAT_VERSION: u32 = 3;
+pub const TRACE_FORMAT_VERSION: u32 = 4;
 
 /// Serialize a value to postcard bytes.
 pub fn serialize<T: serde::Serialize>(value: &T) -> Vec<u8> {
@@ -83,6 +86,30 @@ impl std::fmt::Display for TablingDecisionKind {
             Self::CacheHit => write!(f, "cache-hit"),
             Self::CacheMiss => write!(f, "cache-miss"),
             Self::CompleteStore => write!(f, "complete-store"),
+        }
+    }
+}
+
+/// Why an expression was determined to be self-evaluating (irreducible).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelfEvaluatingReason {
+    /// Bloom filter said no rules for `(head, arity)` AND no wildcard rules.
+    BloomFilterReject,
+    /// Group existed but no candidates after disc-tree + first-arg pruning.
+    NoCandidates,
+    /// Candidates existed but all failed structural/enhanced matching.
+    AllCandidatesFailed,
+    /// Expression has no head symbol (not an S-expression or empty).
+    NoHead,
+}
+
+impl std::fmt::Display for SelfEvaluatingReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BloomFilterReject => write!(f, "bloom-filter-reject"),
+            Self::NoCandidates => write!(f, "no-candidates"),
+            Self::AllCandidatesFailed => write!(f, "all-candidates-failed"),
+            Self::NoHead => write!(f, "no-head"),
         }
     }
 }
@@ -600,6 +627,192 @@ pub enum TraceEventKind {
         /// Source span of the selected rule definition.
         rule_span: Option<TraceSpan>,
     },
+
+    // ---- Rule Match Diagnostics ----
+    //
+    // Emitted by the matchers (StructuralMatcher, EnhancedMatcher, MORK
+    // fallback) on every (call_site, candidate_rule) pair when the trace
+    // filter accepts. Lets the analyzer answer "why did rule R not match
+    // at call site C?" without modifying user code or attaching a
+    // debugger.
+    /// A single rule-match attempt — success or failure with diagnostic
+    /// detail describing why it failed.
+    RuleMatchAttempt {
+        /// Head atom of the call expression (duplicated for O(1) filtering).
+        call_head: String,
+        /// Arity of the call expression.
+        call_arity: u32,
+        /// The rule's LHS pattern.
+        rule_lhs: TraceValue,
+        /// Source location of the rule's definition, if known.
+        rule_span: Option<TraceSpan>,
+        /// Stable index of the rule in the candidate set (matches the
+        /// indices reported by the corresponding `RuleMatchSet` event).
+        rule_index: u32,
+        /// Which matcher implementation produced this attempt.
+        /// `"structural"` | `"enhanced"` | `"mork"` | `"wide-mork"`
+        matcher: String,
+        /// Outcome — success with bindings, or detailed failure.
+        outcome: RuleMatchOutcome,
+    },
+
+    // ---- Rule Lookup Diagnostics (v4) ----
+
+    /// Emitted at the start of rule matching. Shows the full lookup pipeline
+    /// from index to final matches, making it immediately visible when a rule
+    /// was expected in the candidate set but wasn't found.
+    RuleLookup {
+        /// Head atom of the expression being matched.
+        head: String,
+        /// Arity of the expression.
+        arity: u32,
+        /// First argument head used for second-level narrowing (None = variable/non-atom).
+        first_arg_head: Option<String>,
+        /// Number of rules in the `(head, arity)` group (0 if no group exists).
+        group_size: u32,
+        /// Number of wildcard rules (variable-head, always included in candidates).
+        wildcard_count: u32,
+        /// Candidates AFTER disc-tree pruning but BEFORE structural matching.
+        candidates_after_disc_tree: u32,
+        /// Candidates AFTER dead-rule filtering.
+        candidates_after_dead_filter: u32,
+        /// Final match count AFTER structural matching.
+        final_match_count: u32,
+        /// Whether the bloom filter said "no rules for this `(head, arity)`".
+        bloom_filter_reject: bool,
+        /// True when `final_match_count == 0` (expression returns unreduced).
+        self_evaluating: bool,
+    },
+
+    /// Emitted when a rule is inserted into the index via `add_rule()`.
+    RuleIndexInsert {
+        /// The rule LHS pattern.
+        rule_lhs: TraceValue,
+        /// Head symbol it's indexed under (None = wildcard/variable head).
+        head: Option<String>,
+        /// Arity it's indexed under.
+        arity: u32,
+        /// First argument head (None = variable/wildcard first arg).
+        first_arg_head: Option<String>,
+        /// Index within the `(head, arity)` group.
+        rule_index_in_group: u32,
+        /// Global monotonic rule index.
+        global_rule_index: u32,
+        /// Whether this was a duplicate (multiplicity increment, not a new entry).
+        is_duplicate: bool,
+        /// `"import"` or `"direct-definition"` (from the call-site).
+        source: String,
+    },
+
+    /// Emitted when an expression is determined to be irreducible (no rules matched).
+    SelfEvaluating {
+        /// The expression that returned unreduced.
+        expression: TraceValue,
+        /// Why no rules matched.
+        reason: SelfEvaluatingReason,
+        /// How many candidates were tried (0 = bloom reject or no group).
+        candidate_count: u32,
+    },
+
+    /// Emitted at each iteration of the trampoline's main work loop.
+    /// Gated behind `METTA_TRACE_TRAMPOLINE=1` due to extreme volume
+    /// (every work item processed emits one). Essential for diagnosing
+    /// infinite loops and deadlocks inside the trampoline.
+    TrampolineStep {
+        /// Which work item is being processed.
+        /// "Eval", "EvalWithBindings", or "Resume"
+        work_kind: String,
+        /// The expression being evaluated (for Eval/EvalWithBindings).
+        expression: Option<TraceValue>,
+        /// Current work stack depth.
+        stack_depth: u32,
+        /// Current continuation stack depth.
+        continuation_depth: u32,
+        /// Monotonic iteration counter.
+        iteration: u64,
+    },
+
+    /// Emitted when the trampoline dispatches nondeterministic branches
+    /// to the parallel work pool. Crucial for diagnosing hangs caused by
+    /// blocking condvar waits on pool thread completion.
+    ParallelDispatch {
+        /// Number of branches being dispatched (including branch 0 which is local).
+        branch_count: u32,
+        /// The branch expressions (first few, capped for trace size).
+        branch_exprs: Vec<TraceValue>,
+        /// Current parallel nesting depth.
+        parallel_depth: u32,
+        /// Phase: "enter" (dispatching), "branch0-done" (local branch completed),
+        /// "wait-start" (entering condvar wait), "all-done" (all branches completed).
+        phase: String,
+    },
+}
+
+/// Why a rule-match attempt ended without binding the rule.
+///
+/// Used by the `RuleMatchAttempt` event. The granularity here is
+/// deliberately rich — the analyzer can summarize / group / filter
+/// based on these fields without having to re-run evaluation.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum RuleMatchOutcome {
+    /// Candidate matched. `bindings` may be empty when the trace filter
+    /// is configured to skip success bindings (default), to keep the
+    /// trace volume manageable.
+    Success { bindings: Vec<(String, TraceValue)> },
+
+    /// One of the StructuralMatcher / EnhancedMatcher pre-bind checks
+    /// failed (wrong arity, wrong atom, wrong literal).
+    StructuralCheckFailed {
+        /// Zero-based index into the rule's structural-check table.
+        check_index: u32,
+        /// `"arity"` | `"atom"` | `"long"` | `"bool"` | `"float"` | `"str"`
+        check_kind: String,
+        /// Path expressed as a sequence of child indices from the root
+        /// of the call expression (e.g. `[1, 0]` = "second child's first
+        /// child").
+        path: Vec<u16>,
+        /// What the rule required at that path.
+        expected: TraceValue,
+        /// What was actually observed at that path. `Empty` if the path
+        /// failed to resolve (path-navigate failure).
+        actual: TraceValue,
+    },
+
+    /// A `VarOp::Bind` / `SlotOp::Bind` tried to resolve a path that
+    /// did not exist in the call expression (`navigate` returned `None`).
+    PathNavigateFailed {
+        /// The path that could not be resolved.
+        path: Vec<u16>,
+        /// The variable name being bound (if available).
+        var: Option<String>,
+    },
+
+    /// A repeated-variable `EqualCheck` failed AND the bidirectional
+    /// unification fallback also failed.
+    EqualCheckFailed {
+        /// The repeated variable name (e.g. `"$A"`).
+        var: String,
+        /// The value bound at the first occurrence.
+        first_value: TraceValue,
+        /// The value at the second occurrence (which differs).
+        second_value: TraceValue,
+    },
+
+    /// Bidirectional unification inside `EqualCheck` returned `None`.
+    BidirectionalUnifyFailed {
+        /// The repeated variable name.
+        var: String,
+        /// The previously-bound value (LHS of the unification).
+        bound: TraceValue,
+        /// The new value being unified against (RHS).
+        candidate: TraceValue,
+        /// High-level reason from the unifier (`"arity-mismatch"`,
+        /// `"occurs-check"`, `"atom-mismatch"`, etc.).
+        reason: String,
+    },
+
+    /// MORK slow-path fallback failed at the byte-matching layer.
+    MorkExtractFailed { note: String },
 }
 
 /// A single trace event — the fundamental unit of the trace log.

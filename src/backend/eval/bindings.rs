@@ -476,6 +476,29 @@ where
 
 /// Iterative implementation of apply_bindings.
 ///
+/// Uses an explicit work stack (pushdown automaton) instead of recursion to
+/// avoid Rust call-stack overflow on deeply nested expressions or long
+/// transitive binding chains.
+///
+/// **Transitive substitution**: when a variable lookup finds a bound value
+/// that itself contains variables, those inner variables are also resolved.
+/// This is critical for bidirectional unification cases where one rule
+/// variable is bound to an expression containing a free input variable that
+/// has been bound by unification of a sibling occurrence:
+///
+///     bindings: {$B → (Inheritance $1 (IntSet cancerous)), $1 → Anna}
+///     template: $B
+///     result:   (Inheritance Anna (IntSet cancerous))
+///
+/// Without transitive substitution, the result would be the unreduced
+/// (Inheritance $1 (IntSet cancerous)). The transitive walk happens via the
+/// existing work stack (using `Work::ProcessOwned`), so there is NO call-stack
+/// growth — this is safe for arbitrarily deep transitive chains.
+///
+/// Cycle prevention: bidirectional_unify_generic enforces an occurs check
+/// at unification time, so cyclic bindings (e.g., $a → (... $a ...)) cannot
+/// enter the bindings map. Without cycles, the transitive walk terminates.
+///
 /// Precondition: `template` is not Spanned (caller peels it).
 fn apply_bindings_iterative_generic<V, F>(
     template: &V,
@@ -487,7 +510,11 @@ where
     F: MettaValueFactory<V>,
 {
     enum Work<'a, V> {
+        /// Process a borrowed value from the original template.
         Process(&'a V),
+        /// Process an owned value popped from the bindings map. Owned because
+        /// the bound value's lifetime is tied to `bindings`, not `template`.
+        ProcessOwned(V),
         BuildSExpr(usize),
         BuildConjunction(usize),
     }
@@ -513,7 +540,16 @@ where
                 if let Some(name) = val.as_atom() {
                     if name.starts_with('$') {
                         if let Some(bound) = bindings.get(name) {
-                            result_stack.push(bound.clone());
+                            // Guard: self-referential binding ($a → $a) — emit
+                            // directly to prevent infinite transitive loop.
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound.clone());
+                                continue;
+                            }
+                            // Transitive substitution: push the bound value
+                            // back to the work stack so any inner variables
+                            // also get substituted.
+                            work_stack.push(Work::ProcessOwned(bound.clone()));
                         } else {
                             result_stack.push(val.clone());
                         }
@@ -540,6 +576,61 @@ where
                     }
                 } else {
                     result_stack.push(val.clone());
+                }
+            }
+            Work::ProcessOwned(val) => {
+                // Same logic as `Process` but operating on an owned value
+                // (the value was popped from the bindings map, so its
+                // lifetime is no longer tied to the input template).
+                if val.is_spanned() {
+                    let result = apply_bindings_generic(&val, bindings, factory);
+                    result_stack.push(result);
+                    continue;
+                }
+
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') {
+                        if let Some(bound) = bindings.get(name) {
+                            // Guard: self-referential binding ($a → $a) — emit
+                            // directly to prevent infinite transitive loop.
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound.clone());
+                                continue;
+                            }
+                            // Transitive: re-process the (newly) bound value.
+                            work_stack.push(Work::ProcessOwned(bound.clone()));
+                        } else {
+                            result_stack.push(val);
+                        }
+                    } else {
+                        result_stack.push(val);
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        // Children are borrowed from `val`; clone each before
+                        // pushing because `val` is consumed when this branch ends.
+                        let len = items.len();
+                        let owned_children: Vec<V> = items.iter().cloned().collect();
+                        work_stack.push(Work::BuildSExpr(len));
+                        for item in owned_children.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = goals.len();
+                        let owned_goals: Vec<V> = goals.iter().cloned().collect();
+                        work_stack.push(Work::BuildConjunction(len));
+                        for goal in owned_goals.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val);
                 }
             }
             Work::BuildSExpr(count) => {

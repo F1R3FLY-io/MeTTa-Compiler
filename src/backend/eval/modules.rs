@@ -24,7 +24,7 @@ use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
 use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::{ MettaEnvironment, EvalContext};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
-use crate::backend::modules::resolve_module_path;
+use crate::backend::modules::path::{resolve_library_form, resolve_module_path};
 
 // ============================================================================
 // Generic Module Operations
@@ -222,20 +222,56 @@ where
         &items[1]
     };
 
-    let path_str = if let Some(s) = path_arg.as_string() {
-        s.to_string()
-    } else if let Some(s) = path_arg.as_atom() {
-        s.to_string()
-    } else {
-        let err = factory.error(
-            "import!: expected string or symbol for module path",
-            path_arg.clone(),
-        );
-        return (vec![err], env);
-    };
-
-    // Resolve module path
-    let resolved_path = resolve_module_path(&path_str, env.current_module_dir());
+    // Resolve the module path. Three accepted forms:
+    //
+    //   1. String literal: `(import! &self "path/to/file.metta")`
+    //   2. Bare atom: `(import! &self PLN)` — resolved via METTA_MODULE_PATH
+    //   3. PeTTa-compatible `(library X)` / `(library X Y)` S-expression — resolved
+    //      against the LIBRARY_PATHS registry (seeded from METTA_LIBRARY_PATH and
+    //      `<MeTTaTron>/stdlib`, plus runtime additions from `git-import!`).
+    //
+    // All failure paths return a graceful error MettaValue (never panic).
+    let (resolved_path, path_display): (std::path::PathBuf, String) =
+        if let Some(s) = path_arg.as_string() {
+            let p = resolve_module_path(s, env.current_module_dir());
+            let d = s.to_string();
+            (p, d)
+        } else if let Some(s) = path_arg.as_atom() {
+            let p = resolve_module_path(s, env.current_module_dir());
+            let d = s.to_string();
+            (p, d)
+        } else if let Some(items_ref) = path_arg.as_sexpr() {
+            // PeTTa-compatible (library X) / (library X Y) form.
+            if items_ref.first().and_then(|h| h.as_atom()) == Some("library") {
+                match resolve_library_form(items_ref) {
+                    Some(p) => {
+                        let d = format!("{:?}", path_arg);
+                        (p, d)
+                    }
+                    None => {
+                        let err = factory.error(
+                            "import!: (library ...) form did not resolve to an existing file. \
+                             Check METTA_LIBRARY_PATH and that any required `git-import!` has been called.",
+                            path_arg.clone(),
+                        );
+                        return (vec![err], env);
+                    }
+                }
+            } else {
+                let err = factory.error(
+                    "import!: expected string, symbol, or (library ...) S-expression for module path",
+                    path_arg.clone(),
+                );
+                return (vec![err], env);
+            }
+        } else {
+            let err = factory.error(
+                "import!: expected string, symbol, or (library ...) S-expression for module path",
+                path_arg.clone(),
+            );
+            return (vec![err], env);
+        };
+    let path_str = path_display;
 
     // Cycle detection: hash the resolved path
     let content_hash = {

@@ -27,7 +27,7 @@
 //!
 //! See: `hyperon-experimental/lib/src/metta/runner/stdlib/debug.rs`
 
-use smallvec::smallvec;
+use smallvec::{smallvec, SmallVec};
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
@@ -52,6 +52,7 @@ where
     let op = items[0].as_atom().expect("testing_ops dispatch: head must be atom");
     match op {
         "=alpha" => eval_alpha_eq_generic(items, env, ctx),
+        "test" => eval_test_generic(items, env, ctx),
         "assertEqual" => eval_assert_equal_generic(items, env, ctx),
         "assertAlphaEqual" => eval_assert_alpha_equal_generic(items, env, ctx),
         "assertEqualMsg" => eval_assert_equal_msg_generic(items, env, ctx),
@@ -94,6 +95,111 @@ where
 
     let result = atoms_are_alpha_equivalent(&items[1], &items[2]);
     GenericEvalStep::Done((smallvec![ctx.factory().bool(result)], env))
+}
+
+// ============================================================================
+// PeTTa-compatible `test`
+// ============================================================================
+
+/// `(test actual expected)` — PeTTa-compatible diagnostic test.
+///
+/// Evaluates both arguments via the trampoline, then compares the result
+/// multisets using **alpha-equivalence** (matching PeTTa's `metta.pl:195`
+/// `test/3` predicate which uses `=@=`). Prints a formatted diagnostic line:
+///
+///   `is <actual>, should <expected>. ✅`     (on match)
+///   `is <actual>, should <expected>. ❌`     (on mismatch)
+///
+/// Both args are evaluated INSIDE this function (not pre-evaluated by the
+/// trampoline) because `test` is in the impure-head list — this matches
+/// PeTTa's behavior where the test predicate evaluates both sides before
+/// comparing.
+///
+/// **Differs from PeTTa**: PeTTa's `test` calls `halt(1)` on mismatch,
+/// terminating the program. MeTTaTron returns a graceful error MettaValue
+/// instead, allowing subsequent expressions to continue evaluating. This
+/// matches the user requirement that ALL failure paths return errors
+/// rather than panicking or crashing.
+///
+/// On success, returns Unit. On mismatch, returns an error MettaValue
+/// containing both the actual and expected values for inspection.
+fn eval_test_generic<C: EvalContext>(
+    items: Vec<MettaValue>,
+    env: MettaEnvironment,
+    ctx: &C,
+) -> GenericEvalStep<MettaValue, MettaEnvironment>
+where
+    MettaValue: Clone,
+{
+    if items.len() != 3 {
+        let err = ctx.factory().error(
+            &format!(
+                "test requires exactly 2 arguments, got {}. Usage: (test actual expected)",
+                items.len() - 1
+            ),
+            ctx.factory().sexpr(items),
+        );
+        return GenericEvalStep::Done((smallvec![err], env));
+    }
+
+    // Push frame protecting items across nested trampoline calls.
+    // SAFETY: `items` outlives `_frame_guard`.
+    let _frame_guard = unsafe {
+        maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
+    };
+
+    // Evaluate both arguments. Each may produce multiple results.
+    let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
+    let env = (*env).clone();
+    let (expected_results, env) = eval_trampoline(items[2].clone(), env, ctx);
+    let env = (*env).clone();
+
+    drop(_frame_guard);
+
+    // Strip Quoted wrappers before comparing: in PeTTa, (quote X) evaluates
+    // to bare X — the quote is purely an evaluation barrier. MeTTaTron's
+    // (quote X) evaluates to Quoted(X), a distinct variant. For test
+    // operations that evaluate both arguments, we strip this wrapper so that
+    // comparison semantics match PeTTa.
+    let strip_quote = |v: &MettaValue| -> MettaValue {
+        v.as_quoted().unwrap_or(*v)
+    };
+    let actual_stripped: SmallVec<[MettaValue; 4]> = actual_results.iter().map(strip_quote).collect();
+    let expected_stripped: SmallVec<[MettaValue; 4]> = expected_results.iter().map(strip_quote).collect();
+
+    // Compare results: alpha-equivalence pairwise. If lengths differ or any
+    // pair fails alpha-equivalence, the test fails.
+    let matches = actual_stripped.len() == expected_stripped.len()
+        && actual_stripped
+            .iter()
+            .zip(expected_stripped.iter())
+            .all(|(a, e)| atoms_are_alpha_equivalent(a, e));
+
+    // Format using Display (cleaner than Debug, no Spanned wrappers).
+    // Multiple results render as space-separated values inside parens.
+    let format_results = |results: &[MettaValue]| -> String {
+        if results.len() == 1 {
+            format!("{}", results[0])
+        } else {
+            let parts: Vec<String> = results.iter().map(|v| format!("{}", v)).collect();
+            format!("({})", parts.join(" "))
+        }
+    };
+    let actual_str = format_results(&actual_results);
+    let expected_str = format_results(&expected_results);
+    let mark = if matches { "✅" } else { "❌" };
+
+    println!("is {}, should {}. {}", actual_str, expected_str, mark);
+
+    if matches {
+        GenericEvalStep::Done((smallvec![ctx.factory().unit()], env))
+    } else {
+        let err = ctx.factory().error(
+            &format!("test mismatch: is {}, should {}", actual_str, expected_str),
+            ctx.factory().sexpr(items),
+        );
+        GenericEvalStep::Done((smallvec![err], env))
+    }
 }
 
 // ============================================================================

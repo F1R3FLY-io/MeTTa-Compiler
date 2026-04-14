@@ -6,6 +6,12 @@
 //! - get_tail - Get all elements except the first
 //! - get_arity - Get the number of elements
 //! - get_element - Get element at a specific index
+//! - structural_head / structural_tail - `car-atom`/`cdr-atom` with
+//!   tree-walker-equivalent pre-eval semantics: pops the raw (unreduced)
+//!   argument, applies the 4-condition predicate (variable head, grounded
+//!   op, eager special form, or arrow-typed head) against the live env
+//!   from `ctx.env_ptr`, optionally reduces via the trampoline, then takes
+//!   head/tail.
 
 use super::helpers::{metta_to_jit, value_to_jit_generic};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_UNIT};
@@ -131,6 +137,156 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
             // Return unit for non-SExpr values (SExpr(vec![]) → unit via factory)
             JitValue::unit().to_bits()
         }
+    }
+}
+
+/// Apply the 4-condition structural-arg pre-eval predicate and optionally
+/// reduce via the trampoline. Identical semantics to tree-walker's
+/// `is_reducible_structural_arg` (src/backend/eval/step/sexpr.rs) and the
+/// bytecode VM's `maybe_pre_eval_structural` (src/backend/bytecode/vm/mod.rs).
+///
+/// Returns the reduced value if any reducer condition holds, otherwise the
+/// original value.
+///
+/// # Safety
+/// `ctx_ref.env_ptr` must point to a valid `MettaEnvironment` or be null.
+unsafe fn jit_maybe_pre_eval_structural(
+    ctx_ref: &JitContext,
+    v: MettaValue,
+) -> MettaValue {
+    use crate::backend::eval::{is_grounded_op, is_eager_special_form};
+    use crate::backend::eval::step::should_pre_eval_by_type;
+    use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
+    use crate::backend::eval::trampoline::EvalContext;
+    use crate::backend::models::{global_factory, GcFactory};
+
+    let items = match v.as_sexpr() {
+        Some(s) => s,
+        None => return v,
+    };
+    let head = match items.first().and_then(|h| h.as_atom()) {
+        Some(h) => h,
+        None => return v,
+    };
+    if ctx_ref.env_ptr.is_null() {
+        return v;
+    }
+    let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+
+    let should_reduce = head.starts_with('$')
+        || is_grounded_op(head)
+        || is_eager_special_form(head)
+        || should_pre_eval_by_type::<MettaValue, crate::backend::models::GcFactory>(head, env);
+    if !should_reduce {
+        return v;
+    }
+
+    // Reduce via the trampoline. Mirrors `jit_pre_eval_arg` in call_support.rs.
+    struct JitEvalContext {
+        factory: GcFactory,
+    }
+    impl EvalContext for JitEvalContext {
+        #[inline]
+        fn factory(&self) -> &GcFactory {
+            &self.factory
+        }
+    }
+    let ctx = JitEvalContext {
+        factory: global_factory(),
+    };
+    let (results, _) = eval_trampoline(v.clone(), env.clone(), &ctx);
+    results.into_iter().next().unwrap_or(v)
+}
+
+/// Runtime function for StructuralHead opcode (`car-atom`).
+///
+/// Pops the raw (unreduced) argument, applies the 4-condition pre-eval
+/// predicate against the live environment, optionally reduces, then takes
+/// the head. Mirrors tree-walker Arm B-structural + bytecode VM
+/// `op_structural_head` exactly.
+///
+/// # Arguments
+/// * `ctx` - JIT context pointer (provides env_ptr and bailout state)
+/// * `val` - NaN-boxed raw argument value
+/// * `ip` - Instruction pointer for error reporting (unused currently)
+///
+/// # Returns
+/// NaN-boxed head of the (optionally reduced) argument.
+///
+/// # Safety
+/// Pointers must be valid; `ctx.env_ptr` must point to a valid env or null.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_structural_head(
+    ctx: *mut JitContext,
+    val: u64,
+    _ip: u64,
+) -> u64 {
+    let ctx_ref = match ctx.as_ref() {
+        Some(c) => c,
+        None => return TAG_UNIT,
+    };
+    let jit_val = JitValue::from_raw(val);
+    if !jit_val.is_heap() {
+        return TAG_UNIT;
+    }
+    let inner_ptr = jit_val.as_inner_ptr();
+    if inner_ptr.is_null() {
+        return TAG_UNIT;
+    }
+    let raw = MettaValue::from_inner(&*inner_ptr);
+    let evaluated = jit_maybe_pre_eval_structural(ctx_ref, raw);
+    match evaluated.view() {
+        ValueView::SExpr(items) => {
+            if items.is_empty() {
+                TAG_UNIT
+            } else {
+                value_to_jit_generic(&items[0]).to_bits()
+            }
+        }
+        ValueView::Quoted(_) => {
+            let quote_atom = MettaValue::Atom("quote".to_string());
+            metta_to_jit(&quote_atom).to_bits()
+        }
+        _ => TAG_UNIT,
+    }
+}
+
+/// Runtime function for StructuralTail opcode (`cdr-atom`).
+/// See `jit_runtime_structural_head` for semantics.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_structural_tail(
+    ctx: *mut JitContext,
+    val: u64,
+    _ip: u64,
+) -> u64 {
+    let ctx_ref = match ctx.as_ref() {
+        Some(c) => c,
+        None => return JitValue::unit().to_bits(),
+    };
+    let jit_val = JitValue::from_raw(val);
+    if !jit_val.is_heap() {
+        return JitValue::unit().to_bits();
+    }
+    let inner_ptr = jit_val.as_inner_ptr();
+    if inner_ptr.is_null() {
+        return JitValue::unit().to_bits();
+    }
+    let raw = MettaValue::from_inner(&*inner_ptr);
+    let evaluated = jit_maybe_pre_eval_structural(ctx_ref, raw);
+    match evaluated.view() {
+        ValueView::SExpr(items) => {
+            let tail: Vec<MettaValue> = if items.len() > 1 {
+                items[1..].to_vec()
+            } else {
+                Vec::new()
+            };
+            value_to_jit_generic(&MettaValue::SExpr(tail)).to_bits()
+        }
+        ValueView::Quoted(inner) => {
+            let tail = MettaValue::SExpr(vec![inner]);
+            value_to_jit_generic(&tail).to_bits()
+        }
+        _ => JitValue::unit().to_bits(),
     }
 }
 

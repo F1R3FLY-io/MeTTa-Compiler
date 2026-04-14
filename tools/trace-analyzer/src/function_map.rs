@@ -322,7 +322,16 @@ pub fn classify_trace_event(kind: &TraceEventKind) -> TraceCategory {
         | TraceEventKind::ErrorPropagated { .. }
         | TraceEventKind::GroundedOpError { .. } => TraceCategory::EvalCore,
 
+        TraceEventKind::RuleLookup { .. }
+        | TraceEventKind::RuleIndexInsert { .. } => TraceCategory::RuleMatching,
+
+        TraceEventKind::SelfEvaluating { .. } => TraceCategory::EvalCore,
+
         // WorkPool events
+        TraceEventKind::ParallelDispatch { .. } => TraceCategory::Nondeterminism,
+
+        TraceEventKind::TrampolineStep { .. } => TraceCategory::EvalCore,
+
         TraceEventKind::WorkPoolTaskEnqueued { .. }
         | TraceEventKind::WorkPoolTaskDropped { .. }
         | TraceEventKind::WorkPoolTaskCompleted { .. }
@@ -338,7 +347,8 @@ pub fn classify_trace_event(kind: &TraceEventKind) -> TraceCategory {
         | TraceEventKind::ArgumentPreEvalResult { .. }
         | TraceEventKind::TablingDecision { .. }
         | TraceEventKind::BindingsApplied { .. }
-        | TraceEventKind::RuleSelected { .. } => TraceCategory::Other,
+        | TraceEventKind::RuleSelected { .. }
+        | TraceEventKind::RuleMatchAttempt { .. } => TraceCategory::Other,
     }
 }
 

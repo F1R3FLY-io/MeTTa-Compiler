@@ -231,7 +231,7 @@ fn is_impure_head(head: &str) -> bool {
         "add-atom" | "remove-atom" | "get-atoms"
             | "new-state" | "change-state!" | "get-state"
             | "match" | "match-or" | "unify"
-            | "import!" | "include"
+            | "import!" | "git-import!" | "include"
             | "println!" | "trace!" | "nop"
             | "new-space" | "mod-space!"
             | "bind!"
@@ -247,12 +247,15 @@ thread_local! {
     /// Key: content hash of the S-expression (via `hash_value()`)
     /// Value: cached evaluation results (SmallVec avoids heap for ≤4 results)
     ///
-    /// 8192 entries × ~40 bytes avg = ~320 KB per thread. LRU eviction bounds memory.
+    /// 16384 entries × ~40 bytes avg = ~640 KB per thread. LRU eviction bounds memory.
+    /// Doubled from 8192 (sweet spot found via benchmarking) to reduce eviction
+    /// churn for Robot's deep recursive PLN inference. Larger sizes (32768)
+    /// cause LRU lookup overhead that exceeds the benefit.
     /// Each entry stores (mutation_epoch, scope_gen, results) so lookups can
     /// validate freshness and scope visibility without clearing the entire
     /// cache on every mutation or branch transition.
     static EVAL_MEMO: RefCell<LruCache<u64, (u64, u64, SmallVec<[MettaValue; 4]>), IdentityU64BuildHasher>> =
-        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(8192).expect("non-zero"), IdentityU64BuildHasher));
+        RefCell::new(LruCache::with_hasher(NonZeroUsize::new(16384).expect("non-zero"), IdentityU64BuildHasher));
 
     /// Mutation epoch counter for cache correctness.
     ///
@@ -704,7 +707,7 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         "=" | "!" | "quote" | "unquote"
         | "if" | "if-reducible" | "if-equal"
         | "error" | "Error" | "is-error" | "catch"
-        | "eval" | "function" | "return" | "chain"
+        | "eval" | "reduce" | "progn" | "function" | "return" | "chain"
         | "match" | "match-or" | "case"
         | "switch" | "switch-minimal" | "switch-internal"
         | "let" | "let*" | "unify" | "sealed" | "atom-subst"
@@ -718,8 +721,11 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "tuple-concat" | "tuple-count" | "without" | "element-of"
         | "range" | "reverse-atom" | "flatten-atom" | "zip-atom"
         | "take-atom" | "drop-atom" | "sort-tuple" | "best-candidate"
+        // PeTTa-compatible helpers (Arm B overridable list ops)
+        | "is-member" | "append" | "length" | "exclude-item" | "msort" | "cut"
+        | "struct-unique-atom"
         | "new-space" | "add-atom" | "remove-atom"
-        | "collapse" | "collapse-bind" | "superpose" | "amb"
+        | "collapse" | "collapse-bind" | "superpose" | "amb" | "ground-with-bindings"
         | "guard" | "commit" | "backtrack"
         | "get-atoms"
         | "new-state" | "get-state" | "change-state!"
@@ -727,10 +733,11 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "bind!" | "println!" | "trace!" | "nop"
         | "repr" | "format-args"
         | "empty" | "get-metatype"
-        | "include" | "import!" | "mod-space!" | "print-mods!"
+        | "include" | "import!" | "git-import!" | "mod-space!" | "print-mods!"
         | "exec" | "coalg" | "lookup" | "rulify"
         | "=alpha"
-        | "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        | "unique-atom" | "alpha-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        | "test"
         | "assertEqual" | "assertAlphaEqual"
         | "assertEqualMsg" | "assertAlphaEqualMsg"
         | "assertEqualToResult" | "assertAlphaEqualToResult"
@@ -871,7 +878,7 @@ mod tests {
             "sealed", "atom-subst", "match", "match-or",
             "catch", "is-error",
             "eval", "quote", "unquote",
-            "collapse", "collapse-bind", "amb", "guard",
+            "collapse", "collapse-bind", "amb", "guard", "ground-with-bindings",
             "new-state", "get-state", "change-state!",
             "println!", "trace!",
             "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",

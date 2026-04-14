@@ -313,6 +313,10 @@ impl EnhancedMatcher {
 
         // Phase 2: Slot operations
         let mut slots: SmallVec<[Option<V>; 8]> = smallvec::smallvec![None; self.slot_count as usize];
+        // Extra bindings produced by bidirectional unification at EqualCheck
+        // (variables not in the rule's slot table — typically free input
+        // variables matched against already-bound rule variables).
+        let mut extra: SmallVec<[(&'static str, V); 4]> = SmallVec::new();
 
         for op in &self.slot_ops {
             match op {
@@ -324,14 +328,34 @@ impl EnhancedMatcher {
                     let val = path.navigate(expr)?;
                     let bound = slots[*slot as usize].as_ref()?;
                     if val != bound {
-                        return None;
+                        // Structural equality failed. Fall back to bidirectional
+                        // (Martelli-Montanari) unification — see
+                        // `StructuralMatcher::try_match` for the rationale (PLN
+                        // Modus Ponens with free vars in implications).
+                        let unify_bindings = crate::backend::eval::bindings::bidirectional_unify_generic(bound, val)?;
+                        for (var_name, var_val) in unify_bindings.iter() {
+                            // Check existing extras for conflict
+                            if let Some((_, existing)) = extra.iter().find(|(n, _)| *n == var_name) {
+                                if existing != var_val {
+                                    return None;
+                                }
+                            } else {
+                                extra.push((var_name, var_val.clone()));
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Phase 3: Export to GenericBindings
-        Some(self.export_bindings(&slots))
+        // Phase 3: Export to GenericBindings, including any extras
+        let mut bindings = self.export_bindings(&slots);
+        for (name, val) in extra {
+            if bindings.get(name).is_none() {
+                bindings.insert(name, val);
+            }
+        }
+        Some(bindings)
     }
 
     /// Match a template expression with lazy variable resolution.
@@ -355,6 +379,7 @@ impl EnhancedMatcher {
 
         // Phase 2: Slot operations with resolution
         let mut slots: SmallVec<[Option<V>; 8]> = smallvec::smallvec![None; self.slot_count as usize];
+        let mut extra: SmallVec<[(&'static str, V); 4]> = SmallVec::new();
 
         for op in &self.slot_ops {
             match op {
@@ -366,13 +391,29 @@ impl EnhancedMatcher {
                     let val = path.navigate_resolving(template, outer_bindings)?;
                     let bound = slots[*slot as usize].as_ref()?;
                     if val != *bound {
-                        return None;
+                        // Bidirectional unification fallback (see try_match above).
+                        let unify_bindings = crate::backend::eval::bindings::bidirectional_unify_generic(bound, &val)?;
+                        for (var_name, var_val) in unify_bindings.iter() {
+                            if let Some((_, existing)) = extra.iter().find(|(n, _)| *n == var_name) {
+                                if existing != var_val {
+                                    return None;
+                                }
+                            } else {
+                                extra.push((var_name, var_val.clone()));
+                            }
+                        }
                     }
                 }
             }
         }
 
-        Some(self.export_bindings(&slots))
+        let mut bindings = self.export_bindings(&slots);
+        for (name, val) in extra {
+            if bindings.get(name).is_none() {
+                bindings.insert(name, val);
+            }
+        }
+        Some(bindings)
     }
 
     /// Return the number of variable slots.

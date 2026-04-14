@@ -320,6 +320,95 @@ fn print_kind_details(kind: &TraceEventKind) {
             if let Some(span) = rule_span { print!(", span: {}:{}", span.start_row, span.start_col); }
             println!(" }}");
         }
+        TraceEventKind::RuleMatchAttempt {
+            call_head, call_arity, rule_lhs, rule_index, matcher, outcome, rule_span: _,
+        } => {
+            println!("  RuleMatchAttempt {{");
+            println!("    call_head: \"{}\"/{}", call_head, call_arity);
+            println!("    matcher: {}, rule_index: {}", matcher, rule_index);
+            println!("    rule_lhs: {}", format_trace_value(rule_lhs));
+            match outcome {
+                trace_format::RuleMatchOutcome::Success { bindings } => {
+                    print!("    outcome: Success");
+                    if !bindings.is_empty() {
+                        let b: Vec<String> = bindings.iter()
+                            .map(|(k, v)| format!("{} = {}", k, format_trace_value(v)))
+                            .collect();
+                        print!(" {{ {} }}", b.join(", "));
+                    }
+                    println!();
+                }
+                trace_format::RuleMatchOutcome::StructuralCheckFailed {
+                    check_index, check_kind, path, expected, actual,
+                } => {
+                    println!("    outcome: StructuralCheckFailed {{");
+                    println!("      check[{}]: {} at path {:?}", check_index, check_kind, path);
+                    println!("      expected: {}", format_trace_value(expected));
+                    println!("      actual: {}", format_trace_value(actual));
+                    println!("    }}");
+                }
+                trace_format::RuleMatchOutcome::PathNavigateFailed { path, var } => {
+                    println!("    outcome: PathNavigateFailed {{ path: {:?}, var: {:?} }}", path, var);
+                }
+                trace_format::RuleMatchOutcome::EqualCheckFailed { var, first_value, second_value } => {
+                    println!("    outcome: EqualCheckFailed {{");
+                    println!("      var: {}", var);
+                    println!("      first: {}", format_trace_value(first_value));
+                    println!("      second: {}", format_trace_value(second_value));
+                    println!("    }}");
+                }
+                trace_format::RuleMatchOutcome::BidirectionalUnifyFailed {
+                    var, bound, candidate, reason,
+                } => {
+                    println!("    outcome: BidirectionalUnifyFailed {{");
+                    println!("      var: {}, reason: {}", var, reason);
+                    println!("      bound: {}", format_trace_value(bound));
+                    println!("      candidate: {}", format_trace_value(candidate));
+                    println!("    }}");
+                }
+                trace_format::RuleMatchOutcome::MorkExtractFailed { note } => {
+                    println!("    outcome: MorkExtractFailed {{ note: {} }}", note);
+                }
+            }
+            println!("  }}");
+        }
+        TraceEventKind::RuleLookup {
+            head, arity, first_arg_head, group_size, wildcard_count,
+            candidates_after_disc_tree, candidates_after_dead_filter,
+            final_match_count, bloom_filter_reject, self_evaluating,
+        } => {
+            println!("  RuleLookup {{ head: \"{head}\", arity: {arity}, first_arg_head: {fah}, group: {group_size}, wildcards: {wildcard_count}, pipeline: group({group_size}) -> disc({candidates_after_disc_tree}) -> dead({candidates_after_dead_filter}) -> matched({final_match_count}){bloom}{self_eval} }}",
+                fah = first_arg_head.as_deref().unwrap_or("None"),
+                bloom = if *bloom_filter_reject { ", bloom-rejected" } else { "" },
+                self_eval = if *self_evaluating { " ** SELF-EVALUATING **" } else { "" },
+            );
+        }
+        TraceEventKind::RuleIndexInsert {
+            rule_lhs: _, head, arity, first_arg_head, rule_index_in_group,
+            global_rule_index, is_duplicate, source,
+        } => {
+            println!("  RuleIndexInsert {{ head: {}, arity: {arity}, first_arg: {}, idx: {rule_index_in_group} (global: {global_rule_index}){dup}, source: {source} }}",
+                head.as_deref().unwrap_or("*wildcard*"),
+                first_arg_head.as_deref().unwrap_or("variable"),
+                dup = if *is_duplicate { " DUPLICATE" } else { "" },
+            );
+        }
+        TraceEventKind::SelfEvaluating { expression: _, reason, candidate_count } => {
+            println!("  SelfEvaluating {{ reason: {reason}, candidates_tried: {candidate_count} }}");
+        }
+        TraceEventKind::ParallelDispatch { branch_count, branch_exprs, parallel_depth, phase } => {
+            println!("  ParallelDispatch {{ branches: {branch_count}, depth: {parallel_depth}, phase: {phase} }}");
+            for (i, expr) in branch_exprs.iter().enumerate() {
+                println!("    branch[{i}]: {}", format_trace_value(expr));
+            }
+        }
+        TraceEventKind::TrampolineStep { work_kind, expression, stack_depth, continuation_depth, iteration } => {
+            print!("  TrampolineStep #{iteration} {{ kind: {work_kind}, stack: {stack_depth}, conts: {continuation_depth}");
+            if let Some(expr) = expression {
+                print!(", expr: {}", format_trace_value(expr));
+            }
+            println!(" }}");
+        }
     }
 }
 

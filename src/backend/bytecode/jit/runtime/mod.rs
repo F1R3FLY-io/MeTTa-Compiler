@@ -127,7 +127,7 @@ pub use value_creation::{
 // S-expression operations
 pub use sexpr_ops::{
     jit_runtime_get_arity, jit_runtime_get_element, jit_runtime_get_head, jit_runtime_get_tail,
-    jit_runtime_push_empty,
+    jit_runtime_push_empty, jit_runtime_structural_head, jit_runtime_structural_tail,
 };
 
 // Nondeterminism
@@ -251,7 +251,8 @@ pub use higher_order::{
 
 // Set operations and alpha-equivalence
 pub use set_ops::{
-    jit_runtime_eval_if_equal, jit_runtime_intersection_atom, jit_runtime_subtraction_atom,
+    jit_runtime_alpha_unique_atom, jit_runtime_eval_if_equal, jit_runtime_intersection_atom,
+    jit_runtime_msort, jit_runtime_struct_unique_atom, jit_runtime_subtraction_atom,
     jit_runtime_union_atom, jit_runtime_unique_atom,
 };
 

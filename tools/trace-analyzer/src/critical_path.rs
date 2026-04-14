@@ -114,6 +114,11 @@ pub fn run(file: &str, worker_counts: &[usize]) -> Result<(), String> {
                     }
                 }
             }
+            TraceEventKind::RuleLookup { .. }
+            | TraceEventKind::RuleIndexInsert { .. }
+            | TraceEventKind::SelfEvaluating { .. }
+            | TraceEventKind::ParallelDispatch { .. }
+            | TraceEventKind::TrampolineStep { .. } => { /* not relevant to critical path */ }
             _ => {
                 // Non-fork timed events contribute to sequential computation
                 if duration > 0 {

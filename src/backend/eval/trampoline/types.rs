@@ -124,6 +124,9 @@ pub enum Continuation {
         /// to isolate cache entries between nondeterministic branches without
         /// clearing caches.
         pre_fork_gen: u64,
+        /// Fork depth for Prolog-style cut semantics. When `(cut)` is evaluated
+        /// inside a branch's RHS, the cut signal is targeted at this depth.
+        fork_depth: u32,
         /// Span correlation ID for the current branch (format v2).
         #[cfg(feature = "eval-trace")]
         branch_span_id: u64,
@@ -386,6 +389,13 @@ pub enum Continuation {
         evaluated: Vec<MettaValue>,
         /// Whether this is for collapse-bind (vs plain collapse)
         is_bind: bool,
+        /// Per-result binding snapshots from collapse-bind (None for plain collapse).
+        /// When `is_bind` is true, each result is paired with its corresponding
+        /// bindings encoded as `(Bindings ($var val) ...)`. Index i corresponds
+        /// to the i-th raw result from the inner expression evaluation.
+        per_result_bindings: Option<Vec<crate::backend::models::GenericBindings<MettaValue>>>,
+        /// Index into per_result_bindings for the next result to process.
+        bindings_index: usize,
         /// Environment
         env: SharedEnv,
         /// Evaluation depth
@@ -1029,9 +1039,16 @@ impl Continuation {
             Self::ProcessCollapse { .. } => {}
             Self::ProcessCollapseBind { .. } => {}
 
-            Self::ProcessCollapseEvalResults { remaining_raw, evaluated, .. } => {
+            Self::ProcessCollapseEvalResults { remaining_raw, evaluated, per_result_bindings, .. } => {
                 out.extend(remaining_raw.as_slice().iter().copied());
                 out.extend(evaluated.iter().copied());
+                if let Some(ref per_result) = per_result_bindings {
+                    for bindings in per_result {
+                        for (_, v) in bindings.iter() {
+                            out.push(v.clone());
+                        }
+                    }
+                }
             }
 
             Self::ProcessAmb { remaining_alts, results, .. } => {
@@ -1428,6 +1445,8 @@ mod tests {
             remaining_raw: vec![f.long(1), f.long(2)].into_iter(),
             evaluated: vec![f.long(3)],
             is_bind: false,
+            per_result_bindings: None,
+            bindings_index: 0,
             env: env(),
             depth: 0,
         };

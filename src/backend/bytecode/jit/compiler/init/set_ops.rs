@@ -15,14 +15,20 @@ use crate::backend::bytecode::jit::types::{JitError, JitResult};
 pub struct SetOpsFuncIds {
     /// if-equal: alpha-equivalence conditional
     pub eval_if_equal_func_id: FuncId,
-    /// unique-atom: deduplicate list
+    /// unique-atom: deduplicate list by alpha-equivalence (matches MeTTa HE)
     pub unique_atom_func_id: FuncId,
+    /// alpha-unique-atom: explicit alias of unique-atom (alpha-equivalence)
+    pub alpha_unique_atom_func_id: FuncId,
+    /// struct-unique-atom: deduplicate list by structural equality (PeTTa)
+    pub struct_unique_atom_func_id: FuncId,
     /// union-atom: concatenate lists
     pub union_atom_func_id: FuncId,
     /// intersection-atom: multiset intersection
     pub intersection_atom_func_id: FuncId,
     /// subtraction-atom: multiset subtraction
     pub subtraction_atom_func_id: FuncId,
+    /// msort: numeric ascending sort
+    pub msort_func_id: FuncId,
 }
 
 /// Trait for set operations initialization - zero-cost static dispatch
@@ -43,6 +49,18 @@ impl<T> SetOpsInit for T {
         builder.symbol(
             "jit_runtime_unique_atom",
             runtime::set_ops::jit_runtime_unique_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_alpha_unique_atom",
+            runtime::set_ops::jit_runtime_alpha_unique_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_struct_unique_atom",
+            runtime::set_ops::jit_runtime_struct_unique_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_msort",
+            runtime::set_ops::jit_runtime_msort as *const u8,
         );
         builder.symbol(
             "jit_runtime_union_atom",
@@ -100,6 +118,41 @@ impl<T> SetOpsInit for T {
                 ))
             })?;
 
+        let alpha_unique_atom_func_id = module
+            .declare_function(
+                "jit_runtime_alpha_unique_atom",
+                Linkage::Import,
+                &unary_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_alpha_unique_atom: {}",
+                    e
+                ))
+            })?;
+
+        let struct_unique_atom_func_id = module
+            .declare_function(
+                "jit_runtime_struct_unique_atom",
+                Linkage::Import,
+                &unary_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_struct_unique_atom: {}",
+                    e
+                ))
+            })?;
+
+        let msort_func_id = module
+            .declare_function("jit_runtime_msort", Linkage::Import, &unary_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_msort: {}",
+                    e
+                ))
+            })?;
+
         // binary ops: fn(ctx, left, right, ip) -> result
         let mut binary_sig = module.make_signature();
         binary_sig.params.push(AbiParam::new(types::I64)); // ctx
@@ -146,9 +199,12 @@ impl<T> SetOpsInit for T {
         Ok(SetOpsFuncIds {
             eval_if_equal_func_id,
             unique_atom_func_id,
+            alpha_unique_atom_func_id,
+            struct_unique_atom_func_id,
             union_atom_func_id,
             intersection_atom_func_id,
             subtraction_atom_func_id,
+            msort_func_id,
         })
     }
 }

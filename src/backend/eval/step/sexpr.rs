@@ -23,12 +23,13 @@ use super::grounded::{find_grounded_arg_indices_generic, find_typed_arg_indices_
 
 use crate::backend::eval::bindings::{eval_atom_subst_generic, eval_sealed_generic};
 use crate::backend::eval::list_ops::ops::{
-    eval_car_atom_generic, eval_cdr_atom_generic, eval_cons_atom_generic,
-    eval_decons_atom_generic, eval_drop_atom_generic, eval_element_of_generic,
-    eval_flatten_atom_generic, eval_index_atom_generic, eval_max_atom_generic,
-    eval_min_atom_generic, eval_range_generic, eval_reverse_atom_generic,
-    eval_size_atom_generic, eval_take_atom_generic, eval_tuple_concat_generic,
-    eval_tuple_count_generic, eval_without_generic, eval_zip_atom_generic,
+    eval_append_generic, eval_car_atom_generic, eval_cdr_atom_generic, eval_cons_atom_generic,
+    eval_cut_generic, eval_decons_atom_generic, eval_drop_atom_generic, eval_element_of_generic,
+    eval_exclude_item_generic, eval_flatten_atom_generic, eval_index_atom_generic,
+    eval_is_member_generic, eval_length_generic, eval_max_atom_generic, eval_min_atom_generic,
+    eval_msort_generic, eval_range_generic, eval_reverse_atom_generic, eval_size_atom_generic,
+    eval_take_atom_generic, eval_tuple_concat_generic, eval_tuple_count_generic,
+    eval_without_generic, eval_zip_atom_generic,
 };
 use crate::backend::eval::list_ops::helpers::suggest_variable_format;
 // Generic module operations - used directly (no boundary conversion)
@@ -38,6 +39,9 @@ use crate::backend::eval::modules::{
 // Generic MORK operations - used directly (no boundary conversion)
 use crate::backend::eval::mork_forms::{
     eval_coalg_generic, eval_exec_generic, eval_lookup_generic, eval_rulify_generic,
+};
+use crate::backend::environment::dispatch_overrides::{
+    overridable_op_id, OverridableOpId,
 };
 use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
 use crate::backend::eval::types::{eval_check_type_generic, eval_get_type_generic, types_match_generic};
@@ -135,8 +139,8 @@ where
                     | "get-type" | "check-type" | "match" | "match-or" | "superpose" | "amb" | "collapse"
                     | "map-atom" | "filter-atom" | "foldl-atom" | "add-atom" | "remove-atom"
                     | "get-atoms" | "new-space" | "new-state" | "get-state" | "change-state!"
-                    | "pragma!" | "println!" | "import!" | "include" | "mod-space!"
-                    | "print-mods!" | "unique" | "subtraction" | "intersection" | "union"
+                    | "pragma!" | "println!" | "import!" | "git-import!" | "include" | "mod-space!"
+                    | "print-mods!" | "test" | "unique" | "subtraction" | "intersection" | "union"
                     | "assertEqual" | "assertEqualToResult" | "is-function" | "type-cast"
                     | "match-types" | "match-type-or" | "first-from-pair" | "metta"
                 );
@@ -156,6 +160,12 @@ where
                 }
             }
         }
+        // The labeled block lets gated arms below `break 'special_forms` to
+        // skip the built-in handling and fall through to Step 2 / Step 3
+        // (rule matching). Used by the override mechanism for grounded
+        // helpers that user rules may shadow — see
+        // `crate::backend::environment::dispatch_overrides`.
+        'special_forms: {
         match op {
             // Rule definition - native generic implementation (zero-conversion)
             "=" => {
@@ -364,6 +374,96 @@ where
                 }
                 return GenericEvalStep::EvalEval {
                     arg: items[1].clone(),
+                    env,
+                    depth,
+                };
+            }
+
+            // PeTTa-compatible `reduce` built-in. Desugars to `(eval arg)` —
+            // PeTTa's `reduce/2` Prolog predicate (translator.pl:50) forces
+            // evaluation of an expression to its normal form, which is exactly
+            // what `eval` does in MeTTaTron.
+            "reduce" => {
+                if items.len() != 2 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "reduce requires exactly 1 argument, got {}. Usage: (reduce expr)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((smallvec![err], env));
+                }
+                return GenericEvalStep::EvalEval {
+                    arg: items[1].clone(),
+                    env,
+                    depth,
+                };
+            }
+
+            // PeTTa-compatible `progn` built-in. Desugars to nested `let`
+            // bindings on a fresh anonymous variable, which gives the correct
+            // sequential-evaluation semantics:
+            //   (progn a b)         -> (let $_progn_unused a b)
+            //   (progn a b c)       -> (let $_progn_unused a (let $_progn_unused b c))
+            //   (progn a b c d)     -> (let $_progn_unused a (let $_progn_unused b (let $_progn_unused c d)))
+            //
+            // The let semantics evaluate the binding value first (for side
+            // effects), then evaluate the body. The body is the next progn
+            // step or the final expression. This works correctly because:
+            // 1. let pre-evaluates its value_expr (so side-effecting earlier
+            //    args fire correctly)
+            // 2. The body is re-evaluated by the trampoline (so a recursive
+            //    function call as the last arg is fully reduced)
+            //
+            // Mirrors PeTTa's `progn/N` from `<PeTTa>/src/metta.pl:298`.
+            "progn" => {
+                let factory = ctx.factory();
+                if items.len() < 3 {
+                    let err = factory.error(
+                        &format!(
+                            "progn requires at least 2 arguments, got {}. \
+                             Usage: (progn expr1 expr2 [...])",
+                            items.len() - 1
+                        ),
+                        factory.sexpr(items),
+                    );
+                    return GenericEvalStep::Done((smallvec![err], env));
+                }
+
+                // Build nested let from the right: start with the last arg as
+                // the innermost body, then wrap each preceding arg in a let.
+                // Use a fresh variable name with a leading `_` to signal "unused".
+                let unused_var = factory.atom("$_progn_unused");
+                let last_idx = items.len() - 1;
+                let mut result = items[last_idx].clone();
+                // Process args[1..last_idx] in reverse order (skip head at idx 0).
+                for arg in items[1..last_idx].iter().rev() {
+                    result = factory.sexpr(vec![
+                        factory.atom("let"),
+                        unused_var.clone(),
+                        arg.clone(),
+                        result,
+                    ]);
+                }
+
+                // The 2-arg case (most common): (progn a b) -> (let $_ a b).
+                // Return StartLetBinding directly, skipping a redundant trampoline pass.
+                if items.len() == 3 {
+                    return GenericEvalStep::StartLetBinding {
+                        pattern: unused_var,
+                        value_expr: items[1].clone(),
+                        body: items[2].clone(),
+                        env,
+                        depth,
+                    };
+                }
+
+                // Multi-arg case (3+ args): the constructed nested-let
+                // expression needs full re-evaluation. Use EvalEval to push it
+                // back to the trampoline.
+                return GenericEvalStep::EvalEval {
+                    arg: result,
                     env,
                     depth,
                 };
@@ -994,8 +1094,13 @@ where
                 return GenericEvalStep::Done((smallvec![err], env));
             }
 
-            // map-atom - defers iteration to trampoline
+            // map-atom - defers iteration to trampoline.
+            // Overridable: HE defines `map-atom` as a MeTTa rule in
+            // `stdlib.metta`. User rules take precedence when present.
             "map-atom" => {
+                if env.dispatch_overrides().is_overridden(OverridableOpId::MapAtom) {
+                    break 'special_forms;
+                }
                 if items.len() != 4 {
                     let err = ctx.factory().error(
                         &format!(
@@ -1005,6 +1110,19 @@ where
                         ctx.factory().sexpr(items),
                     );
                     return GenericEvalStep::Done((smallvec![err], env));
+                }
+                // MeTTa HE applicative order: the list argument must be
+                // reduced BEFORE we extract its elements. Without this,
+                // `(map-atom (collapse X) $v T)` would see `(collapse X)`
+                // as a 2-element tuple `(collapse X)` instead of the
+                // evaluated collapse result.
+                if is_reducible_sub_expr(&items[1], &env) {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: vec![1],
+                        env,
+                        depth,
+                    };
                 }
                 // Extract list elements
                 let list_arg = &items[1];
@@ -1030,8 +1148,13 @@ where
                 };
             }
 
-            // filter-atom - defers iteration to trampoline
+            // filter-atom - defers iteration to trampoline.
+            // Overridable: HE defines `filter-atom` as a MeTTa rule in
+            // `stdlib.metta`. User rules take precedence when present.
             "filter-atom" => {
+                if env.dispatch_overrides().is_overridden(OverridableOpId::FilterAtom) {
+                    break 'special_forms;
+                }
                 if items.len() != 4 {
                     let err = ctx.factory().error(
                         &format!(
@@ -1041,6 +1164,17 @@ where
                         ctx.factory().sexpr(items),
                     );
                     return GenericEvalStep::Done((smallvec![err], env));
+                }
+
+                // HE applicative order: reduce the list arg before
+                // extracting elements.
+                if is_reducible_sub_expr(&items[1], &env) {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: vec![1],
+                        env,
+                        depth,
+                    };
                 }
 
                 let list_arg = &items[1];
@@ -1066,49 +1200,104 @@ where
                 };
             }
 
-            // foldl-atom - defers iteration to trampoline
+            // foldl-atom - supports two argument signatures:
+            //
+            //   1. MeTTaTron 5-arg form: `(foldl-atom list init $acc $x op)` — explicit
+            //      accumulator/item variables, defers iteration to the trampoline.
+            //
+            //   2. PeTTa 3-arg form: `(foldl-atom list init f)` — implicit
+            //      accumulator/item, builds a deferred (f (f (f init h0) h1) h2) chain.
+            //      Mirrors PeTTa's `metta.pl:245-247` `'foldl-atom'/4` predicate.
+            //
+            // The arity of the call decides which form is used.
+            //
+            // Overridable: HE defines `foldl-atom` as a MeTTa rule in
+            // `stdlib.metta`. User rules take precedence when present.
             "foldl-atom" => {
-                if items.len() != 6 {
+                if env.dispatch_overrides().is_overridden(OverridableOpId::FoldlAtom) {
+                    break 'special_forms;
+                }
+                // HE applicative order: the list argument must be reduced
+                // before we extract its elements. Applies to both the HE
+                // 5-arg form and the PeTTa 3-arg extension. Without this,
+                // `(foldl-atom (collapse X) init op)` would see the
+                // literal children of `(collapse X)` (i.e. `[collapse, X]`)
+                // instead of the evaluated collapse tuple.
+                if items.len() >= 2 && is_reducible_sub_expr(&items[1], &env) {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: vec![1],
+                        env,
+                        depth,
+                    };
+                }
+                let arity = items.len() - 1; // exclude head
+                if arity == 5 {
+                    // MeTTaTron 5-arg form: (foldl-atom list init $acc $x op)
+                    let list_arg = &items[1];
+                    let init = items[2].clone();
+                    let acc_var = &items[3];
+                    let item_var = &items[4];
+                    let operation = items[5].clone();
+
+                    let acc_var_name = match extract_var_name::<C>(acc_var, "foldl-atom", "third argument", &env, ctx) {
+                        Ok(name) => name,
+                        Err(step) => return step,
+                    };
+
+                    let item_var_name = match extract_var_name::<C>(item_var, "foldl-atom", "fourth argument", &env, ctx) {
+                        Ok(name) => name,
+                        Err(step) => return step,
+                    };
+
+                    let elements = match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
+                        Ok(elems) => elems,
+                        Err(step) => return step,
+                    };
+
+                    return GenericEvalStep::StartFoldlAtom {
+                        elements,
+                        init,
+                        acc_var_name,
+                        item_var_name,
+                        operation,
+                        env,
+                        depth,
+                    };
+                } else if arity == 3 {
+                    // PeTTa 3-arg form: (foldl-atom list init f)
+                    // Build a left-fold chain: (f (f (f init h0) h1) h2) and return
+                    // it for the trampoline to evaluate. Each (f acc elem) reduction
+                    // happens via normal applicative-order rule dispatch.
+                    let list_arg = &items[1];
+                    let init = items[2].clone();
+                    let func = items[3].clone();
+
+                    let elements = match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
+                        Ok(elems) => elems,
+                        Err(step) => return step,
+                    };
+
+                    let mut acc = init;
+                    for elem in elements {
+                        // Each step: (func acc elem)
+                        acc = ctx.factory().sexpr(vec![func.clone(), acc, elem]);
+                    }
+                    // Evaluate the fold chain — PeTTa's 3-arg foldl evaluates
+                    // each step via reduce(). Returning Done would leave the
+                    // chain unevaluated (e.g., literal (Truth_Revision (Truth_Revision ...))).
+                    return GenericEvalStep::EvalIfBranch { branch: acc, env, depth };
+                } else {
                     let err = ctx.factory().error(
                         &format!(
-                            "foldl-atom requires exactly 5 arguments, got {}. Usage: (foldl-atom list init $acc $x op)",
-                            items.len() - 1
+                            "foldl-atom requires either 3 args (PeTTa form: (foldl-atom list init f)) \
+                             or 5 args (MeTTaTron form: (foldl-atom list init $acc $x op)), got {}",
+                            arity
                         ),
                         ctx.factory().sexpr(items),
                     );
                     return GenericEvalStep::Done((smallvec![err], env));
                 }
-
-                let list_arg = &items[1];
-                let init = items[2].clone();
-                let acc_var = &items[3];
-                let item_var = &items[4];
-                let operation = items[5].clone();
-
-                let acc_var_name = match extract_var_name::<C>(acc_var, "foldl-atom", "third argument", &env, ctx) {
-                    Ok(name) => name,
-                    Err(step) => return step,
-                };
-
-                let item_var_name = match extract_var_name::<C>(item_var, "foldl-atom", "fourth argument", &env, ctx) {
-                    Ok(name) => name,
-                    Err(step) => return step,
-                };
-
-                let elements = match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
-                    Ok(elems) => elems,
-                    Err(step) => return step,
-                };
-
-                return GenericEvalStep::StartFoldlAtom {
-                    elements,
-                    init,
-                    acc_var_name,
-                    item_var_name,
-                    operation,
-                    env,
-                    depth,
-                };
             }
 
             // List operations - native generic implementations (zero conversion)
@@ -1118,13 +1307,104 @@ where
             // reducible S-expression arguments (like `(collapse ...)`) would be treated
             // as structural tuples instead of being evaluated first. This is critical
             // for PLN's BestCandidate which passes `(collapse ...)` to car-atom/cdr-atom.
-            "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom"
-            | "max-atom" | "min-atom" | "index-atom"
-            | "tuple-concat" | "tuple-count" | "without" | "element-of"
+            //
+            // Two arms below split this set into:
+            //   - **Arm A**: TRUE HE primitives (`cons-atom`, `decons-atom`,
+            //     `size-atom`, `max-atom`, `min-atom`, `index-atom`). HE
+            //     dispatches these as `Atom::Grounded` or embedded ops, so
+            //     they MUST NOT be overridable by user rules. No gate.
+            //   - **Arm B**: helpers HE leaves at the MeTTa level, or that
+            //     HE doesn't have at all. These ARE overridable: a single
+            //     atomic load + bit test gates the grounded fast path; a
+            //     set bit means "user has rules for this name" and we
+            //     `break 'special_forms` to fall through to rule matching.
+            //
+            // See `crate::backend::environment::dispatch_overrides` for the
+            // partition rationale and the `OverridableOpId` enum.
+
+            // Arm A: TRUE HE primitives — never overridable.
+            // Uses type-aware pre-eval: meta-typed args (Atom, Variable)
+            // are NOT pre-evaluated, matching HE embedded-op semantics.
+            "cons-atom" | "decons-atom" | "size-atom"
+            | "max-atom" | "min-atom" | "index-atom" => {
+                let reducible_indices = list_op_reducible_arg_indices_typed(op, &items, &env);
+                if !reducible_indices.is_empty() {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: reducible_indices,
+                        env,
+                        depth,
+                    };
+                }
+                let results = match op {
+                    "cons-atom"   => eval_cons_atom_generic(&items, ctx.factory()),
+                    "decons-atom" => eval_decons_atom_generic(&items, ctx.factory()),
+                    "size-atom"   => eval_size_atom_generic(&items, ctx.factory()),
+                    "max-atom"    => eval_max_atom_generic(&items, ctx.factory()),
+                    "min-atom"    => eval_min_atom_generic(&items, ctx.factory()),
+                    "index-atom"  => eval_index_atom_generic(&items, ctx.factory()),
+                    _ => unreachable!("Arm A list op dispatch mismatch"),
+                };
+                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+            }
+
+            // Arm B-structural: car-atom and cdr-atom are structural destructuring ops.
+            // They operate on the SYNTACTIC structure of their argument and must NOT
+            // pre-evaluate user-defined function calls. Doing so causes nondeterminism
+            // (multiple rule matches) that forks the evaluation into branches, each of
+            // which receives a cloned environment from Arc::make_mut. Any add-atom &self
+            // call inside a forked branch writes to a branch-local clone that does NOT
+            // persist to the main environment — silently dropping the added rule.
+            //
+            // The only arguments that SHOULD be pre-evaluated are:
+            //   - Eager special forms (collapse, superpose, eval, …) — explicitly list-producing
+            //   - Grounded ops (+, ==, …) — always return a concrete value
+            //   - Type-declared functions (should_pre_eval_by_type) — explicitly typed
+            //
+            // User-defined functions (identified by the bloom filter) must NOT be
+            // pre-evaluated. This matches HE semantics where car-atom/cdr-atom operate
+            // on the expression structure, not the evaluated value.
+            //
+            // Example: (car-atom (grandfather $a $x)) should return `grandfather`, NOT
+            // evaluate `(grandfather $a $x)` via matching rules.
+            "car-atom" | "cdr-atom" => {
+                let id = overridable_op_id(op).expect("car-atom/cdr-atom are overridable list ops");
+                if env.dispatch_overrides().is_overridden(id) {
+                    break 'special_forms;
+                }
+                let reducible_indices = structural_op_reducible_arg_indices(&items, &env);
+                if !reducible_indices.is_empty() {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: reducible_indices,
+                        env,
+                        depth,
+                    };
+                }
+                let results = match op {
+                    "car-atom" => eval_car_atom_generic(&items, ctx.factory()),
+                    "cdr-atom" => eval_cdr_atom_generic(&items, ctx.factory()),
+                    _ => unreachable!("Arm B-structural op dispatch mismatch"),
+                };
+                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+            }
+
+            // Arm B: overridable helpers (Class B in HE or not in HE at all).
+            // Single relaxed atomic load + bit test (~1-2 ns) gates the
+            // grounded fast path. When the bit is set, fall through past
+            // the entire special-form match block and let standard rule
+            // matching (Step 2 / Step 3 below) handle the call.
+            "tuple-concat" | "tuple-count" | "without" | "element-of"
             | "range" | "reverse-atom" | "flatten-atom" | "zip-atom"
-            | "take-atom" | "drop-atom" => {
-                // Check if any arguments are reducible S-expressions that need
-                // pre-evaluation before the list operation can proceed.
+            | "take-atom" | "drop-atom"
+            | "is-member" | "append" | "length" | "exclude-item" | "msort"
+            | "cut" => {
+                let id = overridable_op_id(op).expect("Arm B covers all overridable list ops");
+                if env.dispatch_overrides().is_overridden(id) {
+                    // User rules exist for this name — let rule matching
+                    // handle the call instead of the grounded fast path.
+                    break 'special_forms;
+                }
                 let reducible_indices = list_op_reducible_arg_indices(&items, &env);
                 if !reducible_indices.is_empty() {
                     return GenericEvalStep::EvalGroundedArgs {
@@ -1134,33 +1414,65 @@ where
                         depth,
                     };
                 }
-                // All arguments are in normal form — proceed with the operation.
                 let results = match op {
-                    "car-atom" => eval_car_atom_generic(&items, ctx.factory()),
-                    "cdr-atom" => eval_cdr_atom_generic(&items, ctx.factory()),
-                    "cons-atom" => eval_cons_atom_generic(&items, ctx.factory()),
-                    "decons-atom" => eval_decons_atom_generic(&items, ctx.factory()),
-                    "size-atom" => eval_size_atom_generic(&items, ctx.factory()),
-                    "max-atom" => eval_max_atom_generic(&items, ctx.factory()),
-                    "min-atom" => eval_min_atom_generic(&items, ctx.factory()),
-                    "index-atom" => eval_index_atom_generic(&items, ctx.factory()),
-                    "tuple-concat" => eval_tuple_concat_generic(&items, ctx.factory()),
-                    "tuple-count" => eval_tuple_count_generic(&items, ctx.factory()),
-                    "without" => eval_without_generic(&items, ctx.factory()),
-                    "element-of" => eval_element_of_generic(&items, ctx.factory()),
-                    "range" => eval_range_generic(&items, ctx.factory()),
-                    "reverse-atom" => eval_reverse_atom_generic(&items, ctx.factory()),
-                    "flatten-atom" => eval_flatten_atom_generic(&items, ctx.factory()),
-                    "zip-atom" => eval_zip_atom_generic(&items, ctx.factory()),
-                    "take-atom" => eval_take_atom_generic(&items, ctx.factory()),
-                    "drop-atom" => eval_drop_atom_generic(&items, ctx.factory()),
-                    _ => unreachable!("list op dispatch mismatch"),
+                    "tuple-concat"  => eval_tuple_concat_generic(&items, ctx.factory()),
+                    "tuple-count"   => eval_tuple_count_generic(&items, ctx.factory()),
+                    "without"       => eval_without_generic(&items, ctx.factory()),
+                    "element-of"    => eval_element_of_generic(&items, ctx.factory()),
+                    "range"         => eval_range_generic(&items, ctx.factory()),
+                    "reverse-atom"  => eval_reverse_atom_generic(&items, ctx.factory()),
+                    "flatten-atom"  => eval_flatten_atom_generic(&items, ctx.factory()),
+                    "zip-atom"      => eval_zip_atom_generic(&items, ctx.factory()),
+                    "take-atom"     => eval_take_atom_generic(&items, ctx.factory()),
+                    "drop-atom"     => eval_drop_atom_generic(&items, ctx.factory()),
+                    "is-member"     => eval_is_member_generic(&items, ctx.factory()),
+                    "append"        => eval_append_generic(&items, ctx.factory()),
+                    "length"        => eval_length_generic(&items, ctx.factory()),
+                    "exclude-item"  => eval_exclude_item_generic(&items, ctx.factory()),
+                    "msort"         => eval_msort_generic(&items, ctx.factory()),
+                    "cut"           => eval_cut_generic(&items, ctx.factory()),
+                    _ => unreachable!("Arm B list op dispatch mismatch: {}", op),
                 };
                 return GenericEvalStep::Done((SmallVec::from_vec(results), env));
             }
 
-            // sort-tuple - defers iteration to trampoline
+            // ground-with-bindings: apply serialized bindings to a template.
+            // (ground-with-bindings template (Bindings ($var val) ...)) → grounded template.
+            // Used by the ? macro to apply captured collapse-bind bindings.
+            "ground-with-bindings" => {
+                if items.len() != 3 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "ground-with-bindings requires 2 arguments, got {}. Usage: (ground-with-bindings template (Bindings ...))",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((smallvec![err], env));
+                }
+                let template = items[1].clone();
+                let bindings_sexpr = &items[2];
+                let bindings = crate::backend::eval::trampoline::eval_loop::decode_bindings_from_sexpr(
+                    bindings_sexpr,
+                    ctx.factory(),
+                );
+                if bindings.is_empty() {
+                    // No bindings to apply — return template unchanged.
+                    return GenericEvalStep::Done((smallvec![template], env));
+                }
+                let grounded = crate::backend::eval::trampoline::engine::apply_bindings(
+                    &template, &bindings, ctx.factory(),
+                );
+                return GenericEvalStep::Done((smallvec![grounded], env));
+            }
+
+            // sort-tuple - defers iteration to trampoline.
+            // Overridable: MeTTaTron-only helper, HE has nothing equivalent.
+            // User rules take precedence when present.
             "sort-tuple" => {
+                if env.dispatch_overrides().is_overridden(OverridableOpId::SortTuple) {
+                    break 'special_forms;
+                }
                 if items.len() != 5 {
                     let err = ctx.factory().error(
                         &format!(
@@ -1170,6 +1482,16 @@ where
                         ctx.factory().sexpr(items),
                     );
                     return GenericEvalStep::Done((smallvec![err], env));
+                }
+
+                // Applicative order: reduce the tuple arg before extracting elements.
+                if is_reducible_sub_expr(&items[1], &env) {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: vec![1],
+                        env,
+                        depth,
+                    };
                 }
 
                 let list_arg = &items[1];
@@ -1202,8 +1524,13 @@ where
                 };
             }
 
-            // best-candidate - defers iteration to trampoline
+            // best-candidate - defers iteration to trampoline.
+            // Overridable: MeTTaTron-only helper, HE has nothing equivalent.
+            // User rules take precedence when present.
             "best-candidate" => {
+                if env.dispatch_overrides().is_overridden(OverridableOpId::BestCandidate) {
+                    break 'special_forms;
+                }
                 if items.len() != 4 {
                     let err = ctx.factory().error(
                         &format!(
@@ -1213,6 +1540,16 @@ where
                         ctx.factory().sexpr(items),
                     );
                     return GenericEvalStep::Done((smallvec![err], env));
+                }
+
+                // Applicative order: reduce the tuple arg before extracting elements.
+                if is_reducible_sub_expr(&items[1], &env) {
+                    return GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices: vec![1],
+                        env,
+                        depth,
+                    };
                 }
 
                 let list_arg = &items[1];
@@ -1722,6 +2059,16 @@ where
                 let (results, new_env) = eval_import_generic(items, env, ctx);
                 return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
             }
+            "git-import!" => {
+                // PeTTa-compatible: clone a git repo and register its directory
+                // as a library search path. Pure side-effecting form: returns Unit
+                // on success or an error MettaValue on any failure (no panics).
+                let results = crate::backend::eval::git_import::eval_git_import_generic(
+                    &items,
+                    ctx.factory(),
+                );
+                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+            }
             "mod-space!" => {
                 let (results, new_env) = eval_mod_space_generic(items, env, ctx.factory());
                 return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
@@ -1783,7 +2130,7 @@ where
             //
             // Like list operations, set operations must evaluate reducible
             // arguments before operating. E.g., `(unique-atom (collapse ...))`.
-            "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom" => {
+            "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom" => {
                 let reducible_indices = list_op_reducible_arg_indices(&items, &env);
                 if !reducible_indices.is_empty() {
                     return GenericEvalStep::EvalGroundedArgs {
@@ -1800,6 +2147,16 @@ where
 
             // Alpha equivalence — (=alpha expr1 expr2) → Bool
             "=alpha" => {
+                return crate::backend::eval::testing_ops::eval_testing_op_generic(
+                    items, env, ctx,
+                );
+            }
+
+            // PeTTa-compatible test — (test actual expected) → Unit | Error
+            // Both args are pre-evaluated (applicative order). Compares with
+            // alpha-equivalence and prints a diagnostic line. Returns Unit on
+            // match, error MettaValue on mismatch (NEVER halts/panics).
+            "test" => {
                 return crate::backend::eval::testing_ops::eval_testing_op_generic(
                     items, env, ctx,
                 );
@@ -1869,6 +2226,7 @@ where
                 cached_parent_op_types = Some(op_types);
             }
         }
+        } // 'special_forms
     }
 
     // Step 2: Applicative pre-evaluation of S-expression arguments.
@@ -2000,6 +2358,67 @@ where
         };
     }
 
+    // Step 3.5: HE-conformant free-variable rule enumeration.
+    //
+    // Step 3 above uses StructuralMatcher which does literal atom comparison
+    // — it fails when a query position has a free variable that should
+    // unify with the rule's atom at the same position. PeTTa / MeTTa HE
+    // handle this case via Prolog-style unification: e.g. `(father a $b)`
+    // against rule `(father a b)` should bind `$b → b` and produce the
+    // rule's RHS as a result. Without this branch, expressions with free
+    // variables silently self-evaluate, breaking PLN's `?` macro and any
+    // free-variable query.
+    //
+    // Gating:
+    //   - The query must contain free variables (`has_variables_fast()`).
+    //     The ground case is fully handled by Step 3 above.
+    //   - Step 3 must have returned no matches (otherwise the structural
+    //     fast path already produced the right answer).
+    //   - The head atom must be present and not a special form
+    //     (special forms like `if`, `match`, `let` are dispatched in
+    //     Step 1 / 2 and never reach here).
+    //
+    // The matches are returned via the existing `EvalRuleMatchesLazy`
+    // dispatch, so all downstream cut handling, trace events, fork
+    // accounting and post-processing are inherited from the ground path.
+    if resolved_sexpr.has_variables_fast() {
+        let unified_matches = crate::backend::eval::trampoline::engine::enumerate_rules_via_unification(
+            &resolved_sexpr,
+            &env,
+            ctx.factory(),
+        );
+        if !unified_matches.is_empty() {
+            #[cfg(feature = "eval-trace")]
+            {
+                if let Some(tc) = ctx.trace_collector() {
+                    let match_count = unified_matches.len() as u32;
+                    let matches_tv: Vec<(trace_format::TraceValue, Option<trace_format::TraceSpan>)> =
+                        unified_matches.iter()
+                            .map(|(rhs, _bindings, _rhs_type)| {
+                                (crate::backend::trace::trace_value_generic(rhs), None)
+                            })
+                            .collect();
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth as u32,
+                        crate::backend::trace::trace_value_generic(&resolved_sexpr),
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::RuleMatchSet {
+                            match_count,
+                            matches: matches_tv,
+                        },
+                    );
+                }
+            }
+            return GenericEvalStep::EvalRuleMatchesLazy {
+                matches: unified_matches,
+                env,
+                depth,
+            };
+        }
+    }
+
     // Step 4: No rules matched, no pre-eval needed — data constructor / tuple path.
     // Evaluates sub-elements independently (MeTTa HE's `interpret_tuple` path).
     GenericEvalStep::EvalSExpr { items, env, depth }
@@ -2045,40 +2464,161 @@ fn list_op_reducible_arg_indices(
     items: &[MettaValue],
     env: &MettaEnvironment,
 ) -> Vec<usize> {
-    use crate::backend::eval::step::grounded::should_pre_eval_by_type;
-    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
-
     let mut indices = Vec::new();
     // Skip index 0 (the operator itself), check all arguments
     for (i, item) in items.iter().enumerate().skip(1) {
-        if let Some(sub_items) = item.as_sexpr() {
-            if let Some(first) = sub_items.first() {
-                if let Some(head) = first.as_atom() {
-                    // Variables as heads need evaluation (the var may resolve
-                    // to a function)
-                    if head.starts_with('$') {
-                        indices.push(i);
-                    }
-                    // Grounded ops (e.g. +, ==) always produce a result
-                    // different from the input S-expression
-                    else if is_grounded_op(head) {
-                        indices.push(i);
-                    }
-                    // Eager special forms (collapse, superpose, map-atom, etc.)
-                    // always produce a result different from the input
-                    else if is_eager_special_form(head) {
-                        indices.push(i);
-                    }
-                    // Type-driven: operator has (-> ...) type signature,
-                    // indicating it's a declared function that should evaluate
-                    else if should_pre_eval_by_type(head, env) {
-                        indices.push(i);
-                    }
-                }
-            }
+        if is_reducible_sub_expr(item, env) {
+            indices.push(i);
         }
     }
     indices
+}
+
+/// Structural-op variant of `list_op_reducible_arg_indices` for `car-atom`/`cdr-atom`.
+///
+/// These operations perform SYNTACTIC destructuring — they return the head/tail of
+/// the expression structure without evaluating it. User-defined function calls must
+/// NOT be pre-evaluated because:
+///
+/// 1. If the call is nondeterministic (multiple matching rules), pre-evaluation forks
+///    the trampoline into multiple branches. Each branch receives a cloned Arc<Env>
+///    (refcount > 1 → Arc::make_mut clones). Any `add-atom &self` call inside a
+///    forked branch writes to a branch-local clone that is DISCARDED after the branch
+///    completes — the rule is never visible to subsequent evaluations.
+///
+/// 2. HE semantics: `car-atom: (-> Atom Atom)` — the argument type `Atom` is a
+///    meta-type in HE. Meta-typed arguments are passed unevaluated.
+///
+/// Arguments that SHOULD be pre-evaluated:
+///   - Eager special forms (collapse, superpose, eval, …) — always list-producing
+///   - Grounded ops (+, ==, …) — always return a concrete value
+///   - Type-declared functions (should_pre_eval_by_type) — explicitly typed with (-> …)
+///
+/// Arguments that must NOT be pre-evaluated:
+///   - User-defined function calls (bloom filter) — may produce nondeterminism
+///
+fn structural_op_reducible_arg_indices(
+    items: &[MettaValue],
+    env: &MettaEnvironment,
+) -> Vec<usize> {
+    let mut indices = Vec::new();
+    for (i, item) in items.iter().enumerate().skip(1) {
+        if is_reducible_structural_arg(item, env) {
+            indices.push(i);
+        }
+    }
+    indices
+}
+
+/// Returns true if `value` is a reducible argument for a structural op (`car-atom`,
+/// `cdr-atom`). Unlike `is_reducible_sub_expr`, this does NOT include the bloom filter
+/// fallback for user-defined function calls.
+fn is_reducible_structural_arg(value: &MettaValue, env: &MettaEnvironment) -> bool {
+    use crate::backend::eval::step::grounded::should_pre_eval_by_type;
+    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
+
+    let sub_items = match value.as_sexpr() {
+        Some(s) => s,
+        None => return false,
+    };
+    let head = match sub_items.first().and_then(|v| v.as_atom()) {
+        Some(h) => h,
+        None => return false,
+    };
+    // Variable heads may resolve to functions — always evaluate
+    head.starts_with('$')
+        // Grounded ops (+, ==, etc.) always produce a concrete result
+        || is_grounded_op(head)
+        // Eager special forms (collapse, superpose, eval, …) are explicitly
+        // designed to produce list values for structural operations
+        || is_eager_special_form(head)
+        // Type-declared functions with (-> …) signatures are explicitly typed
+        // and should be evaluated to their return values
+        || should_pre_eval_by_type(head, env)
+    // NOTE: intentionally does NOT include:
+    //   - bloom filter (env.may_have_rules_for) — user-defined rules must not be pre-evaluated
+    //   - inferred types — may misidentify data constructors as functions
+}
+
+/// Type-aware variant of `list_op_reducible_arg_indices` for Arm A (TRUE HE
+/// primitives). Consults the builtin type signature to skip args with meta
+/// types (`Atom`, `Variable`, `Pattern`) — HE does NOT pre-evaluate those.
+///
+/// This matters for `cons-atom` whose type is `(-> Atom Expression Expression)`:
+/// the first arg (type `Atom`) must NOT be pre-evaluated, matching HE's
+/// embedded-op semantics where `cons-atom` constructs the result directly
+/// from the raw atoms.
+fn list_op_reducible_arg_indices_typed(
+    op: &str,
+    items: &[MettaValue],
+    env: &MettaEnvironment,
+) -> Vec<usize> {
+    use crate::backend::builtin_signatures::{get_signature, get_expected_type_at_position, TypeExpr};
+    let sig = get_signature(op);
+    let mut indices = Vec::new();
+    for (i, item) in items.iter().enumerate().skip(1) {
+        if let Some(ref s) = sig {
+            if let Some(te) = get_expected_type_at_position(s, i - 1) {
+                if matches!(te, TypeExpr::Atom | TypeExpr::Variable | TypeExpr::Pattern) {
+                    continue;
+                }
+            }
+        }
+        if is_reducible_sub_expr(item, env) {
+            indices.push(i);
+        }
+    }
+    indices
+}
+
+/// Returns true if `value` is a reducible S-expression under the same
+/// criteria used by `list_op_reducible_arg_indices`. Used by
+/// higher-order list ops (`map-atom`, `filter-atom`, `foldl-atom`,
+/// `sort-tuple`, `best-candidate`) to decide whether to pre-evaluate a
+/// list argument before extracting its children.
+///
+/// MeTTa HE applicative-order reduces arguments before function dispatch,
+/// so `(map-atom (collapse X) $v T)` first reduces `(collapse X)` to a
+/// tuple, then `map-atom` operates on that tuple. MeTTaTron dispatches
+/// special forms before normal applicative pre-eval, so these arms must
+/// explicitly trigger pre-eval on their list arg.
+fn is_reducible_sub_expr(value: &MettaValue, env: &MettaEnvironment) -> bool {
+    use crate::backend::eval::step::grounded::should_pre_eval_by_type;
+    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
+
+    let sub_items = match value.as_sexpr() {
+        Some(s) => s,
+        None => return false,
+    };
+    let head = match sub_items.first().and_then(|v| v.as_atom()) {
+        Some(h) => h,
+        None => return false,
+    };
+    // Variables as heads need evaluation (the var may resolve to a function)
+    head.starts_with('$')
+        // Grounded ops (e.g. +, ==) always produce a result different
+        // from the input S-expression.
+        || is_grounded_op(head)
+        // Eager special forms (collapse, superpose, map-atom, etc.)
+        // always produce a result different from the input.
+        || is_eager_special_form(head)
+        // Type-driven: operator has (-> ...) type signature, indicating
+        // it's a declared function that should evaluate.
+        || should_pre_eval_by_type(head, env)
+        // Phase 10 inferred-type fallback: operators with inferred
+        // arrow types from deep type inference also need pre-eval.
+        || (env.has_inferred_type(head)
+            && env
+                .get_inferred_fn_types(head)
+                .iter()
+                .any(|t| crate::backend::eval::step::grounded::is_arrow_type(t)))
+        // Bloom filter fallback for untyped user-defined operators with
+        // rules. This is the same Tier 3 check used by
+        // `find_grounded_arg_indices_generic` in `step/grounded.rs`.
+        // Without it, calls like `(exclude-item x (kb))` fail to
+        // pre-evaluate `(kb)` (a user-defined function call), leaving
+        // exclude-item with an unreduced S-expression.
+        || env.may_have_rules_for(head, sub_items.len() - 1)
 }
 
 /// Extract a variable name (atom starting with `$`) from a value, with a

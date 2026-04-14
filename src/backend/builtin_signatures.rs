@@ -415,6 +415,8 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
         // ====================================================================
         BuiltinSignature { name: "unique-atom", min_arity: 1, max_arity: 1,
             type_sig: arrow(vec![Expression], Atom) },
+        BuiltinSignature { name: "alpha-unique-atom", min_arity: 1, max_arity: 1,
+            type_sig: arrow(vec![Expression], Atom) },
         BuiltinSignature { name: "union-atom", min_arity: 2, max_arity: 2,
             type_sig: arrow(vec![Expression, Expression], Atom) },
         BuiltinSignature { name: "intersection-atom", min_arity: 2, max_arity: 2,
@@ -809,7 +811,7 @@ mod tests {
             "map-atom", "filter-atom", "foldl-atom",
             "sort-tuple", "best-candidate",
             // Set ops
-            "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+            "unique-atom", "alpha-unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
             // Nondeterminism
             "superpose", "amb", "guard", "commit", "backtrack",
             // Quoting
@@ -1461,7 +1463,13 @@ mod tests {
 
     #[test]
     fn test_set_operations_have_signatures() {
-        for op in ["unique-atom", "union-atom", "intersection-atom", "subtraction-atom"] {
+        for op in [
+            "unique-atom",
+            "alpha-unique-atom",
+            "union-atom",
+            "intersection-atom",
+            "subtraction-atom",
+        ] {
             let sig = get_signature(op);
             assert!(sig.is_some(), "Set op '{}' should have a signature", op);
         }

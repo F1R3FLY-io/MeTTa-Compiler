@@ -3423,7 +3423,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
- "smallvec",
  "state",
  "tokio",
  "tracing",

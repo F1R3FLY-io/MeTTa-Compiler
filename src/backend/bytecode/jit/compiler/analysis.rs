@@ -52,6 +52,8 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             // S-expression operations
             Opcode::GetHead
             | Opcode::GetTail
+            | Opcode::StructuralHead
+            | Opcode::StructuralTail
             | Opcode::GetArity
             | Opcode::GetElement => {}
 
@@ -335,6 +337,8 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             // S-expression operations (Stage 14: via runtime calls)
             Opcode::GetHead     // Stage 14: get first element via runtime call
             | Opcode::GetTail   // Stage 14: get all but first via runtime call
+            | Opcode::StructuralHead   // Stage 14: car-atom with runtime pre-eval
+            | Opcode::StructuralTail   // Stage 14: cdr-atom with runtime pre-eval
             | Opcode::GetArity  // Stage 14: get element count via runtime call
             | Opcode::GetElement => {} // Stage 14b: get element by index via runtime call
 

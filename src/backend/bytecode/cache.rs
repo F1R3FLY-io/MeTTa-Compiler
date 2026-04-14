@@ -275,6 +275,16 @@ mod tests {
 
     use crate::backend::bytecode::chunk::ChunkBuilder;
     use crate::backend::bytecode::Opcode;
+    use std::sync::Mutex;
+
+    /// Serializes the cache-cache tests so they don't race against each
+    /// other on the shared `CAN_COMPILE_CACHE` / `BYTECODE_CACHE` statics.
+    ///
+    /// `cargo test` runs tests in parallel by default. Both
+    /// `test_can_compile_cache` and `test_bytecode_cache` call
+    /// `clear_caches()` which wipes BOTH caches; without this lock, one
+    /// test can clear the other's data mid-test, causing a flaky failure.
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_hash_stability() {
@@ -307,6 +317,7 @@ mod tests {
 
     #[test]
     fn test_can_compile_cache() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_caches();
         let hash = 12345u64;
 
@@ -322,6 +333,7 @@ mod tests {
 
     #[test]
     fn test_bytecode_cache() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_caches();
         let hash = 67890u64;
 

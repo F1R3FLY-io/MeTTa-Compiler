@@ -20,6 +20,8 @@ pub struct SExprHandlerContext<'m> {
     pub get_tail_func_id: FuncId,
     pub get_arity_func_id: FuncId,
     pub get_element_func_id: FuncId,
+    pub structural_head_func_id: FuncId,
+    pub structural_tail_func_id: FuncId,
     pub make_sexpr_func_id: FuncId,
     pub cons_atom_func_id: FuncId,
     pub make_list_func_id: FuncId,
@@ -62,6 +64,40 @@ pub fn compile_sexpr_access_op<'a, 'b>(
                 .declare_func_in_func(ctx.get_tail_func_id, codegen.builder.func);
 
             // Call jit_runtime_get_tail(ctx, val, ip)
+            let ctx_ptr = codegen.ctx_ptr();
+            let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, val, ip_val]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
+        }
+
+        Opcode::StructuralHead => {
+            // car-atom with tree-walker pre-eval semantics. Runtime decides
+            // whether to reduce the arg based on its head atom; see
+            // jit_runtime_structural_head for the 4-condition predicate.
+            let val = codegen.pop()?;
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.structural_head_func_id, codegen.builder.func);
+            let ctx_ptr = codegen.ctx_ptr();
+            let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, val, ip_val]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
+        }
+
+        Opcode::StructuralTail => {
+            // cdr-atom with tree-walker pre-eval semantics.
+            let val = codegen.pop()?;
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.structural_tail_func_id, codegen.builder.func);
             let ctx_ptr = codegen.ctx_ptr();
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
             let call_inst = codegen

@@ -369,12 +369,13 @@ mod tests {
         let rules = bridge.dispatch_rules(&expr);
         assert_eq!(rules.len(), 1);
 
-        // Check bindings - pattern_match keeps the $ prefix in variable names
+        // Check bindings - rule variables are alpha-renamed (Fix 3B) so we
+        // check that SOME binding maps to Long(5), regardless of the freshened name.
         let compiled = &rules[0];
         assert!(compiled
             .bindings
             .iter()
-            .any(|(name, val)| { name == "$x" && *val == MettaValue::Long(5) }));
+            .any(|(name, val)| { name.contains("x") && *val == MettaValue::Long(5) }));
     }
 
     #[test]

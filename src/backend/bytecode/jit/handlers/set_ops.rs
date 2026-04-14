@@ -18,9 +18,12 @@ pub struct SetOpsHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub eval_if_equal_func_id: FuncId,
     pub unique_atom_func_id: FuncId,
+    pub alpha_unique_atom_func_id: FuncId,
+    pub struct_unique_atom_func_id: FuncId,
     pub union_atom_func_id: FuncId,
     pub intersection_atom_func_id: FuncId,
     pub subtraction_atom_func_id: FuncId,
+    pub msort_func_id: FuncId,
 }
 
 /// Compile set operations and alpha-equivalence opcodes via runtime calls
@@ -55,6 +58,7 @@ pub fn compile_set_op<'a, 'b>(
 
         Opcode::UniqueAtom => {
             // unique-atom: [list] -> [deduped_list]
+            // (PeTTa-compatible structural equality after B10 split.)
             let list = codegen.pop()?;
 
             let func_ref = ctx
@@ -68,6 +72,66 @@ pub fn compile_set_op<'a, 'b>(
                 .builder
                 .ins()
                 .call(func_ref, &[ctx_ptr, list, ip_val]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
+        }
+
+        Opcode::AlphaUniqueAtom => {
+            // alpha-unique-atom: explicit alias of unique-atom
+            // (alpha-equivalence dedup, matches MeTTa HE).
+            let list = codegen.pop()?;
+
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.alpha_unique_atom_func_id, codegen.builder.func);
+
+            let ctx_ptr = codegen.ctx_ptr();
+            let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, list, ip_val]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
+        }
+
+        Opcode::StructUniqueAtom => {
+            // struct-unique-atom: [list] -> [deduped_list]
+            // (PeTTa-compatible byte-identity dedup; distinct from
+            // unique-atom which uses alpha-equivalence.)
+            let list = codegen.pop()?;
+
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.struct_unique_atom_func_id, codegen.builder.func);
+
+            let ctx_ptr = codegen.ctx_ptr();
+            let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, list, ip_val]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
+        }
+
+        Opcode::Msort => {
+            // msort: [tuple] -> [sorted_tuple]
+            let tuple = codegen.pop()?;
+
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.msort_func_id, codegen.builder.func);
+
+            let ctx_ptr = codegen.ctx_ptr();
+            let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, tuple, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }

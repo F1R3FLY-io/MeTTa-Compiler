@@ -16,7 +16,7 @@ mod loader;
 mod metta_mod;
 mod module_space;
 mod package;
-mod path;
+pub mod path;
 mod pkg_info_metta;
 mod tokenizer;
 
@@ -27,6 +27,9 @@ pub use loader::{
 pub use metta_mod::{MettaMod, ModId, ModuleState};
 pub use module_space::ModuleSpace;
 pub use package::{Dependency, DependencyDetail, ExportConfig, PackageInfo, PackageMeta};
-pub use path::{is_submodule, normalize_module_path, parent_module_path, resolve_module_path};
+pub use path::{
+    add_library_path, is_submodule, library_paths_snapshot, normalize_module_path,
+    parent_module_path, resolve_library_form, resolve_module_path,
+};
 pub use pkg_info_metta::{load_pkg_info_metta, parse_pkg_info_metta, PkgInfoParseError};
 pub use tokenizer::{GenericTokenizer, Tokenizer};

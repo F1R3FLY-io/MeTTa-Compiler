@@ -16,6 +16,7 @@ pub(crate) mod alpha_equiv;
 pub(crate) mod set_ops;
 pub(crate) mod testing_ops;
 pub(crate) mod modules;
+pub(crate) mod git_import;
 pub(crate) mod mork_forms;
 mod pattern;
 pub mod priority;
@@ -69,7 +70,7 @@ use std::cell::RefCell;
 
 use smallvec::SmallVec;
 
-use crate::backend::models::{MettaValue, SafepointRootHandle};
+use crate::backend::models::{MettaValue, MettaValueTrait, SafepointRootHandle};
 
 /// Type alias for arena evaluation result.
 /// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap
@@ -562,7 +563,13 @@ fn eval_inner(
             compilation_state.set_compilable_with_env(result);
             result
         });
-    if compilable_with_env {
+    // Gate: skip the bytecode path when ANY sub-expression's head has
+    // rules whose RHS bodies contain `(cut)`. The bytecode VM evaluates
+    // all nondeterministic branches unconditionally (no fork/cut
+    // mechanism), so cut semantics only work in the tree-walker trampoline.
+    // For `(! (foo 1))`, we need to check `foo`'s rules, not just `!`.
+    let has_cut_rules = expression_involves_cut_rules(&value, &env);
+    if compilable_with_env && !has_cut_rules {
         // Reuse compilation_state from the record_execution at line 371 —
         // same expression hash, avoids redundant DashMap lookup + hash computation.
         let compilation_state_env = &compilation_state;
@@ -629,6 +636,20 @@ fn eval_inner(
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
     let (results, shared_env) = eval_trampoline(value, env, state);
     (results, (*shared_env).clone())
+}
+
+/// Recursively check if any sub-expression's head has rules that use `(cut)`.
+/// Used to gate the bytecode path: the bytecode VM doesn't implement cut.
+fn expression_involves_cut_rules(value: &MettaValue, env: &MettaEnvironment) -> bool {
+    if let Some(head) = value.get_head_symbol() {
+        if env.rule_rhs_contains_atom(head, "cut") {
+            return true;
+        }
+    }
+    if let Some(items) = value.as_sexpr() {
+        return items.iter().any(|item| expression_involves_cut_rules(item, env));
+    }
+    false
 }
 
 /// Execute JIT-compiled code for arena expression with environment threading.

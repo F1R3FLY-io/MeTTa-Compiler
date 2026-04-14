@@ -750,13 +750,20 @@ impl JitCompiler {
             // =====================================================================
             // Stage 14: S-Expression Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::GetHead | Opcode::GetTail | Opcode::GetArity | Opcode::GetElement => {
+            Opcode::GetHead
+            | Opcode::GetTail
+            | Opcode::StructuralHead
+            | Opcode::StructuralTail
+            | Opcode::GetArity
+            | Opcode::GetElement => {
                 let mut ctx = handlers::SExprHandlerContext {
                     module: &mut self.module,
                     get_head_func_id: self.sexpr.get_head_func_id,
                     get_tail_func_id: self.sexpr.get_tail_func_id,
                     get_arity_func_id: self.sexpr.get_arity_func_id,
                     get_element_func_id: self.sexpr.get_element_func_id,
+                    structural_head_func_id: self.sexpr.structural_head_func_id,
+                    structural_tail_func_id: self.sexpr.structural_tail_func_id,
                     make_sexpr_func_id: self.sexpr.make_sexpr_func_id,
                     cons_atom_func_id: self.sexpr.cons_atom_func_id,
                     make_list_func_id: self.sexpr.make_list_func_id,
@@ -836,6 +843,8 @@ impl JitCompiler {
                     get_tail_func_id: self.sexpr.get_tail_func_id,
                     get_arity_func_id: self.sexpr.get_arity_func_id,
                     get_element_func_id: self.sexpr.get_element_func_id,
+                    structural_head_func_id: self.sexpr.structural_head_func_id,
+                    structural_tail_func_id: self.sexpr.structural_tail_func_id,
                     make_sexpr_func_id: self.sexpr.make_sexpr_func_id,
                     cons_atom_func_id: self.sexpr.cons_atom_func_id,
                     make_list_func_id: self.sexpr.make_list_func_id,
@@ -1982,16 +1991,22 @@ impl JitCompiler {
             // =====================================================================
             Opcode::EvalIfEqual
             | Opcode::UniqueAtom
+            | Opcode::AlphaUniqueAtom
+            | Opcode::StructUniqueAtom
             | Opcode::UnionAtom
             | Opcode::IntersectionAtom
-            | Opcode::SubtractionAtom => {
+            | Opcode::SubtractionAtom
+            | Opcode::Msort => {
                 let mut ctx = handlers::SetOpsHandlerContext {
                     module: &mut self.module,
                     eval_if_equal_func_id: self.set_ops.eval_if_equal_func_id,
                     unique_atom_func_id: self.set_ops.unique_atom_func_id,
+                    alpha_unique_atom_func_id: self.set_ops.alpha_unique_atom_func_id,
+                    struct_unique_atom_func_id: self.set_ops.struct_unique_atom_func_id,
                     union_atom_func_id: self.set_ops.union_atom_func_id,
                     intersection_atom_func_id: self.set_ops.intersection_atom_func_id,
                     subtraction_atom_func_id: self.set_ops.subtraction_atom_func_id,
+                    msort_func_id: self.set_ops.msort_func_id,
                 };
                 return handlers::compile_set_op(&mut ctx, codegen, op, offset);
             }

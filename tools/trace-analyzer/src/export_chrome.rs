@@ -133,6 +133,12 @@ fn event_name(kind: &TraceEventKind) -> String {
         TraceEventKind::TablingDecision { decision, .. } => format!("Tabling:{decision}"),
         TraceEventKind::BindingsApplied { .. } => "BindingsApplied".to_string(),
         TraceEventKind::RuleSelected { selected_index, total_matches, .. } => format!("RuleSelected:{selected_index}/{total_matches}"),
+        TraceEventKind::RuleMatchAttempt { call_head, matcher, .. } => format!("RuleMatchAttempt:{matcher}:{call_head}"),
+        TraceEventKind::RuleLookup { head, .. } => format!("RuleLookup:{head}"),
+        TraceEventKind::RuleIndexInsert { head, .. } => format!("RuleIndexInsert:{}", head.as_deref().unwrap_or("*")),
+        TraceEventKind::SelfEvaluating { reason, .. } => format!("SelfEvaluating:{reason}"),
+        TraceEventKind::ParallelDispatch { branch_count, phase, .. } => format!("ParallelDispatch({branch_count}):{phase}"),
+        TraceEventKind::TrampolineStep { work_kind, iteration, .. } => format!("TrampolineStep#{iteration}:{work_kind}"),
     }
 }
 
@@ -167,5 +173,11 @@ fn event_category(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ArgumentPreEvalResult { .. } => "preeval",
         TraceEventKind::TablingDecision { .. } => "tabling",
         TraceEventKind::RuleSelected { .. } => "rule",
+        TraceEventKind::RuleMatchAttempt { .. } => "rule",
+        TraceEventKind::RuleLookup { .. } => "rule",
+        TraceEventKind::RuleIndexInsert { .. } => "rule",
+        TraceEventKind::SelfEvaluating { .. } => "eval",
+        TraceEventKind::ParallelDispatch { .. } => "nondeterminism",
+        TraceEventKind::TrampolineStep { .. } => "eval",
     }
 }

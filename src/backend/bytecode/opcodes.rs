@@ -121,6 +121,25 @@ pub enum Opcode {
     /// Stack: [var, term] -> [] on success; jump to fail if var occurs in term.
     OccursCheck = 0x25,
 
+    /// `msort`: numeric ascending sort of a tuple.
+    /// Stack: `[tuple] -> [sorted_tuple]`
+    ///
+    /// PeTTa-compatible. Errors on non-numeric elements. Empty tuple
+    /// returns empty tuple. Long and Float values are compared as f64.
+    /// Mirrors `eval_msort_generic` in `src/backend/eval/list_ops/ops.rs`.
+    Msort = 0x26,
+
+    /// `struct-unique-atom`: deduplicate a list using **structural equality**
+    /// (`PartialEq` — variables with different names are NOT considered equal).
+    /// Stack: `[list] -> [deduped_list]`
+    ///
+    /// MeTTaTron's `unique-atom` (0xB4) and `alpha-unique-atom` (0xBF) both
+    /// use **alpha-equivalence** (matching MeTTa HE). This opcode is the
+    /// explicit name for callers who specifically want PeTTa's byte-identity
+    /// dedup semantics. For ground (variable-free) lists, all three produce
+    /// identical results.
+    StructUniqueAtom = 0x27,
+
     // === Variable Operations (0x30-0x3F) ===
     /// Load value from local slot, index is next byte
     LoadLocal = 0x30,
@@ -307,6 +326,17 @@ pub enum Opcode {
     /// Apply substitution to expression
     ApplySubst = 0x96,
 
+    /// Structural head (car-atom) with tree-walker-equivalent pre-eval
+    /// semantics. Pops the raw (unreduced) argument from TOS, applies the
+    /// 4-condition predicate against the current environment (variable head,
+    /// grounded op, eager special form, or arrow-typed head), optionally
+    /// reduces via the tree-walker, then takes head.
+    /// Stack: [raw_arg] -> [head]
+    StructuralHead = 0x97,
+    /// Structural tail (cdr-atom) — see StructuralHead.
+    /// Stack: [raw_arg] -> [tail_sexpr]
+    StructuralTail = 0x98,
+
     // === Special Forms (0xA0-0xBF) ===
     /// Lazy if-then-else
     EvalIf = 0xA0,
@@ -380,6 +410,18 @@ pub enum Opcode {
     /// Native match-or against &self space with default.
     /// Stack: [pattern, default, template] → [result]
     MatchSelfOr = 0xBE,
+    /// alpha-unique-atom: deduplicate list by alpha-equivalence.
+    /// Stack: [list] → [deduped_list]
+    ///
+    /// **Semantics**: matches MeTTa HE's `unique-atom` (alpha-equivalence
+    /// dedup, where two atoms are duplicates iff one can be obtained from
+    /// the other by consistent variable renaming).
+    ///
+    /// MeTTaTron's `unique-atom` (Opcode::UniqueAtom, 0xB4) was changed
+    /// in B10 to use STRUCTURAL equality (PeTTa-compatible). This new
+    /// opcode preserves the alpha-equivalence semantics under the new
+    /// name `alpha-unique-atom`.
+    AlphaUniqueAtom = 0xBF,
 
     // === Grounded Arithmetic (0xC0-0xCF) ===
     /// Addition: [a, b] -> [a + b]
@@ -556,6 +598,8 @@ impl Opcode {
             | Self::IsSymbol
             | Self::GetHead
             | Self::GetTail
+            | Self::StructuralHead
+            | Self::StructuralTail
             | Self::GetArity
             | Self::DeconsAtom
             | Self::Repr
@@ -649,6 +693,7 @@ impl Opcode {
             | Self::EvalApply
             | Self::EvalIfEqual
             | Self::UniqueAtom
+            | Self::AlphaUniqueAtom
             | Self::UnionAtom
             | Self::IntersectionAtom
             | Self::SubtractionAtom
@@ -677,7 +722,9 @@ impl Opcode {
             | Self::FlattenAtom
             | Self::ZipAtom
             | Self::TakeAtom
-            | Self::DropAtom => 0,
+            | Self::DropAtom
+            | Self::Msort
+            | Self::StructUniqueAtom => 0,
 
             // 1-byte immediate
             Self::PushLongSmall
@@ -796,6 +843,8 @@ impl Opcode {
             Self::UnifyDeep => "unify_deep",
             Self::UnifyDeepBind => "unify_deep_bind",
             Self::OccursCheck => "occurs_check",
+            Self::Msort => "msort",
+            Self::StructUniqueAtom => "struct_unique_atom",
             Self::LoadLocal => "load_local",
             Self::StoreLocal => "store_local",
             Self::LoadBinding => "load_binding",
@@ -855,6 +904,8 @@ impl Opcode {
             Self::IsSymbol => "is_symbol",
             Self::GetHead => "get_head",
             Self::GetTail => "get_tail",
+            Self::StructuralHead => "structural_head",
+            Self::StructuralTail => "structural_tail",
             Self::GetArity => "get_arity",
             Self::GetElement => "get_element",
             Self::DeconsAtom => "decons_atom",
@@ -903,6 +954,7 @@ impl Opcode {
             Self::EvalApply => "eval_apply",
             Self::EvalIfEqual => "eval_if_equal",
             Self::UniqueAtom => "unique_atom",
+            Self::AlphaUniqueAtom => "alpha_unique_atom",
             Self::UnionAtom => "union_atom",
             Self::IntersectionAtom => "intersection_atom",
             Self::SubtractionAtom => "subtraction_atom",
@@ -1074,6 +1126,8 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x23] = Some(Opcode::UnifyDeep);
     table[0x24] = Some(Opcode::UnifyDeepBind);
     table[0x25] = Some(Opcode::OccursCheck);
+    table[0x26] = Some(Opcode::Msort);
+    table[0x27] = Some(Opcode::StructUniqueAtom);
 
     // Variable operations
     table[0x30] = Some(Opcode::LoadLocal);
@@ -1170,6 +1224,8 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x94] = Some(Opcode::FailRule);
     table[0x95] = Some(Opcode::LookupRules);
     table[0x96] = Some(Opcode::ApplySubst);
+    table[0x97] = Some(Opcode::StructuralHead);
+    table[0x98] = Some(Opcode::StructuralTail);
 
     // Special forms
     table[0xA0] = Some(Opcode::EvalIf);
@@ -1193,6 +1249,7 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xB2] = Some(Opcode::EvalApply);
     table[0xB3] = Some(Opcode::EvalIfEqual);
     table[0xB4] = Some(Opcode::UniqueAtom);
+    table[0xBF] = Some(Opcode::AlphaUniqueAtom);
     table[0xB5] = Some(Opcode::UnionAtom);
     table[0xB6] = Some(Opcode::IntersectionAtom);
     table[0xB7] = Some(Opcode::SubtractionAtom);
@@ -1336,7 +1393,9 @@ mod tests {
     fn test_invalid_opcode() {
         // Test that gaps in the opcode space return None
         assert!(Opcode::from_byte(0x10).is_none()); // Gap between compiled unification and value creation
-        assert!(Opcode::from_byte(0x26).is_none()); // Gap after unification ops (0x25 is OccursCheck)
+        // 0x26 is Msort, 0x27 is StructUniqueAtom (allocated next to
+        // OccursCheck=0x25); use 0x28 as the next free slot.
+        assert!(Opcode::from_byte(0x28).is_none()); // Free slot after StructUniqueAtom=0x27
     }
 
     #[test]

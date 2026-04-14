@@ -60,19 +60,14 @@ where
                 // HE-compatible: () is an empty S-expression, not unit
                 Ok(maybe_spanned(factory, factory.sexpr(vec![]), span))
             } else {
-                // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
-                let is_conjunction = items
-                    .first()
-                    .is_some_and(|first| matches!(first, MettaExpr::Atom(s, _) if s == ","));
-
-                if is_conjunction {
-                    // Convert to Conjunction variant (skip the comma operator)
-                    let mut goals = Vec::with_capacity(items.len() - 1);
-                    for e in &items[1..] {
-                        goals.push(expr_to_value_generic(e, factory)?);
-                    }
-                    Ok(maybe_spanned(factory, factory.conjunction(goals), span))
-                } else {
+                // NOTE: Comma expressions (, expr1 expr2 ...) are kept as
+                // regular S-expressions to match MeTTa HE semantics, where
+                // (,) is an inert symbol. Previously these were converted to
+                // a Conjunction variant at compile time, but that broke
+                // pattern matching (e.g., (cons , $args) in PLN's Direct.metta)
+                // and diverged from HE's behavior of returning the expression
+                // unchanged.
+                {
                     // Check for (quote expr) → Quoted(expr) variant
                     let is_quote = items.len() == 2
                         && matches!(&items[0], MettaExpr::Atom(s, _) if s == "quote");

@@ -221,6 +221,25 @@ pub enum CompileWork {
         operand: u8,
     },
 
+    /// Emit opcode with u16 operand
+    EmitOpcodeU16 {
+        opcode: Opcode,
+        operand: u16,
+    },
+
+    /// Compile an expression as a LITERAL s-expression, never emitting a
+    /// `Call` opcode for user-defined function heads. Used by
+    /// `car-atom`/`cdr-atom` (and any other structural op) to preserve the
+    /// syntactic form of their argument. Recursively descends into
+    /// s-expression children, emitting `MakeSExpr`/`MakeSExprLarge` to
+    /// reconstruct the list at runtime. Non-sexpr children (atoms,
+    /// variables, primitives) delegate to normal `CompileExpr` compilation,
+    /// so `LoadLocal` still resolves bound variables.
+    CompileAsLiteralSExpr {
+        expr: MettaValue,
+        cont_id: usize,
+    },
+
     /// Patch a jump offset
     PatchJump {
         jump_label: JumpLabel,
@@ -354,6 +373,17 @@ pub enum UnaryOp {
 
     // Set operations
     UniqueAtom,
+    /// Explicit alias of `unique-atom` (alpha-equivalence). Both
+    /// `UniqueAtom` and `AlphaUniqueAtom` map to the same MeTTa HE
+    /// semantics; the variant is kept so the bytecode reflects the
+    /// caller's intent. See `Opcode::AlphaUniqueAtom`.
+    AlphaUniqueAtom,
+    /// `struct-unique-atom`: structural-equality dedup. Distinct from
+    /// `UniqueAtom`/`AlphaUniqueAtom` (which are alpha-equivalence).
+    /// See `Opcode::StructUniqueAtom`.
+    StructUniqueAtom,
+    /// Numeric ascending sort. PeTTa-compatible. See `Opcode::Msort`.
+    Msort,
 
     // Tuple operations
     TupleCount,
@@ -419,6 +449,9 @@ impl UnaryOp {
             UnaryOp::EvalCollapse => Opcode::EvalCollapse,
             UnaryOp::Trace => Opcode::Trace,
             UnaryOp::UniqueAtom => Opcode::UniqueAtom,
+            UnaryOp::AlphaUniqueAtom => Opcode::AlphaUniqueAtom,
+            UnaryOp::StructUniqueAtom => Opcode::StructUniqueAtom,
+            UnaryOp::Msort => Opcode::Msort,
             UnaryOp::TupleCount => Opcode::TupleCount,
             UnaryOp::ReverseAtom => Opcode::ReverseAtom,
             UnaryOp::FlattenAtom => Opcode::FlattenAtom,

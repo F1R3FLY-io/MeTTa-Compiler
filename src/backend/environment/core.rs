@@ -269,6 +269,15 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// are low-frequency. DashMap avoids writer-blocks-readers stalls.
     /// Fork: iterate + clone into new DashMap (infrequent operation).
     pub(crate) inferred_fn_types: DashMap<String, Vec<V>>,
+
+    /// Per-environment override bitset for grounded helpers that user rules
+    /// may shadow (HE-compat helpers like `append`, `length`, `map-atom`,
+    /// `car-atom`, …). Lock-free atomics — read at dispatch time via a
+    /// single relaxed load + bit test.
+    ///
+    /// See `super::dispatch_overrides` for the design rationale and the
+    /// full list of overridable names.
+    pub(crate) dispatch_overrides: super::dispatch_overrides::DispatchOverrides,
 }
 
 /// Byte length of the MORK-serialized rule prefix: `[Arity(3)] + [SymbolSize(8)] + [8 symbol ID bytes]`.
@@ -400,6 +409,8 @@ where
             rule_index: Arc::new(RwLock::new(super::rule_management::RuleIndex::new())),
             // Phase 10.1: Inferred function return types (initially empty)
             inferred_fn_types: DashMap::new(),
+            // Override bitset starts empty — no user rules yet
+            dispatch_overrides: super::dispatch_overrides::DispatchOverrides::default(),
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
@@ -425,6 +436,16 @@ where
     #[inline]
     pub fn factory(&self) -> &F {
         &self.factory
+    }
+
+    /// Get the per-environment override bitset for grounded helpers.
+    ///
+    /// Used by the special-form dispatch arm in `eval_sexpr_step_generic` to
+    /// decide whether a user rule should shadow a grounded helper. See
+    /// `super::dispatch_overrides` for the design.
+    #[inline]
+    pub fn dispatch_overrides(&self) -> &super::dispatch_overrides::DispatchOverrides {
+        &self.shared.dispatch_overrides
     }
 
     /// Get the monotonic epoch for MORK symbol cache invalidation.
@@ -554,6 +575,8 @@ where
             inferred_fn_types: DashMap::from_iter(
                 self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
             ),
+            // Snapshot override bits — owned env mutates independently
+            dispatch_overrides: self.shared.dispatch_overrides.snapshot(),
         });
 
         // Register new shared state as GC root provider
@@ -610,6 +633,8 @@ where
             inferred_fn_types: DashMap::from_iter(
                 self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
             ),
+            // Snapshot override bits for the fork (independent state)
+            dispatch_overrides: self.shared.dispatch_overrides.snapshot(),
         });
 
         // Register forked shared state as GC root provider
@@ -905,6 +930,21 @@ where
                     for t in entry.value() {
                         if !vec.contains(t) {
                             vec.push(t.clone());
+                        }
+                    }
+                }
+                merged
+            },
+            // Override bits: take self's snapshot, then bump for each of
+            // other's user rules whose head is in the overridable set.
+            // The merged rule_index above already contains other's rules,
+            // so the bits stay consistent with the merged index.
+            dispatch_overrides: {
+                let merged = self.shared.dispatch_overrides.snapshot();
+                for entry in other.shared.rule_index.read().get_all_rules() {
+                    if let Some(head) = entry.lhs.get_head_symbol() {
+                        if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                            merged.note_user_rule_added(id);
                         }
                     }
                 }
@@ -1302,6 +1342,22 @@ where
                         for t in entry.value() {
                             if !vec.contains(t) {
                                 vec.push(t.clone());
+                            }
+                        }
+                    }
+                }
+                merged
+            },
+            // Override bits: take self's snapshot, then bump for each rule
+            // from every `other` env whose head is in the overridable set.
+            // Mirrors the merged rule_index above.
+            dispatch_overrides: {
+                let merged = self.shared.dispatch_overrides.snapshot();
+                for other_env in others {
+                    for entry in other_env.shared.rule_index.read().get_all_rules() {
+                        if let Some(head) = entry.lhs.get_head_symbol() {
+                            if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                                merged.note_user_rule_added(id);
                             }
                         }
                     }
@@ -1791,7 +1847,15 @@ where
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
             // Rule removal: use De Bruijn encoding to match PathMap entry
             let sm = self.shared_mapping.clone();
+            // Capture the full De Bruijn bytes inside the callback so we can
+            // also use them to sync the RuleIndex via alpha-equivalent
+            // comparison (rules are stored freshened by Fix 3B, so structural
+            // MettaValue equality fails).
+            let mut captured_bytes: Option<Vec<u8>> = None;
             match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
+                // Save bytes for post-callback RuleIndex sync
+                captured_bytes = Some(mork_bytes.to_vec());
+
                 let mut btm = self.shared.atom_space.btm.write();
 
                 let current_count = get_multiplicity(&btm, mork_bytes);
@@ -1816,8 +1880,49 @@ where
                 self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
             }) {
                 Ok(()) => {
-                    // Sync RuleIndex: decrement or remove the rule entry
-                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
+                    // Sync RuleIndex: use the captured full De Bruijn bytes to
+                    // find and remove the matching entry via alpha-equivalent
+                    // comparison. The wrapper returns `Some(_)` whenever the
+                    // index was authoritatively updated (whether the entry
+                    // was decremented or fully removed) and `None` only when
+                    // no matching entry was found. We must check `.is_some()`
+                    // — NOT pattern-match for `Some(true)` — because matching
+                    // for "fully removed" would re-fire the structural
+                    // fallback on a just-decremented multiplicity > 1 entry,
+                    // silently corrupting it.
+                    let mut idx = self.shared.rule_index.write();
+                    let synced: bool = if let Some(ref bytes) = captured_bytes {
+                        idx.remove_rule_by_debruijn(bytes).is_some()
+                    } else {
+                        false
+                    };
+                    let mut structural_removed = false;
+                    if !synced {
+                        let is_ground = !lhs.contains_variables() && !rhs.contains_variables();
+                        debug_assert!(
+                            is_ground || captured_bytes.is_some(),
+                            "remove_from_space: variable rule had no captured De Bruijn bytes — structural fallback would re-enter the pre-fix bug"
+                        );
+                        if is_ground {
+                            structural_removed = idx.remove_rule(&lhs, &rhs);
+                        }
+                        // For variable rules without captured bytes, do NOT fall
+                        // back to structural removal — that path is broken for
+                        // freshened rules. Leaving the rule in the index is the
+                        // lesser evil (no silent corruption).
+                    }
+                    drop(idx);
+                    // If the rule was actually removed and its head is in the
+                    // overridable set, decrement the override bitset so the
+                    // dispatch arm goes back to the grounded fast path when
+                    // no user rules remain.
+                    if synced || structural_removed {
+                        if let Some(head) = lhs.get_head_symbol() {
+                            if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                                self.shared.dispatch_overrides.note_user_rule_removed(id);
+                            }
+                        }
+                    }
                 }
                 Err(_) => {
                     // Fallback for large expressions (arity >= 64): Wide MORK encoding
@@ -1833,8 +1938,45 @@ where
                     drop(wbtm);
                     self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
                     self.shared.atom_space.head_arity_bloom.write().note_deletion();
+
+                    // Sync RuleIndex for wide rules via wide De Bruijn bytes.
+                    // Same `.is_some()` rule as the narrow path — see comment
+                    // above for why we mustn't pattern-match `Some(true)`.
+                    let mut full_wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+                    let mut wide_full_debruijn = Vec::new();
+                    crate::backend::wide_mork::encoding::encode_wide_debruijn(
+                        value, &mut full_wide_ctx, &mut wide_full_debruijn,
+                    );
+                    let mut idx = self.shared.rule_index.write();
+                    let synced: bool = idx.remove_rule_by_debruijn(&wide_full_debruijn).is_some();
+                    let mut structural_removed = false;
+                    if !synced {
+                        let is_ground = !lhs.contains_variables() && !rhs.contains_variables();
+                        debug_assert!(
+                            is_ground,
+                            "remove_from_space (wide path): variable rule not found via wide De Bruijn"
+                        );
+                        if is_ground {
+                            structural_removed = idx.remove_rule(&lhs, &rhs);
+                        }
+                    }
+                    drop(idx);
+                    if synced || structural_removed {
+                        if let Some(head) = lhs.get_head_symbol() {
+                            if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                                self.shared.dispatch_overrides.note_user_rule_removed(id);
+                            }
+                        }
+                    }
                 }
             }
+            // Invalidate evaluation caches — removing a rule changes which
+            // rules fire at match time, so any memoized result referencing
+            // this rule's head is stale. Same invalidation the non-rule
+            // path performs at the end of this function.
+            crate::backend::eval::trampoline::invalidate_normal_form_memo();
+            crate::backend::eval::trampoline::clear_eval_memo();
+            crate::backend::eval::trampoline::clear_match_result_cache();
             return;
         }
 
@@ -2034,7 +2176,11 @@ where
         // Check if this is a rule (= lhs rhs) — rules are stored with De Bruijn encoding
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
             let sm = self.shared_mapping.clone();
+            // Capture full De Bruijn bytes for alpha-equivalent RuleIndex sync.
+            let mut captured_bytes: Option<Vec<u8>> = None;
             match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
+                captured_bytes = Some(mork_bytes.to_vec());
+
                 let mut btm = self.shared.atom_space.btm.write();
 
                 let current_count = get_multiplicity(&btm, mork_bytes);
@@ -2060,7 +2206,37 @@ where
                 self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
             }) {
                 Ok(()) => {
-                    self.shared.rule_index.write().remove_rule(&lhs, &rhs);
+                    // See `remove_from_space` for the `.is_some()` rationale —
+                    // `Some(_)` means "the index was authoritatively updated"
+                    // (whether decremented or fully removed). Pattern-matching
+                    // for the `Some(true)` "fully removed" case alone would
+                    // re-fire the structural fallback on a just-decremented
+                    // multiplicity > 1 entry and corrupt it.
+                    let mut idx = self.shared.rule_index.write();
+                    let synced: bool = if let Some(ref bytes) = captured_bytes {
+                        idx.remove_rule_by_debruijn(bytes).is_some()
+                    } else {
+                        false
+                    };
+                    let mut structural_removed = false;
+                    if !synced {
+                        let is_ground = !lhs.contains_variables() && !rhs.contains_variables();
+                        debug_assert!(
+                            is_ground || captured_bytes.is_some(),
+                            "remove_from_space_shared: variable rule had no captured De Bruijn bytes"
+                        );
+                        if is_ground {
+                            structural_removed = idx.remove_rule(&lhs, &rhs);
+                        }
+                    }
+                    drop(idx);
+                    if synced || structural_removed {
+                        if let Some(head) = lhs.get_head_symbol() {
+                            if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                                self.shared.dispatch_overrides.note_user_rule_removed(id);
+                            }
+                        }
+                    }
                 }
                 Err(_) => {
                     // Fallback for large expressions (arity >= 64): Wide MORK encoding
@@ -2076,8 +2252,41 @@ where
                     drop(wbtm);
                     self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
                     self.shared.atom_space.head_arity_bloom.write().note_deletion();
+
+                    // Sync RuleIndex for wide rules via wide De Bruijn bytes.
+                    // Same `.is_some()` rule as the narrow path.
+                    let mut full_wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+                    let mut wide_full_debruijn = Vec::new();
+                    crate::backend::wide_mork::encoding::encode_wide_debruijn(
+                        value, &mut full_wide_ctx, &mut wide_full_debruijn,
+                    );
+                    let mut idx = self.shared.rule_index.write();
+                    let synced: bool = idx.remove_rule_by_debruijn(&wide_full_debruijn).is_some();
+                    let mut structural_removed = false;
+                    if !synced {
+                        let is_ground = !lhs.contains_variables() && !rhs.contains_variables();
+                        debug_assert!(
+                            is_ground,
+                            "remove_from_space_shared (wide path): variable rule not found via wide De Bruijn"
+                        );
+                        if is_ground {
+                            structural_removed = idx.remove_rule(&lhs, &rhs);
+                        }
+                    }
+                    drop(idx);
+                    if synced || structural_removed {
+                        if let Some(head) = lhs.get_head_symbol() {
+                            if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                                self.shared.dispatch_overrides.note_user_rule_removed(id);
+                            }
+                        }
+                    }
                 }
             }
+            // Invalidate evaluation caches — same rationale as remove_from_space.
+            crate::backend::eval::trampoline::invalidate_normal_form_memo();
+            crate::backend::eval::trampoline::clear_eval_memo();
+            crate::backend::eval::trampoline::clear_match_result_cache();
             self.mark_modified();
             return;
         }
@@ -2159,6 +2368,23 @@ where
             .head_arity_bloom
             .read()
             .may_contain(head, arity as u8)
+    }
+
+    /// Check if any rule for `head` (any arity) has an RHS body that
+    /// contains the atom `target_atom` anywhere in its tree.
+    ///
+    /// Used to gate the bytecode VM path: the VM doesn't implement cut,
+    /// so expressions whose rules use `(cut)` must go through the trampoline.
+    pub fn rule_rhs_contains_atom(&self, head: &str, target_atom: &str) -> bool {
+        let idx = self.shared.rule_index.read();
+        for entry in idx.get_all_rules() {
+            if entry.lhs.get_head_symbol() == Some(head) {
+                if contains_atom_recursive(&entry.rhs, target_atom) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Check if a (head, arity) pair may match a RULE definition (not data atoms).
@@ -2361,6 +2587,18 @@ impl Default for MettaEnvironment {
     fn default() -> Self {
         GenericEnvironment::new(GcFactory::default())
     }
+}
+
+/// Recursively check if a MettaValue tree contains a specific atom name.
+/// Used by `rule_rhs_contains_atom` to detect `(cut)` in rule bodies.
+fn contains_atom_recursive<V: MettaValueTrait>(value: &V, target: &str) -> bool {
+    if let Some(name) = value.as_atom() {
+        return name == target;
+    }
+    if let Some(items) = value.as_sexpr() {
+        return items.iter().any(|item| contains_atom_recursive(item, target));
+    }
+    false
 }
 
 #[cfg(test)]

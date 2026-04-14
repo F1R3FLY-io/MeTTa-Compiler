@@ -16,6 +16,7 @@ pub mod convert;
 pub mod format;
 #[macro_use]
 pub mod macros;
+pub mod rule_match;
 pub mod thread_local_sink;
 
 #[cfg(test)]
@@ -24,10 +25,11 @@ mod tests;
 pub use collector::TraceCollector;
 pub use convert::{trace_bindings, trace_span, trace_value, trace_value_generic};
 pub use format::{write_event, write_header, write_footer};
+pub use rule_match::{emit_match_attempt, rule_match_filter, LiveOutcome, RuleMatchFilter};
 pub use thread_local_sink::{set_thread_trace_collector, clear_thread_trace_collector, with_thread_trace_collector, set_thread_trace_collector_ref, with_trace_collector_ref};
 
 // Re-export shared format types for convenience.
 pub use trace_format::{
-    TraceEvent, TraceEventKind, TraceHeader, TraceSpan, TraceTier, TraceValue,
+    RuleMatchOutcome, TraceEvent, TraceEventKind, TraceHeader, TraceSpan, TraceTier, TraceValue,
     TRACE_MAGIC, TRACE_FORMAT_VERSION,
 };

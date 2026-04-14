@@ -340,33 +340,31 @@ where
                         }
                     };
 
-                    // Parse as number, bool, or string
-                    let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
-                    let could_be_number = first_byte.is_ascii_digit()
-                        || (first_byte == b'-'
-                            && symbol_str.len() > 1
-                            && symbol_str
-                                .as_bytes()
-                                .get(1)
-                                .is_some_and(|b| b.is_ascii_digit()));
-
-                    if could_be_number {
-                        if let Ok(n) = symbol_str.parse::<i64>() {
-                            factory.long(n)
-                        } else {
-                            factory.atom(symbol_str)
-                        }
-                    } else if symbol_str == "true" {
-                        factory.bool(true)
-                    } else if symbol_str == "false" {
-                        factory.bool(false)
-                    } else if symbol_str.starts_with('"')
-                        && symbol_str.ends_with('"')
-                        && symbol_str.len() >= 2
-                    {
-                        factory.string(&symbol_str[1..symbol_str.len() - 1])
-                    } else {
-                        factory.atom(symbol_str)
+                    // Single-pass classify-AND-parse via the unified
+                    // literal classifier. The DFA walks the bytes ONCE,
+                    // accumulating the integer value digit-by-digit during
+                    // the same scan that determines the kind. Float still
+                    // requires `f64::from_str` (manual mantissa parsing is
+                    // error-prone) but the shape is pre-validated. Bool /
+                    // String / Atom need no further parsing.
+                    //
+                    // Overflow (`LongOverflow`) and unparseable shapes
+                    // fall through to `Atom`, preserving pre-refactor
+                    // semantics for huge digit strings.
+                    //
+                    // See `crate::backend::literal_classifier` for the
+                    // full state-machine description and tests.
+                    use crate::backend::literal_classifier::{
+                        classify_and_parse, ClassifiedLiteral,
+                    };
+                    match classify_and_parse(symbol_str) {
+                        ClassifiedLiteral::Long(n) => factory.long(n),
+                        ClassifiedLiteral::Float(f) => factory.float(f),
+                        ClassifiedLiteral::BoolTrue => factory.bool(true),
+                        ClassifiedLiteral::BoolFalse => factory.bool(false),
+                        ClassifiedLiteral::String(inner) => factory.string(inner),
+                        ClassifiedLiteral::LongOverflow
+                        | ClassifiedLiteral::Atom => factory.atom(symbol_str),
                     }
                 }
                 Tag::Arity(arity) => {

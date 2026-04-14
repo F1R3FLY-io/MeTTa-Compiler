@@ -1385,6 +1385,16 @@ where
                     });
                 }
             }
+            Opcode::StructuralHead => {
+                let raw = self.pop()?;
+                let reduced = self.maybe_pre_eval_structural(raw)?;
+                self.push_head_of(reduced)?;
+            }
+            Opcode::StructuralTail => {
+                let raw = self.pop()?;
+                let reduced = self.maybe_pre_eval_structural(raw)?;
+                self.push_tail_of(reduced)?;
+            }
             Opcode::GetArity => {
                 let a = self.pop()?;
                 if let Some(items) = a.as_sexpr() {
@@ -1491,6 +1501,9 @@ where
             // === Set Operations & Alpha-Equivalence ===
             Opcode::EvalIfEqual => self.op_eval_if_equal()?,
             Opcode::UniqueAtom => self.op_unique_atom()?,
+            Opcode::AlphaUniqueAtom => self.op_alpha_unique_atom()?,
+            Opcode::StructUniqueAtom => self.op_struct_unique_atom()?,
+            Opcode::Msort => self.op_msort()?,
             Opcode::UnionAtom => self.op_union_atom()?,
             Opcode::IntersectionAtom => self.op_intersection_atom()?,
             Opcode::SubtractionAtom => self.op_subtraction_atom()?,
@@ -3175,8 +3188,23 @@ where
         Ok(())
     }
 
-    /// unique-atom: deduplicate list by alpha-equivalence
-    /// Stack: [list] -> [deduped_list]
+    /// `unique-atom`: deduplicate a list by **alpha-equivalence**.
+    ///
+    /// Stack: `[list] -> [deduped_list]`
+    ///
+    /// **Semantics**: matches **MeTTa HE's `UniqueAtomOp`** (in
+    /// `lib/src/metta/runner/stdlib/atom.rs`). Two atoms are duplicates
+    /// iff one can be obtained from the other by consistent variable
+    /// renaming, and variable-repetition patterns must match.
+    ///
+    /// `alpha-unique-atom` is an explicit alias of this opcode with
+    /// identical semantics. For PeTTa-compatible structural dedup
+    /// (where variables with different names are NOT considered equal),
+    /// use `struct-unique-atom` (`Opcode::StructUniqueAtom`).
+    ///
+    /// Note: an earlier in-branch B10 work had temporarily flipped this
+    /// opcode to structural equality. That divergence has been reverted
+    /// in favor of MeTTa HE-faithfulness.
     fn op_unique_atom(&mut self) -> VmResult<()> {
         let list = self.pop()?;
 
@@ -3191,7 +3219,7 @@ where
             got: "other",
         })?;
 
-        // O(n²) alpha-equivalence dedup (matches MeTTa HE)
+        // O(n²) alpha-equivalence dedup (matches MeTTa HE).
         let mut unique: Vec<V> = Vec::with_capacity(items.len());
         for item in items {
             let already_seen = unique.iter().any(|seen| self.alpha_equiv(seen, item));
@@ -3200,6 +3228,123 @@ where
             }
         }
         self.push(self.make_sexpr(unique));
+        Ok(())
+    }
+
+    /// `alpha-unique-atom`: explicit alias of `unique-atom`.
+    ///
+    /// Stack: `[list] -> [deduped_list]`
+    ///
+    /// Semantics are identical to `op_unique_atom` (alpha-equivalence
+    /// dedup, matching MeTTa HE). Kept as a separate opcode so callers
+    /// can spell out their intent and the bytecode is self-documenting.
+    fn op_alpha_unique_atom(&mut self) -> VmResult<()> {
+        // Identical body to op_unique_atom — kept inline rather than
+        // delegating to avoid an extra function-call frame in the hot path.
+        let list = self.pop()?;
+
+        if list.is_unit() {
+            self.push(list);
+            return Ok(());
+        }
+
+        let items = list.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+
+        let mut unique: Vec<V> = Vec::with_capacity(items.len());
+        for item in items {
+            let already_seen = unique.iter().any(|seen| self.alpha_equiv(seen, item));
+            if !already_seen {
+                unique.push(item.clone());
+            }
+        }
+        self.push(self.make_sexpr(unique));
+        Ok(())
+    }
+
+    /// `struct-unique-atom`: deduplicate a list by **structural equality**.
+    ///
+    /// Stack: `[list] -> [deduped_list]`
+    ///
+    /// **Semantics**: PeTTa-compatible byte-identity dedup (Rust
+    /// `PartialEq`). Variables with the same name match; variables with
+    /// different names do NOT. Matches PeTTa's `unique-atom`
+    /// (`metta.pl:114`, `list_to_set/2`).
+    ///
+    /// MeTTaTron's `unique-atom` uses alpha-equivalence (matching MeTTa
+    /// HE). `struct-unique-atom` is the explicit name for callers who
+    /// want byte-identity semantics.
+    fn op_struct_unique_atom(&mut self) -> VmResult<()> {
+        let list = self.pop()?;
+
+        if list.is_unit() {
+            self.push(list);
+            return Ok(());
+        }
+
+        let items = list.as_sexpr().ok_or(VmError::TypeError {
+            expected: "S-expression",
+            got: "other",
+        })?;
+
+        // O(n²) structural-equality dedup — matches PeTTa's `list_to_set/2`.
+        let mut unique: Vec<V> = Vec::with_capacity(items.len());
+        for item in items {
+            let already_seen = unique.iter().any(|seen| seen == item);
+            if !already_seen {
+                unique.push(item.clone());
+            }
+        }
+        self.push(self.make_sexpr(unique));
+        Ok(())
+    }
+
+    /// `msort`: numeric ascending sort of a tuple.
+    ///
+    /// Stack: `[tuple] -> [sorted_tuple]`
+    ///
+    /// PeTTa-compatible. Empty tuple returns empty tuple. All elements
+    /// must be numeric (Long or Float); non-numeric elements produce an
+    /// error MettaValue. Long and Float values are compared as f64.
+    /// Mirrors `eval_msort_generic` in `src/backend/eval/list_ops/ops.rs`.
+    fn op_msort(&mut self) -> VmResult<()> {
+        let tuple = self.pop()?;
+
+        let elements: Vec<V> = if tuple.is_unit() {
+            Vec::new()
+        } else if let Some(elems) = tuple.as_sexpr() {
+            elems.iter().cloned().collect()
+        } else {
+            let err = self.make_error("msort: argument must be an expression", tuple);
+            self.push(err);
+            return Ok(());
+        };
+
+        // Pair each element with its numeric key, propagating an error
+        // value on the first non-numeric element (matching the
+        // tree-walker's eager-error semantics).
+        let mut keyed: Vec<(f64, V)> = Vec::with_capacity(elements.len());
+        for e in elements {
+            let key = if let Some(n) = e.as_long() {
+                n as f64
+            } else if let Some(f) = e.as_float() {
+                f
+            } else {
+                let err = self.make_error(
+                    "msort: all elements must be numeric (Long or Float)",
+                    e,
+                );
+                self.push(err);
+                return Ok(());
+            };
+            keyed.push((key, e));
+        }
+
+        keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let sorted: Vec<V> = keyed.into_iter().map(|(_, v)| v).collect();
+        self.push(self.make_sexpr(sorted));
         Ok(())
     }
 
@@ -4682,6 +4827,104 @@ where
             Ok(self.factory.sexpr(evaluated_items))
         } else {
             Ok(expr)
+        }
+    }
+
+    /// Decide whether a `car-atom`/`cdr-atom` argument should be pre-evaluated
+    /// before the structural head/tail is taken. Mirrors exactly the tree-walker
+    /// predicate `is_reducible_structural_arg` (src/backend/eval/step/sexpr.rs)
+    /// — the four reducer conditions:
+    ///   1. head starts with `$` (variable — binding may resolve to a reducer)
+    ///   2. `is_grounded_op(head)` (e.g. `+`, `cons-atom`, `get-type`)
+    ///   3. `is_eager_special_form(head)` (e.g. `collapse`, `reduce`, `unquote`)
+    ///   4. `should_pre_eval_by_type(head, env)` (head has `(-> ...)` arrow type)
+    ///
+    /// If the arg's head matches any of these (at runtime, against the VM's
+    /// current env), we evaluate via the trampoline and return the reduced
+    /// value. Otherwise the raw s-expression is preserved — structural
+    /// operations see the syntactic form (e.g. `(car-atom (grandfather a b))`
+    /// returns `grandfather`, never forcing a rule call on user-defined heads).
+    fn maybe_pre_eval_structural(&self, v: V) -> VmResult<V> {
+        use crate::backend::eval::{is_grounded_op, is_eager_special_form};
+        use crate::backend::eval::step::should_pre_eval_by_type;
+
+        let items = match v.as_sexpr() {
+            Some(s) => s,
+            None => return Ok(v),
+        };
+        let head = match items.first().and_then(|h| h.as_atom()) {
+            Some(h) => h,
+            None => return Ok(v),
+        };
+        let env_ref = match self.env.as_ref() {
+            Some(e) => e,
+            None => return Ok(v),
+        };
+        let should_reduce = head.starts_with('$')
+            || is_grounded_op(head)
+            || is_eager_special_form(head)
+            || should_pre_eval_by_type::<V, F>(head, env_ref);
+        if !should_reduce {
+            return Ok(v);
+        }
+
+        // Reduce via the trampoline, mirroring `eval_sub_expr_vm` pattern
+        // used by `op_eval_if_reducible`/`op_eval_match` (line 2805+).
+        let env = self.env.clone().ok_or_else(|| {
+            VmError::Runtime("structural op: no environment available".to_string())
+        })?;
+        self.eval_sub_expr_vm(v, env)
+    }
+
+    /// Shared implementation of `car-atom` semantics: given a (possibly
+    /// pre-evaluated) value, push the head onto the VM stack. Mirrors the
+    /// `GetHead` arm at line 1345 of `step` and the quoted-transparency case.
+    fn push_head_of(&mut self, a: V) -> VmResult<()> {
+        if let Some(items) = a.as_sexpr() {
+            if let Some(first) = items.first() {
+                self.push(first.clone());
+                Ok(())
+            } else {
+                Err(VmError::TypeError {
+                    expected: "non-empty S-expression",
+                    got: "other",
+                })
+            }
+        } else if a.is_quoted() {
+            // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
+            self.push(self.make_atom("quote"));
+            Ok(())
+        } else {
+            Err(VmError::TypeError {
+                expected: "non-empty S-expression",
+                got: "other",
+            })
+        }
+    }
+
+    /// Shared implementation of `cdr-atom` semantics. Mirrors the `GetTail`
+    /// arm at line 1366 of `step` including quoted-transparency.
+    fn push_tail_of(&mut self, a: V) -> VmResult<()> {
+        if let Some(items) = a.as_sexpr() {
+            if !items.is_empty() {
+                let tail: Vec<V> = items[1..].to_vec();
+                self.push(self.make_sexpr(tail));
+                Ok(())
+            } else {
+                Err(VmError::TypeError {
+                    expected: "non-empty S-expression",
+                    got: "other",
+                })
+            }
+        } else if let Some(inner) = a.as_quoted() {
+            // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
+            self.push(self.make_sexpr(vec![inner]));
+            Ok(())
+        } else {
+            Err(VmError::TypeError {
+                expected: "non-empty S-expression",
+                got: "other",
+            })
         }
     }
 

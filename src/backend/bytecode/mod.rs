@@ -467,6 +467,7 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                         && items[1].as_atom() == Some("&self"),
                     "unify" => false,
                     "collapse-bind" => false,
+                    "ground-with-bindings" => false,
                     "amb" => false,
                     "sealed" | "atom-subst" => false,
                     "remove-atom" | "get-atoms" => true,

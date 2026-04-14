@@ -808,6 +808,11 @@ fn test_compile_check_type() {
 
 #[test]
 fn test_compile_car_atom() {
+    // car-atom compiles to StructuralHead (not GetHead). The VM-side
+    // `StructuralHead` opcode applies the tree-walker's 4-condition pre-eval
+    // predicate at runtime using the live env — so structural semantics
+    // match the interpreter exactly. See src/backend/bytecode/vm/mod.rs
+    // `maybe_pre_eval_structural`.
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("car-atom".to_string()),
         MettaValue::SExpr(vec![
@@ -817,11 +822,24 @@ fn test_compile_car_atom() {
         ]),
     ]);
     let chunk = compile("test", &expr).unwrap();
-    assert!(chunk.disassemble().contains("get_head"));
+    let disasm = chunk.disassemble();
+    assert!(
+        disasm.contains("structural_head"),
+        "car-atom should compile to structural_head; got:\n{}",
+        disasm
+    );
+    // And the argument must be materialized via MakeSExpr (literal), NOT Call.
+    assert!(
+        !disasm.contains("call "),
+        "car-atom must not emit Call for its argument; got:\n{}",
+        disasm
+    );
 }
 
 #[test]
 fn test_compile_cdr_atom() {
+    // cdr-atom compiles to StructuralTail (not GetTail). See
+    // test_compile_car_atom for rationale.
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("cdr-atom".to_string()),
         MettaValue::SExpr(vec![
@@ -831,7 +849,70 @@ fn test_compile_cdr_atom() {
         ]),
     ]);
     let chunk = compile("test", &expr).unwrap();
-    assert!(chunk.disassemble().contains("get_tail"));
+    let disasm = chunk.disassemble();
+    assert!(
+        disasm.contains("structural_tail"),
+        "cdr-atom should compile to structural_tail; got:\n{}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("call "),
+        "cdr-atom must not emit Call for its argument; got:\n{}",
+        disasm
+    );
+}
+
+#[test]
+fn test_compile_car_atom_user_sexpr_preserves_structure() {
+    // Critical regression test: `(car-atom (grandfather foo bar))` must
+    // preserve (grandfather foo bar) as literal syntax — the bytecode
+    // compiler must NOT emit `Call grandfather 2`, which would
+    // pre-evaluate the rule body and destroy the syntactic form that
+    // car-atom operates on. Tree-walker parity is enforced by
+    // StructuralHead at runtime.
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("car-atom".to_string()),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("grandfather".to_string()),
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(
+        disasm.contains("structural_head"),
+        "expected structural_head; got:\n{}",
+        disasm
+    );
+    assert!(
+        disasm.contains("make_sexpr"),
+        "arg must be materialized via make_sexpr; got:\n{}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("call "),
+        "must not emit Call for user-defined head; got:\n{}",
+        disasm
+    );
+}
+
+#[test]
+fn test_compile_cdr_atom_user_sexpr_preserves_structure() {
+    // Symmetric to test_compile_car_atom_user_sexpr_preserves_structure.
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("cdr-atom".to_string()),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("grandfather".to_string()),
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    assert!(disasm.contains("structural_tail"), "{}", disasm);
+    assert!(disasm.contains("make_sexpr"), "{}", disasm);
+    assert!(!disasm.contains("call "), "{}", disasm);
 }
 
 #[test]

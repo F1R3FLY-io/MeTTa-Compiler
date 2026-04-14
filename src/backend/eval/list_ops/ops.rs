@@ -808,6 +808,316 @@ where
     vec![factory.sexpr(remaining)]
 }
 
+// =============================================================================
+// PeTTa-compatible helpers
+// =============================================================================
+//
+// The following functions provide PeTTa-compatible aliases and new operations
+// used by lib_pln.metta and other PeTTa-style code. They are pure-MeTTa
+// equivalents (in the sense that they're implemented as MeTTaTron native
+// grounded operators, not by shelling out to Prolog/Python/Chicken Scheme).
+//
+// PeTTa argument-order conventions sometimes differ from MeTTaTron's existing
+// conventions:
+//   - PeTTa `(is-member elem list)` matches MeTTaTron `(element-of elem list)` ✓
+//   - PeTTa `(exclude-item elem list)` is REVERSED vs MeTTaTron `(without list elem)`
+//   - PeTTa `(append a b)` matches MeTTaTron `(tuple-concat a b)` ✓
+//   - PeTTa `(length list)` matches MeTTaTron `(size-atom list)` ✓
+
+/// is-member: PeTTa-compatible alias of `element-of`.
+///
+/// Usage: `(is-member elem tuple)` -> `True | False`
+///
+/// Identical semantics to MeTTaTron's `element-of` (PeTTa's `is-member` and
+/// MeTTaTron's `element-of` happen to use the same arg order: element first,
+/// list second). Mirrors PeTTa's `metta.pl:114` `'is-member'/2` predicate.
+pub fn eval_is_member_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() != 3 {
+        return vec![factory.error(
+            &format!(
+                "is-member requires 2 arguments, got {}. Usage: (is-member elem tuple)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+
+    let elem = &items[1];
+    let tuple = &items[2];
+
+    let elements: &[V] = if tuple.is_unit() {
+        &[]
+    } else if let Some(elems) = tuple.as_sexpr() {
+        elems
+    } else {
+        return vec![factory.error(
+            "is-member: second argument must be an expression",
+            tuple.clone(),
+        )];
+    };
+
+    let found = elements.iter().any(|e| e == elem);
+    vec![factory.bool(found)]
+}
+
+/// append: PeTTa-compatible alias of `tuple-concat`.
+///
+/// Usage: `(append tuple1 tuple2)` -> `(tuple1... tuple2...)`
+///
+/// Mirrors PeTTa's `append/3` builtin (Prolog list append).
+pub fn eval_append_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() != 3 {
+        return vec![factory.error(
+            &format!(
+                "append requires 2 arguments, got {}. Usage: (append tuple1 tuple2)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+
+    let a = &items[1];
+    let b = &items[2];
+
+    let a_elems: Vec<V> = if a.is_unit() {
+        vec![]
+    } else if let Some(elems) = a.as_sexpr() {
+        elems.iter().cloned().collect()
+    } else {
+        return vec![factory.error(
+            "append: first argument must be an expression",
+            a.clone(),
+        )];
+    };
+
+    let b_elems: Vec<V> = if b.is_unit() {
+        vec![]
+    } else if let Some(elems) = b.as_sexpr() {
+        elems.iter().cloned().collect()
+    } else {
+        return vec![factory.error(
+            "append: second argument must be an expression",
+            b.clone(),
+        )];
+    };
+
+    let mut combined = Vec::with_capacity(a_elems.len() + b_elems.len());
+    combined.extend(a_elems);
+    combined.extend(b_elems);
+    vec![factory.sexpr(combined)]
+}
+
+/// length: PeTTa-compatible alias of `size-atom`.
+///
+/// Usage: `(length tuple)` -> `Number`
+///
+/// Mirrors PeTTa's `length/2` Prolog builtin.
+pub fn eval_length_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() != 2 {
+        return vec![factory.error(
+            &format!(
+                "length requires 1 argument, got {}. Usage: (length tuple)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+
+    let expr = &items[1];
+
+    if expr.is_unit() {
+        return vec![factory.long(0)];
+    }
+
+    if let Some(elements) = expr.as_sexpr() {
+        return vec![factory.long(elements.len() as i64)];
+    }
+
+    vec![factory.error(
+        "length: argument must be an expression",
+        expr.clone(),
+    )]
+}
+
+/// exclude-item: PeTTa-compatible — like MeTTaTron's `without` but with
+/// **reversed argument order**.
+///
+/// Usage: `(exclude-item elem tuple)` -> tuple-without-elem
+///
+/// PeTTa's `(exclude-item elem tuple)` (element first) is the reverse of
+/// MeTTaTron's `(without tuple elem)` (tuple first). This wrapper swaps the
+/// args and forwards to the existing `eval_without_generic` implementation.
+///
+/// Mirrors PeTTa's `'exclude-item'/3` predicate.
+pub fn eval_exclude_item_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() != 3 {
+        return vec![factory.error(
+            &format!(
+                "exclude-item requires 2 arguments, got {}. Usage: (exclude-item elem tuple)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+    // Swap args: (exclude-item elem tuple) -> (without tuple elem)
+    // The first item (head atom name) doesn't matter for `eval_without_generic`
+    // because it just inspects items[1] and items[2].
+    let swapped = vec![items[0].clone(), items[2].clone(), items[1].clone()];
+    eval_without_generic(&swapped, factory)
+}
+
+/// msort: numeric ascending sort of a tuple of numbers.
+///
+/// Usage: `(msort (3 1 2))` -> `(1 2 3)`
+///
+/// Mirrors PeTTa's `msort/2` (which is `sort` without dedup, i.e. sort-with-dups).
+/// Empty tuple → empty tuple. Non-numeric elements produce an error MettaValue.
+/// Long and Float values are sorted as if all converted to f64.
+pub fn eval_msort_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() != 2 {
+        return vec![factory.error(
+            &format!(
+                "msort requires 1 argument, got {}. Usage: (msort tuple)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+    let tuple = &items[1];
+    let elements: Vec<V> = if tuple.is_unit() {
+        vec![]
+    } else if let Some(elems) = tuple.as_sexpr() {
+        elems.iter().cloned().collect()
+    } else {
+        return vec![factory.error(
+            "msort: argument must be an expression",
+            tuple.clone(),
+        )];
+    };
+    // Sort by numeric value (Long or Float). Non-numeric items error out.
+    let mut keyed: Vec<(f64, V)> = Vec::with_capacity(elements.len());
+    for e in elements {
+        let key = if let Some(n) = e.as_long() {
+            n as f64
+        } else if let Some(f) = e.as_float() {
+            f
+        } else {
+            return vec![factory.error(
+                "msort: all elements must be numeric (Long or Float)",
+                e,
+            )];
+        };
+        keyed.push((key, e));
+    }
+    keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let sorted: Vec<V> = keyed.into_iter().map(|(_, v)| v).collect();
+    vec![factory.sexpr(sorted)]
+}
+
+/// progn: sequential evaluation, returns the last result.
+///
+/// Usage: `(progn expr1 expr2 ... exprN)` -> result of `exprN`
+///
+/// Each preceding expression is evaluated for side effects only. Because
+/// MeTTaTron uses applicative-order evaluation, the side-effecting earlier
+/// arguments are already reduced by the trampoline before this function is
+/// called, so this just returns the last argument.
+///
+/// Mirrors PeTTa's `progn/N` (sequential composition).
+pub fn eval_progn_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() < 2 {
+        return vec![factory.error(
+            "progn requires at least 1 argument",
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+    // items[0] is the head atom "progn"; items[1..] are the args.
+    // Last arg is at items[items.len() - 1]. Already pre-evaluated by the trampoline.
+    vec![items.last().unwrap().clone()]
+}
+
+/// reduce: PeTTa-compatible — force evaluation of an expression.
+///
+/// Usage: `(reduce expr)` -> evaluated expr
+///
+/// In MeTTaTron's applicative-order evaluator, the argument is already
+/// reduced by the trampoline by the time this function is called, so this
+/// is effectively the identity function. Mirrors PeTTa's
+/// `<PeTTa>/src/translator.pl:50` `reduce/2` predicate, which forces
+/// evaluation of an expression to its normal form.
+pub fn eval_reduce_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() != 2 {
+        return vec![factory.error(
+            &format!(
+                "reduce requires 1 argument, got {}. Usage: (reduce expr)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+    // The argument is already reduced by the time we get here (applicative order).
+    vec![items[1].clone()]
+}
+
+/// cut: Prolog-style commitment marker. Returns Unit.
+///
+/// Usage: `(cut)` -> `()`
+///
+/// Implements Prolog-style cut semantics: when evaluated inside a rule's
+/// RHS (typically via `(progn (cut) body)`), signals the nearest enclosing
+/// nondeterministic rule dispatch to commit to the current branch and
+/// discard remaining alternative matches.
+///
+/// Mirrors PeTTa's Prolog `cut/0` (`!`), exposed as `cut` in MeTTa code.
+pub fn eval_cut_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if items.len() != 1 {
+        return vec![factory.error(
+            &format!(
+                "cut takes no arguments, got {}. Usage: (cut)",
+                items.len() - 1
+            ),
+            factory.sexpr(items.to_vec()),
+        )];
+    }
+    // Signal the nearest enclosing ProcessRuleMatches continuation to
+    // discard remaining alternative matches. The flag is consumed (cleared)
+    // when the continuation observes it.
+    crate::backend::eval::trampoline::eval_loop::set_cut_active();
+    vec![factory.unit()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

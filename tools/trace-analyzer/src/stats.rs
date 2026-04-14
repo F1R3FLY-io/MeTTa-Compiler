@@ -214,5 +214,11 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::TablingDecision { .. } => "TablingDecision",
         TraceEventKind::BindingsApplied { .. } => "BindingsApplied",
         TraceEventKind::RuleSelected { .. } => "RuleSelected",
+        TraceEventKind::RuleMatchAttempt { .. } => "RuleMatchAttempt",
+        TraceEventKind::RuleLookup { .. } => "RuleLookup",
+        TraceEventKind::RuleIndexInsert { .. } => "RuleIndexInsert",
+        TraceEventKind::SelfEvaluating { .. } => "SelfEvaluating",
+        TraceEventKind::ParallelDispatch { .. } => "ParallelDispatch",
+        TraceEventKind::TrampolineStep { .. } => "TrampolineStep",
     }
 }

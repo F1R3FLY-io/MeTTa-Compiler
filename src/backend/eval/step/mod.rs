@@ -26,5 +26,5 @@ pub use grounded::{extract_arg_types, is_meta_type};
 pub use grounded::{
     find_typed_arg_indices_generic, is_declared_value_type,
     validate_grounded_arg_types, extract_return_type, is_arrow_type,
-    is_meta_type as is_meta_type_value,
+    is_meta_type as is_meta_type_value, should_pre_eval_by_type,
 };

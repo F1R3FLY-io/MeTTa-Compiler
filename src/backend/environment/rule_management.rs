@@ -118,6 +118,7 @@ pub fn clear_mork_bytes_cache() {
 
 use super::core::GenericEnvironment;
 use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
+
 // Disabled: mork_expr_to_generic_value no longer used directly — deserialization happens via
 // mork_bytes_to_generic_value for individual binding bytes.
 // use super::mork_encoding::mork_expr_to_generic_value;
@@ -195,6 +196,16 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// Empty for narrow rules (arity < 64) — use `lhs_debruijn` instead.
     /// Populated when MORK encoding fails due to arity ≥ 64.
     pub lhs_wide_debruijn: Vec<u8>,
+
+    /// Full `(= lhs rhs)` De Bruijn bytes — used by `remove_rule` for
+    /// alpha-equivalent rule identification. Without this, remove-atom on
+    /// a rule with variables fails silently: rules are stored with
+    /// Fix 3B's alpha-renamed variables, so structural `MettaValue == V`
+    /// comparison between the caller's original-name rule and the stored
+    /// freshened rule never matches. Comparing De Bruijn bytes (which are
+    /// alpha-equivalent by construction) fixes that.
+    /// Empty for wide rules (arity ≥ 64).
+    pub full_debruijn: Vec<u8>,
 
     // --- Metadata ---
     /// De Bruijn index → original variable name (e.g., "$x", "$y")
@@ -353,6 +364,10 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
                     return Some(false);
                 } else {
                     entries.remove(pos);
+                    // Disc tree indexes by rule_index_in_group; removing an
+                    // entry invalidates those indices, so the tree must be
+                    // rebuilt on the next query.
+                    self.invalidate_disc_tree();
                     return Some(true);
                 }
             }
@@ -364,6 +379,46 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
                 return Some(false);
             } else {
                 self.variable_first_arg.remove(pos);
+                self.invalidate_disc_tree();
+                return Some(true);
+            }
+        }
+        None // Not found in this group
+    }
+
+    /// Alpha-equivalent rule removal via full De Bruijn byte comparison.
+    ///
+    /// Rules are stored with Fix 3B alpha-renamed variables, so
+    /// `remove_rule(&lhs, &rhs)` using MettaValue structural equality fails
+    /// when the caller passes original-name variables. This variant instead
+    /// compares the full `(= lhs rhs)` De Bruijn bytes, which are alpha-
+    /// equivalent by construction: two rules that differ only in variable
+    /// names produce identical bytes.
+    ///
+    /// Returns `Some(true)` if an entry was fully removed (multiplicity dropped
+    /// to 0), `Some(false)` if only decremented, `None` if no match found.
+    fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<bool> {
+        // Search first-arg-indexed buckets
+        for entries in self.by_first_arg_head.values_mut() {
+            if let Some(pos) = entries.iter().position(|e| e.full_debruijn == full_bytes) {
+                if entries[pos].multiplicity > 1 {
+                    entries[pos].multiplicity -= 1;
+                    return Some(false);
+                } else {
+                    entries.remove(pos);
+                    self.invalidate_disc_tree();
+                    return Some(true);
+                }
+            }
+        }
+        // Search variable-first-arg list
+        if let Some(pos) = self.variable_first_arg.iter().position(|e| e.full_debruijn == full_bytes) {
+            if self.variable_first_arg[pos].multiplicity > 1 {
+                self.variable_first_arg[pos].multiplicity -= 1;
+                return Some(false);
+            } else {
+                self.variable_first_arg.remove(pos);
+                self.invalidate_disc_tree();
                 return Some(true);
             }
         }
@@ -439,7 +494,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for RuleGroupIter<'a, V> {
 /// When `add_rule()` is called with the same `(lhs, rhs)` (by `PartialEq`),
 /// the existing entry's multiplicity is incremented rather than creating a duplicate.
 #[derive(Debug, Clone)]
-pub(crate) struct RuleIndex<V: MettaValueTrait + Clone> {
+pub(crate) struct RuleIndex<V: MettaValueTrait + Clone + 'static> {
     /// Rules indexed by (head_symbol, arity) → RuleGroup (with second-level first-arg indexing).
     /// Head symbols are interned as `&'static str` via the slab allocator for zero-alloc lookups.
     by_head_arity: HashMap<(&'static str, usize), RuleGroup<V>>,
@@ -483,6 +538,24 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 for existing in group.all_entries_mut() {
                     if existing.lhs == entry.lhs && existing.rhs == entry.rhs {
                         existing.multiplicity += 1;
+                        #[cfg(feature = "eval-trace")]
+                        crate::backend::trace::with_trace_collector_ref(|tc| {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker, 0,
+                                crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                Vec::new(), None,
+                                trace_format::TraceEventKind::RuleIndexInsert {
+                                    rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                    head: Some(h.to_string()),
+                                    arity: arity as u32,
+                                    first_arg_head: first_arg_head.map(|s| s.to_string()),
+                                    rule_index_in_group: existing.rule_index_in_group,
+                                    global_rule_index: existing.global_rule_index,
+                                    is_duplicate: true,
+                                    source: "direct-definition".to_string(),
+                                },
+                            );
+                        });
                         return;
                     }
                 }
@@ -493,6 +566,28 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 entry.rule_index_in_group = idx;
                 entry.global_rule_index = GLOBAL_RULE_COUNTER.fetch_add(1, Ordering::Relaxed);
                 group.next_rule_index += 1;
+
+                #[cfg(feature = "eval-trace")]
+                {
+                    let global_idx = entry.global_rule_index;
+                    crate::backend::trace::with_trace_collector_ref(|tc| {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker, 0,
+                            crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                            Vec::new(), None,
+                            trace_format::TraceEventKind::RuleIndexInsert {
+                                rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                head: Some(h.to_string()),
+                                arity: arity as u32,
+                                first_arg_head: first_arg_head.map(|s| s.to_string()),
+                                rule_index_in_group: idx,
+                                global_rule_index: global_idx,
+                                is_duplicate: false,
+                                source: "direct-definition".to_string(),
+                            },
+                        );
+                    });
+                }
 
                 // I-1: Build/update discrimination tree for multi-level pruning
                 let lhs_for_disc = entry.lhs.clone();
@@ -518,12 +613,52 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 for existing in self.wildcard.iter_mut() {
                     if existing.lhs == entry.lhs && existing.rhs == entry.rhs {
                         existing.multiplicity += 1;
+                        #[cfg(feature = "eval-trace")]
+                        crate::backend::trace::with_trace_collector_ref(|tc| {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker, 0,
+                                crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                Vec::new(), None,
+                                trace_format::TraceEventKind::RuleIndexInsert {
+                                    rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                    head: None,
+                                    arity: 0,
+                                    first_arg_head: None,
+                                    rule_index_in_group: existing.rule_index_in_group,
+                                    global_rule_index: existing.global_rule_index,
+                                    is_duplicate: true,
+                                    source: "direct-definition".to_string(),
+                                },
+                            );
+                        });
                         return;
                     }
                 }
                 let mut entry = entry;
                 entry.rule_index_in_group = self.wildcard.len() as u32;
                 entry.global_rule_index = GLOBAL_RULE_COUNTER.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "eval-trace")]
+                {
+                    let idx = entry.rule_index_in_group;
+                    let global_idx = entry.global_rule_index;
+                    crate::backend::trace::with_trace_collector_ref(|tc| {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker, 0,
+                            crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                            Vec::new(), None,
+                            trace_format::TraceEventKind::RuleIndexInsert {
+                                rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                head: None,
+                                arity: 0,
+                                first_arg_head: None,
+                                rule_index_in_group: idx,
+                                global_rule_index: global_idx,
+                                is_duplicate: false,
+                                source: "direct-definition".to_string(),
+                            },
+                        );
+                    });
+                }
                 self.wildcard.push(entry);
             }
         }
@@ -548,6 +683,51 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
             }
         }
         false
+    }
+
+    /// Alpha-equivalent rule removal via full De Bruijn byte comparison.
+    ///
+    /// Use this instead of `remove_rule` when the caller has only the
+    /// original-name rule form (e.g. from `remove-atom &self (= lhs rhs)`).
+    /// Rules stored via `add_rule` are alpha-renamed by Fix 3B, so MettaValue
+    /// structural equality fails; this variant matches via the full rule
+    /// De Bruijn bytes which are alpha-equivalent by construction.
+    ///
+    /// Three-state return value (mirrors `RuleGroup::remove_rule_by_debruijn`):
+    ///
+    /// - `Some(true)`  — the matching entry had multiplicity 1 and was
+    ///                   removed entirely.
+    /// - `Some(false)` — multiplicity was > 1 and was decremented; the
+    ///                   entry remains in the index.
+    /// - `None`        — no matching entry was found in any group or in
+    ///                   the wildcard bucket.
+    ///
+    /// **The distinction between `Some(false)` and `None` is essential.**
+    /// Earlier versions of this method returned a bare `bool` where `false`
+    /// conflated the "decremented" and "not found" cases. The caller's
+    /// structural-equality fallback would then fire on a just-decremented
+    /// entry (treating `false` as "not found") and fully remove it,
+    /// silently corrupting multiplicity > 1 ground rules. Always check
+    /// `.is_some()` to decide whether the index was authoritatively
+    /// updated; only run a fallback path on `None`.
+    pub fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<bool> {
+        // Search head-arity-indexed groups
+        for group in self.by_head_arity.values_mut() {
+            if let Some(result) = group.remove_rule_by_debruijn(full_bytes) {
+                return Some(result);
+            }
+        }
+        // Search wildcard bucket
+        if let Some(pos) = self.wildcard.iter().position(|e| e.full_debruijn == full_bytes) {
+            if self.wildcard[pos].multiplicity > 1 {
+                self.wildcard[pos].multiplicity -= 1;
+                return Some(false);
+            } else {
+                self.wildcard.remove(pos);
+                return Some(true);
+            }
+        }
+        None
     }
 
     /// Get candidate rules for the given (head, arity) pair, optionally narrowed
@@ -625,6 +805,19 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         !self.wildcard.is_empty()
     }
 
+    /// Number of wildcard rules (rules with variable heads).
+    #[inline]
+    pub fn wildcard_len(&self) -> usize {
+        self.wildcard.len()
+    }
+
+    /// Number of rules in a specific `(head, arity)` group, or 0 if no group exists.
+    pub fn group_size(&self, head: &str, arity: usize) -> usize {
+        use crate::backend::models::gc_allocator::global_allocator;
+        let interned: &'static str = global_allocator().alloc_str(head);
+        self.by_head_arity.get(&(interned, arity)).map(|g| g.len()).unwrap_or(0)
+    }
+
     /// Get the number of rules in the index.
     pub fn len(&self) -> usize {
         self.by_head_arity
@@ -688,6 +881,12 @@ impl MatchPath {
         new.indices[new.len as usize] = idx;
         new.len += 1;
         new
+    }
+
+    /// Convert this path to a `Vec<u16>` for serialization in trace events.
+    #[inline]
+    fn to_vec(&self) -> Vec<u16> {
+        (0..self.len as usize).map(|i| self.indices[i] as u16).collect()
     }
 
     /// Navigate from root to the node at this path.
@@ -976,6 +1175,10 @@ impl StructuralMatcher {
     ///
     /// Cost: O(checks + var_ops) with very low constant factors (pointer derefs
     /// and comparisons, no hashing or serialization).
+    ///
+    /// For diagnostic tracing of *why* a match failed, see
+    /// [`Self::try_match_with_detail`] which is used by the `eval-trace`
+    /// feature when the `METTA_TRACE_RULE_MATCH_HEADS` filter is active.
     #[inline]
     pub fn try_match<V>(&self, expr: &V) -> Option<GenericBindings<V>>
     where
@@ -1042,13 +1245,280 @@ impl StructuralMatcher {
                     let val = path.navigate(expr)?;
                     let bound = bound_values[*bind_index as usize];
                     if val != bound {
-                        return None;
+                        // Structural equality failed. Fall back to bidirectional
+                        // (Martelli-Montanari) unification: this allows free
+                        // variables in the input expression to bind against the
+                        // already-bound rule variable. PLN's inference rules
+                        // depend on this behavior — e.g., the Modus Ponens rule
+                        //
+                        //     (= (|- ($A $T1) ((Implication $A $B) $T2)) ...)
+                        //
+                        // matched against
+                        //
+                        //     (|- ((Inheritance Anna (IntSet smokes)) (stv 1 0.9))
+                        //         ((Implication (Inheritance $1 (IntSet smokes))
+                        //                       (Inheritance $1 (IntSet cancerous)))
+                        //          (stv 0.6 0.9)))
+                        //
+                        // requires unifying the second occurrence of $A
+                        // (already bound to `(Inheritance Anna (IntSet smokes))`)
+                        // with `(Inheritance $1 (IntSet smokes))` from the
+                        // implication. Structural equality fails because $1 ≠ Anna,
+                        // but unification succeeds with $1 → Anna.
+                        let unify_bindings = match
+                            crate::backend::eval::bindings::bidirectional_unify_generic(bound, val)
+                        {
+                            Some(b) => b,
+                            None => return None,
+                        };
+                        // Merge the new bindings into the existing ones. Conflicts
+                        // would mean the same variable is bound to incompatible
+                        // values across the two unification calls — bail out.
+                        for (var_name, var_val) in unify_bindings.iter() {
+                            if let Some(existing) = bindings.get(var_name) {
+                                if existing != var_val {
+                                    return None;
+                                }
+                            } else {
+                                bindings.insert(var_name, var_val.clone());
+                            }
+                        }
                     }
                 }
             }
         }
 
         Some(bindings)
+    }
+
+    /// Diagnostic variant of [`Self::try_match`] that returns a rich
+    /// failure description on mismatch. Used by the `eval-trace` feature
+    /// to emit `RuleMatchAttempt` events explaining *why* a candidate
+    /// rule did not fire at a given call site.
+    ///
+    /// The implementation mirrors `try_match` exactly, but every place
+    /// where `try_match` returns `None` is replaced with an `Err(detail)`
+    /// carrying the check index, path, expected value, and actual value.
+    ///
+    /// **Performance**: this method is **only** called when the trace
+    /// filter has admitted the call site (see
+    /// [`crate::backend::trace::rule_match::RuleMatchFilter`]). The fast
+    /// path remains `try_match` itself, byte-identical to the original.
+    #[cfg(feature = "eval-trace")]
+    pub fn try_match_with_detail<V>(
+        &self,
+        expr: &V,
+    ) -> Result<GenericBindings<V>, crate::backend::trace::rule_match::DetailedFailure<V>>
+    where
+        V: MettaValueTrait + Clone + PartialEq,
+    {
+        use crate::backend::trace::rule_match::DetailedFailure;
+
+        // Phase 1: Structural checks (mirror of try_match's logic with
+        // explicit failure detail).
+        for (check_index, check) in self.checks.iter().enumerate() {
+            let check_index = check_index as u32;
+            match check {
+                StructuralCheck::Arity { path, expected } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: None,
+                        }),
+                    };
+                    let items = match val.as_sexpr() {
+                        Some(items) => items,
+                        None => return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "arity",
+                            path: path.to_vec(),
+                            expected_arity: Some(*expected as usize),
+                            expected_atom: None,
+                            actual: Some(val.clone()),
+                        }),
+                    };
+                    if items.len() != *expected as usize {
+                        return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "arity",
+                            path: path.to_vec(),
+                            expected_arity: Some(*expected as usize),
+                            expected_atom: None,
+                            actual: Some(val.clone()),
+                        });
+                    }
+                }
+                StructuralCheck::Atom { path, expected } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: None,
+                        }),
+                    };
+                    let atom = match val.as_atom() {
+                        Some(a) => a,
+                        None => return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "atom",
+                            path: path.to_vec(),
+                            expected_arity: None,
+                            expected_atom: Some(*expected),
+                            actual: Some(val.clone()),
+                        }),
+                    };
+                    if atom != *expected {
+                        return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "atom",
+                            path: path.to_vec(),
+                            expected_arity: None,
+                            expected_atom: Some(*expected),
+                            actual: Some(val.clone()),
+                        });
+                    }
+                }
+                StructuralCheck::Long { path, expected: _ } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: None,
+                        }),
+                    };
+                    if val.as_long().map(|n| n == match check {
+                        StructuralCheck::Long { expected, .. } => *expected,
+                        _ => unreachable!(),
+                    }) != Some(true) {
+                        return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "long",
+                            path: path.to_vec(),
+                            expected_arity: None,
+                            expected_atom: None,
+                            actual: Some(val.clone()),
+                        });
+                    }
+                }
+                StructuralCheck::Bool { path, expected } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: None,
+                        }),
+                    };
+                    if val.as_bool() != Some(*expected) {
+                        return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "bool",
+                            path: path.to_vec(),
+                            expected_arity: None,
+                            expected_atom: None,
+                            actual: Some(val.clone()),
+                        });
+                    }
+                }
+                StructuralCheck::Float { path, expected_bits } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: None,
+                        }),
+                    };
+                    if val.as_float().map(|f| f.to_bits()) != Some(*expected_bits) {
+                        return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "float",
+                            path: path.to_vec(),
+                            expected_arity: None,
+                            expected_atom: None,
+                            actual: Some(val.clone()),
+                        });
+                    }
+                }
+                StructuralCheck::Str { path, expected } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: None,
+                        }),
+                    };
+                    if val.as_string() != Some(*expected) {
+                        return Err(DetailedFailure::StructuralCheckFailed {
+                            check_index,
+                            check_kind: "str",
+                            path: path.to_vec(),
+                            expected_arity: None,
+                            expected_atom: None,
+                            actual: Some(val.clone()),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Variable bindings.
+        let mut bindings = GenericBindings::new();
+        let mut bound_values: SmallVec<[&V; 8]> = SmallVec::new();
+
+        for op in &self.var_ops {
+            match op {
+                VarOp::Bind { path, name } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: Some(*name),
+                        }),
+                    };
+                    bound_values.push(val);
+                    bindings.insert(*name, val.clone());
+                }
+                VarOp::EqualCheck { path, bind_index } => {
+                    let val = match path.navigate(expr) {
+                        Some(v) => v,
+                        None => return Err(DetailedFailure::PathNavigateFailed {
+                            path: path.to_vec(),
+                            var: None,
+                        }),
+                    };
+                    let bound = bound_values[*bind_index as usize];
+                    if val != bound {
+                        // Bidirectional unification fallback (mirrors try_match).
+                        let unify_bindings = match
+                            crate::backend::eval::bindings::bidirectional_unify_generic(bound, val)
+                        {
+                            Some(b) => b,
+                            None => return Err(DetailedFailure::BidirectionalUnifyFailed {
+                                var: "<repeated>",
+                                bound: bound.clone(),
+                                candidate: val.clone(),
+                                reason: "unification-failed",
+                            }),
+                        };
+                        for (var_name, var_val) in unify_bindings.iter() {
+                            if let Some(existing) = bindings.get(var_name) {
+                                if existing != var_val {
+                                    return Err(DetailedFailure::EqualCheckFailed {
+                                        var: var_name,
+                                        first_value: existing.clone(),
+                                        second_value: var_val.clone(),
+                                    });
+                                }
+                            } else {
+                                bindings.insert(var_name, var_val.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(bindings)
     }
 
     /// Match a **template** expression whose variables are not yet substituted,
@@ -1134,7 +1604,26 @@ impl StructuralMatcher {
                     let val = path.navigate_resolving(template, outer_bindings)?;
                     let bound = &bound_values[*bind_index as usize];
                     if val != *bound {
-                        return None;
+                        // Structural equality failed. Fall back to bidirectional
+                        // (Martelli-Montanari) unification for repeated rule
+                        // variables — see the matching block in `try_match` for
+                        // the full rationale (PLN Modus Ponens with free
+                        // variables in implications).
+                        let unify_bindings = match
+                            crate::backend::eval::bindings::bidirectional_unify_generic(bound, &val)
+                        {
+                            Some(b) => b,
+                            None => return None,
+                        };
+                        for (var_name, var_val) in unify_bindings.iter() {
+                            if let Some(existing) = bindings.get(var_name) {
+                                if existing != var_val {
+                                    return None;
+                                }
+                            } else {
+                                bindings.insert(var_name, var_val.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -1191,6 +1680,7 @@ pub(crate) fn validate_mork_bytes(bytes: &[u8]) -> Result<usize, (usize, u8)> {
 
 /// Count the number of NewVar tags in MORK bytes (used for specificity computation).
 ///
+// ============================================================================
 /// Each NewVar tag (0xC0) introduces a new variable binding position.
 /// Fewer NewVar tags = more specific pattern (more concrete structure).
 ///
@@ -1553,6 +2043,32 @@ where
         // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
         increment_rule_epoch();
 
+        // Fix 3B: Alpha-rename rule variables to prevent name collisions with
+        // call-site variables. MeTTa HE treats rule LHS variables as pattern-local
+        // (distinct from call-site variables). Without renaming, `(= (f $a) (g $a))`
+        // matched against `(f $a)` creates a self-referential binding `$a → $a`.
+        //
+        // CRITICAL: LHS and RHS must use the SAME freshening epoch so that
+        // variable references in the RHS correspond to the bindings from the LHS.
+        let rule_sexpr_for_freshen = self.factory.sexpr(vec![
+            self.factory.atom("="),
+            lhs.clone(),
+            rhs.clone(),
+        ]);
+        let freshened_rule = crate::backend::eval::freshening::freshen_variables_generic(
+            &rule_sexpr_for_freshen, &self.factory,
+        );
+        // Extract freshened LHS and RHS from the freshened (= lhs rhs)
+        let (lhs, rhs) = if let Some(items) = freshened_rule.as_sexpr() {
+            if items.len() == 3 {
+                (items[1].clone(), items[2].clone())
+            } else {
+                (lhs, rhs)
+            }
+        } else {
+            (lhs, rhs)
+        };
+
         // Get head symbol and arity for bloom filter (clone head string before moving lhs)
         let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());
         let arity = lhs.get_arity();
@@ -1728,6 +2244,12 @@ where
                 lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
                 lhs_debruijn.push(0x00); // Padding byte for ExprZipper read-past-end safety
 
+                // Also save the full rule De Bruijn bytes for alpha-equivalent
+                // rule removal in remove_rule / remove_from_space. This is the
+                // authoritative key for the rule: two rules compare equal iff
+                // their full debruijn bytes match.
+                let full_debruijn = debruijn_bytes.to_vec();
+
                 // Validate ALL bytes in lhs_debruijn are valid MORK (no reserved 0x40-0x7F)
                 #[cfg(debug_assertions)]
                 {
@@ -1785,6 +2307,7 @@ where
                     rhs: rhs.clone(),
                     lhs_debruijn,
                     lhs_wide_debruijn: Vec::new(), // Narrow path — MORK encoding succeeded
+                    full_debruijn,
                     var_names,
                     wildcard_indices,
                     multiplicity: 1,
@@ -1832,6 +2355,15 @@ where
                 &lhs, &mut wide_ctx, &mut lhs_wide_debruijn,
             );
 
+            // Encode the full rule `(= lhs rhs)` with Wide MORK De Bruijn for
+            // alpha-equivalent removal via remove_rule_by_debruijn. Uses a
+            // separate fresh context so its variable indices are self-contained.
+            let mut full_wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut full_debruijn = Vec::new();
+            crate::backend::wide_mork::encoding::encode_wide_debruijn(
+                &rule_sexpr, &mut full_wide_ctx, &mut full_debruijn,
+            );
+
             let lhs_var_count = crate::backend::wide_mork::encoding::count_wide_newvar_tags(&lhs_wide_debruijn);
             let (var_names, wildcard_indices) =
                 build_var_names_and_wildcards(&wide_ctx.var_names, lhs_var_count);
@@ -1869,6 +2401,7 @@ where
                 rhs: rhs.clone(),
                 lhs_debruijn: Vec::new(), // Empty — this is a wide rule
                 lhs_wide_debruijn,
+                full_debruijn, // Wide De Bruijn bytes for alpha-equivalent removal
                 var_names,
                 wildcard_indices,
                 multiplicity: 1,
@@ -1905,7 +2438,25 @@ where
                 .atom_space.rule_head_bloom
                 .write()
                 .insert(head, arity_u8);
+
+            // If the head is in the overridable set, bump the override
+            // bitset so the dispatch arm routes future calls through rule
+            // matching instead of the grounded fast path.
+            if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                self.shared.dispatch_overrides.note_user_rule_added(id);
+            }
         }
+
+        // Rules are stored as (= lhs rhs) atoms in the PathMap. For
+        // match_space() queries with (= ...) patterns to pass the bloom
+        // filter, we must also insert ("=", 3). Without this, add_rule()
+        // only inserts the LHS head (e.g., "father") and match &self
+        // with (= ...) patterns is incorrectly rejected by the bloom.
+        self.shared
+            .atom_space
+            .head_arity_bloom
+            .write()
+            .insert("=", 3);
 
         self.modified.store(true, Ordering::Release);
     }
@@ -1946,6 +2497,7 @@ where
         let arity = expr.get_arity();
         // Phase 3: Extract first argument's head symbol for second-level index narrowing
         let first_arg_head = get_first_arg_head(expr);
+
 
         // Bloom filter O(1) rejection: skip MORK serialization entirely when
         // the bloom filter says no head-specific rules exist for this head+arity
@@ -1995,6 +2547,33 @@ where
 
             if candidates.is_empty() {
                 return Vec::new();
+            }
+
+            // Trace: RuleLookup — emit candidate pipeline statistics
+            #[cfg(feature = "eval-trace")]
+            if !head.is_empty() && crate::backend::trace::rule_match::should_trace_lookup(head) {
+                let group_size = rule_index.group_size(head, arity) as u32;
+                let wildcard_count = rule_index.wildcard_len() as u32;
+                let candidates_count = candidates.len() as u32;
+                crate::backend::trace::with_trace_collector_ref(|tc| {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker, 0,
+                        crate::backend::trace::convert::trace_value_generic(expr),
+                        vec![], None,
+                        trace_format::TraceEventKind::RuleLookup {
+                            head: head.to_string(),
+                            arity: arity as u32,
+                            first_arg_head: first_arg_head.map(|s| s.to_string()),
+                            group_size,
+                            wildcard_count,
+                            candidates_after_disc_tree: candidates_count,
+                            candidates_after_dead_filter: candidates_count,
+                            final_match_count: 0, // filled later
+                            bloom_filter_reject: false,
+                            self_evaluating: false,
+                        },
+                    );
+                });
             }
 
             // I-14: Record query pattern for adaptive indexing.
@@ -2079,11 +2658,13 @@ where
 
                     std::thread::scope(|s| {
                         let handles: Vec<_> = chunks.iter().map(|&(start, end)| {
+                            let chunk_offset = start;
                             let chunk = &candidates[start..end];
                             let fac = gc_factory;
                             s.spawn(move || {
                                 let mut chunk_results = Vec::new();
-                                for entry in chunk {
+                                for (i, entry) in chunk.iter().enumerate() {
+                                    let _rule_idx_u32 = (chunk_offset + i) as u32;
                                     let bindings = if let Some(ref m) = entry.structural_matcher {
                                         m.try_match(expr)
                                     } else if let Some(ref m) = entry.enhanced_matcher {
@@ -2091,6 +2672,37 @@ where
                                     } else {
                                         None
                                     };
+
+                                    // eval-trace: emit a RuleMatchAttempt event
+                                    // for this candidate (parallel speculative
+                                    // path). Cheap when the filter is disabled.
+                                    #[cfg(feature = "eval-trace")]
+                                    if crate::backend::trace::rule_match::should_trace_match(head) {
+                                        let outcome = if let Some(ref b) = bindings {
+                                            trace_format::RuleMatchOutcome::Success {
+                                                bindings: b.iter()
+                                                    .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                                    .collect(),
+                                            }
+                                        } else {
+                                            trace_format::RuleMatchOutcome::PathNavigateFailed {
+                                                path: Vec::new(),
+                                                var: None,
+                                            }
+                                        };
+                                        crate::backend::trace::rule_match::emit_outcome::<V>(
+                                            "structural-parallel",
+                                            head,
+                                            arity as u32,
+                                            expr,
+                                            &entry.lhs,
+                                            None,
+                                            _rule_idx_u32,
+                                            outcome,
+                                            None,
+                                            0,
+                                        );
+                                    }
                                     if let Some(bindings) = bindings {
                                         let instantiated_rhs = if entry.rhs_has_variables {
                                             // SAFETY: V is MettaValue, fac is GcFactory (TypeId checked).
@@ -2139,13 +2751,63 @@ where
                 let mut arena = crate::backend::eval::cesk::BindingArena::<V>::new();
                 arena.push_frame();
 
-                for entry in &candidates {
+                for (rule_idx, entry) in candidates.iter().enumerate() {
                     // I-3: Save choice point before each attempt
                     arena.save_choice_point();
+                    let _rule_idx_u32 = rule_idx as u32;
 
                     // I-2: Try enhanced matcher if structural matcher is None
                     let bindings = if let Some(ref matcher) = entry.structural_matcher {
-                        matcher.try_match(expr)
+                        // eval-trace: when METTA_TRACE_RULE_MATCH_HEADS admits
+                        // this call_head, use try_match_with_detail and emit a
+                        // RuleMatchAttempt event explaining success or failure.
+                        // Hot path (filter disabled) is unchanged: a single
+                        // atomic load + None check before falling through to
+                        // the original try_match invocation.
+                        #[cfg(feature = "eval-trace")]
+                        if crate::backend::trace::rule_match::should_trace_match(head) {
+                            match matcher.try_match_with_detail(expr) {
+                                Ok(b) => {
+                                    crate::backend::trace::rule_match::emit_outcome::<V>(
+                                        "structural",
+                                        head,
+                                        arity as u32,
+                                        expr,
+                                        &entry.lhs,
+                                        None,
+                                        _rule_idx_u32,
+                                        trace_format::RuleMatchOutcome::Success {
+                                            bindings: b.iter()
+                                                .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                                .collect(),
+                                        },
+                                        None,
+                                        0,
+                                    );
+                                    Some(b)
+                                }
+                                Err(detail) => {
+                                    let outcome = crate::backend::trace::rule_match::detailed_failure_to_outcome(detail);
+                                    crate::backend::trace::rule_match::emit_outcome::<V>(
+                                        "structural",
+                                        head,
+                                        arity as u32,
+                                        expr,
+                                        &entry.lhs,
+                                        None,
+                                        _rule_idx_u32,
+                                        outcome,
+                                        None,
+                                        0,
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            matcher.try_match(expr)
+                        }
+                        #[cfg(not(feature = "eval-trace"))]
+                        { matcher.try_match(expr) }
                     } else if let Some(ref matcher) = entry.enhanced_matcher {
                         matcher.try_match(expr)
                     } else {
@@ -2267,10 +2929,42 @@ where
                 // Lazily-computed wide storage encoding (only allocated if needed)
                 let mut expr_wide_buf: Option<Vec<u8>> = None;
 
-                for entry in candidates {
+                for (rule_idx, entry) in candidates.iter().enumerate() {
+                    let _rule_idx_u32 = rule_idx as u32;
                     // Try structural matcher first (works regardless of MORK encoding)
                     if let Some(ref matcher) = entry.structural_matcher {
-                        if let Some(bindings) = matcher.try_match(expr) {
+                        let try_result = matcher.try_match(expr);
+                        // eval-trace: emit RuleMatchAttempt for the MORK fallback's
+                        // structural-matcher pre-check (the path taken when expr
+                        // can't be encoded as MORK bytes).
+                        #[cfg(feature = "eval-trace")]
+                        if crate::backend::trace::rule_match::should_trace_match(head) {
+                            let outcome = if let Some(ref b) = try_result {
+                                trace_format::RuleMatchOutcome::Success {
+                                    bindings: b.iter()
+                                        .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                        .collect(),
+                                }
+                            } else {
+                                trace_format::RuleMatchOutcome::PathNavigateFailed {
+                                    path: Vec::new(),
+                                    var: None,
+                                }
+                            };
+                            crate::backend::trace::rule_match::emit_outcome::<V>(
+                                "structural-mork-fallback",
+                                head,
+                                arity as u32,
+                                expr,
+                                &entry.lhs,
+                                None,
+                                _rule_idx_u32,
+                                outcome,
+                                None,
+                                0,
+                            );
+                        }
+                        if let Some(bindings) = try_result {
                             let instantiated_rhs = if entry.rhs_has_variables {
                                 apply_bindings(&entry.rhs, &bindings, &self.factory)
                             } else {
@@ -2412,12 +3106,43 @@ where
 
             // Inline macro to avoid duplicating the match body for both iterator paths
             macro_rules! try_match_entry {
-                ($entry:expr) => {
+                ($entry:expr, $rule_idx:expr) => {
                     let entry = $entry;
+                    let _rule_idx_u32 = $rule_idx as u32;
 
                     // Try structural matcher first (avoids MORK byte-level matching)
                     if let Some(ref matcher) = entry.structural_matcher {
-                        if let Some(bindings) = matcher.try_match(expr) {
+                        let try_result = matcher.try_match(expr);
+                        // eval-trace: emit RuleMatchAttempt for the MORK
+                        // happy-path's structural-matcher pre-check.
+                        #[cfg(feature = "eval-trace")]
+                        if crate::backend::trace::rule_match::should_trace_match(head) {
+                            let outcome = if let Some(ref b) = try_result {
+                                trace_format::RuleMatchOutcome::Success {
+                                    bindings: b.iter()
+                                        .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                        .collect(),
+                                }
+                            } else {
+                                trace_format::RuleMatchOutcome::PathNavigateFailed {
+                                    path: Vec::new(),
+                                    var: None,
+                                }
+                            };
+                            crate::backend::trace::rule_match::emit_outcome::<V>(
+                                "structural-mork-path",
+                                head,
+                                arity as u32,
+                                expr,
+                                &entry.lhs,
+                                None,
+                                _rule_idx_u32,
+                                outcome,
+                                None,
+                                0,
+                            );
+                        }
+                        if let Some(bindings) = try_result {
                             hits.push(MatchHit { entry, is_wide: false, precomputed_bindings: Some(bindings) });
                         }
                         // Structural matcher is authoritative — skip MORK
@@ -2462,12 +3187,12 @@ where
             }
 
             if !head.is_empty() {
-                for entry in rule_index.get_candidates(head, arity, first_arg_head) {
-                    try_match_entry!(entry);
+                for (rule_idx, entry) in rule_index.get_candidates(head, arity, first_arg_head).enumerate() {
+                    try_match_entry!(entry, rule_idx);
                 }
             } else {
-                for entry in rule_index.get_all_rules() {
-                    try_match_entry!(entry);
+                for (rule_idx, entry) in rule_index.get_all_rules().enumerate() {
+                    try_match_entry!(entry, rule_idx);
                 }
             }
 
@@ -2892,6 +3617,11 @@ impl MettaEnvironment {
         // Clear the existing RuleIndex before rebuilding
         self.shared.rule_index.write().clear();
 
+        // Reset the override bitset — it will be rebuilt as rules are
+        // re-inserted below. Without this, repeated rebuilds would
+        // monotonically increase the per-name refcounts.
+        self.shared.dispatch_overrides.reset();
+
         let space = self.create_space();
         let rule_prefix_len = super::core::RULE_PREFIX_LEN;
 
@@ -2914,6 +3644,10 @@ impl MettaEnvironment {
                             .atom_space.rule_head_bloom
                             .write()
                             .insert(head, arity as u8);
+                        // Re-bump override bitset (matches add_rule's behavior).
+                        if let Some(id) = super::dispatch_overrides::overridable_op_id(head) {
+                            self.shared.dispatch_overrides.note_user_rule_added(id);
+                        }
                     }
 
                     // Rebuild RuleIndex entry from De Bruijn bytes
@@ -2938,6 +3672,9 @@ impl MettaEnvironment {
                         let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
                         lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
                         lhs_debruijn.push(0x00);
+
+                        // Save full rule bytes for alpha-equivalent removal via remove_rule_by_debruijn.
+                        let full_debruijn = debruijn_bytes.to_vec();
 
                         let lhs_var_count = count_newvar_tags(&lhs_debruijn);
                         let (var_names, wildcard_indices) =
@@ -3002,6 +3739,7 @@ impl MettaEnvironment {
                             rhs: rhs.clone(),
                             lhs_debruijn,
                             lhs_wide_debruijn: Vec::new(), // Bulk path uses MORK encoding
+                            full_debruijn,
                             var_names,
                             wildcard_indices,
                             multiplicity,

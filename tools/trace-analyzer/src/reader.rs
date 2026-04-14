@@ -11,7 +11,7 @@ use std::path::Path;
 
 use memmap2::Mmap;
 use trace_format::{
-    TraceEvent, TraceHeader, TRACE_MAGIC, TRACE_MAGIC_V1, TRACE_MAGIC_V2,
+    TraceEvent, TraceHeader, TRACE_MAGIC, TRACE_MAGIC_V1, TRACE_MAGIC_V2, TRACE_MAGIC_V3,
 };
 
 /// Detect the footer in a trace file using backward sentinel scan.
@@ -108,8 +108,10 @@ impl TraceReader {
             return Err("File too small to contain trace header".to_string());
         }
 
-        // Verify magic bytes (accept both v1 and v2)
+        // Verify magic bytes (accept v1, v2, v3, and v4)
         let format_version = if mmap[0..8] == TRACE_MAGIC {
+            4u32
+        } else if mmap[0..8] == TRACE_MAGIC_V3 {
             3u32
         } else if mmap[0..8] == TRACE_MAGIC_V2 {
             2u32

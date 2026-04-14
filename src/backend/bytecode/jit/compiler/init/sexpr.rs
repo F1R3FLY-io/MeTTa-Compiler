@@ -26,6 +26,10 @@ pub struct SExprFuncIds {
     pub get_arity_func_id: FuncId,
     /// Get element at index
     pub get_element_func_id: FuncId,
+    /// Structural head (`car-atom` with tree-walker pre-eval semantics)
+    pub structural_head_func_id: FuncId,
+    /// Structural tail (`cdr-atom` with tree-walker pre-eval semantics)
+    pub structural_tail_func_id: FuncId,
     /// Make new S-expression (dispatches based on ctx.value_mode)
     pub make_sexpr_func_id: FuncId,
     /// Cons atom to expression (dispatches based on ctx.value_mode)
@@ -69,6 +73,14 @@ impl<T> SExprInit for T {
         builder.symbol(
             "jit_runtime_get_element",
             runtime::jit_runtime_get_element as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_structural_head",
+            runtime::jit_runtime_structural_head as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_structural_tail",
+            runtime::jit_runtime_structural_tail as *const u8,
         );
         builder.symbol(
             "jit_runtime_make_sexpr",
@@ -163,6 +175,46 @@ impl<T> SExprInit for T {
                 ))
             })?;
 
+        // structural_head: fn(ctx, sexpr, ip) -> head (same signature as get_head)
+        let mut structural_head_sig = module.make_signature();
+        structural_head_sig.params.push(AbiParam::new(types::I64)); // ctx
+        structural_head_sig.params.push(AbiParam::new(types::I64)); // sexpr
+        structural_head_sig.params.push(AbiParam::new(types::I64)); // ip
+        structural_head_sig.returns.push(AbiParam::new(types::I64)); // head
+
+        let structural_head_func_id = module
+            .declare_function(
+                "jit_runtime_structural_head",
+                Linkage::Import,
+                &structural_head_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_structural_head: {}",
+                    e
+                ))
+            })?;
+
+        // structural_tail: fn(ctx, sexpr, ip) -> tail (same signature as get_tail)
+        let mut structural_tail_sig = module.make_signature();
+        structural_tail_sig.params.push(AbiParam::new(types::I64)); // ctx
+        structural_tail_sig.params.push(AbiParam::new(types::I64)); // sexpr
+        structural_tail_sig.params.push(AbiParam::new(types::I64)); // ip
+        structural_tail_sig.returns.push(AbiParam::new(types::I64)); // tail
+
+        let structural_tail_func_id = module
+            .declare_function(
+                "jit_runtime_structural_tail",
+                Linkage::Import,
+                &structural_tail_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_structural_tail: {}",
+                    e
+                ))
+            })?;
+
         // make_sexpr: fn(ctx, values_ptr, count, ip) -> sexpr
         let mut make_sexpr_sig = module.make_signature();
         make_sexpr_sig.params.push(AbiParam::new(types::I64)); // ctx
@@ -236,6 +288,8 @@ impl<T> SExprInit for T {
             get_tail_func_id,
             get_arity_func_id,
             get_element_func_id,
+            structural_head_func_id,
+            structural_tail_func_id,
             make_sexpr_func_id,
             cons_atom_func_id,
             make_list_func_id,

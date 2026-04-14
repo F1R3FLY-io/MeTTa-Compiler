@@ -216,7 +216,7 @@ fn write_output(output: Option<&str>, content: &str) -> Result<(), String> {
 /// Format an MettaValue result for display.
 fn format_result(value: &MettaValue) -> String {
     match value.view() {
-        ValueView::Bool(b) => b.to_string(),
+        ValueView::Bool(b) => if b { "True".to_string() } else { "False".to_string() },
         ValueView::Long(n) => n.to_string(),
         ValueView::Float(f) => f.to_string(),
         ValueView::Unit => "()".to_string(),

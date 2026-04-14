@@ -472,6 +472,56 @@ impl Compiler {
                 self.builder.emit_byte(opcode, operand);
             }
 
+            CompileWork::EmitOpcodeU16 { opcode, operand } => {
+                self.builder.emit_u16(opcode, operand);
+            }
+
+            CompileWork::CompileAsLiteralSExpr { expr, cont_id } => {
+                // Literal-mode compilation: reconstruct the argument as an
+                // s-expression at runtime via MakeSExpr, NEVER emitting a
+                // function Call. Mirrors `compile_as_literal_sexpr` in
+                // core.rs. Used by car-atom/cdr-atom so the VM's
+                // StructuralHead/Tail opcodes receive the syntactic form of
+                // their argument, then apply the 4-condition pre-eval
+                // predicate against the live env.
+                if let Some(items) = expr.as_sexpr() {
+                    if items.is_empty() {
+                        self.builder.emit(Opcode::PushEmpty);
+                    } else {
+                        // LIFO: emit MakeSExpr AFTER children are compiled,
+                        // so push it first and children on top (in reverse).
+                        let arity = items.len();
+                        if arity <= 255 {
+                            work_stack.push(CompileWork::EmitOpcodeU8 {
+                                opcode: Opcode::MakeSExpr,
+                                operand: arity as u8,
+                            });
+                        } else {
+                            work_stack.push(CompileWork::EmitOpcodeU16 {
+                                opcode: Opcode::MakeSExprLarge,
+                                operand: arity as u16,
+                            });
+                        }
+                        for item in items.iter().rev() {
+                            work_stack.push(CompileWork::CompileAsLiteralSExpr {
+                                expr: item.clone(),
+                                cont_id: 0,
+                            });
+                        }
+                    }
+                } else {
+                    // Non-sexpr: normal compilation correctly resolves
+                    // variables (LoadLocal), pushes atoms/primitives, etc.
+                    // None of these emit `Call`.
+                    let _ = cont_id;
+                    work_stack.push(CompileWork::CompileExpr {
+                        expr,
+                        in_tail_position: false,
+                        cont_id: 0,
+                    });
+                }
+            }
+
             CompileWork::PatchJump { jump_label } => {
                 self.builder.patch_jump(jump_label);
             }
@@ -1440,21 +1490,29 @@ impl Compiler {
             // List operations
             // ================================================================
             "car-atom" => {
+                // Structural: preserve raw argument syntax; VM decides at
+                // runtime (via StructuralHead) whether to pre-evaluate based
+                // on the head's kind (variable, grounded op, eager special
+                // form, or arrow-typed). Mirrors tree-walker Arm B-structural
+                // semantics exactly (src/backend/eval/step/sexpr.rs).
                 self.check_arity("car-atom", args.len(), 1)?;
-                work_stack.push(CompileWork::CompileUnaryOp {
-                    op: UnaryOp::GetHead,
-                    arg: args[0].clone(),
-                    folded: None,
+                // LIFO: emit StructuralHead AFTER the arg is built.
+                work_stack.push(CompileWork::EmitOpcode {
+                    opcode: Opcode::StructuralHead,
+                });
+                work_stack.push(CompileWork::CompileAsLiteralSExpr {
+                    expr: args[0].clone(),
                     cont_id,
                 });
                 Ok(Some(()))
             }
             "cdr-atom" => {
                 self.check_arity("cdr-atom", args.len(), 1)?;
-                work_stack.push(CompileWork::CompileUnaryOp {
-                    op: UnaryOp::GetTail,
-                    arg: args[0].clone(),
-                    folded: None,
+                work_stack.push(CompileWork::EmitOpcode {
+                    opcode: Opcode::StructuralTail,
+                });
+                work_stack.push(CompileWork::CompileAsLiteralSExpr {
+                    expr: args[0].clone(),
                     cont_id,
                 });
                 Ok(Some(()))
@@ -1550,6 +1608,29 @@ impl Compiler {
                 });
                 Ok(Some(()))
             }
+            // Explicit alias of `unique-atom` — both use alpha-equivalence
+            // (matching MeTTa HE).
+            "alpha-unique-atom" => {
+                self.check_arity("alpha-unique-atom", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::AlphaUniqueAtom,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            // PeTTa-compatible structural-equality dedup variant.
+            "struct-unique-atom" => {
+                self.check_arity("struct-unique-atom", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::StructUniqueAtom,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
             "union-atom" => {
                 self.check_arity("union-atom", args.len(), 2)?;
                 work_stack.push(CompileWork::CompileBinaryOp {
@@ -1629,6 +1710,148 @@ impl Compiler {
                     cont_id,
                 });
                 Ok(Some(()))
+            }
+
+            // PeTTa-compatible aliases — match the dispatch in core.rs and the
+            // tree-walker implementations in src/backend/eval/list_ops/ops.rs.
+            "is-member" => {
+                self.check_arity("is-member", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::ElementOf,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "append" => {
+                self.check_arity("append", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::TupleConcat,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "length" => {
+                self.check_arity("length", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::TupleCount,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            // exclude-item is `without` with reversed arg order. Swap operands.
+            "exclude-item" => {
+                self.check_arity("exclude-item", args.len(), 2)?;
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::Without,
+                    left: args[1].clone(),
+                    right: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            // msort: numeric ascending sort. New unary opcode.
+            "msort" => {
+                self.check_arity("msort", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::Msort,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            // reduce: alias of eval (UnaryOp::EvalEval).
+            "reduce" => {
+                self.check_arity("reduce", args.len(), 1)?;
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::EvalEval,
+                    arg: args[0].clone(),
+                    folded: None,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            // cut: PLN no-op returning Unit. Compile as a Unit literal
+            // (which the existing literal path emits as PushUnit). NOT to be
+            // confused with `Opcode::Cut` (the nondeterminism cut at 0xF2).
+            "cut" => {
+                self.check_arity("cut", args.len(), 0)?;
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: MettaValue::Unit(),
+                    in_tail_position: false,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            // progn: sequential evaluation, returns last value. Compile-time
+            // desugar to nested `(let $_progn_unused a (let $_progn_unused b ...))`,
+            // mirroring the tree-walker special-form handling.
+            "progn" => {
+                if args.is_empty() {
+                    return Err(crate::backend::bytecode::compiler::CompileError::InvalidArity {
+                        op: "progn".to_string(),
+                        expected: 1,
+                        got: 0,
+                    });
+                }
+                if args.len() == 1 {
+                    work_stack.push(CompileWork::CompileExpr {
+                        expr: args[0].clone(),
+                        in_tail_position: false,
+                        cont_id,
+                    });
+                    return Ok(Some(()));
+                }
+                let unused = MettaValue::Atom("$_progn_unused");
+                let let_atom = MettaValue::Atom("let");
+                let mut body = args.last().unwrap().clone();
+                for arg in args[..args.len() - 1].iter().rev() {
+                    body = MettaValue::SExpr(vec![
+                        let_atom.clone(),
+                        unused.clone(),
+                        arg.clone(),
+                        body,
+                    ]);
+                }
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: body,
+                    in_tail_position: false,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            // foldl-atom 3-arg form (PeTTa): (foldl-atom tuple init func)
+            // Static-list desugar: (foldl-atom (a b c) i f) → (f (f (f i a) b) c)
+            // For dynamic lists, return Ok(None) to fall through (5-arg form
+            // or tree-walker fallback).
+            "foldl-atom" if args.len() == 3 => {
+                let init = &args[1];
+                let func = &args[2];
+                if let Some(elems) = args[0].as_sexpr() {
+                    let mut acc = init.clone();
+                    let elems_owned: Vec<_> = elems.iter().cloned().collect();
+                    for elem in elems_owned {
+                        acc = MettaValue::SExpr(vec![func.clone(), acc, elem]);
+                    }
+                    work_stack.push(CompileWork::CompileExpr {
+                        expr: acc,
+                        in_tail_position: false,
+                        cont_id,
+                    });
+                    return Ok(Some(()));
+                }
+                // Dynamic list: fall through to next match (existing 5-arg
+                // handling or tree-walker fallback).
+                Ok(None)
             }
 
             // ================================================================

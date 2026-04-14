@@ -59,86 +59,221 @@ pub fn apply_bindings(value: &MettaValue, bindings: &Bindings, factory: &GcFacto
     apply_bindings_inner(value, bindings, factory)
 }
 
-/// Inner implementation after Spanned is peeled.
-/// MettaValue is Copy — no heap allocation for returns.
+/// Inner implementation after the top-level Spanned wrapper is peeled.
+///
+/// **Iterative trampoline / pushdown automaton.** Uses an explicit work stack
+/// instead of Rust call-stack recursion. This guarantees:
+///
+/// 1. **No stack overflow on deep nesting**: an S-expression nested 10,000
+///    levels deep walks the heap-allocated work_stack, not the Rust stack.
+///
+/// 2. **Transitive substitution**: when looking up a variable yields a bound
+///    value that itself contains variables, those inner variables are also
+///    resolved by the same single pass. The bound value is pushed back onto
+///    the work stack as a `Process` item, so the loop re-enters the variable
+///    branch on the next iteration. This is critical for the bidirectional
+///    unification case where bindings look like:
+///
+///        {$B → (Inheritance $1 (IntSet cancerous)), $1 → Anna}
+///
+///    Substituting `$B` must yield `(Inheritance Anna (IntSet cancerous))`,
+///    not the unreduced `(Inheritance $1 (IntSet cancerous))`.
+///
+/// **Cycle prevention**: `bidirectional_unify_generic` enforces an occurs
+/// check at unification time, so cyclic bindings (e.g., `$a → (... $a ...)`)
+/// can never enter the bindings map. Without cycles, the transitive walk is
+/// bounded by the binding chain length and terminates.
+///
+/// **Lazy allocation preserved**: each `BuildSExpr` / `BuildConjunction` /
+/// `BuildError` arm performs an identity-equality check against the original
+/// value's children. If every child is unchanged, the original value is
+/// reused verbatim — no allocation, matching the previous recursive
+/// implementation's hot path.
 fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
-    // Handle variables (atoms starting with $, &, or ')
-    if let Some(var_name) = value.as_atom() {
-        if (var_name.starts_with('$') || var_name.starts_with('&') || var_name.starts_with('\''))
-            && var_name != "&"
-        {
-            if let Some(bound_value) = bindings.get(var_name) {
-                return *bound_value; // Copy: O(1) 8-byte pointer copy
+    use crate::ir::Span;
+
+    /// Work-stack item describing a pending operation.
+    enum Work {
+        /// Process a value: dispatch to the appropriate handler.
+        Process(MettaValue),
+        /// After processing `count` children, build a new S-expression.
+        /// `original` is used for the identity-equality lazy-allocation check.
+        BuildSExpr { count: usize, original: MettaValue },
+        /// After processing `count` goals, build a new Conjunction.
+        BuildConjunction { count: usize, original: MettaValue },
+        /// After processing 1 details value, build a new Error.
+        BuildError { msg: &'static str, original: MettaValue },
+        /// After processing 1 inner value, re-wrap with the saved Span.
+        BuildSpanned { span: Span, original: MettaValue },
+    }
+
+    let mut work_stack: Vec<Work> = Vec::with_capacity(32);
+    let mut result_stack: Vec<MettaValue> = Vec::with_capacity(32);
+
+    work_stack.push(Work::Process(*value));
+
+    while let Some(w) = work_stack.pop() {
+        match w {
+            Work::Process(v) => {
+                // Handle Spanned wrapper around an inner value.
+                // Peel one layer, process the inner value, then re-wrap.
+                // This is iterative: we push BuildSpanned + Process(inner).
+                if v.span().is_some() {
+                    let (inner, span_opt) = v.peel_span();
+                    if let Some(span) = span_opt {
+                        work_stack.push(Work::BuildSpanned { span: *span, original: v });
+                        work_stack.push(Work::Process(inner));
+                        continue;
+                    }
+                    // Fallthrough: peel_span returned None for span (shouldn't
+                    // happen since we just checked span().is_some(), but be safe).
+                    result_stack.push(v);
+                    continue;
+                }
+
+                // Atom (variable or non-variable)
+                if let Some(var_name) = v.as_atom() {
+                    if (var_name.starts_with('$')
+                        || var_name.starts_with('&')
+                        || var_name.starts_with('\''))
+                        && var_name != "&"
+                    {
+                        if let Some(bound_value) = bindings.get(var_name) {
+                            // Guard: if bound value is the same variable atom,
+                            // emit directly to prevent infinite self-referential
+                            // transitive resolution (e.g., $a → $a from
+                            // call-site/rule variable name collision).
+                            if bound_value.as_atom() == Some(var_name) {
+                                result_stack.push(*bound_value);
+                                continue;
+                            }
+                            // Transitive substitution: re-process the bound
+                            // value via the work stack so any inner variables
+                            // also get resolved. NO Rust call-stack growth.
+                            work_stack.push(Work::Process(*bound_value));
+                            continue;
+                        }
+                    }
+                    result_stack.push(v);
+                    continue;
+                }
+
+                // Fast path: no variables anywhere in this subtree.
+                if !v.has_variables_fast() {
+                    result_stack.push(v);
+                    continue;
+                }
+
+                // Types are returned as-is (no substitution)
+                if v.is_type() {
+                    result_stack.push(v);
+                    continue;
+                }
+
+                // S-expression: push BuildSExpr continuation, then push children
+                // in reverse so they're processed left-to-right.
+                if let Some(items) = v.as_sexpr() {
+                    let count = items.len();
+                    if count == 0 {
+                        result_stack.push(v);
+                        continue;
+                    }
+                    work_stack.push(Work::BuildSExpr { count, original: v });
+                    for item in items.iter().rev() {
+                        work_stack.push(Work::Process(*item));
+                    }
+                    continue;
+                }
+
+                // Conjunction: same pattern as S-expression.
+                if let Some(goals) = v.as_conjunction() {
+                    let count = goals.len();
+                    if count == 0 {
+                        result_stack.push(v);
+                        continue;
+                    }
+                    work_stack.push(Work::BuildConjunction { count, original: v });
+                    for goal in goals.iter().rev() {
+                        work_stack.push(Work::Process(*goal));
+                    }
+                    continue;
+                }
+
+                // Error: process details, then rebuild with msg.
+                if let Some((msg, details)) = v.as_error() {
+                    work_stack.push(Work::BuildError { msg, original: v });
+                    work_stack.push(Work::Process(details));
+                    continue;
+                }
+
+                // Ground / unknown values: return as-is.
+                result_stack.push(v);
+            }
+            Work::BuildSExpr { count, original } => {
+                let start = result_stack.len() - count;
+                // Identity-equality lazy-allocation check: if every new child
+                // is the same MettaValue as the corresponding original child,
+                // reuse the original verbatim (no allocation).
+                let items = original.as_sexpr().expect("BuildSExpr original must be sexpr");
+                debug_assert_eq!(items.len(), count);
+                let changed = (0..count)
+                    .any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let new_val = factory.sexpr_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(new_val);
+                }
+            }
+            Work::BuildConjunction { count, original } => {
+                let start = result_stack.len() - count;
+                let goals = original
+                    .as_conjunction()
+                    .expect("BuildConjunction original must be conjunction");
+                debug_assert_eq!(goals.len(), count);
+                let changed = (0..count)
+                    .any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let new_val = factory.conjunction_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(new_val);
+                }
+            }
+            Work::BuildError { msg, original } => {
+                let new_details = result_stack.pop().expect("BuildError needs details");
+                let (_orig_msg, orig_details) =
+                    original.as_error().expect("BuildError original must be error");
+                if new_details.identity_eq(&orig_details) {
+                    result_stack.push(original);
+                } else {
+                    result_stack.push(factory.error(msg, new_details));
+                }
+            }
+            Work::BuildSpanned { span, original } => {
+                let inner = result_stack.pop().expect("BuildSpanned needs inner");
+                // Match the existing top-level peel logic at engine.rs:53-55:
+                // if the result already carries a span, don't double-wrap.
+                if inner.span().is_some() {
+                    result_stack.push(inner);
+                } else if inner.identity_eq(&original.peel_span().0) {
+                    // Inner unchanged: reuse original Spanned wrapper.
+                    result_stack.push(original);
+                } else {
+                    result_stack.push(factory.spanned(inner, span));
+                }
             }
         }
-        return *value;
     }
 
-    // Fast path: no variables → return unchanged (O(1) tagged-pointer flag check)
-    if !value.has_variables_fast() {
-        return *value;
-    }
-
-    // Types are returned as-is (no substitution)
-    if value.is_type() {
-        return *value;
-    }
-
-    // S-expressions: recursively apply bindings with identity short-circuit
-    if let Some(items) = value.as_sexpr() {
-        let mut any_changed = false;
-        let new_items: SmallVec<[MettaValue; 8]> = items
-            .iter()
-            .map(|item| {
-                if !item.has_variables_fast() {
-                    return *item;
-                }
-                let result = apply_bindings(item, bindings, factory);
-                if !any_changed && !result.identity_eq(item) {
-                    any_changed = true;
-                }
-                result
-            })
-            .collect();
-        if !any_changed {
-            return *value;
-        }
-        return factory.sexpr_from_slice(&new_items);
-    }
-
-    // Conjunctions: same identity short-circuit
-    if let Some(goals) = value.as_conjunction() {
-        let mut any_changed = false;
-        let new_goals: SmallVec<[MettaValue; 8]> = goals
-            .iter()
-            .map(|goal| {
-                if !goal.has_variables_fast() {
-                    return *goal;
-                }
-                let result = apply_bindings(goal, bindings, factory);
-                if !any_changed && !result.identity_eq(goal) {
-                    any_changed = true;
-                }
-                result
-            })
-            .collect();
-        if !any_changed {
-            return *value;
-        }
-        return factory.conjunction_from_slice(&new_goals);
-    }
-
-    // Errors: identity short-circuit on details
-    if let Some((msg, details)) = value.as_error() {
-        let new_details = apply_bindings(&details, bindings, factory);
-        if new_details.identity_eq(&details) {
-            return *value;
-        }
-        return factory.error(msg, new_details);
-    }
-
-    // Ground values: return as-is (Copy)
-    *value
+    debug_assert_eq!(result_stack.len(), 1, "result stack should have exactly 1 value");
+    result_stack
+        .pop()
+        .expect("apply_bindings_inner: result stack empty")
 }
 
 // ============================================================================
@@ -403,6 +538,74 @@ pub fn try_match_all_rules(
     result_vec
 }
 
+/// Enumerate rule matches via bidirectional unification.
+///
+/// This is the HE-conformant fallback used when `try_match_all_rules` returns
+/// no matches AND the query expression contains free variables. It iterates
+/// over all candidate rules in the rule index for the query's `(head, arity)`
+/// and runs `bidirectional_unify_generic` against each candidate's LHS. On
+/// success, the candidate's RHS is instantiated with the unified bindings.
+///
+/// Why this is needed: `try_match_all_rules` uses `StructuralMatcher` which
+/// performs literal atom comparison. When the query has a free variable in a
+/// position where the rule LHS has a concrete atom (e.g. query `(father a $b)`
+/// vs rule `(father a b)`), the literal check fails because `"$b" != "b"`.
+/// PeTTa / MeTTa HE handle this case via Prolog-style unification —
+/// the query variable `$b` should bind to `b` and the rule's RHS should be
+/// produced as a result. This function provides exactly that semantic.
+///
+/// The returned bindings include both rule LHS variables AND query
+/// variables. The caller's eval pipeline applies the bindings to the
+/// instantiated RHS in the same way as `try_match_all_rules` results.
+///
+/// Returns an empty vec when no rules match, never `None`. Caller decides
+/// whether the result is meaningful (empty → fall through to data
+/// constructor / tuple path).
+pub fn enumerate_rules_via_unification(
+    query: &MettaValue,
+    env: &Environment,
+    factory: &GcFactory,
+) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
+    use crate::backend::environment::rule_management::get_first_arg_head;
+    use crate::backend::eval::bindings::bidirectional_unify_generic;
+    use crate::backend::eval::cesk::continuation_compression::is_rule_live;
+
+    let head = match query.get_head_symbol() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let arity = query.get_arity();
+    let first_arg_head = get_first_arg_head(query);
+
+    let rule_index = env.shared.rule_index.read();
+    let candidates = rule_index.get_candidates_filtered(head, arity, first_arg_head, query);
+
+    let mut out: Vec<(MettaValue, Bindings, Option<MettaValue>)> =
+        Vec::with_capacity(candidates.len());
+
+    for entry in candidates.iter() {
+        if !is_rule_live(entry.global_rule_index) {
+            continue;
+        }
+        // entry.lhs is already Fix-3B-freshened (alpha-renamed via
+        // freshen_variables_generic on the combined `(= lhs rhs)` at insertion
+        // time), so the rule's variables are guaranteed disjoint from the
+        // caller's. Unify directly without re-freshening.
+        if let Some(bindings) = bidirectional_unify_generic(&entry.lhs, query) {
+            // Instantiate the RHS with the unified bindings. The bindings
+            // contain BOTH rule-local variables (originating from entry.lhs)
+            // AND query variables (originating from `query`); applying them
+            // to the rule's RHS produces a value that may still contain
+            // query variables (which is the point — the caller's eval
+            // continuation needs to see them propagate).
+            let instantiated = apply_bindings(&entry.rhs, &bindings, factory);
+            out.push((instantiated, bindings, entry.rhs_type.clone()));
+        }
+    }
+
+    out
+}
+
 // ============================================================================
 // SG1: Binding-Aware Rule Matching (WAM-style lazy variable resolution)
 // ============================================================================
@@ -520,7 +723,16 @@ pub fn try_match_rules_with_bindings(
     // try_match_with_bindings, resolving variables on the fly.
     let mut matches: Vec<(MettaValue, Bindings)> = Vec::new();
 
-    for entry in &candidates {
+    // eval-trace filter check: cheap atomic load when the env var is unset.
+    // When admitted, every (call_site, candidate) pair emits a
+    // `RuleMatchAttempt` event so the analyzer can answer "why did rule R
+    // not match at this call site?".
+    #[cfg(feature = "eval-trace")]
+    let trace_match_attempts =
+        crate::backend::trace::rule_match::should_trace_match(resolved_head);
+
+    for (rule_idx, entry) in candidates.iter().enumerate() {
+        let _rule_idx_u32 = rule_idx as u32;
         let match_result = if let Some(ref matcher) = entry.structural_matcher {
             matcher.try_match_with_bindings(template, outer_bindings)
         } else if let Some(ref matcher) = entry.enhanced_matcher {
@@ -528,6 +740,43 @@ pub fn try_match_rules_with_bindings(
         } else {
             None
         };
+
+        // eval-trace: emit a RuleMatchAttempt event for this candidate.
+        // Cheap when the filter is disabled (single atomic load + None
+        // check above). When enabled, the event captures the call site,
+        // rule LHS, and outcome (Success or generic failure).
+        #[cfg(feature = "eval-trace")]
+        if trace_match_attempts {
+            let outcome = if let Some(ref b) = match_result {
+                trace_format::RuleMatchOutcome::Success {
+                    bindings: b.iter()
+                        .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                        .collect(),
+                }
+            } else {
+                // Without a `try_match_with_bindings_with_detail` variant we
+                // can't pinpoint *which* check failed; emit a generic
+                // path-navigate-failed outcome with an empty path. The next
+                // refinement is to thread detailed failures through this
+                // call site as well.
+                trace_format::RuleMatchOutcome::PathNavigateFailed {
+                    path: Vec::new(),
+                    var: None,
+                }
+            };
+            crate::backend::trace::rule_match::emit_outcome::<MettaValue>(
+                "structural-with-bindings",
+                resolved_head,
+                arity as u32,
+                template,
+                &entry.lhs,
+                None,
+                _rule_idx_u32,
+                outcome,
+                None,
+                0,
+            );
+        }
 
         if let Some(mut match_bindings) = match_result {
             // Deep-resolve captured values through outer_bindings.
@@ -589,7 +838,7 @@ pub fn try_deterministic_chain(
     env: &Environment,
     factory: &GcFactory,
 ) -> Option<MettaValue> {
-    const MAX_CHAIN_LENGTH: usize = 64;
+    const MAX_CHAIN_LENGTH: usize = 512;
 
     let items = expr.as_sexpr()?;
     if items.is_empty() { return None; }
@@ -726,7 +975,7 @@ pub fn try_deferred_deterministic_chain(
     env: &Environment,
     factory: &GcFactory,
 ) -> Option<DeferredChainResult> {
-    const MAX_CHAIN_LENGTH: usize = 64;
+    const MAX_CHAIN_LENGTH: usize = 512;
 
     // Template must be an S-expr with a resolvable head
     let items = template.as_sexpr()?;
@@ -963,14 +1212,14 @@ pub fn template_has_grounded_arg_heads(template: &MettaValue) -> bool {
                 if matches!(head,
                     "if" | "let" | "let*" | "chain" | "case" | "switch"
                     | "unify" | "match" | "match-or"
-                    | "superpose" | "collapse" | "collapse-bind"
+                    | "superpose" | "collapse" | "collapse-bind" | "ground-with-bindings"
                     | "map-atom" | "filter-atom" | "foldl-atom"
                     | "add-atom" | "remove-atom" | "get-atoms"
                     | "new-state" | "get-state" | "change-state!"
                     | "println!" | "trace!" | "nop"
                     | "quote" | "unquote" | "eval"
                     | "!" | "sealed" | "atom-subst"
-                    | "new-space" | "bind!" | "import!" | "include"
+                    | "new-space" | "bind!" | "import!" | "git-import!" | "include"
                     | "error" | "is-error" | "catch"
                     | "=" | ":" | ":<"
                 ) {

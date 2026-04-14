@@ -26,6 +26,7 @@
 
 pub(crate) mod atom_space;
 pub(crate) mod bloom;
+pub(crate) mod dispatch_overrides;
 mod fact_storage;
 pub(crate) mod core;
 mod grounded_ops;
@@ -47,6 +48,9 @@ mod proptests;
 mod type_system;
 
 pub use core::{GenericEnvironment, GenericEnvironmentShared, MettaEnvironment, MultiplicityMatch as GenericMultiplicityMatch};
+pub use dispatch_overrides::{
+    overridable_op_id, DispatchOverrides, OverridableOpId, NUM_OVERRIDABLE_OPS,
+};
 pub use named_spaces::NamedSpaceIter;
 pub use pattern_matching::MultiplicityMatch;
 pub use rule_management::RuleHeadsIter;

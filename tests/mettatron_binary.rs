@@ -526,9 +526,13 @@ fn test_pln_robot() {
         stderr
     );
 
+    // The PLN test framework (`eval_test_generic` in src/backend/eval/testing_ops.rs)
+    // emits exactly `is X, should Y. ✅` on pass and `... ❌` on failure. The
+    // `Passed: true` legacy marker no longer exists in the emitter; assert on the
+    // checkmark + the absence of the failure mark.
     assert!(
-        stdout.contains("Passed: true") || stdout.contains("Passed: True"),
-        "PLN Robot did not produce 'Passed: true':\nSTDOUT:\n{}\nSTDERR:\n{}",
+        stdout.contains("✅") && !stdout.contains("❌"),
+        "PLN Robot did not pass (no ✅, or ❌ present):\nSTDOUT:\n{}\nSTDERR:\n{}",
         stdout,
         stderr
     );
@@ -560,9 +564,11 @@ fn test_pln_flying_raven() {
         stderr
     );
 
+    // See test_pln_robot for the rationale on `✅` / `❌` vs the legacy
+    // `Passed: true` marker.
     assert!(
-        stdout.contains("Passed: true") || stdout.contains("Passed: True"),
-        "PLN FlyingRaven did not produce 'Passed: true':\nSTDOUT:\n{}\nSTDERR:\n{}",
+        stdout.contains("✅") && !stdout.contains("❌"),
+        "PLN FlyingRaven did not pass (no ✅, or ❌ present):\nSTDOUT:\n{}\nSTDERR:\n{}",
         stdout,
         stderr
     );
@@ -594,9 +600,11 @@ fn test_pln_smokes() {
         stderr
     );
 
+    // See test_pln_robot for the rationale on `✅` / `❌` vs the legacy
+    // `Passed: true` marker.
     assert!(
-        stdout.contains("Passed: true") || stdout.contains("Passed: True"),
-        "PLN Smokes did not produce 'Passed: true':\nSTDOUT:\n{}\nSTDERR:\n{}",
+        stdout.contains("✅") && !stdout.contains("❌"),
+        "PLN Smokes did not pass (no ✅, or ❌ present):\nSTDOUT:\n{}\nSTDERR:\n{}",
         stdout,
         stderr
     );
@@ -628,16 +636,13 @@ fn test_pln_toothbrush() {
         stderr
     );
 
-    // NOTE: Toothbrush currently produces "Passed: false" due to a pre-existing issue
-    // unrelated to demand-driven branch pruning (verified by disabling demand forwarding
-    // and rule_head_bloom changes independently -- both still fail). The PLN query
-    // returns empty results (Is: ()). This needs separate investigation.
-    // The binary succeeds (exit 0) and produces output, which confirms the evaluator
-    // doesn't crash or hang.
-    if !stdout.contains("Passed: true") && !stdout.contains("Passed: True") {
-        eprintln!(
-            "WARNING: PLN Toothbrush did not produce 'Passed: true' (known pre-existing issue):\nSTDOUT:\n{}",
-            stdout
-        );
-    }
+    // PLN Toothbrush is now passing on this branch — assert ✅ + no ❌ to lock
+    // it in. The legacy "Passed: true" marker is no longer emitted; the test
+    // framework prints `is X, should Y. ✅` (see eval_test_generic).
+    assert!(
+        stdout.contains("✅") && !stdout.contains("❌"),
+        "PLN Toothbrush did not pass (no ✅, or ❌ present):\nSTDOUT:\n{}\nSTDERR:\n{}",
+        stdout,
+        stderr
+    );
 }

@@ -20,7 +20,7 @@
 //! the value type and factory. The production implementation uses `StaticEvalContext`
 //! with arena-allocated `MettaValue` values.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -349,6 +349,9 @@ fn dispatch_rule_matches<C: EvalContext>(
     if matches.len() == 1 && base_results.is_empty() {
         let (rhs, bindings) = matches.pop().expect("matches has exactly 1 element");
 
+        // collapse-bind: capture tracked variable bindings from this match.
+        capture_bindings_if_active(&bindings);
+
         // Trace: RuleApplication (single match — no fork)
         #[cfg(feature = "eval-trace")]
         {
@@ -563,6 +566,9 @@ fn dispatch_rule_matches<C: EvalContext>(
         let _total_branches = (remaining_iter.len() + 1) as u32; // +1 matches existing trace convention
         let (rhs, bindings) = remaining_iter.next().expect("matches is non-empty");
 
+        // collapse-bind: capture tracked variable bindings from first match.
+        capture_bindings_if_active(&bindings);
+
         // Trace: NondeterministicFork + BranchStart for first branch
         #[cfg(feature = "eval-trace")]
         let _branch_span_id = {
@@ -602,6 +608,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         };
 
         let pre_fork_gen = enter_fork_scope();
+        let fork_depth = enter_fork();
         continuations.push(Continuation::ProcessRuleMatches {
             remaining_matches: remaining_iter,
             results: base_results.into_vec(),
@@ -609,6 +616,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             depth,
             pre_fork_epoch: mutation_epoch(),
             pre_fork_gen,
+            fork_depth,
             #[cfg(feature = "eval-trace")]
             branch_span_id: _branch_span_id,
             #[cfg(feature = "eval-trace")]
@@ -694,6 +702,261 @@ thread_local! {
     /// Set by `dispatch_rule_matches` before calling `parallel_branch_eval`,
     /// read by `parallel_branch_eval` to compute context-aware effective priority.
     static CONTINUATION_CONTEXT_HASH: Cell<u64> = const { Cell::new(0) };
+
+    /// Prolog-style cut depth. When `(cut)` is evaluated inside a rule's RHS,
+    /// this is set to the current fork depth. The `ProcessRuleMatches`
+    /// continuation at the matching fork depth consumes the signal and
+    /// discards remaining alternative matches.
+    ///
+    /// Value of 0 means "no cut active". Values > 0 indicate the fork depth
+    /// at which cut should fire. This depth-awareness prevents nested
+    /// `dispatch_rule_matches` calls from accidentally consuming the cut
+    /// signal meant for an outer dispatch.
+    static CUT_TARGET_DEPTH: Cell<u32> = const { Cell::new(0) };
+
+    /// Current nondeterministic fork depth — incremented when entering a
+    /// `dispatch_rule_matches` with 2+ matches, decremented when the
+    /// corresponding `ProcessRuleMatches` continuation completes.
+    static FORK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+// ── Binding Capture for collapse-bind ─────────────────────────────────
+//
+// When a `collapse-bind` evaluation is active, the thread-local capture
+// stack records variable bindings at nondeterministic branch points.
+// This is opt-in: zero overhead when no `collapse-bind` is in progress
+// (single `RefCell::borrow` + `Vec::is_empty` check).
+//
+// Architecture: per-branch capture with inverse mapping.
+//
+// Layer 1 (inverse map): At the top-level dispatch for the collapse-bind
+// expression, rule-var bindings are {$fr_a → $who} (rule var keys). The
+// inverse map records {$who → $fr_a} so that when $fr_a is later resolved
+// to a ground value, we can populate $who's binding.
+//
+// Layer 2 (per-result snapshots): Each nondeterministic result gets its
+// own binding snapshot. When ProcessRuleMatches accumulates results from
+// a completed branch, the current bindings are snapshotted for each result.
+//
+// Layer 3 (direct + indirect capture): At each dispatch_rule_matches,
+// bindings are checked for: (a) direct tracked-var keys with ground values,
+// (b) rule-var keys that map to tracked vars via the inverse map.
+
+/// Frame recording tracked variable bindings during `collapse-bind` evaluation.
+struct BindingCaptureFrame {
+    /// Free variable names from the original `collapse-bind` expression.
+    tracked_vars: SmallVec<[&'static str; 4]>,
+    /// Current branch bindings — updated by capture_bindings_if_active,
+    /// snapshotted into per_result_bindings when results are produced.
+    current_bindings: crate::backend::models::GenericBindings<MettaValue>,
+    /// Per-result binding snapshots. Each entry corresponds to one
+    /// nondeterministic result that will flow to ProcessCollapseBind.
+    /// Grown by `snapshot_bindings_for_results()`.
+    per_result_bindings: Vec<crate::backend::models::GenericBindings<MettaValue>>,
+    /// Inverse map: when a rule-var binding is {$fr_a → $who} (value is
+    /// a tracked var), record ($who, $fr_a) so that when $fr_a is later
+    /// resolved to a ground value, we populate $who's binding.
+    /// Multiple entries allowed for the same tracked var with different rule vars.
+    inverse_map: SmallVec<[(&'static str, &'static str); 4]>,
+    /// Fork depth at which the collapse-bind was entered. Only snapshots
+    /// at this depth count as top-level results for pairing.
+    collapse_fork_depth: u32,
+}
+
+thread_local! {
+    /// Stack of binding capture frames for nested `collapse-bind` calls.
+    /// Empty when no `collapse-bind` is active.
+    static BINDING_CAPTURE_STACK: RefCell<Vec<BindingCaptureFrame>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Push a new capture frame when entering `collapse-bind`.
+/// `tracked_vars` are the free variable names from the inner expression.
+fn push_binding_capture_frame(tracked_vars: SmallVec<[&'static str; 4]>) {
+    let fork_depth = FORK_DEPTH.with(|c| c.get());
+    BINDING_CAPTURE_STACK.with(|stack| {
+        stack.borrow_mut().push(BindingCaptureFrame {
+            tracked_vars,
+            current_bindings: crate::backend::models::GenericBindings::new(),
+            per_result_bindings: Vec::new(),
+            inverse_map: SmallVec::new(),
+            collapse_fork_depth: fork_depth,
+        });
+    });
+}
+
+/// Pop and return the top capture frame when `collapse-bind` completes.
+fn pop_binding_capture_frame() -> Option<BindingCaptureFrame> {
+    BINDING_CAPTURE_STACK.with(|stack| stack.borrow_mut().pop())
+}
+
+/// Check bindings for tracked variables — direct capture, inverse map
+/// population, and inverse map resolution.
+///
+/// Fast no-op when no capture frame is active. Called at every
+/// `dispatch_rule_matches` site.
+#[inline]
+fn capture_bindings_if_active(match_bindings: &crate::backend::models::GenericBindings<MettaValue>) {
+    if match_bindings.is_empty() { return; }
+    BINDING_CAPTURE_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(frame) = stack.last_mut() {
+            for (name, value) in match_bindings.iter() {
+                // (a) Direct capture: key IS a tracked var, value is ground.
+                if frame.tracked_vars.contains(&name) && !value.has_variables_fast() {
+                    frame.current_bindings.insert_or_replace(name, value.clone());
+                    continue;
+                }
+                // (b) Inverse map population: value IS a tracked var (as atom).
+                if let Some(val_name) = value.as_atom() {
+                    if frame.tracked_vars.contains(&val_name)
+                        && !frame.inverse_map.iter().any(|&(tv, rv)| tv == val_name && rv == name)
+                    {
+                        frame.inverse_map.push((val_name, name));
+                    }
+                }
+                // (c) Inverse map resolution: key is a rule-var that maps to a
+                //     tracked var, and value is ground — resolve the tracked var.
+                if !value.has_variables_fast() {
+                    for &(tracked_var, rule_var) in frame.inverse_map.iter() {
+                        if name == rule_var {
+                            frame.current_bindings.insert_or_replace(tracked_var, value.clone());
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Snapshot current bindings for `count` new nondeterministic results.
+/// Only fires when `at_fork_depth` matches the collapse-bind's entry depth,
+/// ensuring snapshots correspond to top-level nondeterministic results only.
+/// Called from ProcessRuleMatches when a branch completes.
+#[inline]
+fn snapshot_bindings_for_results(count: usize, at_fork_depth: u32) {
+    if count == 0 { return; }
+    BINDING_CAPTURE_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(frame) = stack.last_mut() {
+            if at_fork_depth != frame.collapse_fork_depth + 1 {
+                return;
+            }
+            for _ in 0..count {
+                frame.per_result_bindings.push(frame.current_bindings.clone());
+            }
+        }
+    });
+}
+
+/// Clear current_bindings when starting a new branch at the collapse-bind
+/// fork level. Each branch should capture its own bindings independently.
+#[inline]
+fn clear_current_bindings_for_new_branch() {
+    BINDING_CAPTURE_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(frame) = stack.last_mut() {
+            frame.current_bindings = crate::backend::models::GenericBindings::new();
+        }
+    });
+}
+
+/// Encode bindings as an S-expression: `(Bindings ($var val) ...)`.
+/// Used by collapse-bind to pair each result with its captured bindings.
+fn encode_bindings_as_sexpr(
+    bindings: &crate::backend::models::GenericBindings<MettaValue>,
+    factory: &crate::backend::models::gc_allocator::GcFactory,
+) -> MettaValue {
+    let mut items: Vec<MettaValue> = Vec::with_capacity(bindings.len() + 1);
+    items.push(factory.atom("Bindings"));
+    for (name, value) in bindings.iter() {
+        items.push(factory.sexpr(vec![factory.atom(name), value.clone()]));
+    }
+    factory.sexpr(items)
+}
+
+/// Decode bindings from an S-expression `(Bindings ($var val) ...)` back to
+/// `GenericBindings<MettaValue>`. Used by `ground-with-bindings` and (future)
+/// `superpose-bind` to reconstruct bindings from their serialized form.
+pub fn decode_bindings_from_sexpr(
+    sexpr: &MettaValue,
+    factory: &crate::backend::models::gc_allocator::GcFactory,
+) -> crate::backend::models::GenericBindings<MettaValue> {
+    let mut bindings = crate::backend::models::GenericBindings::new();
+    if let Some(items) = sexpr.as_sexpr() {
+        // Skip head "Bindings" atom
+        for pair in items.iter().skip(1) {
+            if let Some(pair_items) = pair.as_sexpr() {
+                if pair_items.len() == 2 {
+                    if let Some(name) = pair_items[0].as_atom() {
+                        bindings.insert(name, pair_items[1]);
+                    }
+                }
+            }
+        }
+    }
+    let _ = factory; // factory available for future use
+    bindings
+}
+
+/// Collect GC roots from the binding capture stack.
+/// Called during GC safepoints to prevent the collector from sweeping
+/// MettaValues held in capture frames.
+pub fn collect_binding_capture_roots(roots: &mut Vec<MettaValue>) {
+    BINDING_CAPTURE_STACK.with(|stack| {
+        let stack = stack.borrow();
+        for frame in stack.iter() {
+            for (_, value) in frame.current_bindings.iter() {
+                roots.push(value.clone());
+            }
+            for bindings in &frame.per_result_bindings {
+                for (_, value) in bindings.iter() {
+                    roots.push(value.clone());
+                }
+            }
+        }
+    });
+}
+
+/// Set the cut signal — called by `eval_cut_generic` when `(cut)` is evaluated.
+/// Records the current fork depth so the correct `ProcessRuleMatches`
+/// continuation consumes it.
+#[inline]
+pub fn set_cut_active() {
+    let depth = FORK_DEPTH.with(|c| c.get());
+    CUT_TARGET_DEPTH.with(|c| c.set(depth));
+}
+
+/// Check if a cut signal is pending for the given fork depth. If so,
+/// consume it and return `true`.
+#[inline]
+fn take_cut_at_depth(depth: u32) -> bool {
+    CUT_TARGET_DEPTH.with(|c| {
+        if c.get() == depth && depth > 0 {
+            c.set(0);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Increment fork depth — called when entering a nondeterministic dispatch.
+#[inline]
+fn enter_fork() -> u32 {
+    FORK_DEPTH.with(|c| {
+        let d = c.get() + 1;
+        c.set(d);
+        d
+    })
+}
+
+/// Decrement fork depth — called when a `ProcessRuleMatches` completes.
+#[inline]
+fn leave_fork() {
+    FORK_DEPTH.with(|c| {
+        let d = c.get();
+        if d > 0 { c.set(d - 1); }
+    });
 }
 
 /// Evaluate nondeterministic branches in parallel via the work pool.
@@ -722,6 +985,30 @@ fn parallel_branch_eval(
 
     let num_branches = branches.len();
     debug_assert!(num_branches >= 2, "parallel_branch_eval requires at least 2 branches");
+
+    // Trace: ParallelDispatch enter
+    #[cfg(feature = "eval-trace")]
+    {
+        crate::backend::trace::with_trace_collector_ref(|tc| {
+            let branch_tvs: Vec<trace_format::TraceValue> = branches.iter()
+                .take(4)
+                .map(|b| crate::backend::trace::trace_value_generic(b))
+                .collect();
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                caller_depth,
+                trace_format::TraceValue::Unit,
+                vec![],
+                None,
+                trace_format::TraceEventKind::ParallelDispatch {
+                    branch_count: num_branches as u32,
+                    branch_exprs: branch_tvs,
+                    parallel_depth: PARALLEL_BRANCH_DEPTH.with(|d| d.get()),
+                    phase: "enter".to_string(),
+                },
+            );
+        });
+    }
 
     // Pre-allocate result slots: Vec<Option<Vec<MettaValue>>>
     let results: Arc<Mutex<Vec<Option<Vec<MettaValue>>>>> =
@@ -824,6 +1111,26 @@ fn parallel_branch_eval(
     {
         let mut guard = results.lock().expect("results mutex poisoned");
         guard[0] = Some(branch0_results.into_vec());
+    }
+
+    // Trace: ParallelDispatch branch0-done
+    #[cfg(feature = "eval-trace")]
+    {
+        crate::backend::trace::with_trace_collector_ref(|tc| {
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                caller_depth,
+                trace_format::TraceValue::Unit,
+                vec![],
+                None,
+                trace_format::TraceEventKind::ParallelDispatch {
+                    branch_count: num_branches as u32,
+                    branch_exprs: vec![],
+                    parallel_depth: PARALLEL_BRANCH_DEPTH.with(|d| d.get()),
+                    phase: "branch0-done".to_string(),
+                },
+            );
+        });
     }
 
     // Wait for all spawned tasks to complete, with work-stealing.
@@ -1152,18 +1459,32 @@ pub fn eval_trampoline<C: EvalContext>(
     env: MettaEnvironment,
     ctx: &C,
 ) -> EvalResult {
+    // Isolate fork/cut thread-local state so nested trampoline calls
+    // (from `test`, `assertEqual`, `collapse` within synchronous ops,
+    // etc.) don't corrupt the outer trampoline's cut signaling.
+    // Without this, a `(cut)` inside a `test` body could consume the
+    // outer dispatch's cut target or vice versa.
+    let saved_fork = FORK_DEPTH.with(|c| c.replace(0));
+    let saved_cut = CUT_TARGET_DEPTH.with(|c| c.replace(0));
+
     let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0);
-    loop {
+    let result = loop {
         match outcome {
             crate::backend::eval::cesk::EvalOutcome::Complete(results, env) => {
-                return (results, Arc::new(env));
+                break (results, Arc::new(env));
             }
             crate::backend::eval::cesk::EvalOutcome::Yielded(suspended) => {
                 // Resume from suspended state with a fresh reduction budget
                 outcome = resume_trampoline_inner(suspended, ctx);
             }
         }
-    }
+    };
+
+    // Restore outer trampoline's fork/cut state.
+    FORK_DEPTH.with(|c| c.set(saved_fork));
+    CUT_TARGET_DEPTH.with(|c| c.set(saved_cut));
+
+    result
 }
 
 /// Resume a suspended trampoline evaluation from saved state.
@@ -1314,7 +1635,46 @@ fn eval_trampoline_inner<C: EvalContext>(
     >> = Vec::new();
 
     // Main trampoline loop
+    #[cfg(feature = "eval-trace")]
+    let mut _trampoline_iter: u64 = 0;
     while let Some(work) = work_stack.pop() {
+        // Trace: TrampolineStep (gated by METTA_TRACE_TRAMPOLINE=1)
+        #[cfg(feature = "eval-trace")]
+        {
+            _trampoline_iter += 1;
+            if crate::backend::trace::rule_match::should_trace_trampoline() {
+                crate::backend::trace::with_trace_collector_ref(|tc| {
+                    let (kind, expr, depth) = match &work {
+                        WorkItem::Eval { value, depth, .. } => (
+                            "Eval",
+                            Some(crate::backend::trace::trace_value_generic(value)),
+                            *depth as u32,
+                        ),
+                        WorkItem::EvalWithBindings { template, depth, .. } => (
+                            "EvalWithBindings",
+                            Some(crate::backend::trace::trace_value_generic(template)),
+                            *depth as u32,
+                        ),
+                        WorkItem::Resume { .. } => ("Resume", None, 0),
+                    };
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        depth,
+                        expr.clone().unwrap_or(trace_format::TraceValue::Unit),
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::TrampolineStep {
+                            work_kind: kind.to_string(),
+                            expression: expr,
+                            stack_depth: work_stack.len() as u32,
+                            continuation_depth: continuations.len() as u32,
+                            iteration: _trampoline_iter,
+                        },
+                    );
+                });
+            }
+        }
+
         // Incremental deferred-drop drain: pop 1 environment every 64 iterations.
         // Drops happen on the eval thread (amortized, not spiked).
         gc_counter = gc_counter.wrapping_add(1);
@@ -1350,6 +1710,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                 collect_match_result_roots(concrete_roots);
                 crate::backend::eval::cesk::tabling::collect_subgoal_roots(concrete_roots);
                 crate::backend::eval::cesk::thunk::collect_thunk_roots(concrete_roots);
+
+                // Collect GC roots from collapse-bind capture frames.
+                collect_binding_capture_roots(concrete_roots);
 
                 // Collect GC roots from deferred environment drops.
                 // These environments' MettaValues must be visible to the GC
@@ -2549,6 +2912,20 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Start collapse-bind
                     GenericEvalStep::StartCollapseBind { expr, env: step_env, depth } => {
                         let env: SharedEnv = Arc::new(step_env);
+
+                        // Push a binding capture frame if the expression has free variables.
+                        // These tracked variables will be captured at dispatch_rule_matches
+                        // sites during the inner expression's evaluation.
+                        if expr.has_variables_fast() {
+                            let free_vars = expr.free_variables();
+                            if !free_vars.is_empty() {
+                                let tracked: SmallVec<[&'static str; 4]> = free_vars
+                                    .into_iter()
+                                    .collect();
+                                push_binding_capture_frame(tracked);
+                            }
+                        }
+
                         continuations.push(Continuation::ProcessCollapseBind {
                             env: env.clone(),
                             depth,
@@ -3061,8 +3438,39 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Phase 2.4: Environment trimming — remove bindings not referenced
                 // by the template. This reduces root set size at GC safepoints and
                 // avoids carrying dead bindings through nested let* chains.
+                //
+                // CRITICAL: must compute the **transitive closure** of needed
+                // variables. If the template uses $B, and $B is bound to
+                // `(Inheritance $1 ...)`, then $1 must also be kept — otherwise
+                // it will be lost when $B is later substituted (e.g., for
+                // bidirectional unification cases where a rule variable is
+                // bound to an expression containing a free input variable that
+                // was bound by unification of a sibling occurrence).
+                //
+                // Algorithm: fixpoint expansion. Start with `template.free_variables()`,
+                // then for each kept binding, add its value's free variables to
+                // the needed set. Repeat until stable. Bounded by `bindings.len()`.
                 let bindings = if bindings.len() > 1 {
-                    let needed = template.free_variables();
+                    let mut needed = template.free_variables();
+                    // Fixpoint: expand needed set with transitively-referenced vars.
+                    // Each iteration adds at least one new variable, so the loop
+                    // terminates after at most `bindings.len()` iterations.
+                    loop {
+                        let prev_len = needed.len();
+                        for (name, val) in bindings.iter() {
+                            if needed.contains(&name) && val.has_variables_fast() {
+                                let val_vars = val.free_variables();
+                                for v in val_vars {
+                                    if !needed.contains(&v) {
+                                        needed.push(v);
+                                    }
+                                }
+                            }
+                        }
+                        if needed.len() == prev_len {
+                            break;
+                        }
+                    }
                     if needed.len() < bindings.len() {
                         let mut trimmed = crate::backend::models::GenericBindings::new();
                         for (name, val) in bindings.iter() {
@@ -3668,6 +4076,7 @@ fn process_continuation<C: EvalContext>(
             depth,
             pre_fork_epoch,
             pre_fork_gen,
+            fork_depth,
             #[cfg(feature = "eval-trace")]
             branch_span_id,
             #[cfg(feature = "eval-trace")]
@@ -3679,6 +4088,11 @@ fn process_continuation<C: EvalContext>(
         } => {
             #[cfg(feature = "eval-trace")]
             let result_count = result.0.len() as u32;
+
+            // collapse-bind: snapshot current bindings for each new result
+            // from this branch. Only fires at the collapse-bind's fork depth.
+            snapshot_bindings_for_results(result.0.len(), fork_depth);
+
             results.extend(result.0);
             let result_env = result.1;
 
@@ -3705,8 +4119,15 @@ fn process_continuation<C: EvalContext>(
                 }
             }
 
-            if remaining_matches.len() == 0 {
-                // All branches consumed — leave the fork scope.
+            // Check for Prolog-style cut: if (cut) was evaluated during the
+            // branch that just completed, commit to this branch's results and
+            // discard all remaining alternative matches. The cut signal is
+            // depth-targeted so nested dispatches don't accidentally consume it.
+            let cut_fired = take_cut_at_depth(fork_depth);
+
+            if remaining_matches.len() == 0 || cut_fired {
+                // All branches consumed (or cut fired) — leave the fork scope.
+                leave_fork();
                 leave_fork_scope(pre_fork_gen);
                 // Defer the branch environment's deep drop. Its MettaValues
                 // are collected into root_set at the next GC safepoint via
@@ -3718,6 +4139,12 @@ fn process_continuation<C: EvalContext>(
             } else {
                 // remaining_matches is already in generic type (V, GenericBindings<V>)
                 let (rhs, raw_bindings) = remaining_matches.next().expect("remaining_matches is non-empty");
+
+                // collapse-bind: clear current bindings for the new branch so
+                // each branch captures independently, then capture from this match.
+                clear_current_bindings_for_new_branch();
+                capture_bindings_if_active(&raw_bindings);
+
                 let bindings = Box::new(raw_bindings);
 
                 // Trace: BranchStart for the next branch
@@ -3773,6 +4200,7 @@ fn process_continuation<C: EvalContext>(
                     depth,
                     pre_fork_epoch,
                     pre_fork_gen,
+                    fork_depth,
                     #[cfg(feature = "eval-trace")]
                     branch_span_id: _next_span_id,
                     #[cfg(feature = "eval-trace")]
@@ -6625,6 +7053,8 @@ fn process_continuation<C: EvalContext>(
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: false,
+                    per_result_bindings: None,
+                    bindings_index: 0,
                     env: result_env.clone(),
                     depth,
                 });
@@ -6646,6 +7076,9 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (expr_results, result_env) = result;
 
+            // Pop the binding capture frame (may be None if no free vars).
+            let captured_frame = pop_binding_capture_frame();
+
             // Empty results: return empty tuple immediately
             if expr_results.is_empty() {
                 let result_list = ctx.factory().sexpr(vec![]);
@@ -6655,9 +7088,29 @@ fn process_continuation<C: EvalContext>(
                 return;
             }
 
+            // Force sequential when bindings were captured — parallel workers
+            // have their own thread-local stacks and can't contribute captures.
+            let force_sequential = captured_frame.is_some();
+
+            // Extract per-result bindings from the capture frame.
+            // Fallback: when per_result_bindings is empty (no nondeterministic
+            // fork at the collapse-bind level — e.g., single rule match), use
+            // current_bindings for ALL results.
+            let per_result_bindings = captured_frame.map(|f| {
+                if f.per_result_bindings.is_empty() {
+                    // Single-match fast path: no fork → no snapshots.
+                    // Use current_bindings (accumulated through entire eval).
+                    let n = expr_results.len();
+                    vec![f.current_bindings; n]
+                } else {
+                    f.per_result_bindings
+                }
+            });
+
             // ── Parallel path: identical to ProcessCollapse ──
             let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
-            let par_budget = if expr_results.len() >= PARALLEL_COLLAPSE_THRESHOLD
+            let par_budget = if !force_sequential
+                && expr_results.len() >= PARALLEL_COLLAPSE_THRESHOLD
                 && current_depth < max_parallel_depth()
                 && global_eval_pool().active_workers() > 0
             {
@@ -6707,6 +7160,8 @@ fn process_continuation<C: EvalContext>(
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: true,
+                    per_result_bindings,
+                    bindings_index: 0,
                     env: result_env.clone(),
                     depth,
                 });
@@ -6725,21 +7180,29 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessCollapseEvalResults {
             mut remaining_raw,
             mut evaluated,
-            is_bind: _,
+            is_bind,
+            per_result_bindings,
+            mut bindings_index,
             env: _,
             depth,
         } => {
             let (eval_results, result_env) = result;
 
             // Collect evaluated results (filter empty/pruned branches)
+            // Track how many results were added for bindings_index advancement
+            let prev_count = evaluated.len();
             evaluated.extend(eval_results.into_iter().filter(|v| !v.is_empty()));
+            let added = evaluated.len() - prev_count;
+            bindings_index += added;
 
             if let Some(next_raw) = remaining_raw.next() {
-                // More results to evaluate — reuse continuation slot
+                // More results to evaluate — preserve state
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated,
-                    is_bind: false,
+                    is_bind,
+                    per_result_bindings,
+                    bindings_index,
                     env: result_env.clone(),
                     depth,
                 });
@@ -6754,7 +7217,21 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // All results evaluated — assemble the tuple
-                let result_list = ctx.factory().sexpr(evaluated);
+                let result_list = if is_bind {
+                    // collapse-bind: wrap each result as (result (Bindings ($var val) ...))
+                    // Use per-result bindings when available, falling back to empty.
+                    let empty_bindings = crate::backend::models::GenericBindings::new();
+                    let pairs: Vec<MettaValue> = evaluated.into_iter().enumerate().map(|(i, result_val)| {
+                        let bindings = per_result_bindings.as_ref()
+                            .and_then(|prb| prb.get(i))
+                            .unwrap_or(&empty_bindings);
+                        let bindings_sexpr = encode_bindings_as_sexpr(bindings, ctx.factory());
+                        ctx.factory().sexpr(vec![result_val, bindings_sexpr])
+                    }).collect();
+                    ctx.factory().sexpr(pairs)
+                } else {
+                    ctx.factory().sexpr(evaluated)
+                };
 
                 // Trace: collapse-result phase
                 #[cfg(feature = "eval-trace")]
@@ -6767,7 +7244,7 @@ fn process_continuation<C: EvalContext>(
                             vec![],
                             None,
                             trace_format::TraceEventKind::SpecialForm {
-                                form_name: "collapse".to_string(),
+                                form_name: if is_bind { "collapse-bind" } else { "collapse" }.to_string(),
                                 phase: "collapse-result".to_string(),
                             },
                         );
@@ -6991,9 +7468,50 @@ fn process_continuation<C: EvalContext>(
                             }
                         }
 
-                        work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::from_vec(generic_results), env_after),
-                        });
+                        // Schedule each instantiated template through WorkItem::Eval —
+                        // identical to the owned-space branch below. Without this
+                        // re-eval pass, instantiated templates that contain reducible
+                        // sub-expressions (grounded ops, user rules) propagate
+                        // unreduced, breaking arithmetic on values from match results
+                        // and any nested-template chains. Literal-value results
+                        // (e.g. floats, atoms) still self-evaluate to themselves with
+                        // negligible overhead.
+                        if generic_results.is_empty() {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env_after),
+                            });
+                        } else if generic_results.len() == 1 {
+                            work_stack.push(WorkItem::Eval {
+                                value: generic_results.into_iter().next().unwrap(),
+                                env: env_after,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                demand: None,
+                            });
+                        } else {
+                            // Multiple matches — queue template evaluations.
+                            let mut generic_templates = generic_results.into_iter();
+                            let tmpl_capacity = generic_templates.len();
+                            let first_template = generic_templates.next().unwrap();
+
+                            continuations.push(Continuation::ProcessMatchTemplates {
+                                remaining_templates: generic_templates,
+                                results: Vec::with_capacity(tmpl_capacity),
+                                env: env_after.clone(),
+                                depth,
+                            });
+
+                            let forked_env = env_after.fork_for_nondeterminism();
+                            work_stack.push(WorkItem::Eval {
+                                value: first_template,
+                                env: Arc::new(forked_env),
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                demand: None,
+                            });
+                        }
                     } else {
                         // Owned space - match against atoms in SpaceHandle via unified match_pattern_generic
                         let instantiated_templates: Vec<MettaValue> =

@@ -223,6 +223,52 @@ where
         Ok(())
     }
 
+    /// Compile an expression as a LITERAL S-expression, never emitting a
+    /// function call (`Call` opcode) for user-defined heads.
+    ///
+    /// Used by structural operations (`car-atom`, `cdr-atom`) that need to
+    /// see the syntactic form of their argument — not its evaluation. The
+    /// VM's `StructuralHead`/`StructuralTail` opcodes apply the 4-condition
+    /// pre-eval predicate at runtime against the live environment, so the
+    /// argument must arrive unreduced.
+    ///
+    /// Semantics:
+    /// - S-expression: recursively compile each child as literal, then
+    ///   emit `MakeSExpr` / `MakeSExprLarge` to reconstruct the list at
+    ///   runtime. Never descends into `compile_call`.
+    /// - Atom / variable / primitive: delegate to `self.compile`, which
+    ///   correctly emits `PushAtom`, `LoadLocal`/`PushVariable`, or
+    ///   `PushLong`/`PushConstant` — so bound variables like `$x` resolve
+    ///   to their current values at runtime. For example:
+    ///   `(let $x (f a b) (car-atom $x))` compiles `$x` as `LoadLocal N`,
+    ///   the VM pushes the bound value `(f a b)`, then `StructuralHead`
+    ///   applies the pre-eval predicate on `(f a b)` — identical to
+    ///   tree-walker behavior.
+    fn compile_as_literal_sexpr(&mut self, expr: &V) -> CompileResult<()> {
+        if let Some(items) = expr.as_sexpr() {
+            if items.is_empty() {
+                self.builder.emit(Opcode::PushEmpty);
+                return Ok(());
+            }
+            // Recursively compile each child as literal — never `compile_call`.
+            for item in items {
+                self.compile_as_literal_sexpr(item)?;
+            }
+            let arity = items.len();
+            if arity <= 255 {
+                self.builder.emit_byte(Opcode::MakeSExpr, arity as u8);
+            } else {
+                self.builder.emit_u16(Opcode::MakeSExprLarge, arity as u16);
+            }
+            return Ok(());
+        }
+        // Non-sexpr (atoms, variables, primitives): normal compilation is
+        // correct — it resolves variables via LoadLocal, emits PushAtom for
+        // symbols, and pushes primitives verbatim. None of these paths emit
+        // `Call`, so variable bindings are preserved.
+        self.compile(expr)
+    }
+
     /// Compile a function call to a user-defined rule
     fn compile_call(&mut self, head: &str, args: &[V]) -> CompileResult<()> {
         let arity = args.len();
@@ -625,16 +671,30 @@ where
             }
 
             // List operations
+            //
+            // car-atom/cdr-atom use StructuralHead/StructuralTail to preserve
+            // the raw (unreduced) argument through to the VM, which then
+            // applies the 4-condition pre-eval predicate against the live
+            // environment — identical semantics to the tree-walker's
+            // `is_reducible_structural_arg` (src/backend/eval/step/sexpr.rs).
+            //
+            // The argument is compiled via `compile_as_literal_sexpr`, which
+            // recursively constructs the s-expression at runtime via
+            // `MakeSExpr` (never emitting `Call` for user-defined function
+            // heads). This preserves the syntactic structure while still
+            // allowing variables (`$x`) to be resolved via `LoadLocal`, so
+            // e.g. `(let $x (grandfather a b) (car-atom $x))` correctly
+            // substitutes $x before the structural op sees it.
             "car-atom" => {
                 self.check_arity("car-atom", args.len(), 1)?;
-                self.compile(&args[0])?;
-                self.builder.emit(Opcode::GetHead);
+                self.compile_as_literal_sexpr(&args[0])?;
+                self.builder.emit(Opcode::StructuralHead);
                 Ok(Some(()))
             }
             "cdr-atom" => {
                 self.check_arity("cdr-atom", args.len(), 1)?;
-                self.compile(&args[0])?;
-                self.builder.emit(Opcode::GetTail);
+                self.compile_as_literal_sexpr(&args[0])?;
+                self.builder.emit(Opcode::StructuralTail);
                 Ok(Some(()))
             }
             "cons-atom" => {
@@ -906,6 +966,22 @@ where
                 self.builder.emit(Opcode::UniqueAtom);
                 Ok(Some(()))
             }
+            // Explicit alias of `unique-atom` — both use alpha-equivalence
+            // (matching MeTTa HE).
+            "alpha-unique-atom" => {
+                self.check_arity("alpha-unique-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::AlphaUniqueAtom);
+                Ok(Some(()))
+            }
+            // PeTTa-compatible structural-equality dedup. Distinct from
+            // `unique-atom` (which uses alpha-equivalence).
+            "struct-unique-atom" => {
+                self.check_arity("struct-unique-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::StructUniqueAtom);
+                Ok(Some(()))
+            }
             "union-atom" => {
                 self.check_arity("union-atom", args.len(), 2)?;
                 self.compile(&args[0])?;
@@ -955,6 +1031,116 @@ where
                 self.compile(&args[1])?;
                 self.builder.emit(Opcode::ElementOf);
                 Ok(Some(()))
+            }
+
+            // PeTTa-compatible aliases — see src/backend/eval/list_ops/ops.rs
+            // for the matching tree-walker implementations.
+            //
+            // `is-member`: alias of `element-of` (same arg order: elem first, list second).
+            "is-member" => {
+                self.check_arity("is-member", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::ElementOf);
+                Ok(Some(()))
+            }
+            // `append`: alias of `tuple-concat`.
+            "append" => {
+                self.check_arity("append", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::TupleConcat);
+                Ok(Some(()))
+            }
+            // `length`: alias of `tuple-count` / `size-atom`.
+            "length" => {
+                self.check_arity("length", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::TupleCount);
+                Ok(Some(()))
+            }
+            // `exclude-item`: like `without` but with reversed arg order.
+            // PeTTa: (exclude-item elem tuple). MeTTaTron `without`: (without tuple elem).
+            // We swap operands at compile time and emit the existing Without opcode.
+            "exclude-item" => {
+                self.check_arity("exclude-item", args.len(), 2)?;
+                // Compile in swapped order so the stack has [tuple, elem] for Without.
+                self.compile(&args[1])?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Without);
+                Ok(Some(()))
+            }
+            // `msort`: numeric ascending sort. New opcode.
+            "msort" => {
+                self.check_arity("msort", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Msort);
+                Ok(Some(()))
+            }
+            // `reduce`: PeTTa-compatible alias of `eval`. The argument is
+            // already evaluated by applicative-order pre-evaluation, so this
+            // is effectively the identity at the bytecode level. Emitting
+            // EvalEval gives the strongest semantics (forces re-evaluation).
+            "reduce" => {
+                self.check_arity("reduce", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::EvalEval);
+                Ok(Some(()))
+            }
+            // `cut`: PLN/PeTTa no-op returning Unit. NOT to be confused with
+            // `Opcode::Cut` (the nondeterminism cut at 0xF2). The PLN cut is
+            // a 0-arg expression that produces Unit. Compile as PushUnit.
+            "cut" => {
+                self.check_arity("cut", args.len(), 0)?;
+                self.builder.emit(Opcode::PushUnit);
+                Ok(Some(()))
+            }
+            // `progn` (PeTTa): sequential evaluation, returns last value.
+            // Compile-time desugar to nested `(let $_ a (let $_ b ...))`,
+            // mirroring the tree-walker special-form handling. Reuses the
+            // existing let compilation infrastructure entirely.
+            "progn" => {
+                if args.is_empty() {
+                    return Err(CompileError::InvalidArity {
+                        op: "progn".to_string(),
+                        expected: 1,
+                        got: 0,
+                    });
+                }
+                if args.len() == 1 {
+                    return self.compile(&args[0]).map(Some);
+                }
+                // Build the nested let from the right.
+                let unused = self.factory.atom("$_progn_unused");
+                let mut body = args.last().unwrap().clone();
+                for arg in args[..args.len() - 1].iter().rev() {
+                    body = self.factory.sexpr(vec![
+                        self.factory.atom("let"),
+                        unused.clone(),
+                        arg.clone(),
+                        body,
+                    ]);
+                }
+                self.compile(&body).map(Some)
+            }
+            // `foldl-atom` PeTTa 3-arg form: (foldl-atom tuple init func)
+            // Compile-time desugar to a nested application chain when the
+            // tuple is a static literal: (foldl-atom (a b c) i f) →
+            // (f (f (f i a) b) c). For dynamic-list inputs, fall through
+            // to the existing 5-arg / tree-walker handling.
+            "foldl-atom" if args.len() == 3 => {
+                let init = &args[1];
+                let func = &args[2];
+                if let Some(elems) = args[0].as_sexpr() {
+                    let mut acc = init.clone();
+                    let elems_owned: Vec<_> = elems.iter().cloned().collect();
+                    for elem in elems_owned {
+                        acc = self.factory.sexpr(vec![func.clone(), acc, elem]);
+                    }
+                    return self.compile(&acc).map(Some);
+                }
+                // Dynamic list: fall through to tree-walker via no-match.
+                Ok(None)
             }
 
             // Additional list operations (MeTTaTron extensions)
@@ -1345,11 +1531,27 @@ where
             }
         }
 
-        // If the last arm was NOT a catch-all, emit no-match fallback
+        // If the last arm was NOT a catch-all, emit no-match fallback.
+        //
+        // **MeTTa HE semantic note**: when no case arm matches the scrutinee,
+        // the case expression must produce ZERO results (empty multiset),
+        // matching MeTTa HE's `case`/`switch-minimal` behavior. The previous
+        // implementation emitted `Pop; PushEmpty` which produces ONE Unit
+        // result (`()`), causing PLN's deriver task queue to be polluted
+        // with stray Unit values when the deriver's `(case (|- $x) ...)`
+        // had no matching arm.
+        //
+        // The fix is `Pop; Fail`: Pop discards the unmatched scrutinee, and
+        // Fail triggers backtracking. Because we are now PAST the
+        // CaseBarrierEnd (line ~1397), the Fail propagates OUT of the case
+        // expression to the enclosing context (rather than being caught by
+        // the case barrier's scrutinee-failure handler). With no choice
+        // points to backtrack to, the entire case sub-eval produces zero
+        // results — matching MeTTa HE.
         let last_is_catch_all = self.is_catch_all_pattern(pairs.last().expect("non-empty").0);
         if !last_is_catch_all {
             self.builder.emit(Opcode::Pop);
-            self.builder.emit(Opcode::PushEmpty);
+            self.builder.emit(Opcode::Fail);
         }
 
         // Patch all end jumps to here

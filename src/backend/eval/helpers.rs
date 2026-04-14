@@ -38,18 +38,19 @@ pub fn needs_special_form_redispatch(op: &str) -> bool {
         // Evaluation control
         | "eval" | "quote" | "unquote"
         // Space operations that need special handling
-        | "collapse" | "collapse-bind" | "amb" | "guard"
+        | "collapse" | "collapse-bind" | "amb" | "guard" | "ground-with-bindings"
         // State operations
         | "new-state" | "get-state" | "change-state!"
         // I/O operations
         | "println!" | "trace!"
         // Set operations
-        | "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
         // Alpha equivalence
         | "=alpha"
         // Type matching (HE stdlib parity)
         | "match-types"
         // Testing/assertion operations
+        | "test"
         | "assertEqual" | "assertAlphaEqual"
         | "assertEqualMsg" | "assertAlphaEqualMsg"
         | "assertEqualToResult" | "assertAlphaEqualToResult"
@@ -70,7 +71,7 @@ pub fn is_eager_special_form(op: &str) -> bool {
         // Higher-order tuple operations (produce values)
         | "sort-tuple" | "best-candidate"
         // Evaluation control that produces values
-        | "eval" | "unquote"
+        | "eval" | "reduce" | "unquote"
         // Space operations that produce values
         | "collapse" | "collapse-bind" | "superpose"
         // State operations that produce values
@@ -82,7 +83,7 @@ pub fn is_eager_special_form(op: &str) -> bool {
         // String operations
         | "repr" | "format-args"
         // Set operations (produce list values)
-        | "unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
         // Alpha equivalence (produces Bool value)
         | "=alpha"
     )
@@ -117,10 +118,26 @@ pub fn is_grounded_op(name: &str) -> bool {
         // Tuple operations (all return immediate values)
         | "tuple-concat" | "tuple-count" | "without" | "element-of"
         | "range" | "reverse-atom" | "flatten-atom" | "zip-atom" | "take-atom" | "drop-atom"
+        // PeTTa-compatible tuple helpers (B5 + B9): same semantics as the
+        // MeTTaTron names above. Must be listed here so that nested calls
+        // (e.g. `(msort (append $a $b))` in lib_pln.metta line 384) trigger
+        // pre-evaluation of the inner expression — otherwise the outer call
+        // receives an unreduced S-expression and fails to operate.
+        | "is-member" | "append" | "length" | "exclude-item" | "msort" | "cut"
+        // PeTTa-compatible `progn` and `reduce` are dispatched as special
+        // forms in step/sexpr.rs (desugaring to `let` and `eval`), but they
+        // also need to appear here so that nested usage in expressions like
+        // `(some-fn (progn ...))` triggers pre-evaluation of the progn.
+        | "progn" | "reduce"
         // Higher-order tuple operations (iterate via trampoline)
         | "sort-tuple" | "best-candidate"
         // Safe arithmetic utilities
         | "/safe" | "clamp"
+        // Set operations — `unique-atom` and `alpha-unique-atom` both use
+        // alpha-equivalence (matching MeTTa HE); `struct-unique-atom` uses
+        // structural equality (matching PeTTa).
+        | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom"
+        | "intersection-atom" | "subtraction-atom"
     )
 }
 

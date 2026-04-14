@@ -2195,6 +2195,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         pending_arg_idx: arg_idx,
                                         env: env.clone(),
                                         depth,
+                                        arg_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                                     });
 
                                     // Arg already in correct type V - NO conversion
@@ -2522,6 +2523,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 operation: operation.clone(),
                                 env: env.clone(),
                                 depth,
+                                acc_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                             });
 
                             // NO CONVERSION NEEDED - use generic substitute for both variables
@@ -3995,7 +3997,25 @@ fn process_continuation<C: EvalContext>(
             collected.push(result);
 
             if remaining.len() == 0 {
-                // All items evaluated, process collected results
+                // Stage 1d MERGE: compute the merged bindings from each
+                // collected child's first result. The constructed sexpr's
+                // bindings = merge of children's bindings. On conflict, the
+                // sexpr has empty bindings (branch is inconsistent but we
+                // preserve the value itself so the evaluator can proceed).
+                let mut merged_bindings = crate::backend::models::GenericBindings::new();
+                let mut merge_ok = true;
+                for (vals, _) in collected.iter() {
+                    if let Some((_, child_b)) = vals.first() {
+                        if !merged_bindings.merge(child_b) {
+                            merge_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !merge_ok {
+                    merged_bindings = crate::backend::models::GenericBindings::new();
+                }
+
                 // Use generic version - zero conversion needed!
                 // Unwrap SharedEnv → bare MettaEnvironment for process_collected_sexpr_generic
                 let collected_bare: Vec<(SmallVec<[MettaValue; 2]>, MettaEnvironment)> = collected
@@ -4006,18 +4026,42 @@ fn process_continuation<C: EvalContext>(
 
                 match processed {
                     GenericProcessedSExpr::Done((results, env)) => {
+                        let mb = merged_bindings.clone();
                         work_stack.push(WorkItem::Resume {
-                            result: (results.into_iter().map(bv).collect(), Arc::new(env)),
+                            result: (
+                                results.into_iter()
+                                    .map(|v| (v, mb.clone()))
+                                    .collect(),
+                                Arc::new(env),
+                            ),
                         });
                     }
                     GenericProcessedSExpr::EvalRuleMatches { matches, env, depth, base_results } => {
                         if matches.is_empty() {
+                            let mb = merged_bindings.clone();
                             work_stack.push(WorkItem::Resume {
-                                result: (base_results.into_iter().map(bv).collect(), Arc::new(env)),
+                                result: (
+                                    base_results.into_iter()
+                                        .map(|v| (v, mb.clone()))
+                                        .collect(),
+                                    Arc::new(env),
+                                ),
                             });
                         } else {
-                            // Dispatch via unified parallel/sequential gate
-                            dispatch_rule_matches(matches, base_results.into_iter().map(bv).collect(), env, depth, ctx, work_stack, continuations, None);
+                            // Stage 1d-revised: base-results carry merged_bindings
+                            // so fallback results (no rule match dispatched) have
+                            // correct bindings. For dispatched matches, the
+                            // WorkItem::Eval carrying_bindings field (added by
+                            // Stage 1d-revised) threads merged_bindings into each
+                            // RHS evaluation — see dispatch_rule_matches outer_carrying.
+                            let mb = merged_bindings.clone();
+                            dispatch_rule_matches(
+                                matches,
+                                base_results.into_iter()
+                                    .map(|v| (v, mb.clone()))
+                                    .collect(),
+                                env, depth, ctx, work_stack, continuations, None,
+                            );
                         }
                     }
                     GenericProcessedSExpr::EvalCombinations { combinations, env, depth } => {
@@ -4403,8 +4447,23 @@ fn process_continuation<C: EvalContext>(
             pending_arg_idx,
             env: _,
             depth,
+            mut arg_bindings,
         } => {
             let (result_values, result_env) = result;
+
+            // Stage 1d MERGE: accumulate arg bindings across all arg
+            // evaluations. Grounded ops produce a new ground value; its
+            // bindings = merge of all arg bindings. On conflict, emit zero
+            // results (degenerate branch).
+            for (_, child_b) in result_values.iter() {
+                if !arg_bindings.merge(child_b) {
+                    // Conflict — drop branch.
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                    return;
+                }
+            }
 
             // Set evaluated arg using the stored arg_idx from the EvalArg return
             state.set_arg(pending_arg_idx, result_values.into_iter().map(|(v, _)| v).collect());
@@ -4419,9 +4478,15 @@ fn process_continuation<C: EvalContext>(
                             .into_iter()
                             .map(|(v, _)| v)
                             .collect();
+                        // Tag each grounded-op output with the merged arg bindings.
+                        let merged = (*arg_bindings).clone();
                         work_stack.push(WorkItem::Resume {
-                            result: (values.into_iter().map(bv).collect(), result_env),
-
+                            result: (
+                                values.into_iter()
+                                    .map(|v| (v, merged.clone()))
+                                    .collect(),
+                                result_env,
+                            ),
                         });
                     }
                     GroundedWork::EvalArg { arg_idx, state: new_state } => {
@@ -4430,6 +4495,7 @@ fn process_continuation<C: EvalContext>(
                             pending_arg_idx: arg_idx,
                             env: result_env.clone(),
                             depth,
+                            arg_bindings,
                         });
 
                         // Arg already in correct type V - NO conversion
@@ -4444,6 +4510,7 @@ fn process_continuation<C: EvalContext>(
                         });
                     }
                     GroundedWork::Error(e) => {
+                        let merged = (*arg_bindings).clone();
                         match e {
                             ExecError::NoReduce => {
                                 // MeTTa HE semantics: return the original expression unreduced
@@ -4454,7 +4521,7 @@ fn process_continuation<C: EvalContext>(
                                 }
                                 let unreduced = ctx.factory().sexpr(expr_parts);
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![bv(unreduced)], result_env),
+                                    result: (smallvec![(unreduced, merged)], result_env),
                                 });
                             }
                             _ => {
@@ -4465,7 +4532,7 @@ fn process_continuation<C: EvalContext>(
                                     ExecError::NoReduce => unreachable!(),
                                 };
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![bv(error_value)], result_env),
+                                    result: (smallvec![(error_value, merged)], result_env),
                                 });
                             }
                         }
@@ -5225,29 +5292,44 @@ fn process_continuation<C: EvalContext>(
             operation,
             env: _,
             depth,
+            mut acc_bindings,
         } => {
             let (mut result_values, result_env) = result;
 
-            // Get the new accumulator value from the result
-            let accumulator = if result_values.is_empty() {
-                ctx.factory().unit()
+            // Get the new accumulator value + bindings from the result.
+            // Stage 1d MERGE: the child's bindings (from inner rule dispatches)
+            // are merged into acc_bindings; on conflict, emit zero results
+            // (the fold branch is inconsistent).
+            let (accumulator, new_acc_bindings) = if result_values.is_empty() {
+                (ctx.factory().unit(), (*acc_bindings).clone())
             } else {
-                let (first_result, _b) = result_values.swap_remove(0);
+                let (first_result, child_b) = result_values.swap_remove(0);
 
-                // Check for error propagation
+                // Check for error propagation (bindings come along too)
                 if first_result.is_error() {
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![bv(first_result)], result_env),
+                        result: (smallvec![(first_result, child_b)], result_env),
                     });
                     return;
                 }
-                first_result
+
+                // MERGE child bindings into accumulator bindings.
+                let mut merged = (*acc_bindings).clone();
+                if !merged.merge(&child_b) {
+                    // Conflict — drop the fold branch (zero results).
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                    return;
+                }
+                (first_result, merged)
             };
 
             if remaining_elements.len() == 0 {
-                // All elements processed - return final accumulator
+                // All elements processed - return final accumulator with the
+                // merged bindings accumulated across every iteration.
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(accumulator)], result_env),
+                    result: (smallvec![(accumulator, new_acc_bindings)], result_env),
                 });
             } else {
                 // More elements to process
@@ -5261,6 +5343,8 @@ fn process_continuation<C: EvalContext>(
                     &instantiated, &item_var_name, &next_element, ctx.factory(),
                 );
 
+                // Update acc_bindings for the next iteration.
+                *acc_bindings = new_acc_bindings;
                 continuations.push(Continuation::ProcessFoldlAtom {
                     remaining_elements,
                     acc_var_name,
@@ -5268,6 +5352,7 @@ fn process_continuation<C: EvalContext>(
                     operation,
                     env: result_env.clone(),
                     depth,
+                    acc_bindings,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -7122,12 +7207,13 @@ fn process_continuation<C: EvalContext>(
                 let remaining_vec: Vec<BoundValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
-                let (first_raw, _b) = remaining_raw.next().expect("expr_results is non-empty");
+                let (first_raw, first_raw_b) = remaining_raw.next().expect("expr_results is non-empty");
 
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: false,
+                    current_raw_bindings: Box::new(first_raw_b),
                     env: result_env.clone(),
                     depth,
                 });
@@ -7218,12 +7304,14 @@ fn process_continuation<C: EvalContext>(
                 let remaining_vec: Vec<BoundValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
-                let (first_raw, _b) = remaining_raw.next().expect("expr_results is non-empty");
+                let (first_raw, first_raw_bindings) =
+                    remaining_raw.next().expect("expr_results is non-empty");
 
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: true,
+                    current_raw_bindings: Box::new(first_raw_bindings),
                     env: result_env.clone(),
                     depth,
                 });
@@ -7243,20 +7331,38 @@ fn process_continuation<C: EvalContext>(
             mut remaining_raw,
             mut evaluated,
             is_bind,
+            mut current_raw_bindings,
             env: _,
             depth,
         } => {
             let (eval_results, result_env) = result;
 
-            // Collect evaluated results (filter empty/pruned branches)
-            evaluated.extend(eval_results.into_iter().filter(|(v, _)| !v.is_empty()));
+            // Stage 1e MERGE: merge the raw's original bindings with each
+            // re-eval result's bindings. The re-eval typically produces the
+            // same value for ground raws (no new bindings), but in case the
+            // raw was a further-evaluable expression, both sources are
+            // combined. Filter empty (pruned) branches.
+            let carrying = (*current_raw_bindings).clone();
+            evaluated.extend(
+                eval_results.into_iter()
+                    .filter(|(v, _)| !v.is_empty())
+                    .map(|(v, child_b)| {
+                        let mut merged = carrying.clone();
+                        // If merge conflicts, keep the carrying bindings as
+                        // the branch's identity (raw was the producer).
+                        let _ = merged.merge(&child_b);
+                        (v, merged)
+                    })
+            );
 
-            if let Some((next_raw, _b)) = remaining_raw.next() {
-                // More results to evaluate — preserve state
+            if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
+                // More results to evaluate — preserve state.
+                *current_raw_bindings = next_raw_bindings;
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated,
                     is_bind,
+                    current_raw_bindings,
                     env: result_env.clone(),
                     depth,
                 });

@@ -227,6 +227,10 @@ pub enum Continuation {
         pending_arg_idx: usize,
         env: SharedEnv,
         depth: usize,
+        /// Stage 1d: accumulated bindings from all evaluated args MERGE'd
+        /// together. Grounded ops produce a new ground value whose bindings
+        /// = merge of all arg bindings (conflict → empty output result).
+        arg_bindings: Box<GenericBindings<MettaValue>>,
     },
 
     /// Processing lazy Cartesian product combinations.
@@ -305,6 +309,11 @@ pub enum Continuation {
         operation: MettaValue,
         env: SharedEnv,
         depth: usize,
+        /// Stage 1d: accumulated bindings from all consumed iterations
+        /// MERGE'd together. Each iteration's eval result carries its own
+        /// bindings (from inner rule dispatches) which we merge here.
+        /// On conflict, the fold branch emits zero results.
+        acc_bindings: Box<GenericBindings<MettaValue>>,
     },
 
     /// Processing if condition
@@ -462,6 +471,12 @@ pub enum Continuation {
         evaluated: Vec<BoundValue>,
         /// Whether this is for collapse-bind (vs plain collapse)
         is_bind: bool,
+        /// Stage 1e: the bindings carried by the raw value CURRENTLY being
+        /// re-evaluated. On result arrival, these are merged into each
+        /// received eval result's bindings so the (re-)evaluated value
+        /// retains its source branch's binding provenance — essential for
+        /// `collapse-bind` to emit correct `(Bindings …)` sidecars.
+        current_raw_bindings: Box<GenericBindings<MettaValue>>,
         /// Environment
         env: SharedEnv,
         /// Evaluation depth
@@ -1574,6 +1589,7 @@ mod tests {
             remaining_raw: vec![bv(f.long(1)), bv(f.long(2))].into_iter(),
             evaluated: vec![bv(f.long(3))],
             is_bind: false,
+            current_raw_bindings: Box::new(GenericBindings::new()),
             env: env(),
             depth: 0,
         };

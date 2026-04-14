@@ -742,123 +742,96 @@ thread_local! {
 // bindings are checked for: (a) direct tracked-var keys with ground values,
 // (b) rule-var keys that map to tracked vars via the inverse map.
 
-/// Frame recording tracked variable bindings during `collapse-bind` evaluation.
+/// Scope marker for an active `collapse-bind` evaluation.
+///
+/// Stage 1b+: the frame is minimal — it only records WHICH variables are
+/// being tracked and the fork depth at scope entry. Per-branch bindings
+/// are NOT stored here; they travel with each `BoundValue` via its `.1`
+/// (MeTTa-HE-faithful propagation, see `Continuation::ProcessRuleMatches.
+/// current_branch_match_bindings`).
+///
+/// The old fields (`current_bindings`, `per_result_bindings`, `inverse_map`)
+/// were removed: they encoded shared-mutable state that couldn't correctly
+/// distinguish sibling branches at nested fork depths. Per-branch bindings
+/// now flow via the BoundValue pipeline instead.
 struct BindingCaptureFrame {
     /// Free variable names from the original `collapse-bind` expression.
+    /// Used to project match bindings to just the variables the caller
+    /// cares about (keeps carried bindings small).
     tracked_vars: SmallVec<[&'static str; 4]>,
-    /// Current branch bindings — updated by capture_bindings_if_active,
-    /// snapshotted into per_result_bindings when results are produced.
-    current_bindings: crate::backend::models::GenericBindings<MettaValue>,
-    /// Per-result binding snapshots. Each entry corresponds to one
-    /// nondeterministic result that will flow to ProcessCollapseBind.
-    /// Grown by `snapshot_bindings_for_results()`.
-    per_result_bindings: Vec<crate::backend::models::GenericBindings<MettaValue>>,
-    /// Inverse map: when a rule-var binding is {$fr_a → $who} (value is
-    /// a tracked var), record ($who, $fr_a) so that when $fr_a is later
-    /// resolved to a ground value, we populate $who's binding.
-    /// Multiple entries allowed for the same tracked var with different rule vars.
-    inverse_map: SmallVec<[(&'static str, &'static str); 4]>,
-    /// Fork depth at which the collapse-bind was entered. Only snapshots
-    /// at this depth count as top-level results for pairing.
+    /// Fork depth at which the collapse-bind was entered.
     collapse_fork_depth: u32,
 }
 
 thread_local! {
-    /// Stack of binding capture frames for nested `collapse-bind` calls.
+    /// Stack of scope markers for nested `collapse-bind` calls.
     /// Empty when no `collapse-bind` is active.
     static BINDING_CAPTURE_STACK: RefCell<Vec<BindingCaptureFrame>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Push a new capture frame when entering `collapse-bind`.
+/// Push a new scope marker when entering `collapse-bind`.
 /// `tracked_vars` are the free variable names from the inner expression.
 fn push_binding_capture_frame(tracked_vars: SmallVec<[&'static str; 4]>) {
     let fork_depth = FORK_DEPTH.with(|c| c.get());
     BINDING_CAPTURE_STACK.with(|stack| {
         stack.borrow_mut().push(BindingCaptureFrame {
             tracked_vars,
-            current_bindings: crate::backend::models::GenericBindings::new(),
-            per_result_bindings: Vec::new(),
-            inverse_map: SmallVec::new(),
             collapse_fork_depth: fork_depth,
         });
     });
 }
 
-/// Pop and return the top capture frame when `collapse-bind` completes.
+/// Pop and return the top scope marker when `collapse-bind` completes.
 fn pop_binding_capture_frame() -> Option<BindingCaptureFrame> {
     BINDING_CAPTURE_STACK.with(|stack| stack.borrow_mut().pop())
 }
 
-/// Check bindings for tracked variables — direct capture, inverse map
-/// population, and inverse map resolution.
+/// Returns true iff at least one `collapse-bind` is active on this thread.
+/// Called at rule-dispatch sites to decide whether to filter match bindings.
+#[inline]
+fn in_collapse_bind_scope() -> bool {
+    BINDING_CAPTURE_STACK.with(|stack| !stack.borrow().is_empty())
+}
+
+/// Union of tracked variables across all active collapse-bind frames on
+/// this thread. Returned as a sorted-deduped `SmallVec`. Used to project
+/// match bindings at dispatch sites to just the relevant set.
 ///
-/// Fast no-op when no capture frame is active. Called at every
-/// `dispatch_rule_matches` site.
-#[inline]
-fn capture_bindings_if_active(match_bindings: &crate::backend::models::GenericBindings<MettaValue>) {
-    if match_bindings.is_empty() { return; }
+/// Returns `None` when no collapse-bind is active (the caller should skip
+/// filtering entirely for zero overhead on the hot path).
+fn active_tracked_vars() -> Option<SmallVec<[&'static str; 4]>> {
     BINDING_CAPTURE_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        if let Some(frame) = stack.last_mut() {
-            for (name, value) in match_bindings.iter() {
-                // (a) Direct capture: key IS a tracked var, value is ground.
-                if frame.tracked_vars.contains(&name) && !value.has_variables_fast() {
-                    frame.current_bindings.insert_or_replace(name, value.clone());
-                    continue;
-                }
-                // (b) Inverse map population: value IS a tracked var (as atom).
-                if let Some(val_name) = value.as_atom() {
-                    if frame.tracked_vars.contains(&val_name)
-                        && !frame.inverse_map.iter().any(|&(tv, rv)| tv == val_name && rv == name)
-                    {
-                        frame.inverse_map.push((val_name, name));
-                    }
-                }
-                // (c) Inverse map resolution: key is a rule-var that maps to a
-                //     tracked var, and value is ground — resolve the tracked var.
-                if !value.has_variables_fast() {
-                    for &(tracked_var, rule_var) in frame.inverse_map.iter() {
-                        if name == rule_var {
-                            frame.current_bindings.insert_or_replace(tracked_var, value.clone());
-                        }
-                    }
+        let stack = stack.borrow();
+        if stack.is_empty() {
+            return None;
+        }
+        let mut out: SmallVec<[&'static str; 4]> = SmallVec::new();
+        for frame in stack.iter() {
+            for &v in frame.tracked_vars.iter() {
+                if !out.contains(&v) {
+                    out.push(v);
                 }
             }
         }
-    });
+        Some(out)
+    })
 }
 
-/// Snapshot current bindings for `count` new nondeterministic results.
-/// Only fires when `at_fork_depth` matches the collapse-bind's entry depth,
-/// ensuring snapshots correspond to top-level nondeterministic results only.
-/// Called from ProcessRuleMatches when a branch completes.
+/// Stage 1b no-op: capture logic was removed. Retained as a stub to
+/// minimize churn at dispatch sites during the migration. Per-branch
+/// bindings now flow via `ProcessRuleMatches.current_branch_match_bindings`
+/// (Stage 1c).
 #[inline]
-fn snapshot_bindings_for_results(count: usize, at_fork_depth: u32) {
-    if count == 0 { return; }
-    BINDING_CAPTURE_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        if let Some(frame) = stack.last_mut() {
-            if at_fork_depth != frame.collapse_fork_depth + 1 {
-                return;
-            }
-            for _ in 0..count {
-                frame.per_result_bindings.push(frame.current_bindings.clone());
-            }
-        }
-    });
-}
+fn capture_bindings_if_active(_match_bindings: &crate::backend::models::GenericBindings<MettaValue>) {}
 
-/// Clear current_bindings when starting a new branch at the collapse-bind
-/// fork level. Each branch should capture its own bindings independently.
+/// Stage 1b no-op: snapshots were replaced by BoundValue.1 propagation.
 #[inline]
-fn clear_current_bindings_for_new_branch() {
-    BINDING_CAPTURE_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        if let Some(frame) = stack.last_mut() {
-            frame.current_bindings = crate::backend::models::GenericBindings::new();
-        }
-    });
-}
+fn snapshot_bindings_for_results(_count: usize, _at_fork_depth: u32) {}
+
+/// Stage 1b no-op: branch-switch clearing was replaced by BoundValue.1
+/// propagation (each branch's bindings travel with its own result).
+#[inline]
+fn clear_current_bindings_for_new_branch() {}
 
 /// Encode bindings as an S-expression: `(Bindings ($var val) ...)`.
 /// Used by collapse-bind to pair each result with its captured bindings.
@@ -898,24 +871,12 @@ pub fn decode_bindings_from_sexpr(
     bindings
 }
 
-/// Collect GC roots from the binding capture stack.
-/// Called during GC safepoints to prevent the collector from sweeping
-/// MettaValues held in capture frames.
-pub fn collect_binding_capture_roots(roots: &mut Vec<MettaValue>) {
-    BINDING_CAPTURE_STACK.with(|stack| {
-        let stack = stack.borrow();
-        for frame in stack.iter() {
-            for (_, value) in frame.current_bindings.iter() {
-                roots.push(value.clone());
-            }
-            for bindings in &frame.per_result_bindings {
-                for (_, value) in bindings.iter() {
-                    roots.push(value.clone());
-                }
-            }
-        }
-    });
-}
+/// Stage 1b: the capture frame no longer stores MettaValues — bindings now
+/// travel with each `BoundValue` and are walked via the standard WorkItem/
+/// Continuation GC root collectors. This function is retained as a no-op
+/// to preserve the callable signature; existing call sites remain unchanged
+/// and contribute zero roots.
+pub fn collect_binding_capture_roots(_roots: &mut Vec<MettaValue>) {}
 
 /// Set the cut signal — called by `eval_cut_generic` when `(cut)` is evaluated.
 /// Records the current fork depth so the correct `ProcessRuleMatches`
@@ -7089,24 +7050,15 @@ fn process_continuation<C: EvalContext>(
                 return;
             }
 
-            // Force sequential when bindings were captured — parallel workers
-            // have their own thread-local stacks and can't contribute captures.
+            // Stage 1b+: per-result bindings now travel with each BoundValue
+            // (expr_results[i].1), so there is nothing to extract from the
+            // capture frame — it's now a pure scope marker.
+            //
+            // Force sequential flag retained until Stage 1e: parallel paths
+            // don't yet thread tracked_vars_hint into workers, so we stay
+            // sequential whenever a scope marker was active.
             let force_sequential = captured_frame.is_some();
-
-            // Extract per-result bindings from the capture frame.
-            // Fallback: when per_result_bindings is empty (no nondeterministic
-            // fork at the collapse-bind level — e.g., single rule match), use
-            // current_bindings for ALL results.
-            let per_result_bindings = captured_frame.map(|f| {
-                if f.per_result_bindings.is_empty() {
-                    // Single-match fast path: no fork → no snapshots.
-                    // Use current_bindings (accumulated through entire eval).
-                    let n = expr_results.len();
-                    vec![f.current_bindings; n]
-                } else {
-                    f.per_result_bindings
-                }
-            });
+            let _ = captured_frame;
 
             // ── Parallel path: identical to ProcessCollapse ──
             let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
@@ -7150,10 +7102,8 @@ fn process_continuation<C: EvalContext>(
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(result_list)], result_env),
                 });
-                let _ = per_result_bindings;
             } else {
                 // ── Sequential path ──
-                let _ = per_result_bindings;
                 let remaining_vec: Vec<BoundValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first

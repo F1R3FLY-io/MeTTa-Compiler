@@ -418,6 +418,18 @@ fn dispatch_rule_matches<C: EvalContext>(
             });
         }
 
+        // Stage 1d-revised: compute RHS carrying = compose(outer_carrying, match_bindings).
+        // This is HE-faithful: each in-flight alternative's Bindings travel
+        // with its evaluation. Only non-empty when in a collapse-bind scope
+        // or ambient is passed (zero overhead otherwise).
+        let rhs_carrying: crate::backend::models::GenericBindings<MettaValue> =
+            if outer_carrying.is_empty() && !in_collapse_bind_scope() {
+                crate::backend::models::GenericBindings::new()
+            } else {
+                crate::backend::eval::bindings::compose_outer_inner_generic(
+                    outer_carrying, &bindings, ctx.factory(),
+                )
+            };
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings.
         // When RHS has no variables, push as Eval directly (O(1) pointer copy).
         if rhs.has_variables_fast() {
@@ -428,17 +440,18 @@ fn dispatch_rule_matches<C: EvalContext>(
                 depth: depth + 1,
                 is_tail_call: false,
                 expected_type: None,
+                carrying_bindings: Box::new(rhs_carrying),
             });
         } else {
             // Normal-form short-circuit for ground RHS
             if is_memoized_normal_form(&rhs) {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(rhs)], env),
+                    result: (smallvec![bv_with(rhs, rhs_carrying)], env),
                 });
             } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(rhs)], env),
+                    result: (smallvec![bv_with(rhs, rhs_carrying)], env),
                 });
             } else {
                 // Phase F: Tight deterministic chain — if the ground RHS is itself
@@ -455,6 +468,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: Box::new(rhs_carrying),
                     });
                 } else {
                     work_stack.push(WorkItem::Eval {
@@ -464,6 +478,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: Box::new(rhs_carrying),
                     });
                 }
             }
@@ -505,6 +520,15 @@ fn dispatch_rule_matches<C: EvalContext>(
                 outer_carrying: Box::new(outer_carrying.clone()),
                 tracked_vars_hint,
             });
+            // Stage 1d-revised: Lazy first branch RHS carrying = compose(outer, match).
+            let lazy_carrying: crate::backend::models::GenericBindings<MettaValue> =
+                if outer_carrying.is_empty() && !in_collapse_bind_scope() {
+                    crate::backend::models::GenericBindings::new()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        outer_carrying, &bindings, ctx.factory(),
+                    )
+                };
             // Evaluate the first branch
             if rhs.has_variables_fast() {
                 work_stack.push(WorkItem::EvalWithBindings {
@@ -514,6 +538,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                     depth: depth + 1,
                     is_tail_call: false,
                     expected_type: None,
+                    carrying_bindings: Box::new(lazy_carrying),
                 });
             } else {
                 work_stack.push(WorkItem::Eval {
@@ -523,6 +548,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: Box::new(lazy_carrying),
                 });
             }
             return;
@@ -724,6 +750,16 @@ fn dispatch_rule_matches<C: EvalContext>(
             }
         }
 
+        // Stage 1d-revised: compose outer_carrying with this branch's match
+        // bindings so the first branch's RHS result carries the full ancestry.
+        let seq_carrying: crate::backend::models::GenericBindings<MettaValue> =
+            if outer_carrying.is_empty() && !in_collapse_bind_scope() {
+                crate::backend::models::GenericBindings::new()
+            } else {
+                crate::backend::eval::bindings::compose_outer_inner_generic(
+                    outer_carrying, &bindings, ctx.factory(),
+                )
+            };
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
         if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
@@ -733,16 +769,17 @@ fn dispatch_rule_matches<C: EvalContext>(
                 depth,
                 is_tail_call: true,
                 expected_type: None,
+                carrying_bindings: Box::new(seq_carrying),
             });
         } else {
             if is_memoized_normal_form(&rhs) {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(rhs)], env),
+                    result: (smallvec![bv_with(rhs, seq_carrying)], env),
                 });
             } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(rhs)], env),
+                    result: (smallvec![bv_with(rhs, seq_carrying)], env),
                 });
             } else {
                 work_stack.push(WorkItem::Eval {
@@ -752,6 +789,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: Box::new(seq_carrying),
                 });
             }
         }
@@ -1614,6 +1652,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 is_tail_call: false,
                 expected_type: None,
                 demand: None,
+                carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
             });
             ws
         };
@@ -1871,6 +1910,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 is_tail_call,
                 expected_type,
                 demand,
+                carrying_bindings,
             } => {
                 trace!(target: "mettatron::backend::eval::eval_trampoline", ?value, depth, "eval work item");
 
@@ -2133,7 +2173,29 @@ fn eval_trampoline_inner<C: EvalContext>(
                         {
                             memoize_normal_form(&values[0]);
                         }
-                        let result = (values.into_iter().map(bv).collect(), Arc::new(step_env));
+                        // Stage 1d-revised: tag each leaf result with the
+                        // carrying bindings from this WorkItem::Eval. This
+                        // is the HE-faithful propagation point — mirrors
+                        // HE's `finished_result(atom, bindings)` where the
+                        // current alternative's bindings travel with the
+                        // produced atom. `carrying_bindings` was destructured
+                        // from the WorkItem::Eval at the top of this arm.
+                        let cb = &*carrying_bindings;
+                        if !cb.is_empty() && std::env::var("MTN_DEBUG_BIND").is_ok() {
+                            let cb_s: Vec<(String,String)> = cb.iter().map(|(k,v)| (k.to_string(), format!("{}", v))).collect();
+                            let v_s: Vec<String> = values.iter().map(|v| format!("{}", v)).collect();
+                            eprintln!("[LEAF] cb={:?} values={:?}", cb_s, v_s);
+                        }
+                        let result = if cb.is_empty() {
+                            (values.into_iter().map(bv).collect(), Arc::new(step_env))
+                        } else {
+                            (
+                                values.into_iter()
+                                    .map(|v| bv_with(v, cb.clone()))
+                                    .collect(),
+                                Arc::new(step_env),
+                            )
+                        };
                         work_stack.push(WorkItem::Resume { result });
                     }
 
@@ -2154,6 +2216,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 collected: Vec::with_capacity(collect_capacity),
                                 original_env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             work_stack.push(WorkItem::Eval {
@@ -2163,6 +2226,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2228,7 +2292,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         pending_arg_idx: arg_idx,
                                         env: env.clone(),
                                         depth,
-                                        arg_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                                        // Stage 1d-revised: seed arg_bindings from
+                                        // the current WorkItem's carrying so ambient
+                                        // bindings (e.g., outer rule match) propagate
+                                        // through grounded-op output.
+                                        arg_bindings: carrying_bindings.clone(),
                                     });
 
                                     // Arg already in correct type V - NO conversion
@@ -2240,6 +2308,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         is_tail_call: true,
                                         expected_type: None,
                                         demand: None,
+                                        carrying_bindings: carrying_bindings.clone(),
                                     });
                                 }
                                 GroundedWork::Error(e) => {
@@ -2329,6 +2398,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             results: Vec::with_capacity(4),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2338,6 +2408,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2351,6 +2422,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2430,6 +2502,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         } else {
                             let first_idx = grounded_indices[0];
@@ -2449,6 +2522,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 evaluated_results: Vec::with_capacity(grounded_count),
                                 env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             work_stack.push(WorkItem::Eval {
@@ -2458,6 +2532,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: arg_expected_type,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2481,6 +2556,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 collected_results: Vec::with_capacity(map_capacity),
                                 env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             // Substitute variable and evaluate - NO CONVERSION NEEDED
@@ -2495,6 +2571,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2519,6 +2596,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 filtered_results: Vec::with_capacity(filter_capacity),
                                 env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             // NO CONVERSION NEEDED - use generic substitute
@@ -2534,6 +2612,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 // Phase 9.2d: filter-atom predicate should return Bool
                                 expected_type: Some(ctx.factory().atom("Bool")),
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2556,7 +2635,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 operation: operation.clone(),
                                 env: env.clone(),
                                 depth,
-                                acc_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                                // Stage 1d-revised: seed acc_bindings from carrying.
+                                acc_bindings: carrying_bindings.clone(),
                             });
 
                             // NO CONVERSION NEEDED - use generic substitute for both variables
@@ -2574,6 +2654,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2612,6 +2693,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 comparator,
                                 env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             work_stack.push(WorkItem::Eval {
@@ -2621,6 +2703,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2651,6 +2734,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 rank_fn,
                                 env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             work_stack.push(WorkItem::Eval {
@@ -2660,6 +2744,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2677,6 +2762,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         } else {
                             continuations.push(Continuation::ProcessIfCondition {
@@ -2685,6 +2771,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 outer_bindings: None,
                                 env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             // 8.7: if-condition always expects Bool — prune non-Bool branches.
@@ -2697,6 +2784,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: Some(ctx.factory().atom("Bool")),
                                 demand: Some(crate::backend::eval::cesk::coroutine::Demand::Exactly(1)),
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2709,6 +2797,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             outer_bindings: None,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2718,6 +2807,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2735,6 +2825,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     is_tail_call: true,
                                     expected_type: None,
                                     demand: None,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                             }
                             SwitchResult::Error(err) => {
@@ -2757,6 +2848,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         continuations.push(Continuation::ProcessEvalEval {
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2766,6 +2858,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2775,6 +2868,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         continuations.push(Continuation::ProcessReturn {
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2784,6 +2878,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2796,6 +2891,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             outer_bindings: None,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2805,6 +2901,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2815,6 +2912,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             iteration_count: 1,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2824,6 +2922,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2833,6 +2932,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         continuations.push(Continuation::ProcessIsError {
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2842,6 +2942,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2852,6 +2953,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             default,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2861,6 +2963,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2879,6 +2982,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         } else {
                             let mut remaining = goals.into_iter();
@@ -2890,6 +2994,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 accumulated_results: Vec::with_capacity(conj_capacity),
                                 env: env.clone(),
                                 depth,
+                                outer_carrying: carrying_bindings.clone(),
                             });
 
                             work_stack.push(WorkItem::Eval {
@@ -2899,6 +3004,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
@@ -2912,6 +3018,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             failure_body,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2921,6 +3028,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2930,6 +3038,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         continuations.push(Continuation::ProcessCollapse {
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2939,6 +3048,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: Some(crate::backend::eval::cesk::coroutine::Demand::All),
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -2962,6 +3072,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         continuations.push(Continuation::ProcessCollapseBind {
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -2971,6 +3082,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: Some(crate::backend::eval::cesk::coroutine::Demand::All),
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3047,6 +3159,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     results: Vec::with_capacity(amb_capacity),
                                     env: env.clone(),
                                     depth,
+                                    outer_carrying: carrying_bindings.clone(),
                                 });
 
                                 work_stack.push(WorkItem::Eval {
@@ -3056,6 +3169,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     is_tail_call: false,
                                     expected_type: None,
                                     demand: None,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                             }
                         }
@@ -3067,6 +3181,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         continuations.push(Continuation::ProcessGuard {
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3076,6 +3191,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3086,6 +3202,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             space_ref: space_ref.clone(),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3095,6 +3212,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3107,6 +3225,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             first_only,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3116,6 +3235,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3127,6 +3247,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             size_arg,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3136,6 +3257,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3148,6 +3270,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_clear,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3157,6 +3280,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3169,6 +3293,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             template,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3178,6 +3303,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3189,6 +3315,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             atom,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3198,6 +3325,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3209,6 +3337,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             atom,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3218,6 +3347,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3228,6 +3358,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             initial_value: initial_value.clone(),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3237,6 +3368,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3247,6 +3379,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             state_ref: state_ref.clone(),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3256,6 +3389,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3267,6 +3401,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             new_value,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3276,6 +3411,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3286,6 +3422,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             atom: atom.clone(),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3295,6 +3432,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3306,6 +3444,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             args_arg,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3315,6 +3454,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3325,6 +3465,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             atom: atom.clone(),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3334,6 +3475,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3345,6 +3487,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             value_expr,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3354,6 +3497,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3364,6 +3508,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             atom: atom.clone(),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3373,6 +3518,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3383,6 +3529,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             token,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3392,6 +3539,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3404,6 +3552,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             else_branch,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3413,6 +3562,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
 
@@ -3426,6 +3576,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             template,
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3435,6 +3586,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                     }
                 }
@@ -3454,6 +3606,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 depth,
                 is_tail_call,
                 expected_type,
+                carrying_bindings,
             } => {
                 // Fast path: empty bindings or no variables → just Eval
                 if bindings.is_empty() || !template.has_variables_fast() {
@@ -3464,6 +3617,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         is_tail_call,
                         expected_type,
                         demand: None,
+                        carrying_bindings: carrying_bindings.clone(),
                     });
                     continue;
                 }
@@ -3574,6 +3728,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     depth,
                                     is_tail_call,
                                     expected_type,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                             } else {
                                 work_stack.push(WorkItem::Eval {
@@ -3583,11 +3738,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     is_tail_call,
                                     expected_type,
                                     demand: None,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                             }
                         } else {
                             work_stack.push(WorkItem::Eval {
                                 value: template, env, depth, is_tail_call, expected_type, demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     } else {
@@ -3655,6 +3812,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         }
                         work_stack.push(WorkItem::Eval {
                             value: materialized, env, depth, is_tail_call, expected_type, demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
                     }
@@ -3681,6 +3839,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             results: Vec::with_capacity(4),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3690,6 +3849,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
                     }
@@ -3714,6 +3874,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 depth,
                                 is_tail_call,
                                 expected_type,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                             continue;
                         }
@@ -3724,6 +3885,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             outer_bindings: Some(bindings),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3733,6 +3895,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: Some(ctx.factory().atom("Bool")),
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
                     }
@@ -3756,6 +3919,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     depth,
                                     is_tail_call,
                                     expected_type,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                                 continue;
                             }
@@ -3779,6 +3943,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     depth,
                                     is_tail_call,
                                     expected_type,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                                 continue;
                             }
@@ -3809,6 +3974,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
                             });
                             continue;
                         }
@@ -3831,6 +3997,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             outer_bindings: Some(bindings),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3840,6 +4007,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
                     }
@@ -3859,6 +4027,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             outer_bindings: Some(bindings),
                             env: env.clone(),
                             depth,
+                            outer_carrying: carrying_bindings.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -3868,6 +4037,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
                     }
@@ -3888,11 +4058,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     template: new_template,
                                     bindings: Box::new(new_bindings),
                                     env, depth, is_tail_call, expected_type,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                             }
                             DeferredChainResult::Concrete(value) => {
                                 work_stack.push(WorkItem::Eval {
                                     value, env, depth, is_tail_call, expected_type, demand: None,
+                                    carrying_bindings: carrying_bindings.clone(),
                                 });
                             }
                             DeferredChainResult::Done(value) => {
@@ -3939,6 +4111,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     let materialized = apply_bindings(&template, &bindings, ctx.factory());
                     work_stack.push(WorkItem::Eval {
                         value: materialized, env, depth, is_tail_call, expected_type, demand: None,
+                        carrying_bindings: carrying_bindings.clone(),
                     });
                     continue;
                 }
@@ -3947,6 +4120,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 let materialized = apply_bindings(&template, &bindings, ctx.factory());
                 work_stack.push(WorkItem::Eval {
                     value: materialized, env, depth, is_tail_call, expected_type, demand: None,
+                    carrying_bindings: carrying_bindings.clone(),
                 });
             }
 
@@ -4026,6 +4200,7 @@ fn process_continuation<C: EvalContext>(
             mut collected,
             original_env,
             depth,
+            outer_carrying,
         } => {
             collected.push(result);
 
@@ -4106,6 +4281,7 @@ fn process_continuation<C: EvalContext>(
                             pending_rule_matches: Vec::new(),
                             env: env.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Resume {
@@ -4121,6 +4297,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                 }
@@ -4132,6 +4309,7 @@ fn process_continuation<C: EvalContext>(
                     collected,
                     original_env: original_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -4141,6 +4319,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -4315,6 +4494,11 @@ fn process_continuation<C: EvalContext>(
                 // thunk FSM.
                 crate::backend::eval::cesk::clear_thunk_table();
 
+                // Stage 1d-revised: clone current_branch_bindings BEFORE
+                // moving it into the continuation, so we can use it below
+                // as the RHS WorkItem's carrying_bindings.
+                let rot_carrying: crate::backend::models::GenericBindings<MettaValue> =
+                    (*current_branch_bindings).clone();
                 continuations.push(Continuation::ProcessRuleMatches {
                     remaining_matches,
                     results,
@@ -4361,6 +4545,9 @@ fn process_continuation<C: EvalContext>(
                     }
                 }
 
+                // Stage 1d-revised: the next branch's RHS inherits the
+                // already-composed current_branch_bindings as its carrying
+                // (cloned above before moving into the re-pushed continuation).
                 // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
                 if rhs.has_variables_fast() {
                     work_stack.push(WorkItem::EvalWithBindings {
@@ -4370,16 +4557,17 @@ fn process_continuation<C: EvalContext>(
                         depth,
                         is_tail_call: true,
                         expected_type: None,
+                        carrying_bindings: Box::new(rot_carrying),
                     });
                 } else {
                     if is_memoized_normal_form(&rhs) {
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![bv(rhs)], env),
+                            result: (smallvec![bv_with(rhs, rot_carrying)], env),
                         });
                     } else if is_normal_form_bounded(&rhs, &env, 2) {
                         memoize_normal_form(&rhs);
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![bv(rhs)], env),
+                            result: (smallvec![bv_with(rhs, rot_carrying)], env),
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -4389,6 +4577,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: Box::new(rot_carrying),
                         });
                     }
                 }
@@ -4476,6 +4665,7 @@ fn process_continuation<C: EvalContext>(
                         depth: depth + 1,
                         is_tail_call: false,
                         expected_type: None,
+                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                     });
                 } else {
                     work_stack.push(WorkItem::Eval {
@@ -4485,6 +4675,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                     });
                 }
             } else {
@@ -4543,6 +4734,7 @@ fn process_continuation<C: EvalContext>(
                         });
                     }
                     GroundedWork::EvalArg { arg_idx, state: new_state } => {
+                        let arg_bindings_for_eval = arg_bindings.clone();
                         continuations.push(Continuation::ProcessGroundedOp {
                             state: Box::new(new_state.clone()),
                             pending_arg_idx: arg_idx,
@@ -4560,6 +4752,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: arg_bindings_for_eval,
                         });
                     }
                     GroundedWork::Error(e) => {
@@ -4610,6 +4803,7 @@ fn process_continuation<C: EvalContext>(
             mut pending_rule_matches,
             env,
             depth,
+            outer_carrying,
         } => {
             let (combo_results, result_env) = result;
             results.extend(combo_results);
@@ -4623,6 +4817,7 @@ fn process_continuation<C: EvalContext>(
                     pending_rule_matches,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
@@ -4634,6 +4829,7 @@ fn process_continuation<C: EvalContext>(
                         depth,
                         is_tail_call: true,
                         expected_type: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 } else {
                     work_stack.push(WorkItem::Eval {
@@ -4643,6 +4839,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
                 return;
@@ -4666,6 +4863,7 @@ fn process_continuation<C: EvalContext>(
                         pending_rule_matches,
                         env: result_env.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Resume {
@@ -4685,6 +4883,7 @@ fn process_continuation<C: EvalContext>(
                         pending_rule_matches: Vec::new(), // dispatch handles all matches
                         env: result_env.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     // Dispatch rule matches (parallel or sequential)
@@ -4707,6 +4906,7 @@ fn process_continuation<C: EvalContext>(
             mut results,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (result_values, result_env) = result;
 
@@ -4790,6 +4990,7 @@ fn process_continuation<C: EvalContext>(
                                     is_tail_call: true,
                                     expected_type: None,
                                     demand: None,
+                                    carrying_bindings: outer_carrying.clone(),
                                 });
                             }
                             BoundBody::Deferred(composed_bindings) => {
@@ -4800,6 +5001,7 @@ fn process_continuation<C: EvalContext>(
                                     depth,
                                     is_tail_call: true,
                                     expected_type: None,
+                                    carrying_bindings: outer_carrying.clone(),
                                 });
                             }
                         }
@@ -4872,6 +5074,7 @@ fn process_continuation<C: EvalContext>(
                             results,
                             env: result_env.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -4881,6 +5084,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                     return;
@@ -4934,6 +5138,7 @@ fn process_continuation<C: EvalContext>(
                                         results,
                                         env: result_env.clone(),
                                         depth,
+                                        outer_carrying: outer_carrying.clone(),
                                     });
 
                                     // Pattern matches - evaluate body with bindings
@@ -4946,6 +5151,7 @@ fn process_continuation<C: EvalContext>(
                                             depth,
                                             is_tail_call: true,
                                             expected_type: None,
+                                            carrying_bindings: outer_carrying.clone(),
                                         });
                                     } else {
                                         let instantiated_body = apply_bindings(&body, &bindings, ctx.factory());
@@ -4956,6 +5162,7 @@ fn process_continuation<C: EvalContext>(
                                             is_tail_call: true,
                                             expected_type: None,
                                             demand: None,
+                                            carrying_bindings: outer_carrying.clone(),
                                         });
                                     }
                                     return;
@@ -5000,6 +5207,7 @@ fn process_continuation<C: EvalContext>(
             mut evaluated_results,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (result_values, result_env) = result;
 
@@ -5029,6 +5237,7 @@ fn process_continuation<C: EvalContext>(
                     evaluated_results,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -5038,6 +5247,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: arg_expected_type,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 // All grounded args evaluated — compute Cartesian product of
@@ -5136,6 +5346,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         }
                     } else {
@@ -5149,6 +5360,7 @@ fn process_continuation<C: EvalContext>(
                             results: Vec::with_capacity(app_capacity),
                             env: result_env.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -5158,6 +5370,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                 }
@@ -5169,6 +5382,7 @@ fn process_continuation<C: EvalContext>(
             mut results,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (result_values, result_env) = result;
             results.extend(result_values);
@@ -5188,6 +5402,7 @@ fn process_continuation<C: EvalContext>(
                     results,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -5197,6 +5412,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -5208,6 +5424,7 @@ fn process_continuation<C: EvalContext>(
             mut collected_results,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (mut result_values, result_env) = result;
 
@@ -5251,6 +5468,7 @@ fn process_continuation<C: EvalContext>(
                     collected_results,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -5260,6 +5478,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -5272,6 +5491,7 @@ fn process_continuation<C: EvalContext>(
             mut filtered_results,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (mut result_values, result_env) = result;
 
@@ -5325,6 +5545,7 @@ fn process_continuation<C: EvalContext>(
                     filtered_results,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -5334,6 +5555,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -5398,6 +5620,7 @@ fn process_continuation<C: EvalContext>(
 
                 // Update acc_bindings for the next iteration.
                 *acc_bindings = new_acc_bindings;
+                let acc_bindings_for_eval = acc_bindings.clone();
                 continuations.push(Continuation::ProcessFoldlAtom {
                     remaining_elements,
                     acc_var_name,
@@ -5415,6 +5638,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: acc_bindings_for_eval,
                 });
             }
         }
@@ -5429,6 +5653,7 @@ fn process_continuation<C: EvalContext>(
             comparator,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (cmp_results, result_env) = result;
 
@@ -5462,6 +5687,7 @@ fn process_continuation<C: EvalContext>(
                         comparator,
                         env: result_env.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -5471,6 +5697,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                     return;
                 } else {
@@ -5507,6 +5734,7 @@ fn process_continuation<C: EvalContext>(
                     comparator,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -5516,6 +5744,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -5529,6 +5758,7 @@ fn process_continuation<C: EvalContext>(
             rank_fn,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (rank_results, result_env) = result;
 
@@ -5566,6 +5796,7 @@ fn process_continuation<C: EvalContext>(
                     rank_fn,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -5575,6 +5806,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -5585,6 +5817,7 @@ fn process_continuation<C: EvalContext>(
             outer_bindings,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (cond_results, env_after_cond) = result;
 
@@ -5669,6 +5902,7 @@ fn process_continuation<C: EvalContext>(
                                 depth,
                                 is_tail_call: true,
                                 expected_type: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             work_stack.push(WorkItem::Eval {
@@ -5678,6 +5912,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         }
                     } else {
@@ -5688,6 +5923,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                 } else {
@@ -5744,6 +5980,7 @@ fn process_continuation<C: EvalContext>(
             outer_bindings,
             env: _,
             depth,
+            outer_carrying,
         } => {
             // Phase C: If outer_bindings present, materialize cases (patterns +
             // templates may reference outer-scope variables).
@@ -5792,6 +6029,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                     SwitchResult::Error(err) => {
@@ -5829,6 +6067,8 @@ fn process_continuation<C: EvalContext>(
                 cases,
                 env: atom_env.clone(),
                 depth,
+                current_raw_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                outer_carrying: outer_carrying.clone(),
             });
 
             work_stack.push(WorkItem::Eval {
@@ -5838,6 +6078,7 @@ fn process_continuation<C: EvalContext>(
                 is_tail_call: false,
                 expected_type: None,
                 demand: None,
+                carrying_bindings: outer_carrying.clone(),
             });
         }
 
@@ -5847,6 +6088,7 @@ fn process_continuation<C: EvalContext>(
             mut collected,
             env,
             depth,
+            outer_carrying,
         } => {
             let (results, _result_env) = result;
             collected.extend(results);
@@ -5896,6 +6138,7 @@ fn process_continuation<C: EvalContext>(
                             collected,
                             env: env.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -5905,6 +6148,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                     SwitchResult::Error(err) => {
@@ -5917,6 +6161,7 @@ fn process_continuation<C: EvalContext>(
                             collected,
                             env: env.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Resume {
@@ -5931,6 +6176,7 @@ fn process_continuation<C: EvalContext>(
                             collected,
                             env: env.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Resume {
@@ -5956,6 +6202,8 @@ fn process_continuation<C: EvalContext>(
             cases,
             env: _,
             depth,
+            current_raw_bindings,
+            outer_carrying,
         } => {
             let (eval_results, eval_env) = result;
 
@@ -5970,6 +6218,8 @@ fn process_continuation<C: EvalContext>(
                     cases,
                     env: eval_env.clone(),
                     depth,
+                    current_raw_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -5979,6 +6229,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 // All raw results evaluated — now perform pattern matching
@@ -5994,6 +6245,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         }
                         SwitchResult::Error(err) => {
@@ -6050,6 +6302,7 @@ fn process_continuation<C: EvalContext>(
                                     is_tail_call: true,
                                     expected_type: None,
                                     demand: None,
+                                    carrying_bindings: outer_carrying.clone(),
                                 });
                             } else {
                                 continuations.push(Continuation::ProcessCaseMultiResults {
@@ -6058,6 +6311,7 @@ fn process_continuation<C: EvalContext>(
                                     collected: vec![],
                                     env: eval_env.clone(),
                                     depth,
+                                    outer_carrying: outer_carrying.clone(),
                                 });
 
                                 work_stack.push(WorkItem::Eval {
@@ -6067,6 +6321,7 @@ fn process_continuation<C: EvalContext>(
                                     is_tail_call: true,
                                     expected_type: None,
                                     demand: None,
+                                    carrying_bindings: outer_carrying.clone(),
                                 });
                             }
                         }
@@ -6107,6 +6362,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessEvalEval {
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (eval_results, result_env) = result;
 
@@ -6129,6 +6385,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 // Multiple results - evaluate each (unwrap Quoted values)
@@ -6144,6 +6401,7 @@ fn process_continuation<C: EvalContext>(
                     results: Vec::with_capacity(amb_capacity),
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -6153,6 +6411,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -6160,6 +6419,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessReturn {
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (arg_results, arg_env) = result;
 
@@ -6192,6 +6452,7 @@ fn process_continuation<C: EvalContext>(
             outer_bindings,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (expr_results, result_env) = result;
 
@@ -6234,6 +6495,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call: true,
                             expected_type: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -6243,6 +6505,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                 } else {
@@ -6259,6 +6522,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
             } else {
@@ -6275,6 +6539,7 @@ fn process_continuation<C: EvalContext>(
                     results: Vec::with_capacity(chain_capacity),
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 // Phase C: Compose chain variable binding with outer_bindings
@@ -6289,6 +6554,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call: false,
                             expected_type: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -6298,6 +6564,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                 } else {
@@ -6314,6 +6581,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
             }
@@ -6327,6 +6595,7 @@ fn process_continuation<C: EvalContext>(
             mut results,
             env,
             depth,
+            outer_carrying,
         } => {
             let (body_results, _result_env) = result;
             results.extend(body_results);
@@ -6340,6 +6609,7 @@ fn process_continuation<C: EvalContext>(
                     results,
                     env: env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 // Phase C: Compose chain variable binding with outer_bindings
@@ -6354,6 +6624,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call: false,
                             expected_type: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -6363,6 +6634,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                 } else {
@@ -6379,6 +6651,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
             } else {
@@ -6393,6 +6666,7 @@ fn process_continuation<C: EvalContext>(
             iteration_count,
             env: _,
             depth,
+            outer_carrying,
         } => {
             const MAX_ITERATIONS: usize = 1000;
             let (eval_results, current_env) = result;
@@ -6453,6 +6727,7 @@ fn process_continuation<C: EvalContext>(
                             iteration_count: iteration_count + 1,
                             env: current_env.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -6462,6 +6737,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     } else {
                         // Multiple continue expressions - just return them
@@ -6478,6 +6754,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessIsError {
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (expr_results, result_env) = result;
 
@@ -6493,6 +6770,7 @@ fn process_continuation<C: EvalContext>(
             default,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (expr_results, result_env) = result;
 
@@ -6508,6 +6786,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 // No error - return original results
@@ -6522,6 +6801,7 @@ fn process_continuation<C: EvalContext>(
             mut accumulated_results,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (goal_results, result_env) = result;
 
@@ -6549,6 +6829,7 @@ fn process_continuation<C: EvalContext>(
                     accumulated_results,
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -6558,6 +6839,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 // All goals evaluated - return last result
@@ -6574,6 +6856,7 @@ fn process_continuation<C: EvalContext>(
             failure_body,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (pattern1_results, result_env) = result;
 
@@ -6586,6 +6869,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else if pattern1_results.len() == 1 {
                 // Single result - check if it's a Space (special handling)
@@ -6632,6 +6916,7 @@ fn process_continuation<C: EvalContext>(
                                     is_tail_call: true,
                                     expected_type: None,
                                     demand: None,
+                                    carrying_bindings: outer_carrying.clone(),
                                 });
                             } else {
                                 // Build bodies to evaluate for each match - values already generic
@@ -6663,6 +6948,7 @@ fn process_continuation<C: EvalContext>(
                                             is_tail_call: true,
                                             expected_type: None,
                                             demand: None,
+                                            carrying_bindings: outer_carrying.clone(),
                                         });
                                     } else {
                                         // Multiple bodies - use ProcessUnifyBodies
@@ -6672,6 +6958,7 @@ fn process_continuation<C: EvalContext>(
                                             results: Vec::with_capacity(unify_capacity),
                                             env: result_env.clone(),
                                             depth,
+                                            outer_carrying: outer_carrying.clone(),
                                         });
                                         work_stack.push(WorkItem::Eval {
                                             value: first_body,
@@ -6680,6 +6967,7 @@ fn process_continuation<C: EvalContext>(
                                             is_tail_call: false,
                                             expected_type: None,
                                             demand: None,
+                                            carrying_bindings: outer_carrying.clone(),
                                         });
                                     }
                                 } else {
@@ -6691,6 +6979,7 @@ fn process_continuation<C: EvalContext>(
                                         is_tail_call: true,
                                         expected_type: None,
                                         demand: None,
+                                        carrying_bindings: outer_carrying.clone(),
                                     });
                                 }
                             }
@@ -6709,6 +6998,7 @@ fn process_continuation<C: EvalContext>(
                                     is_tail_call: true,
                                     expected_type: None,
                                     demand: None,
+                                    carrying_bindings: outer_carrying.clone(),
                                 });
                             } else {
                                 // Build bodies to evaluate for each match - NO conversion needed
@@ -6740,6 +7030,7 @@ fn process_continuation<C: EvalContext>(
                                             is_tail_call: true,
                                             expected_type: None,
                                             demand: None,
+                                            carrying_bindings: outer_carrying.clone(),
                                         });
                                     } else {
                                         // Multiple bodies - use ProcessUnifyBodies
@@ -6749,6 +7040,7 @@ fn process_continuation<C: EvalContext>(
                                             results: Vec::with_capacity(unify_capacity),
                                             env: result_env.clone(),
                                             depth,
+                                            outer_carrying: outer_carrying.clone(),
                                         });
                                         work_stack.push(WorkItem::Eval {
                                             value: first_body,
@@ -6757,6 +7049,7 @@ fn process_continuation<C: EvalContext>(
                                             is_tail_call: false,
                                             expected_type: None,
                                             demand: None,
+                                            carrying_bindings: outer_carrying.clone(),
                                         });
                                     }
                                 } else {
@@ -6768,6 +7061,7 @@ fn process_continuation<C: EvalContext>(
                                         is_tail_call: true,
                                         expected_type: None,
                                         demand: None,
+                                        carrying_bindings: outer_carrying.clone(),
                                     });
                                 }
                             }
@@ -6782,6 +7076,7 @@ fn process_continuation<C: EvalContext>(
                         failure_body,
                         env: result_env.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -6791,6 +7086,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
             } else {
@@ -6808,6 +7104,7 @@ fn process_continuation<C: EvalContext>(
                     all_results: Vec::with_capacity(iter_capacity),
                     env: result_env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 // Check if first is a Space
@@ -6847,6 +7144,7 @@ fn process_continuation<C: EvalContext>(
                                 results: Vec::with_capacity(unify_capacity),
                                 env: result_env.clone(),
                                 depth,
+                                outer_carrying: outer_carrying.clone(),
                             });
                             work_stack.push(WorkItem::Eval {
                                 value: first_body,
@@ -6855,6 +7153,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             // No bodies at all - send empty to iterator
@@ -6894,6 +7193,7 @@ fn process_continuation<C: EvalContext>(
                                 results: Vec::with_capacity(unify_capacity),
                                 env: result_env.clone(),
                                 depth,
+                                outer_carrying: outer_carrying.clone(),
                             });
                             work_stack.push(WorkItem::Eval {
                                 value: first_body,
@@ -6902,6 +7202,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             // No bodies at all - send empty to iterator
@@ -6919,6 +7220,7 @@ fn process_continuation<C: EvalContext>(
                         failure_body: ctx.factory().atom("__unify_failure__"),
                         env: result_env.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -6928,6 +7230,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
             }
@@ -6941,6 +7244,7 @@ fn process_continuation<C: EvalContext>(
             mut all_results,
             env: _iter_env,
             depth,
+            outer_carrying,
         } => {
             let (body_results, env_after) = result;
 
@@ -6959,6 +7263,7 @@ fn process_continuation<C: EvalContext>(
                     all_results,
                     env: env_after.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 // Process this pattern1 value
@@ -7026,6 +7331,7 @@ fn process_continuation<C: EvalContext>(
                                 results: Vec::with_capacity(unify_capacity),
                                 env: env_after.clone(),
                                 depth,
+                                outer_carrying: outer_carrying.clone(),
                             });
                             work_stack.push(WorkItem::Eval {
                                 value: first_body,
@@ -7034,6 +7340,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             work_stack.push(WorkItem::Resume {
@@ -7050,6 +7357,7 @@ fn process_continuation<C: EvalContext>(
                         failure_body,
                         env: env_after.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
                     work_stack.push(WorkItem::Eval {
                         value: pattern2,
@@ -7058,6 +7366,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
             } else {
@@ -7070,6 +7379,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 } else {
                     work_stack.push(WorkItem::Resume {
@@ -7087,6 +7397,7 @@ fn process_continuation<C: EvalContext>(
             failure_body,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (pattern2_results, result_env) = result;
 
@@ -7098,6 +7409,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 // WAM union-find bidirectional unification: handles variables
@@ -7117,6 +7429,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 } else if all_bindings.len() == 1 {
                     // Apply bindings generically - NO conversion needed
@@ -7129,6 +7442,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 } else {
                     // Multiple bindings - pre-instantiate all bodies generically
@@ -7146,6 +7460,7 @@ fn process_continuation<C: EvalContext>(
                         results: Vec::with_capacity(unify_capacity),
                         env: result_env.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -7155,6 +7470,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 }
             }
@@ -7165,6 +7481,7 @@ fn process_continuation<C: EvalContext>(
             mut results,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (body_results, env_after_body) = result;
             results.extend(body_results);
@@ -7175,6 +7492,7 @@ fn process_continuation<C: EvalContext>(
                     results,
                     env: env_after_body.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
                 work_stack.push(WorkItem::Eval {
                     value: next_body,
@@ -7183,6 +7501,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 work_stack.push(WorkItem::Resume {
@@ -7195,6 +7514,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessCollapse {
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (expr_results, result_env) = result;
 
@@ -7278,6 +7598,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -7285,11 +7606,23 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessCollapseBind {
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (expr_results, result_env) = result;
 
             // Pop the binding capture frame (may be None if no free vars).
             let captured_frame = pop_binding_capture_frame();
+
+            if std::env::var("MTN_DEBUG_BIND").is_ok() {
+                let entries: Vec<(String, Vec<(String, String)>)> = expr_results
+                    .iter()
+                    .map(|(v, b)| (
+                        format!("{}", v),
+                        b.iter().map(|(k, vv)| (k.to_string(), format!("{}", vv))).collect::<Vec<_>>(),
+                    ))
+                    .collect();
+                eprintln!("[PROC-COLLAPSE-BIND] expr_results={:#?}", entries);
+            }
 
             // Empty results: return empty tuple immediately
             if expr_results.is_empty() {
@@ -7376,6 +7709,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                 });
             }
         }
@@ -7411,6 +7745,7 @@ fn process_continuation<C: EvalContext>(
             if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
                 // More results to evaluate — preserve state.
                 *current_raw_bindings = next_raw_bindings;
+                let current_raw_bindings_for_eval = current_raw_bindings.clone();
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated,
@@ -7427,6 +7762,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: current_raw_bindings_for_eval,
                 });
             } else {
                 // All results evaluated — assemble the tuple
@@ -7471,6 +7807,7 @@ fn process_continuation<C: EvalContext>(
             mut results,
             env,
             depth,
+            outer_carrying,
         } => {
             let (alt_results, result_env) = result;
             results.extend(alt_results);
@@ -7484,6 +7821,7 @@ fn process_continuation<C: EvalContext>(
                     results,
                     env: env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -7493,6 +7831,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 work_stack.push(WorkItem::Resume {
@@ -7504,6 +7843,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessGuard {
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (cond_results, result_env) = result;
 
@@ -7553,6 +7893,7 @@ fn process_continuation<C: EvalContext>(
             space_ref,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (space_results, result_env) = result;
 
@@ -7599,6 +7940,7 @@ fn process_continuation<C: EvalContext>(
             template,
             env,
             depth,
+            outer_carrying,
         } => {
             let (space_results, env_after) = result;
 
@@ -7698,6 +8040,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             // Multiple matches — queue template evaluations.
@@ -7710,6 +8053,7 @@ fn process_continuation<C: EvalContext>(
                                 results: Vec::with_capacity(tmpl_capacity),
                                 env: env_after.clone(),
                                 depth,
+                                outer_carrying: outer_carrying.clone(),
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -7720,6 +8064,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         }
                     } else {
@@ -7757,6 +8102,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             // Multiple matches - queue template evaluations
@@ -7769,6 +8115,7 @@ fn process_continuation<C: EvalContext>(
                                 results: Vec::with_capacity(tmpl_capacity),
                                 env: env_after.clone(),
                                 depth,
+                                outer_carrying: outer_carrying.clone(),
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -7779,6 +8126,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         }
                     }
@@ -7802,6 +8150,7 @@ fn process_continuation<C: EvalContext>(
             mut results,
             env,
             depth,
+            outer_carrying,
         } => {
             let (template_results, _env_after) = result;
             results.extend(template_results);
@@ -7819,6 +8168,7 @@ fn process_continuation<C: EvalContext>(
                     results,
                     env: env.clone(),
                     depth,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -7828,6 +8178,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -7837,6 +8188,7 @@ fn process_continuation<C: EvalContext>(
             atom,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (space_results, mut env_after) = result;
 
@@ -7928,6 +8280,7 @@ fn process_continuation<C: EvalContext>(
             atom,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (space_results, mut env_after) = result;
 
@@ -8016,6 +8369,7 @@ fn process_continuation<C: EvalContext>(
             initial_value,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (init_results, mut env_after) = result;
 
@@ -8042,6 +8396,7 @@ fn process_continuation<C: EvalContext>(
             state_ref,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (state_results, env_after) = result;
 
@@ -8090,6 +8445,7 @@ fn process_continuation<C: EvalContext>(
             new_value,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (state_results, env_after) = result;
 
@@ -8109,6 +8465,7 @@ fn process_continuation<C: EvalContext>(
                         new_value: new_value.clone(),
                         env: env_after.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -8118,6 +8475,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -8139,6 +8497,7 @@ fn process_continuation<C: EvalContext>(
             new_value,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (value_results, mut env_after) = result;
 
@@ -8176,6 +8535,7 @@ fn process_continuation<C: EvalContext>(
             atom: _,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (atom_results, env_after) = result;
 
@@ -8196,6 +8556,7 @@ fn process_continuation<C: EvalContext>(
             args_arg,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (format_results, env_after) = result;
 
@@ -8215,6 +8576,7 @@ fn process_continuation<C: EvalContext>(
                         args_arg: args_arg.clone(),
                         env: env_after.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -8224,6 +8586,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 } else {
                     let err = ctx.factory().error(
@@ -8245,6 +8608,7 @@ fn process_continuation<C: EvalContext>(
             args_arg,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (args_results, env_after) = result;
 
@@ -8282,6 +8646,7 @@ fn process_continuation<C: EvalContext>(
             atom: _,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (atom_results, env_after) = result;
 
@@ -8306,6 +8671,7 @@ fn process_continuation<C: EvalContext>(
             value_expr,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (msg_results, env_after) = result;
 
@@ -8319,6 +8685,7 @@ fn process_continuation<C: EvalContext>(
                 value_expr: value_expr.clone(),
                 env: env_after.clone(),
                 depth,
+                outer_carrying: outer_carrying.clone(),
             });
 
             work_stack.push(WorkItem::Eval {
@@ -8328,6 +8695,7 @@ fn process_continuation<C: EvalContext>(
                 is_tail_call: false,
                 expected_type: None,
                 demand: None,
+                carrying_bindings: outer_carrying.clone(),
             });
         }
 
@@ -8335,6 +8703,7 @@ fn process_continuation<C: EvalContext>(
             value_expr: _,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (value_results, env_after) = result;
 
@@ -8350,6 +8719,7 @@ fn process_continuation<C: EvalContext>(
             atom: _,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (atom_results, env_after) = result;
 
@@ -8392,6 +8762,7 @@ fn process_continuation<C: EvalContext>(
             token,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (atom_results, mut env_after) = result;
 
@@ -8419,6 +8790,7 @@ fn process_continuation<C: EvalContext>(
             else_branch,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (eval_results, env_after) = result;
 
@@ -8463,6 +8835,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 // Expression reduced — evaluate then branch
@@ -8473,6 +8846,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             }
         }
@@ -8485,6 +8859,7 @@ fn process_continuation<C: EvalContext>(
             template,
             env,
             depth,
+            outer_carrying,
         } => {
             let (space_results, env_after) = result;
 
@@ -8515,6 +8890,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
+                    carrying_bindings: outer_carrying.clone(),
                 });
             } else {
                 let (first, _) = &space_results[0];
@@ -8554,6 +8930,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else if generic_results.len() == 1 {
                             // Single match — evaluate template result
@@ -8564,6 +8941,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             // Multiple matches — queue template evaluations
@@ -8576,6 +8954,7 @@ fn process_continuation<C: EvalContext>(
                                 results: Vec::with_capacity(tmpl_capacity),
                                 env: env_after.clone(),
                                 depth,
+                                outer_carrying: outer_carrying.clone(),
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -8586,6 +8965,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         }
                     } else {
@@ -8620,6 +9000,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else if instantiated_templates.len() == 1 {
                             work_stack.push(WorkItem::Eval {
@@ -8629,6 +9010,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         } else {
                             let mut generic_templates = instantiated_templates.into_iter();
@@ -8640,6 +9022,7 @@ fn process_continuation<C: EvalContext>(
                                 results: Vec::with_capacity(tmpl_capacity),
                                 env: env_after.clone(),
                                 depth,
+                                outer_carrying: outer_carrying.clone(),
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -8650,6 +9033,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
+                                carrying_bindings: outer_carrying.clone(),
                             });
                         }
                     }
@@ -8675,6 +9059,7 @@ fn process_continuation<C: EvalContext>(
             first_only,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (memo_results, env_after) = result;
 
@@ -8703,6 +9088,7 @@ fn process_continuation<C: EvalContext>(
                             first_only,
                             env: env_after.clone(),
                             depth,
+                            outer_carrying: outer_carrying.clone(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -8712,6 +9098,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: outer_carrying.clone(),
                         });
                     }
                 } else {
@@ -8735,6 +9122,7 @@ fn process_continuation<C: EvalContext>(
             first_only,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (expr_results, env_after) = result;
 
@@ -8755,6 +9143,7 @@ fn process_continuation<C: EvalContext>(
             size_arg,
             env: _,
             depth,
+            outer_carrying,
         } => {
             let (name_results, env_after) = result;
 
@@ -8782,6 +9171,7 @@ fn process_continuation<C: EvalContext>(
                         size_arg: size_value.clone(),
                         env: env_after.clone(),
                         depth,
+                        outer_carrying: outer_carrying.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -8791,6 +9181,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: outer_carrying.clone(),
                     });
                 } else {
                     // No size argument - create memo with default size (no limit)
@@ -8808,6 +9199,7 @@ fn process_continuation<C: EvalContext>(
             size_arg,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (size_results, env_after) = result;
 
@@ -8834,6 +9226,7 @@ fn process_continuation<C: EvalContext>(
             is_clear,
             env: _,
             depth: _,
+            outer_carrying,
         } => {
             let (memo_results, env_after) = result;
 
@@ -8964,6 +9357,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call,
                             expected_type: None,
+                            carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                         });
                     } else {
                         // More pairs to process — pop next pair
@@ -8990,6 +9384,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
+                            carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                         });
                     }
                 } else {
@@ -9044,6 +9439,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                     });
                 } else {
                     let mut bodies_iter = bound_bodies.into_iter();
@@ -9054,6 +9450,7 @@ fn process_continuation<C: EvalContext>(
                         results: Vec::new(),
                         env: result_env.clone(),
                         depth,
+                        outer_carrying: accumulated_bindings.clone(),
                     });
 
                     work_stack.push(WorkItem::Eval {
@@ -9063,6 +9460,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
+                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
                     });
                 }
             }

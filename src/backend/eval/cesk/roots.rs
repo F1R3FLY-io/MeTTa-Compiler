@@ -259,6 +259,7 @@ mod tests {
             is_tail_call: false,
             expected_type: None,
             demand: None,
+            carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
         };
         let stack: Vec<WorkItem> = vec![
             WorkItem::Resume {
@@ -286,6 +287,7 @@ mod tests {
                 default: f.atom("fallback"),
                 env: std::sync::Arc::new(env()),
                 depth: 0,
+                outer_carrying: Box::new(crate::backend::models::GenericBindings::new()),
             },
         ];
 
@@ -308,6 +310,7 @@ mod tests {
             is_tail_call: false,
             expected_type: None,
             demand: None,
+            carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
         };
         let work_stack: Vec<WorkItem> = vec![];
         let continuations: Vec<Continuation> = vec![

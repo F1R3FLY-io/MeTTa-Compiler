@@ -2181,11 +2181,6 @@ fn eval_trampoline_inner<C: EvalContext>(
                         // produced atom. `carrying_bindings` was destructured
                         // from the WorkItem::Eval at the top of this arm.
                         let cb = &*carrying_bindings;
-                        if !cb.is_empty() && std::env::var("MTN_DEBUG_BIND").is_ok() {
-                            let cb_s: Vec<(String,String)> = cb.iter().map(|(k,v)| (k.to_string(), format!("{}", v))).collect();
-                            let v_s: Vec<String> = values.iter().map(|v| format!("{}", v)).collect();
-                            eprintln!("[LEAF] cb={:?} values={:?}", cb_s, v_s);
-                        }
                         let result = if cb.is_empty() {
                             (values.into_iter().map(bv).collect(), Arc::new(step_env))
                         } else {
@@ -7612,17 +7607,6 @@ fn process_continuation<C: EvalContext>(
 
             // Pop the binding capture frame (may be None if no free vars).
             let captured_frame = pop_binding_capture_frame();
-
-            if std::env::var("MTN_DEBUG_BIND").is_ok() {
-                let entries: Vec<(String, Vec<(String, String)>)> = expr_results
-                    .iter()
-                    .map(|(v, b)| (
-                        format!("{}", v),
-                        b.iter().map(|(k, vv)| (k.to_string(), format!("{}", vv))).collect::<Vec<_>>(),
-                    ))
-                    .collect();
-                eprintln!("[PROC-COLLAPSE-BIND] expr_results={:#?}", entries);
-            }
 
             // Empty results: return empty tuple immediately
             if expr_results.is_empty() {

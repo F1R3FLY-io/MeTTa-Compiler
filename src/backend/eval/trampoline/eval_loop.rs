@@ -1990,7 +1990,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         trace_format::TraceTier::TreeWalker,
                                         depth as u32,
                                         crate::backend::trace::trace_value_generic(&value),
-                                        cached.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                                        cached.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
                                         None,
                                         trace_format::TraceEventKind::TablingDecision {
                                             expr_hash: tabling_hash,
@@ -2264,11 +2264,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                 trace_format::TraceTier::TreeWalker,
                                                 depth as u32,
                                                 input,
-                                                values.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                values.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
                                                 None,
                                                 trace_format::TraceEventKind::GroundedOp {
                                                     op_name: op_name.clone(),
-                                                    args: state.args.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                    args: state.args.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
                                                 },
                                                 _grounded_start_ns,
                                                 Some(duration),
@@ -2335,7 +2335,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                     op_name: op_name.clone(),
                                                     error_kind: error_kind.to_string(),
                                                     message,
-                                                    args: state.args.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                                                    args: state.args.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
                                                 },
                                             );
                                         }
@@ -4690,18 +4690,22 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (result_values, result_env) = result;
 
-            // Stage 1d MERGE: accumulate arg bindings across all arg
-            // evaluations. Grounded ops produce a new ground value; its
-            // bindings = merge of all arg bindings. On conflict, emit zero
-            // results (degenerate branch).
+            // Stage 1d-revised: collect per-branch bindings for the arg's
+            // nondet results into a parallel `arg_branch_bindings` vector
+            // (same order as the values). When the grounded op eventually
+            // computes outputs via Cartesian product of per-arg results
+            // (e.g. AddOp step 2 iterates `a_results × b_results`), we
+            // re-tag each output with the MERGE of the specific (a_b, b_b)
+            // pair's bindings. This matches HE's per-alternative bindings
+            // model where each result is a `(value, bindings)` pair.
+            //
+            // For now, merge all branch bindings into arg_bindings (union of
+            // compatible pieces; conflicts ignored). Per-combination tagging
+            // requires grounded ops to return BoundValue — a separate
+            // refactor (GroundedOp trait signature change) tracked in the
+            // Stage 2 follow-up.
             for (_, child_b) in result_values.iter() {
-                if !arg_bindings.merge(child_b) {
-                    // Conflict — drop branch.
-                    work_stack.push(WorkItem::Resume {
-                        result: (SmallVec::new(), result_env),
-                    });
-                    return;
-                }
+                let _ = arg_bindings.merge(child_b);
             }
 
             // Set evaluated arg using the stored arg_idx from the EvalArg return
@@ -5273,16 +5277,38 @@ fn process_continuation<C: EvalContext>(
                         }
                     }
 
-                    // Compute Cartesian product inline
+                    // Compute Cartesian product inline.
+                    // Stage 1d-revised: also compute per-combination merged
+                    // bindings from each chosen arg's BoundValue.1, so the
+                    // combination's evaluation carries its per-branch bindings.
                     // Start with a single empty combination (indices all 0)
                     let mut combo_indices: Vec<usize> = vec![0; evaluated_results.len()];
+                    let mut combo_bindings: Vec<crate::backend::models::GenericBindings<MettaValue>> = Vec::new();
                     loop {
                         // Build this combination's items
                         let mut combo_items = items.clone();
+                        // Merge bindings across chosen args. On conflict, skip
+                        // this combination (empty bindings — combo still valid
+                        // for value semantics, just no binding provenance).
+                        let mut merged_b = crate::backend::models::GenericBindings::new();
+                        let mut skip_combo = false;
                         for (i, grounded_idx) in grounded_indices.iter().enumerate() {
-                            combo_items[*grounded_idx] = evaluated_results[i][combo_indices[i]].0.clone();
+                            let (ref v, ref b) = evaluated_results[i][combo_indices[i]];
+                            combo_items[*grounded_idx] = v.clone();
+                            if !merged_b.merge(b) {
+                                // Conflicting bindings across args — this combo
+                                // won't contribute consistent bindings, but the
+                                // value is still evaluable.
+                                skip_combo = true;
+                                break;
+                            }
                         }
                         combinations.push(ctx.factory().sexpr(combo_items));
+                        combo_bindings.push(if skip_combo {
+                            crate::backend::models::GenericBindings::new()
+                        } else {
+                            merged_b
+                        });
 
                         // Advance indices (mixed-radix increment)
                         let mut carry = true;
@@ -5301,39 +5327,44 @@ fn process_continuation<C: EvalContext>(
                         }
                     }
 
-                    if combinations.len() == 1 {
-                        let sexpr = combinations.pop().expect("combinations is non-empty");
+                    // Stage 1d-revised: zip combinations with their
+                    // per-combo bindings so each combination's evaluation
+                    // carries the merged arg bindings.
+                    let combos_with_b: Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)> =
+                        combinations.into_iter().zip(combo_bindings.into_iter()).collect();
+                    let mut combinations_iter = combos_with_b.into_iter();
+
+                    if combinations_iter.len() == 1 {
+                        let (sexpr, combo_b) = combinations_iter.next().expect("combinations is non-empty");
+                        // Compose outer_carrying with the combo's merged arg bindings.
+                        let combo_carrying = if outer_carrying.is_empty() {
+                            combo_b
+                        } else if combo_b.is_empty() {
+                            (*outer_carrying).clone()
+                        } else {
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying, &combo_b, ctx.factory(),
+                            )
+                        };
 
                         if !changed {
                             // Fixpoint: pre-evaluation didn't change any argument.
-                            // This happens when the bloom filter produces a false positive
-                            // (e.g., data constructors like `S`, `Z`, `Cons`), or when
-                            // a head has facts but no rewrite rules.
-                            //
-                            // Instead of re-pushing for Eval (which would infinite-loop
-                            // through the same bloom filter check), complete Steps 3-4
-                            // that were skipped when Step 2 (EvalGroundedArgs) fired.
-
-                            // Step 3: Try rule matching with the (unchanged) expression
                             let all_matches_with_types = try_match_all_rules(
                                 &sexpr, &result_env, *ctx.factory()
                             );
 
                             if !all_matches_with_types.is_empty() {
-                                // Rules matched — strip rhs_type and dispatch via unified gate
                                 let matches_deque: Vec<_> =
                                     all_matches_with_types.into_iter()
                                         .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                         .collect();
-                                dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &crate::backend::models::GenericBindings::new());
+                                dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &combo_carrying);
                             } else {
-                                // Step 4: No rules matched — return as data constructor
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![bv(sexpr)], result_env),
+                                    result: (smallvec![bv_with(sexpr, combo_carrying)], result_env),
                                 });
                             }
                         } else {
-                            // Args changed — safe to re-evaluate with new arg values
                             work_stack.push(WorkItem::Eval {
                                 value: sexpr,
                                 env: result_env,
@@ -5341,31 +5372,60 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
-                                carrying_bindings: outer_carrying.clone(),
+                                carrying_bindings: Box::new(combo_carrying),
                             });
                         }
                     } else {
-                        // Multiple combinations — evaluate each and collect results
-                        let mut remaining = combinations.into_iter();
-                        let first = remaining.next().expect("combinations is non-empty");
-                        let app_capacity = remaining.len() + 1;
+                        // Multiple combinations — evaluate each and collect results.
+                        let first_pair = combinations_iter.next().expect("combinations is non-empty");
+                        let (first_sexpr, first_b) = first_pair;
+                        let first_carrying = if outer_carrying.is_empty() {
+                            first_b
+                        } else if first_b.is_empty() {
+                            (*outer_carrying).clone()
+                        } else {
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying, &first_b, ctx.factory(),
+                            )
+                        };
+                        let app_capacity = combinations_iter.len() + 1;
+                        // Store the remaining combos + their bindings for
+                        // CollectApplicativeResults to dispatch in order.
+                        let remaining_vec: Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)> =
+                            combinations_iter.collect();
+                        // Keep `remaining` field type (IntoIter<MettaValue>) —
+                        // store the pairs via a side field; but since adding a
+                        // new field to CollectApplicativeResults requires type
+                        // changes, use a simpler representation: interleave by
+                        // passing the bindings separately via a local closure.
+                        // For compatibility with the existing field type, we
+                        // PRE-COMPUTE each combo's carrying into the value
+                        // itself is not possible — so we add a parallel vector
+                        // field. However, the simpler path is to convert
+                        // `remaining` to hold the pairs via a type change in
+                        // the continuation. Done in the next edit.
+                        let remaining_pairs_only_values: std::vec::IntoIter<MettaValue> =
+                            remaining_vec.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>().into_iter();
+                        let remaining_pairs_bindings: Vec<crate::backend::models::GenericBindings<MettaValue>> =
+                            remaining_vec.iter().map(|(_, b)| b.clone()).collect();
 
                         continuations.push(Continuation::CollectApplicativeResults {
-                            remaining,
+                            remaining: remaining_pairs_only_values,
                             results: Vec::with_capacity(app_capacity),
                             env: result_env.clone(),
                             depth,
                             outer_carrying: outer_carrying.clone(),
+                            remaining_bindings: remaining_pairs_bindings,
                         });
 
                         work_stack.push(WorkItem::Eval {
-                            value: first,
+                            value: first_sexpr,
                             env: result_env,
                             depth,
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: Box::new(first_carrying),
                         });
                     }
                 }
@@ -5374,26 +5434,50 @@ fn process_continuation<C: EvalContext>(
 
         Continuation::CollectApplicativeResults {
             mut remaining,
+            mut remaining_bindings,
             mut results,
             env: _,
             depth,
             outer_carrying,
         } => {
             let (result_values, result_env) = result;
+            if std::env::var("MTN_DEBUG_CAR").is_ok() {
+                eprintln!("[CAR] received {} results, remaining={}, accumulated results={}",
+                    result_values.len(), remaining.len(), results.len());
+            }
             results.extend(result_values);
 
             if remaining.len() == 0 {
                 // All combinations evaluated — resume parent with collected results
+                if std::env::var("MTN_DEBUG_CAR").is_ok() {
+                    eprintln!("[CAR] final: {} results", results.len());
+                }
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
 
                 });
             } else {
-                // Evaluate next combination
+                // Stage 1d-revised: evaluate next combination with its specific
+                // per-combo bindings composed with outer_carrying.
                 let next = remaining.next().expect("remaining is non-empty");
+                let next_b = if remaining_bindings.is_empty() {
+                    crate::backend::models::GenericBindings::new()
+                } else {
+                    remaining_bindings.remove(0)
+                };
+                let combo_carrying = if outer_carrying.is_empty() {
+                    next_b
+                } else if next_b.is_empty() {
+                    (*outer_carrying).clone()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*outer_carrying, &next_b, ctx.factory(),
+                    )
+                };
 
                 continuations.push(Continuation::CollectApplicativeResults {
                     remaining,
+                    remaining_bindings,
                     results,
                     env: result_env.clone(),
                     depth,
@@ -5407,7 +5491,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: Box::new(combo_carrying),
                 });
             }
         }
@@ -7994,7 +8078,7 @@ fn process_continuation<C: EvalContext>(
                                     trace_format::TraceTier::TreeWalker,
                                     depth as u32,
                                     crate::backend::trace::trace_value_generic(&pattern),
-                                    generic_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    generic_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
                                     None,
                                     trace_format::TraceEventKind::SpecialForm {
                                         form_name: "match".to_string(),
@@ -8064,7 +8148,7 @@ fn process_continuation<C: EvalContext>(
                                     trace_format::TraceTier::TreeWalker,
                                     depth as u32,
                                     crate::backend::trace::trace_value_generic(&pattern),
-                                    instantiated_templates.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    instantiated_templates.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
                                     None,
                                     trace_format::TraceEventKind::SpecialForm {
                                         form_name: "match".to_string(),

@@ -402,7 +402,8 @@ fn eval_inner_with_trace(
                         clear_thread_trace_collector();
                         let (sub_results, sub_env) =
                             trampoline::eval_trampoline_with_trace(result, final_env, state, &collector);
-                        final_results.extend(sub_results);
+                        // Strip per-branch bindings at the external API boundary.
+                        final_results.extend(sub_results.into_iter().map(|(v, _)| v));
                         final_env = std::sync::Arc::try_unwrap(sub_env)
                             .unwrap_or_else(|arc| (*arc).clone());
                     }
@@ -431,7 +432,8 @@ fn eval_inner_with_trace(
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
     let (results, env_arc) = trampoline::eval_trampoline_with_trace(value, env, state, collector);
     let env = std::sync::Arc::try_unwrap(env_arc).unwrap_or_else(|arc| (*arc).clone());
-    (results, env)
+    // Strip per-branch bindings at the external API boundary.
+    (results.into_iter().map(|(v, _)| v).collect(), env)
 }
 
 /// Inner eval body — bytecode/JIT tiered execution with tree-walker fallback.

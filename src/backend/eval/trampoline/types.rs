@@ -299,6 +299,10 @@ pub enum Continuation {
     /// combinations produced by nondeterministic grounded arg evaluation.
     CollectApplicativeResults {
         remaining: std::vec::IntoIter<MettaValue>,
+        /// Stage 1d-revised: per-combination pre-computed arg-bindings,
+        /// parallel to `remaining`. Combined with outer_carrying via
+        /// compose_outer_inner_generic when dispatching each combo's Eval.
+        remaining_bindings: Vec<GenericBindings<MettaValue>>,
         results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,

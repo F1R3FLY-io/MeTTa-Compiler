@@ -391,6 +391,32 @@ where
         .collect()
 }
 
+/// Snapshot `GenericBindings<MettaValue>` as `(name, TraceValue)` pairs,
+/// borrowing only (no ownership transfer, no clones of values themselves).
+pub fn trace_bindings_ref(
+    bindings: &crate::backend::models::GenericBindings<MettaValue>,
+) -> Vec<(String, TraceValue)> {
+    bindings
+        .iter()
+        .map(|(name, val)| (name.to_string(), trace_value(val)))
+        .collect()
+}
+
+/// Snapshot a slice of `BoundValue = (MettaValue, GenericBindings<MettaValue>)`
+/// into a `Vec<BoundValueSnapshot>` suitable for `ContinuationEnter`,
+/// `ContinuationEmit`, and related v5 events. Used by the eval-trace
+/// binding-flow instrumentation in `eval_loop::process_continuation`.
+pub fn trace_bound_values(
+    bvs: &[(MettaValue, crate::backend::models::GenericBindings<MettaValue>)],
+) -> Vec<trace_format::BoundValueSnapshot> {
+    bvs.iter()
+        .map(|(v, b)| trace_format::BoundValueSnapshot {
+            value: trace_value(v),
+            bindings: trace_bindings_ref(b),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod convert_tests {
     use super::*;

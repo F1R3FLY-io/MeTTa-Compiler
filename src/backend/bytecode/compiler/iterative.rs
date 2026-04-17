@@ -662,7 +662,16 @@ impl Compiler {
         Ok(())
     }
 
-    /// Compile a function call iteratively
+    /// Compile a function call iteratively.
+    ///
+    /// Note: HE-parity for meta-typed parameters is enforced at a higher
+    /// level — `expression_has_declared_meta_typed_params` in
+    /// `src/backend/eval/mod.rs` routes calls whose head has declared
+    /// meta-typed parameters to the tree-walker trampoline before they
+    /// ever reach this compiler, so this path can continue to emit the
+    /// fast `Opcode::Call` / `TailCall` sequence with eager applicative
+    /// arg evaluation (preserving Cartesian-product fanout for nondet
+    /// value-typed args).
     fn compile_call_iterative(
         &mut self,
         head: &str,

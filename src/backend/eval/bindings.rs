@@ -1172,8 +1172,17 @@ where
                 }
                 result.insert_or_replace(name, outer_val.clone());
             } else {
-                // Both ground but unequal — inconsistent.
-                return GenericBindings::new();
+                // Both ground but unequal. This commonly arises when outer
+                // holds a POST-pre-eval value (e.g. $__fr_1_stv1=(stv 1 0.9)
+                // after applicative pre-eval of the arg) while inner still
+                // carries the PRE-pre-eval form (e.g. $__fr_1_stv1=(father
+                // $who b)) from the child's own match. These are not truly
+                // inconsistent — they are the same term before and after
+                // applicative reduction. Prefer the outer (more-resolved)
+                // value and continue. Returning empty here silently drops
+                // all user-visible bindings (e.g. $who=a) and causes Layer A
+                // projection to miss them at the sidecar.
+                result.insert_or_replace(name, outer_val.clone());
             }
         } else {
             // Only outer has it.

@@ -238,6 +238,7 @@ fn is_impure_head(head: &str) -> bool {
             | "new-memo" | "memo" | "clear-memo!" | "memo-stats"
             | "pragma!"
             | "=" | ":" | ":<"
+            | "ground-with-bindings" | "freeze-tuple"
     )
 }
 
@@ -725,7 +726,7 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "is-member" | "append" | "length" | "exclude-item" | "msort" | "cut"
         | "struct-unique-atom"
         | "new-space" | "add-atom" | "remove-atom"
-        | "collapse" | "collapse-bind" | "superpose" | "amb" | "ground-with-bindings"
+        | "collapse" | "collapse-bind" | "superpose" | "amb" | "ground-with-bindings" | "freeze-tuple"
         | "guard" | "commit" | "backtrack"
         | "get-atoms"
         | "new-state" | "get-state" | "change-state!"
@@ -878,7 +879,7 @@ mod tests {
             "sealed", "atom-subst", "match", "match-or",
             "catch", "is-error",
             "eval", "quote", "unquote",
-            "collapse", "collapse-bind", "amb", "guard", "ground-with-bindings",
+            "collapse", "collapse-bind", "amb", "guard", "ground-with-bindings", "freeze-tuple",
             "new-state", "get-state", "change-state!",
             "println!", "trace!",
             "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",

@@ -46,6 +46,7 @@ mod perf_correlate;
 mod massif_correlate;
 mod gdb_parser;
 mod gdb_correlate;
+mod bindings;
 
 use clap::{Parser, Subcommand};
 
@@ -240,6 +241,29 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Per-BoundValue binding-flow analysis (v5 events).
+    ///
+    /// Reads `ContinuationEnter` / `ContinuationEmit` / `BindingsDropped`
+    /// events emitted by the trampoline's dispatcher-level binding-flow
+    /// instrumentation (eval-trace feature). Surfaces where per-branch
+    /// bindings are preserved, composed, or silently dropped between
+    /// continuation handlers.
+    Bindings {
+        /// Path to the trace file (.mtrace)
+        file: String,
+        /// Only show BindingsDropped events and a per-(cont_kind, site) summary
+        #[arg(long)]
+        drops_only: bool,
+        /// Comma-separated variable names to filter on (e.g. "$who,$x")
+        #[arg(long)]
+        var: Option<String>,
+        /// Comma-separated continuation kinds to include (e.g. "ProcessEvalEval,ProcessChainExpr")
+        #[arg(long)]
+        cont: Option<String>,
+        /// Maximum number of flows to display
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 fn main() {
@@ -282,6 +306,15 @@ fn main() {
             massif_correlate::run(&file, &massif_out, top_n, json),
         Commands::GdbCorrelate { file, gdb_bt, tail_n, top_n, json } =>
             gdb_correlate::run(&file, &gdb_bt, tail_n, top_n, json),
+        Commands::Bindings { file, drops_only, var, cont, limit } => {
+            let var_filter: Option<Vec<String>> = var.map(|s| {
+                s.split(',').map(|v| v.trim().to_string()).collect()
+            });
+            let cont_filter: Option<Vec<String>> = cont.map(|s| {
+                s.split(',').map(|c| c.trim().to_string()).collect()
+            });
+            bindings::run(&file, drops_only, var_filter, cont_filter, limit)
+        }
     };
 
     if let Err(e) = result {

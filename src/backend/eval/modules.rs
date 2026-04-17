@@ -24,7 +24,7 @@ use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
 use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::{ MettaEnvironment, EvalContext};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
-use crate::backend::modules::path::{resolve_library_form, resolve_module_path};
+use crate::backend::modules::path::{resolve_library_form_with_importer, resolve_module_path};
 
 // ============================================================================
 // Generic Module Operations
@@ -243,7 +243,7 @@ where
         } else if let Some(items_ref) = path_arg.as_sexpr() {
             // PeTTa-compatible (library X) / (library X Y) form.
             if items_ref.first().and_then(|h| h.as_atom()) == Some("library") {
-                match resolve_library_form(items_ref) {
+                match resolve_library_form_with_importer(items_ref, env.current_module_dir()) {
                     Some(p) => {
                         let d = format!("{:?}", path_arg);
                         (p, d)

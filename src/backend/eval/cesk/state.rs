@@ -116,7 +116,7 @@ impl SeckState {
             is_tail_call: false,
             expected_type: None,
             demand: None,
-            carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+            carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
         });
 
         let mut continuations = Vec::with_capacity(64);
@@ -270,7 +270,7 @@ mod tests {
         state.push_continuation(Continuation::ProcessIsError {
             env: std::sync::Arc::new(env()),
             depth: 0,
-            outer_carrying: Box::new(crate::backend::models::GenericBindings::new()),
+            outer_carrying: crate::backend::eval::trampoline::types::empty_shared_bindings(),
         });
         assert_eq!(state.continuation_depth(), 2); // Done + ProcessIsError
 

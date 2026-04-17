@@ -43,7 +43,7 @@ fn tier_label(tier: &TraceTier) -> &'static str {
     }
 }
 
-fn format_trace_value(v: &TraceValue) -> String {
+pub fn format_trace_value(v: &TraceValue) -> String {
     match v {
         TraceValue::Atom(s) => s.clone(),
         TraceValue::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
@@ -409,7 +409,60 @@ fn print_kind_details(kind: &TraceEventKind) {
             }
             println!(" }}");
         }
+        TraceEventKind::ContinuationEnter { cont_kind, flow_id, cont_depth, inputs, tracked_vars } => {
+            let tv = if tracked_vars.is_empty() {
+                String::new()
+            } else {
+                format!(" tracked={:?}", tracked_vars)
+            };
+            println!(
+                "  ContinuationEnter flow#{flow_id} {cont_kind} depth={cont_depth}{tv} inputs={}",
+                format_bound_values(inputs),
+            );
+        }
+        TraceEventKind::ContinuationEmit { cont_kind, flow_id, site, outputs } => {
+            println!(
+                "  ContinuationEmit  flow#{flow_id} {cont_kind} site={site} outputs={}",
+                format_bound_values(outputs),
+            );
+        }
+        TraceEventKind::ContinuationExitNoResume { cont_kind, flow_id, exit_kind } => {
+            println!("  ContinuationExit flow#{flow_id} {cont_kind} kind={exit_kind}");
+        }
+        TraceEventKind::BindingsDropped { cont_kind, flow_id, site, dropped_keys, sample } => {
+            let sample_str: Vec<String> = sample
+                .iter()
+                .map(|(k, v)| format!("{}→{}", k, format_trace_value(v)))
+                .collect();
+            println!(
+                "  ⚠ BindingsDropped flow#{flow_id} {cont_kind} site={site} keys={:?} sample=[{}]",
+                dropped_keys,
+                sample_str.join(", "),
+            );
+        }
     }
+}
+
+fn format_bound_values(bvs: &[trace_format::BoundValueSnapshot]) -> String {
+    if bvs.is_empty() {
+        return "[]".to_string();
+    }
+    let parts: Vec<String> = bvs
+        .iter()
+        .map(|bv| {
+            let b: Vec<String> = bv
+                .bindings
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, format_trace_value(v)))
+                .collect();
+            if b.is_empty() {
+                format!("({} {{}})", format_trace_value(&bv.value))
+            } else {
+                format!("({} {{{}}})", format_trace_value(&bv.value), b.join(","))
+            }
+        })
+        .collect();
+    format!("[{}]", parts.join(", "))
 }
 
 fn print_event_json(event: &TraceEvent) {

@@ -12,6 +12,8 @@
 //! - Bindings use `GenericBindings<MettaValue>` (heap-allocated binding map)
 //! - Names retain the `Generic` prefix for now; renaming is a separate step
 
+use std::sync::Arc;
+
 use smallvec::SmallVec;
 
 use crate::backend::environment::MettaEnvironment;
@@ -36,6 +38,35 @@ use super::context::SharedEnv;
 /// `collapse-bind` scope, the bindings reflect the tracked-variable
 /// groundings established during that specific branch's rule unification.
 pub type BoundValue = (MettaValue, GenericBindings<MettaValue>);
+
+/// Layer C: `SharedBindings = Arc<GenericBindings<MettaValue>>`.
+///
+/// Carrying-bindings are shared across parallel fork branches and copied
+/// into each spawned continuation. Under `Box`, each clone allocates a new
+/// `GenericBindings` (O(N) in key count); across mmverify's ~200-deep
+/// nested dispatches this creates O(N²) heap churn — the root cause of the
+/// 41 GB memory spike and 90× slowdown previously attributed to Stage
+/// 1d-revised.
+///
+/// `Arc` clones are O(1) reference-count bumps. Mutations of the
+/// carrying-bindings (fewer than a dozen sites — rotating to a sibling
+/// branch's bindings) become `shared = Arc::new(new_bindings)` rather than
+/// in-place `*ptr = ...`. Reads/derefs (`&*shared`, `shared.iter()`) are
+/// unchanged since `Arc<T>: Deref<Target=T>`.
+pub type SharedBindings = Arc<GenericBindings<MettaValue>>;
+
+/// Layer C: cached empty-bindings singleton. Every trampoline continuation
+/// and work item that does not carry per-branch bindings clones this value,
+/// turning a frequent allocation into a refcount bump. The constant is
+/// wrapped in `OnceLock` so initialization is lazy and safe across threads.
+#[inline]
+pub fn empty_shared_bindings() -> SharedBindings {
+    use std::sync::OnceLock;
+    static EMPTY: OnceLock<SharedBindings> = OnceLock::new();
+    EMPTY
+        .get_or_init(|| Arc::new(GenericBindings::new()))
+        .clone()
+}
 
 /// Evaluation result: (bound_values, environment)
 ///
@@ -109,7 +140,7 @@ pub enum WorkItem {
         /// into sub-evaluations via this field. At Done→Resume, each leaf
         /// result's BoundValue.1 starts as this carrying (then merged with
         /// any step-produced bindings). Default = empty (no ambient).
-        carrying_bindings: Box<GenericBindings<MettaValue>>,
+        carrying_bindings: SharedBindings,
     },
     /// Evaluate a template with deferred bindings (lazy binding).
     ///
@@ -126,13 +157,13 @@ pub enum WorkItem {
     /// where each level would otherwise materialize the entire remaining body.
     EvalWithBindings {
         template: MettaValue,
-        bindings: Box<GenericBindings<MettaValue>>,
+        bindings: SharedBindings,
         env: SharedEnv,
         depth: usize,
         is_tail_call: bool,
         expected_type: Option<MettaValue>,
         /// Stage 1d-revised: see `WorkItem::Eval.carrying_bindings`.
-        carrying_bindings: Box<GenericBindings<MettaValue>>,
+        carrying_bindings: SharedBindings,
     },
     /// Resume the continuation at stack top with a result
     Resume {
@@ -165,7 +196,7 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         /// Propagated to child Eval pushes so per-branch bindings flow correctly.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing rule match results with bindings.
@@ -192,12 +223,12 @@ pub enum Continuation {
         /// these are merged into every result's BoundValue.1 to establish
         /// per-branch binding provenance. Rotated to `compose(outer_carrying,
         /// next_match_bindings)` before advancing to the next branch.
-        current_branch_bindings: Box<GenericBindings<MettaValue>>,
+        current_branch_bindings: SharedBindings,
         /// Stage 1d-revised: ambient bindings from the caller's context
         /// (e.g., CollectSExpr's merged child bindings). Retained so that
         /// when rotating to the next branch we can compose anew with that
         /// branch's match bindings. Empty when no ambient is passed.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
         /// Stage 1c: The tracked-variable set of the innermost active
         /// `collapse-bind` (if any). Used to project composed bindings so
         /// only the caller-relevant variables flow through. `None` when no
@@ -231,9 +262,9 @@ pub enum Continuation {
         /// Evaluation depth.
         depth: usize,
         /// Stage 1c: see `ProcessRuleMatches.current_branch_bindings`.
-        current_branch_bindings: Box<GenericBindings<MettaValue>>,
+        current_branch_bindings: SharedBindings,
         /// Stage 1d-revised: see `ProcessRuleMatches.outer_carrying`.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
         /// Stage 1c: see `ProcessRuleMatches.tracked_vars_hint`.
         tracked_vars_hint: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>>,
     },
@@ -248,7 +279,40 @@ pub enum Continuation {
         /// Stage 1d: accumulated bindings from all evaluated args MERGE'd
         /// together. Grounded ops produce a new ground value whose bindings
         /// = merge of all arg bindings (conflict → empty output result).
-        arg_bindings: Box<GenericBindings<MettaValue>>,
+        arg_bindings: SharedBindings,
+    },
+
+    /// HE-faithful fan-out over nondeterministic arg-eval alternatives.
+    ///
+    /// Pushed by `ProcessGroundedOp` when an `EvalArg` returns N>1
+    /// alternatives. Self-repushes once per alternative (processing one at
+    /// a time with its own cloned `GroundedState` carrying a single value
+    /// at `pending_arg_idx` + its own composed `arg_bindings`), and
+    /// accumulates all branches' outputs into a single `EvalResult` handed
+    /// to the outer `Resume`.
+    ///
+    /// This mirrors MeTTa HE's plan-vector fan-out at grounded-call sites
+    /// (`eval_impl` in `interpreter.rs:504-549`): each `(value, bindings)`
+    /// alternative is an independent plan item, the grounded op fires once
+    /// per substituted single-valued alternative, and outputs from all
+    /// alternatives are collected into a flat result list.
+    ProcessGroundedOpFanout {
+        /// Remaining arg-eval alternatives to process (value +
+        /// branch-bindings from that alt's Eval return).
+        remaining_alts: std::vec::IntoIter<BoundValue>,
+        /// Accumulated outputs across all alternatives processed so far.
+        results: Vec<BoundValue>,
+        /// Template state BEFORE `pending_arg_idx` was installed. Cloned
+        /// per alternative and the single value is installed on the clone.
+        template_state: Box<GroundedState<MettaValue>>,
+        /// Arg index whose alternatives are being iterated.
+        pending_arg_idx: usize,
+        /// Prior `arg_bindings` (accumulated from earlier args). Each alt
+        /// composes this with its own `alt_bindings` to form that alt's
+        /// full binding bag before the grounded op fires.
+        prior_arg_bindings: SharedBindings,
+        env: SharedEnv,
+        depth: usize,
     },
 
     /// Processing lazy Cartesian product combinations.
@@ -259,7 +323,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing let binding
@@ -271,12 +335,12 @@ pub enum Continuation {
         /// these are composed with pattern-match bindings and the body is
         /// evaluated via `EvalWithBindings` instead of `apply_bindings`.
         /// This enables O(N) instead of O(N^2) work for nested `let*` chains.
-        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
+        outer_bindings: Option<SharedBindings>,
         results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Collecting grounded arg evaluation results.
@@ -292,7 +356,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Collecting results from applicative evaluation of Cartesian product
@@ -307,7 +371,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing map-atom iteration
@@ -319,7 +383,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing filter-atom iteration
@@ -332,7 +396,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing foldl-atom iteration
@@ -347,7 +411,7 @@ pub enum Continuation {
         /// MERGE'd together. Each iteration's eval result carries its own
         /// bindings (from inner rule dispatches) which we merge here.
         /// On conflict, the fold branch emits zero results.
-        acc_bindings: Box<GenericBindings<MettaValue>>,
+        acc_bindings: SharedBindings,
     },
 
     /// Processing if condition
@@ -357,11 +421,11 @@ pub enum Continuation {
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         /// When present, the taken branch is evaluated via EvalWithBindings
         /// instead of Eval, avoiding materialization of the untaken branch.
-        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
+        outer_bindings: Option<SharedBindings>,
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing case atom
@@ -370,11 +434,11 @@ pub enum Continuation {
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         /// When present, case templates are evaluated via EvalWithBindings
         /// instead of Eval, deferring binding application to the matched arm.
-        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
+        outer_bindings: Option<SharedBindings>,
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing (eval expr)
@@ -382,7 +446,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing (return value)
@@ -390,7 +454,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing chain expression
@@ -400,25 +464,30 @@ pub enum Continuation {
         /// Deferred outer bindings from EvalWithBindings (Phase C).
         /// When present, chain body is evaluated via EvalWithBindings after
         /// composing the chain variable binding with outer_bindings.
-        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
+        outer_bindings: Option<SharedBindings>,
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing chain body evaluations
     ProcessChainBody {
-        remaining_values: std::vec::IntoIter<MettaValue>,
+        /// Remaining `(value, per-branch bindings)` alternatives from the
+        /// chain-expr evaluation. Each alt's bindings are merged into the
+        /// body's `outer_bindings` AND `carrying_bindings` when dispatched
+        /// so the chain-var substitution carries its originating branch's
+        /// binding context through the body evaluation.
+        remaining_values: std::vec::IntoIter<BoundValue>,
         var: MettaValue,
         body: MettaValue,
         /// Deferred outer bindings from EvalWithBindings (Phase C).
-        outer_bindings: Option<Box<GenericBindings<MettaValue>>>,
+        outer_bindings: Option<SharedBindings>,
         results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing function loop
@@ -427,7 +496,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing is-error
@@ -435,7 +504,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing catch
@@ -444,7 +513,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing conjunction
@@ -454,7 +523,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing unify pattern1
@@ -465,7 +534,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing unify pattern1 iteration
@@ -478,7 +547,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing unify pattern2
@@ -490,7 +559,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing unify bodies
@@ -500,7 +569,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing collapse
@@ -508,7 +577,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing collapse-bind
@@ -518,7 +587,7 @@ pub enum Continuation {
         /// Stage 1d-revised: ambient bindings from the caller's context.
         /// Note: collapse-bind opens a fresh binding scope for the inner expr,
         /// so this is mainly retained for downstream propagation symmetry.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Evaluating individual collapse results before assembling the tuple.
@@ -544,21 +613,33 @@ pub enum Continuation {
         /// received eval result's bindings so the (re-)evaluated value
         /// retains its source branch's binding provenance — essential for
         /// `collapse-bind` to emit correct `(Bindings …)` sidecars.
-        current_raw_bindings: Box<GenericBindings<MettaValue>>,
+        current_raw_bindings: SharedBindings,
         /// Environment
         env: SharedEnv,
         /// Evaluation depth
         depth: usize,
+        /// Layer A: tracked variable names from the enclosing `collapse-bind`
+        /// frame, captured when `ProcessCollapseBind` pops the scope. Used at
+        /// the sidecar encoding site to project each result's bindings to
+        /// just the user-visible set (matching HE `Bindings::resolve()` at
+        /// the observation point, not earlier during match composition).
+        /// None for plain `collapse` or when no free vars were tracked.
+        tracked_vars_hint: Option<std::sync::Arc<smallvec::SmallVec<[&'static str; 4]>>>,
     },
 
     /// Processing amb
     ProcessAmb {
-        remaining_alts: std::vec::IntoIter<MettaValue>,
+        /// Remaining nondeterministic alternatives still to be dispatched.
+        /// Each alternative carries its own per-branch bindings so that
+        /// downstream evaluation inherits the alt's binding context via
+        /// `carrying_bindings`, mirroring HE's per-plan-item `(atom, bindings)`
+        /// dispatch model.
+        remaining_alts: std::vec::IntoIter<BoundValue>,
         results: Vec<BoundValue>,
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing guard
@@ -566,7 +647,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing get-atoms
@@ -575,7 +656,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing memo table
@@ -586,7 +667,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing memo expression
@@ -597,7 +678,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing new-memo name
@@ -607,7 +688,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing new-memo size
@@ -617,7 +698,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing memo operation
@@ -627,7 +708,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing match space
@@ -638,7 +719,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing match templates
@@ -648,7 +729,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing add-atom space
@@ -658,7 +739,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     // Disabled: ProcessAddAtomAtom is no longer constructed. The atom evaluation
@@ -679,7 +760,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     // Disabled: ProcessRemoveAtomAtom is no longer constructed. The atom evaluation
@@ -699,7 +780,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing get-state
@@ -708,7 +789,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing change-state reference
@@ -718,7 +799,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing change-state value
@@ -728,7 +809,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing repr
@@ -737,7 +818,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing format-args string
@@ -747,7 +828,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing format-args args
@@ -757,7 +838,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing println
@@ -766,7 +847,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing trace message
@@ -776,7 +857,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing trace value
@@ -785,7 +866,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing get-metatype
@@ -794,7 +875,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing bind
@@ -803,7 +884,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing if-reducible: expr has been evaluated, now compare to original.
@@ -819,7 +900,7 @@ pub enum Continuation {
         /// Evaluation depth
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing match-or space evaluation
@@ -837,7 +918,7 @@ pub enum Continuation {
         /// Evaluation depth
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing sort-tuple: insertion sort via trampoline comparator evaluation.
@@ -863,7 +944,7 @@ pub enum Continuation {
         /// Evaluation depth
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing best-candidate: linear scan evaluating rank function.
@@ -886,7 +967,7 @@ pub enum Continuation {
         /// Evaluation depth
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Processing case multi-results
@@ -897,7 +978,7 @@ pub enum Continuation {
         env: SharedEnv,
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Evaluating individual scrutinee results for case before pattern matching.
@@ -919,9 +1000,9 @@ pub enum Continuation {
         depth: usize,
         /// Per-raw bindings of the value currently being re-evaluated.
         /// Used as the carrying when re-pushing for the next raw value.
-        current_raw_bindings: Box<GenericBindings<MettaValue>>,
+        current_raw_bindings: SharedBindings,
         /// Stage 1d-revised: ambient bindings from the caller's context.
-        outer_carrying: Box<GenericBindings<MettaValue>>,
+        outer_carrying: SharedBindings,
     },
 
     /// Memoize evaluation results for a pure expression.
@@ -965,7 +1046,7 @@ pub enum Continuation {
         /// The body template — kept raw until all bindings are resolved.
         body: MettaValue,
         /// Accumulated bindings from resolved pattern matches + outer context.
-        accumulated_bindings: Box<GenericBindings<MettaValue>>,
+        accumulated_bindings: SharedBindings,
         /// Environment for evaluation.
         env: SharedEnv,
         /// Evaluation depth.
@@ -1002,6 +1083,25 @@ pub enum Continuation {
         depth: usize,
         /// Mutation epoch when evaluation started.
         start_epoch: u64,
+    },
+
+    /// Collecting evaluated arguments for `freeze-tuple`. After all args
+    /// are evaluated, constructs the tuple and marks it as normal form
+    /// (via `memoize_normal_form`) instead of re-evaluating — preventing
+    /// the trampoline's fixpoint loop from reducing a data tuple whose
+    /// head happens to be a reducible expression.
+    CollectFreezeArgs {
+        /// The argument slots (some already evaluated in-place).
+        args: Vec<MettaValue>,
+        /// Indices within `args` that need evaluation.
+        reducible_indices: Vec<usize>,
+        /// Current position in `reducible_indices`.
+        current_idx: usize,
+        /// Per-reducible-arg evaluation results.
+        evaluated_results: Vec<Vec<BoundValue>>,
+        env: SharedEnv,
+        depth: usize,
+        outer_carrying: SharedBindings,
     },
 }
 
@@ -1117,8 +1217,28 @@ impl Continuation {
                 }
             }
 
-            Self::ProcessGroundedOp { state, .. } => {
+            Self::ProcessGroundedOp { state, arg_bindings, .. } => {
                 collect_grounded_state_values(state, out);
+                collect_bindings_values(arg_bindings, out);
+            }
+
+            Self::ProcessGroundedOpFanout {
+                remaining_alts,
+                results,
+                template_state,
+                prior_arg_bindings,
+                ..
+            } => {
+                collect_grounded_state_values(template_state, out);
+                collect_bindings_values(prior_arg_bindings, out);
+                for (v, bindings) in remaining_alts.as_slice() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
             }
 
             Self::ProcessCombinations { combinations, results, pending_rule_matches, .. } => {
@@ -1228,7 +1348,10 @@ impl Continuation {
             }
 
             Self::ProcessChainBody { remaining_values, var, body, outer_bindings, results, .. } => {
-                out.extend(remaining_values.as_slice().iter().copied());
+                for (v, bindings) in remaining_values.as_slice().iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
                 out.push(*var);
                 out.push(*body);
                 if let Some(ref ob) = outer_bindings {
@@ -1306,7 +1429,10 @@ impl Continuation {
             }
 
             Self::ProcessAmb { remaining_alts, results, .. } => {
-                out.extend(remaining_alts.as_slice().iter().copied());
+                for (v, bindings) in remaining_alts.as_slice().iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
                 for (v, bindings) in results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1496,6 +1622,18 @@ impl Continuation {
             Self::CompleteThunk { .. } => {
                 // No MettaValue values to collect — only stores a u64 hash key.
             }
+
+            Self::CollectFreezeArgs { args, evaluated_results, .. } => {
+                for v in args.iter() {
+                    out.push(*v);
+                }
+                for results in evaluated_results.iter() {
+                    for (v, bindings) in results.iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
+                }
+            }
         }
     }
 
@@ -1511,6 +1649,7 @@ impl Continuation {
             | Self::ProcessRuleMatches { depth, .. }
             | Self::ProcessRuleMatchesLazy { depth, .. }
             | Self::ProcessGroundedOp { depth, .. }
+            | Self::ProcessGroundedOpFanout { depth, .. }
             | Self::ProcessCombinations { depth, .. }
             | Self::ProcessLet { depth, .. }
             | Self::CollectGroundedArg { depth, .. }
@@ -1568,7 +1707,82 @@ impl Continuation {
             | Self::MemoizeResult { depth, .. }
             | Self::ProcessLetStar { depth, .. }
             | Self::CompleteSubgoal { depth, .. }
-            | Self::CompleteThunk { depth, .. } => *depth,
+            | Self::CompleteThunk { depth, .. }
+            | Self::CollectFreezeArgs { depth, .. } => *depth,
+        }
+    }
+
+    /// Return a stable static name for this continuation variant.
+    /// Used by eval-trace binding-flow instrumentation to label
+    /// `ContinuationEnter` / `Emit` events.
+    #[cfg(feature = "eval-trace")]
+    pub fn discriminant_name(&self) -> &'static str {
+        match self {
+            Self::Done => "Done",
+            Self::CollectSExpr { .. } => "CollectSExpr",
+            Self::ProcessRuleMatches { .. } => "ProcessRuleMatches",
+            Self::ProcessRuleMatchesLazy { .. } => "ProcessRuleMatchesLazy",
+            Self::ProcessGroundedOp { .. } => "ProcessGroundedOp",
+            Self::ProcessGroundedOpFanout { .. } => "ProcessGroundedOpFanout",
+            Self::ProcessCombinations { .. } => "ProcessCombinations",
+            Self::ProcessLet { .. } => "ProcessLet",
+            Self::CollectGroundedArg { .. } => "CollectGroundedArg",
+            Self::CollectApplicativeResults { .. } => "CollectApplicativeResults",
+            Self::ProcessMapAtom { .. } => "ProcessMapAtom",
+            Self::ProcessFilterAtom { .. } => "ProcessFilterAtom",
+            Self::ProcessFoldlAtom { .. } => "ProcessFoldlAtom",
+            Self::ProcessIfCondition { .. } => "ProcessIfCondition",
+            Self::ProcessCaseAtom { .. } => "ProcessCaseAtom",
+            Self::ProcessEvalEval { .. } => "ProcessEvalEval",
+            Self::ProcessReturn { .. } => "ProcessReturn",
+            Self::ProcessChainExpr { .. } => "ProcessChainExpr",
+            Self::ProcessChainBody { .. } => "ProcessChainBody",
+            Self::ProcessFunction { .. } => "ProcessFunction",
+            Self::ProcessIsError { .. } => "ProcessIsError",
+            Self::ProcessCatch { .. } => "ProcessCatch",
+            Self::ProcessConjunction { .. } => "ProcessConjunction",
+            Self::ProcessUnifyPattern1 { .. } => "ProcessUnifyPattern1",
+            Self::ProcessUnifyPattern1Iter { .. } => "ProcessUnifyPattern1Iter",
+            Self::ProcessUnifyPattern2 { .. } => "ProcessUnifyPattern2",
+            Self::ProcessUnifyBodies { .. } => "ProcessUnifyBodies",
+            Self::ProcessCollapse { .. } => "ProcessCollapse",
+            Self::ProcessCollapseBind { .. } => "ProcessCollapseBind",
+            Self::ProcessCollapseEvalResults { .. } => "ProcessCollapseEvalResults",
+            Self::ProcessAmb { .. } => "ProcessAmb",
+            Self::ProcessGuard { .. } => "ProcessGuard",
+            Self::ProcessGetAtoms { .. } => "ProcessGetAtoms",
+            Self::ProcessMemoTable { .. } => "ProcessMemoTable",
+            Self::ProcessMemoExpr { .. } => "ProcessMemoExpr",
+            Self::ProcessNewMemoName { .. } => "ProcessNewMemoName",
+            Self::ProcessNewMemoSize { .. } => "ProcessNewMemoSize",
+            Self::ProcessMemoOp { .. } => "ProcessMemoOp",
+            Self::ProcessBind { .. } => "ProcessBind",
+            Self::ProcessMatchSpace { .. } => "ProcessMatchSpace",
+            Self::ProcessMatchTemplates { .. } => "ProcessMatchTemplates",
+            Self::ProcessAddAtomSpace { .. } => "ProcessAddAtomSpace",
+            Self::ProcessRemoveAtomSpace { .. } => "ProcessRemoveAtomSpace",
+            Self::ProcessNewState { .. } => "ProcessNewState",
+            Self::ProcessGetState { .. } => "ProcessGetState",
+            Self::ProcessChangeStateRef { .. } => "ProcessChangeStateRef",
+            Self::ProcessChangeStateValue { .. } => "ProcessChangeStateValue",
+            Self::ProcessRepr { .. } => "ProcessRepr",
+            Self::ProcessFormatArgsString { .. } => "ProcessFormatArgsString",
+            Self::ProcessFormatArgsArgs { .. } => "ProcessFormatArgsArgs",
+            Self::ProcessPrintln { .. } => "ProcessPrintln",
+            Self::ProcessTraceMessage { .. } => "ProcessTraceMessage",
+            Self::ProcessTraceValue { .. } => "ProcessTraceValue",
+            Self::ProcessGetMetatype { .. } => "ProcessGetMetatype",
+            Self::ProcessIfReducible { .. } => "ProcessIfReducible",
+            Self::ProcessMatchOrSpace { .. } => "ProcessMatchOrSpace",
+            Self::ProcessSortTuple { .. } => "ProcessSortTuple",
+            Self::ProcessBestCandidate { .. } => "ProcessBestCandidate",
+            Self::ProcessCaseMultiResults { .. } => "ProcessCaseMultiResults",
+            Self::ProcessCaseEvalScrutineeResults { .. } => "ProcessCaseEvalScrutineeResults",
+            Self::MemoizeResult { .. } => "MemoizeResult",
+            Self::ProcessLetStar { .. } => "ProcessLetStar",
+            Self::CompleteSubgoal { .. } => "CompleteSubgoal",
+            Self::CompleteThunk { .. } => "CompleteThunk",
+            Self::CollectFreezeArgs { .. } => "CollectFreezeArgs",
         }
     }
 }
@@ -1601,7 +1815,7 @@ mod tests {
             is_tail_call: false,
             expected_type: None,
             demand: None,
-            carrying_bindings: Box::new(GenericBindings::new()),
+            carrying_bindings: empty_shared_bindings(),
         };
         let mut roots = Vec::new();
         item.collect_values(&mut roots);
@@ -1645,7 +1859,7 @@ mod tests {
             ],
             original_env: env(),
             depth: 0,
-            outer_carrying: Box::new(GenericBindings::new()),
+            outer_carrying: empty_shared_bindings(),
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
@@ -1662,7 +1876,7 @@ mod tests {
             outer_bindings: None,
             env: env(),
             depth: 0,
-            outer_carrying: Box::new(GenericBindings::new()),
+            outer_carrying: empty_shared_bindings(),
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
@@ -1682,7 +1896,7 @@ mod tests {
             results: vec![bv(f.long(1))],
             env: env(),
             depth: 0,
-            outer_carrying: Box::new(GenericBindings::new()),
+            outer_carrying: empty_shared_bindings(),
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
@@ -1696,7 +1910,7 @@ mod tests {
             token: "var".to_string(),
             env: env(),
             depth: 0,
-            outer_carrying: Box::new(GenericBindings::new()),
+            outer_carrying: empty_shared_bindings(),
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
@@ -1712,7 +1926,7 @@ mod tests {
             template: f.atom("$t"),
             env: env(),
             depth: 0,
-            outer_carrying: Box::new(GenericBindings::new()),
+            outer_carrying: empty_shared_bindings(),
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
@@ -1726,9 +1940,10 @@ mod tests {
             remaining_raw: vec![bv(f.long(1)), bv(f.long(2))].into_iter(),
             evaluated: vec![bv(f.long(3))],
             is_bind: false,
-            current_raw_bindings: Box::new(GenericBindings::new()),
+            current_raw_bindings: empty_shared_bindings(),
             env: env(),
             depth: 0,
+            tracked_vars_hint: None,
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
@@ -1747,7 +1962,7 @@ mod tests {
             all_results: vec![bv(f.long(99))],
             env: env(),
             depth: 0,
-            outer_carrying: Box::new(GenericBindings::new()),
+            outer_carrying: empty_shared_bindings(),
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);

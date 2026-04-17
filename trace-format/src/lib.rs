@@ -10,8 +10,8 @@
 pub use postcard;
 use serde::{Deserialize, Serialize};
 
-/// Magic bytes identifying a MeTTaTron trace file (format v4).
-pub const TRACE_MAGIC: [u8; 8] = *b"MTRACE\x00\x04";
+/// Magic bytes identifying a MeTTaTron trace file (format v5).
+pub const TRACE_MAGIC: [u8; 8] = *b"MTRACE\x00\x05";
 
 /// Magic bytes for format v1 (accepted by reader for backward compatibility).
 pub const TRACE_MAGIC_V1: [u8; 8] = *b"MTRACE\x00\x01";
@@ -22,8 +22,11 @@ pub const TRACE_MAGIC_V2: [u8; 8] = *b"MTRACE\x00\x02";
 /// Magic bytes for format v3 (accepted by reader for backward compatibility).
 pub const TRACE_MAGIC_V3: [u8; 8] = *b"MTRACE\x00\x03";
 
+/// Magic bytes for format v4 (accepted by reader for backward compatibility).
+pub const TRACE_MAGIC_V4: [u8; 8] = *b"MTRACE\x00\x04";
+
 /// Current trace format version.
-pub const TRACE_FORMAT_VERSION: u32 = 4;
+pub const TRACE_FORMAT_VERSION: u32 = 5;
 
 /// Serialize a value to postcard bytes.
 pub fn serialize<T: serde::Serialize>(value: &T) -> Vec<u8> {
@@ -746,6 +749,75 @@ pub enum TraceEventKind {
         /// "wait-start" (entering condvar wait), "all-done" (all branches completed).
         phase: String,
     },
+
+    // ---- Per-BoundValue binding flow (v5) ----
+    /// Emitted when a continuation handler is about to consume a Resume
+    /// boundary. Records the incoming per-alt `(value, bindings)` list
+    /// so the analyzer can detect where bindings are dropped between
+    /// handlers.
+    ContinuationEnter {
+        /// The Continuation discriminant name (e.g. "ProcessEvalEval",
+        /// "ProcessChainExpr"). From `Continuation::discriminant_name()`.
+        cont_kind: String,
+        /// Monotonic counter correlating this Enter with its subsequent
+        /// Emit / ExitNoResume events. Thread-local.
+        flow_id: u64,
+        /// Continuation stack depth at entry.
+        cont_depth: u32,
+        /// Per-alt inputs: each `(value, per-branch bindings)`.
+        inputs: Vec<BoundValueSnapshot>,
+        /// The active collapse-bind tracked-variable set at entry (union
+        /// across nested `collapse-bind` scopes via `active_tracked_vars`).
+        /// Empty when no collapse-bind is active. Essential for debugging
+        /// projection behavior — if the wrong variables are tracked (e.g.
+        /// macro parameters instead of query variables), ProcessRuleMatches
+        /// projection strips the wrong keys, producing empty bindings.
+        tracked_vars: Vec<String>,
+    },
+
+    /// Emitted when a continuation handler pushes a Resume to the work
+    /// stack. Records the outgoing per-alt `(value, bindings)` list.
+    /// Paired with a prior `ContinuationEnter` via `flow_id`.
+    ContinuationEmit {
+        cont_kind: String,
+        flow_id: u64,
+        /// Source file+line of the emission site (e.g. "eval_loop:6651").
+        site: String,
+        outputs: Vec<BoundValueSnapshot>,
+    },
+
+    /// Emitted when a continuation handler exits without pushing a
+    /// Resume (terminal arm, or pushed an Eval/EvalWithBindings instead).
+    ContinuationExitNoResume {
+        cont_kind: String,
+        flow_id: u64,
+        /// "done" | "eval" | "eval-with-bindings" | "parallel-dispatch" | "other"
+        exit_kind: String,
+    },
+
+    /// Emitted when a `ContinuationEmit`'s output binding keyspace is
+    /// a strict subset of the `ContinuationEnter`'s input keyspace — at
+    /// least one variable was in a branch's bindings on input but is in
+    /// no branch's bindings on output. Precomputed at emit time so the
+    /// analyzer doesn't have to re-derive it from Enter/Emit pairs.
+    BindingsDropped {
+        cont_kind: String,
+        flow_id: u64,
+        site: String,
+        /// Variable names present on input but absent on all outputs.
+        dropped_keys: Vec<String>,
+        /// Sample of the dropped `(key, value)` pairs for debugging.
+        sample: Vec<(String, TraceValue)>,
+    },
+}
+
+/// One nondeterministic alternative at a Resume boundary: a value paired
+/// with the per-branch bindings it carries. Mirrors the runtime
+/// `BoundValue = (MettaValue, GenericBindings<MettaValue>)` tuple.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BoundValueSnapshot {
+    pub value: TraceValue,
+    pub bindings: Vec<(String, TraceValue)>,
 }
 
 /// Why a rule-match attempt ended without binding the rule.
@@ -1116,11 +1188,15 @@ mod tests {
     fn magic_bytes_are_correct() {
         assert_eq!(&TRACE_MAGIC[..6], b"MTRACE");
         assert_eq!(TRACE_MAGIC[6], 0x00);
-        assert_eq!(TRACE_MAGIC[7], 0x02); // v2
+        assert_eq!(TRACE_MAGIC[7], 0x05); // v5
 
         assert_eq!(&TRACE_MAGIC_V1[..6], b"MTRACE");
         assert_eq!(TRACE_MAGIC_V1[6], 0x00);
         assert_eq!(TRACE_MAGIC_V1[7], 0x01); // v1
+
+        assert_eq!(&TRACE_MAGIC_V4[..6], b"MTRACE");
+        assert_eq!(TRACE_MAGIC_V4[6], 0x00);
+        assert_eq!(TRACE_MAGIC_V4[7], 0x04); // v4
     }
 
     #[test]

@@ -97,6 +97,18 @@ where
         self.shared.atom_space.type_bloom.read().may_have_type(name)
     }
 
+    /// Returns `true` if ANY atom has a declared type assertion in this env.
+    ///
+    /// Used as a hot-path fast exit: when the env has zero declared types,
+    /// helpers that check "does any head have a declared meta-typed param?"
+    /// can return `false` immediately without walking the expression tree.
+    ///
+    /// This is O(1) — reads the types HashMap's emptiness without cloning.
+    #[inline]
+    pub fn has_any_declared_types(&self) -> bool {
+        !self.shared.types.read().is_empty()
+    }
+
     /// Get all atom names that have a specific declared type.
     ///
     /// Enables O(k) type-filtered match instead of O(n) full space scan,

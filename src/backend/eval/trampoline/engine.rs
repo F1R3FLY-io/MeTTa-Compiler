@@ -1212,7 +1212,7 @@ pub fn template_has_grounded_arg_heads(template: &MettaValue) -> bool {
                 if matches!(head,
                     "if" | "let" | "let*" | "chain" | "case" | "switch"
                     | "unify" | "match" | "match-or"
-                    | "superpose" | "collapse" | "collapse-bind" | "ground-with-bindings"
+                    | "superpose" | "collapse" | "collapse-bind" | "ground-with-bindings" | "freeze-tuple"
                     | "map-atom" | "filter-atom" | "foldl-atom"
                     | "add-atom" | "remove-atom" | "get-atoms"
                     | "new-state" | "get-state" | "change-state!"

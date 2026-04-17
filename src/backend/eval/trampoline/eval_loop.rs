@@ -81,14 +81,6 @@ use crate::backend::models::metta_value::is_variable_str;
 use crate::backend::models::work_pool::global_eval_pool;
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
-/// Cached check for the `METTA_DEBUG_EVAL` environment variable.
-/// Uses `OnceLock` so the syscall happens at most once per process.
-static METTA_DEBUG_EVAL_CACHED: OnceLock<bool> = OnceLock::new();
-
-fn is_debug_eval() -> bool {
-    *METTA_DEBUG_EVAL_CACHED.get_or_init(|| std::env::var("METTA_DEBUG_EVAL").is_ok())
-}
-
 // Evaluation memoization and type-driven dispatch helpers extracted to `dispatch_hints`
 // module for icache locality. Re-import the functions used in this file.
 use super::dispatch_hints::{
@@ -128,7 +120,9 @@ fn continuation_to_stack_symbol(
                 arity: 0,
             }
         }
-        Continuation::ProcessGroundedOp { .. } => SchedulerStackSymbol::GroundedOp,
+        Continuation::ProcessGroundedOp { .. }
+        | Continuation::ProcessGroundedOpFanout { .. }
+        | Continuation::CollectFreezeArgs { .. } => SchedulerStackSymbol::GroundedOp,
         Continuation::ProcessCombinations { .. } => SchedulerStackSymbol::Combinations,
         Continuation::ProcessLet { .. }
         | Continuation::ProcessLetStar { .. } => {
@@ -266,6 +260,16 @@ fn depth_budgets() -> &'static DepthBudgets {
 ///
 /// Returns actual slots acquired (0..=N).
 fn try_acquire_budget(n: u32, depth: u32) -> u32 {
+    // Collapse-bind scope gate: the BINDING_CAPTURE_STACK is a thread-local,
+    // so parallel worker threads cannot see the tracked-variable set of the
+    // main thread. Rule-match projection would then observe an empty set
+    // and strip bindings that the caller's collapse-bind expected to
+    // capture. Force sequential dispatch whenever a collapse-bind scope is
+    // active.
+    if in_collapse_bind_scope() {
+        return 0;
+    }
+
     let budgets = depth_budgets();
 
     // Dynamic budget gate: check queue pressure.
@@ -395,7 +399,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                     ctx.factory(),
                 )
             };
-            let current_branch_bindings = Box::new(composed);
+            let current_branch_bindings = std::sync::Arc::new(composed);
             continuations.push(Continuation::ProcessRuleMatches {
                 remaining_matches: Vec::new().into_iter(),
                 results: Vec::new(),
@@ -405,7 +409,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 pre_fork_gen: 0, // not entering a fork scope — no CP to restore
                 fork_depth: 0,   // no fork — cut targeting irrelevant
                 current_branch_bindings,
-                outer_carrying: Box::new(outer_carrying.clone()),
+                outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
                 tracked_vars_hint,
                 #[cfg(feature = "eval-trace")]
                 branch_span_id: 0,
@@ -418,29 +422,117 @@ fn dispatch_rule_matches<C: EvalContext>(
             });
         }
 
-        // Stage 1d-revised: compute RHS carrying = compose(outer_carrying, match_bindings).
-        // This is HE-faithful: each in-flight alternative's Bindings travel
-        // with its evaluation. Only non-empty when in a collapse-bind scope
-        // or ambient is passed (zero overhead otherwise).
+        // Stage 1d-revised + HE-faithful rule-match propagation (split by RHS shape):
+        //
+        //   Ground RHS (`!rhs.has_variables_fast()`):
+        //     The rule's `bindings` contains unifications like `$b=c` where
+        //     `$b` is a CALLER-LEVEL variable bound to a rule-LHS literal.
+        //     Propagate bindings composed with outer_carrying so enclosing
+        //     handlers (`ProcessLet` etc.) can observe the caller-level
+        //     binding and thread it through subsequent expressions.
+        //     Freshened rule-body vars (`$__fr_*`) are filtered out to
+        //     prevent unbounded accumulation along deep call chains.
+        //
+        //   Variable RHS (`rhs.has_variables_fast()`):
+        //     `bindings` is applied via `EvalWithBindings` template
+        //     substitution (line 440-448). Pass only `outer_carrying` as
+        //     ambient — duplicating bindings would grow carrying linearly
+        //     per level (mmverify has ~200 nested dispatches → quadratic).
+        //
+        //   Collapse-bind scope: compose ALL bindings; sidecar needs them.
         let rhs_carrying: crate::backend::models::GenericBindings<MettaValue> =
-            if outer_carrying.is_empty() && !in_collapse_bind_scope() {
+            if outer_carrying.is_empty() && bindings.is_empty() {
                 crate::backend::models::GenericBindings::new()
+            } else if in_collapse_bind_scope() {
+                if outer_carrying.is_empty() {
+                    bindings.clone()
+                } else if bindings.is_empty() {
+                    outer_carrying.clone()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        outer_carrying, &bindings, ctx.factory(),
+                    )
+                }
+            } else if rhs.has_variables_fast() {
+                // Variable RHS: `bindings` is handed to EvalWithBindings for
+                // template substitution. The rule-body variables ($__fr_*)
+                // resolve via that path — don't duplicate them in carrying.
+                //
+                // BUT: user-named bindings (e.g., `$who = a` from unifying a
+                // caller-level variable against a rule literal, or aliases
+                // like `$__fr_X_a = $who`) MUST propagate so enclosing
+                // handlers can resolve user variables. This matches HE's
+                // `Bindings::resolve()` semantics where aliases chain from
+                // rule-local names to user-visible ones.
+                //
+                // Filter: keep bindings whose KEY is user-named OR whose
+                // VALUE references a user-named variable (the alias case).
+                //
+                // Layer B (DEFERRED): merging this branch into the ground-RHS
+                // filter regresses Direct.metta tests 2/3 — some branch
+                // selection dynamic depends on the variable-RHS filter
+                // retaining fewer bindings. Left in place; rationale
+                // documented in plan §Phase 2.
+                let mut user_bindings = crate::backend::models::GenericBindings::new();
+                for (name, val) in bindings.iter() {
+                    let key_user = !name.starts_with("$__fr_");
+                    let val_user = val.as_atom()
+                        .map(|a| a.starts_with('$') && !a.starts_with("$__fr_"))
+                        .unwrap_or(false);
+                    if key_user || val_user {
+                        user_bindings.insert_or_replace(name, val.clone());
+                    }
+                }
+                if outer_carrying.is_empty() && user_bindings.is_empty() {
+                    crate::backend::models::GenericBindings::new()
+                } else if user_bindings.is_empty() {
+                    outer_carrying.clone()
+                } else if outer_carrying.is_empty() {
+                    user_bindings
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        outer_carrying, &user_bindings, ctx.factory(),
+                    )
+                }
             } else {
-                crate::backend::eval::bindings::compose_outer_inner_generic(
-                    outer_carrying, &bindings, ctx.factory(),
-                )
+                // Ground RHS: filter freshened rule-body vars before
+                // propagating rule-match bindings. User-named variables
+                // (like `$b` from `(father b $b)`) MUST propagate so
+                // enclosing `let`/`foldl`/`chain` handlers can observe them.
+                let filtered = if bindings.is_empty() {
+                    crate::backend::models::GenericBindings::new()
+                } else {
+                    let mut f = crate::backend::models::GenericBindings::new();
+                    for (name, val) in bindings.iter() {
+                        if !name.starts_with("$__fr_") {
+                            f.insert_or_replace(name, val.clone());
+                        }
+                    }
+                    f
+                };
+                if outer_carrying.is_empty() && filtered.is_empty() {
+                    crate::backend::models::GenericBindings::new()
+                } else if outer_carrying.is_empty() {
+                    filtered
+                } else if filtered.is_empty() {
+                    outer_carrying.clone()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        outer_carrying, &filtered, ctx.factory(),
+                    )
+                }
             };
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings.
         // When RHS has no variables, push as Eval directly (O(1) pointer copy).
         if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
-                bindings: Box::new(bindings),
+                bindings: std::sync::Arc::new(bindings),
                 env,
                 depth: depth + 1,
                 is_tail_call: false,
                 expected_type: None,
-                carrying_bindings: Box::new(rhs_carrying),
+                carrying_bindings: std::sync::Arc::new(rhs_carrying),
             });
         } else {
             // Normal-form short-circuit for ground RHS
@@ -468,7 +560,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: Box::new(rhs_carrying),
+                        carrying_bindings: std::sync::Arc::new(rhs_carrying),
                     });
                 } else {
                     work_stack.push(WorkItem::Eval {
@@ -478,7 +570,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: Box::new(rhs_carrying),
+                        carrying_bindings: std::sync::Arc::new(rhs_carrying),
                     });
                 }
             }
@@ -503,7 +595,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             // Stage 1c: stash this branch's match bindings so incoming sub-eval
             // results get composed with them (per-branch provenance).
             // Stage 1d-revised: compose with outer_carrying (caller's ambient).
-            let current_branch_bindings = Box::new(if outer_carrying.is_empty() {
+            let current_branch_bindings = std::sync::Arc::new(if outer_carrying.is_empty() {
                 bindings.clone()
             } else {
                 crate::backend::eval::bindings::compose_outer_inner_generic(
@@ -517,7 +609,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 env: env.clone(),
                 depth,
                 current_branch_bindings,
-                outer_carrying: Box::new(outer_carrying.clone()),
+                outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
                 tracked_vars_hint,
             });
             // Stage 1d-revised: Lazy first branch RHS carrying = compose(outer, match).
@@ -533,12 +625,12 @@ fn dispatch_rule_matches<C: EvalContext>(
             if rhs.has_variables_fast() {
                 work_stack.push(WorkItem::EvalWithBindings {
                     template: rhs,
-                    bindings: Box::new(bindings),
+                    bindings: std::sync::Arc::new(bindings),
                     env,
                     depth: depth + 1,
                     is_tail_call: false,
                     expected_type: None,
-                    carrying_bindings: Box::new(lazy_carrying),
+                    carrying_bindings: std::sync::Arc::new(lazy_carrying),
                 });
             } else {
                 work_stack.push(WorkItem::Eval {
@@ -548,7 +640,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: Box::new(lazy_carrying),
+                    carrying_bindings: std::sync::Arc::new(lazy_carrying),
                 });
             }
             return;
@@ -636,7 +728,11 @@ fn dispatch_rule_matches<C: EvalContext>(
 
         // Merge with base_results from prior branches (e.g., from EvalRuleMatches)
         let mut merged = base_results;
-        merged.extend(results.into_iter().map(bv));
+        merged.extend(if outer_carrying.is_empty() {
+            results.into_iter().map(bv).collect::<Vec<_>>()
+        } else {
+            results.into_iter().map(|v| bv_with(v, outer_carrying.clone())).collect::<Vec<_>>()
+        });
 
         work_stack.push(WorkItem::Resume {
             result: (merged, env),
@@ -694,7 +790,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         // Stage 1d-revised: compose outer_carrying (ambient from the caller's
         // sexpr construction) with this branch's match bindings so the RHS
         // result inherits the full ancestry.
-        let current_branch_bindings = Box::new(if outer_carrying.is_empty() {
+        let current_branch_bindings = std::sync::Arc::new(if outer_carrying.is_empty() {
             bindings.clone()
         } else {
             crate::backend::eval::bindings::compose_outer_inner_generic(
@@ -711,7 +807,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             pre_fork_gen,
             fork_depth,
             current_branch_bindings,
-            outer_carrying: Box::new(outer_carrying.clone()),
+            outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
             tracked_vars_hint,
             #[cfg(feature = "eval-trace")]
             branch_span_id: _branch_span_id,
@@ -764,12 +860,12 @@ fn dispatch_rule_matches<C: EvalContext>(
         if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
-                bindings: Box::new(bindings),
+                bindings: std::sync::Arc::new(bindings),
                 env,
                 depth,
                 is_tail_call: true,
                 expected_type: None,
-                carrying_bindings: Box::new(seq_carrying),
+                carrying_bindings: std::sync::Arc::new(seq_carrying),
             });
         } else {
             if is_memoized_normal_form(&rhs) {
@@ -789,7 +885,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: Box::new(seq_carrying),
+                    carrying_bindings: std::sync::Arc::new(seq_carrying),
                 });
             }
         }
@@ -875,6 +971,21 @@ thread_local! {
     /// Stack of scope markers for nested `collapse-bind` calls.
     /// Empty when no `collapse-bind` is active.
     static BINDING_CAPTURE_STACK: RefCell<Vec<BindingCaptureFrame>> = const { RefCell::new(Vec::new()) };
+
+    /// Monotonic counter for per-Resume-boundary `flow_id`s used by
+    /// eval-trace binding-flow instrumentation. Enter/Emit/Dropped/
+    /// ExitNoResume events for the same boundary share a flow_id.
+    #[cfg(feature = "eval-trace")]
+    static FLOW_ID_COUNTER: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(feature = "eval-trace")]
+fn next_flow_id() -> u64 {
+    FLOW_ID_COUNTER.with(|c| {
+        let id = c.get();
+        c.set(id.wrapping_add(1));
+        id
+    })
 }
 
 /// Push a new scope marker when entering `collapse-bind`.
@@ -1597,9 +1708,6 @@ fn eval_trampoline_inner<C: EvalContext>(
     resume_continuations: Option<Vec<Continuation>>,
     resume_reductions: u64,
 ) -> crate::backend::eval::cesk::EvalOutcome {
-    // Debug tracing controlled by environment variable (cached — one syscall per process)
-    let debug_eval = is_debug_eval();
-    let mut eval_count: u64 = 0;
 
     // Trace: EvalStart with span correlation + start timestamp.
     // These variables carry the start timestamp and span ID to the EvalEnd site.
@@ -1652,7 +1760,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 is_tail_call: false,
                 expected_type: None,
                 demand: None,
-                carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
             });
             ws
         };
@@ -1914,28 +2022,14 @@ fn eval_trampoline_inner<C: EvalContext>(
             } => {
                 trace!(target: "mettatron::backend::eval::eval_trampoline", ?value, depth, "eval work item");
 
-                // Debug trace (zero-conversion: uses Debug trait)
-                if debug_eval {
-                    eval_count += 1;
-                    if eval_count % 1000 == 0 || eval_count < 100 {
-                        eprintln!(
-                            "[EVAL#{}] depth={} work_stack={} conts={} value={:?}",
-                            eval_count,
-                            depth,
-                            work_stack.len(),
-                            continuations.len(),
-                            value
-                        );
-                    }
-                }
-
                 // Phase 9.5: Normal-form memoization check.
                 // If this S-expression has been previously evaluated and reached
                 // fixpoint (evaluated to itself), skip evaluation entirely.
                 let is_sexpr = value.as_sexpr().is_some();
                 if is_sexpr && is_memoized_normal_form(&value) {
+                    let cb = &*carrying_bindings;
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![bv(value)], env),
+                        result: (smallvec![if cb.is_empty() { bv(value) } else { bv_with(value, cb.clone()) }], env),
                     });
                     continue;
                 }
@@ -2000,8 +2094,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     );
                                 }
                             }
+                            let cb = &*carrying_bindings;
                             work_stack.push(WorkItem::Resume {
-                                result: (cached.into_iter().map(bv).collect(), env),
+                                result: (if cb.is_empty() {
+                                    cached.into_iter().map(bv).collect()
+                                } else {
+                                    cached.into_iter().map(|v| bv_with(v, cb.clone())).collect()
+                                }, env),
                             });
                             continue;
                         }
@@ -2042,8 +2141,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     let h = value.hash_value();
                     if let Some(cached_results) = eval_memo_get(h) {
                         // Cache hit — skip evaluation entirely.
+                        let cb = &*carrying_bindings;
                         work_stack.push(WorkItem::Resume {
-                            result: (cached_results.into_iter().map(bv).collect(), env),
+                            result: (if cb.is_empty() {
+                                cached_results.into_iter().map(bv).collect()
+                            } else {
+                                cached_results.into_iter().map(|v| bv_with(v, cb.clone())).collect()
+                            }, env),
                         });
                         continue;
                     }
@@ -2101,7 +2205,26 @@ fn eval_trampoline_inner<C: EvalContext>(
                         } else { false }
                     } else { false };
 
-                    if has_compilable_head && !has_grounded_args {
+                    // HE-faithful binding-propagation guard: when
+                    // collapse-bind is active or `carrying_bindings` is
+                    // non-empty, per-branch bindings are semantically
+                    // load-bearing. The bytecode VM and JIT are
+                    // binding-agnostic (choice-point alternatives and
+                    // CallNative dispatch carry bare values, not
+                    // `BoundValue`s), so they would silently collapse
+                    // per-branch bindings into empty bags — the same bug
+                    // that `ProcessGroundedOpFanout` fixes in the
+                    // tree-walker. Route such sub-expressions through
+                    // the trampoline, which correctly fans out.
+                    //
+                    // Bisimilarity: outside these scopes, every VM-produced
+                    // result would have been wrapped via `bv()` (empty
+                    // bindings) anyway, so the VM path stays correct in
+                    // the common case.
+                    let bindings_load_bearing =
+                        in_collapse_bind_scope() || !carrying_bindings.is_empty();
+
+                    if has_compilable_head && !has_grounded_args && !bindings_load_bearing {
                         // Merged: increment per-slot exec counter AND read cached compilation hash
                         // in a single thread-local + generation check (vs 2× for separate calls).
                         let compilation_hash = crate::backend::bytecode::tiered_cache::increment_and_get_hash(value.inner_ptr());
@@ -2276,9 +2399,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             );
                                         }
                                     }
+                                    let cb = &*carrying_bindings;
                                     work_stack.push(WorkItem::Resume {
-                                        result: (values.into_iter().map(bv).collect(), env),
-
+                                        result: (if cb.is_empty() {
+                                            values.into_iter().map(bv).collect()
+                                        } else {
+                                            values.into_iter().map(|v| bv_with(v, cb.clone())).collect()
+                                        }, env),
                                     });
                                 }
                                 GroundedWork::EvalArg { arg_idx, state: new_state } => {
@@ -2482,7 +2609,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let matches_deque: Vec<_> = matches.into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                 .collect();
-                            dispatch_rule_matches(matches_deque, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, demand, &crate::backend::models::GenericBindings::new());
+                            dispatch_rule_matches(matches_deque, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, demand, &*carrying_bindings);
                         }
                     }
 
@@ -2962,6 +3089,34 @@ fn eval_trampoline_inner<C: EvalContext>(
                         });
                     }
 
+                    // Start freeze-tuple: evaluate reducible args, then
+                    // construct tuple and mark as normal form.
+                    GenericEvalStep::StartFreezeTuple { args, reducible_indices, env: step_env, depth } => {
+                        let env: SharedEnv = Arc::new(step_env);
+                        let first_idx = reducible_indices[0];
+                        let arg_to_eval = args[first_idx].clone();
+
+                        continuations.push(Continuation::CollectFreezeArgs {
+                            args,
+                            reducible_indices,
+                            current_idx: 0,
+                            evaluated_results: Vec::new(),
+                            env: env.clone(),
+                            depth,
+                            outer_carrying: carrying_bindings.clone(),
+                        });
+
+                        work_stack.push(WorkItem::Eval {
+                            value: arg_to_eval,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                    }
+
                     // Start conjunction
                     GenericEvalStep::StartConjunction { goals, env: step_env, depth } => {
                         let env: SharedEnv = Arc::new(step_env);
@@ -3051,11 +3206,24 @@ fn eval_trampoline_inner<C: EvalContext>(
                     GenericEvalStep::StartCollapseBind { expr, env: step_env, depth } => {
                         let env: SharedEnv = Arc::new(step_env);
 
-                        // Push a binding capture frame if the expression has free variables.
-                        // These tracked variables will be captured at dispatch_rule_matches
-                        // sites during the inner expression's evaluation.
-                        if expr.has_variables_fast() {
-                            let free_vars = expr.free_variables();
+                        // Push a binding capture frame if the expression has
+                        // free variables. Free vars are collected from the
+                        // EFFECTIVE expression — `expr` after substitution via
+                        // `carrying_bindings`. Without this, macro parameters
+                        // like `$term` would be captured instead of the
+                        // underlying query variables (e.g. `$who`) that the
+                        // caller actually wants to track. This matches HE's
+                        // behavior where `apply_bindings_to_atom_move` runs
+                        // before `collapse` inspects the atom.
+                        let effective_expr = if carrying_bindings.is_empty() {
+                            expr.clone()
+                        } else {
+                            crate::backend::eval::bindings::apply_bindings_generic(
+                                &expr, &*carrying_bindings, ctx.factory(),
+                            )
+                        };
+                        if effective_expr.has_variables_fast() {
+                            let free_vars = effective_expr.free_variables();
                             if !free_vars.is_empty() {
                                 let tracked: SmallVec<[&'static str; 4]> = free_vars
                                     .into_iter()
@@ -3145,9 +3313,19 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 });
                             } else {
                                 // ── Sequential path (original) ──
-                                let mut alts_iter = alternatives.into_iter();
-                                let amb_capacity = alts_iter.len(); // total before consuming first
-                                let first = alts_iter.next().expect("alternatives is non-empty");
+                                // Wrap each raw alt value as a BoundValue with
+                                // empty per-branch bindings. All alts at this
+                                // level share the outer_carrying; there are no
+                                // per-branch bindings to attach here.
+                                let amb_capacity = alternatives.len();
+                                let mut alts_iter = alternatives
+                                    .into_iter()
+                                    .map(bv)
+                                    .collect::<Vec<_>>()
+                                    .into_iter();
+                                let (first_val, _first_b) = alts_iter
+                                    .next()
+                                    .expect("alternatives is non-empty");
 
                                 continuations.push(Continuation::ProcessAmb {
                                     remaining_alts: alts_iter,
@@ -3158,7 +3336,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 });
 
                                 work_stack.push(WorkItem::Eval {
-                                    value: first,
+                                    value: first_val,
                                     env,
                                     depth: depth + 1,
                                     is_tail_call: false,
@@ -3617,6 +3795,23 @@ fn eval_trampoline_inner<C: EvalContext>(
                     continue;
                 }
 
+                // Compose deferred bindings into carrying_bindings so
+                // downstream handlers (especially StartCollapseBind's
+                // tracked_vars extraction) can resolve macro parameters
+                // like `$term → (grandfather $who c)`. Without this,
+                // any handler that inspects carrying_bindings to resolve
+                // variables sees only the ambient carrying — deferred
+                // bindings would stay invisible until apply_bindings
+                // materializes the template at leaf nodes.
+                let carrying_bindings: crate::backend::eval::trampoline::types::SharedBindings =
+                    if carrying_bindings.is_empty() {
+                        std::sync::Arc::new((*bindings).clone())
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*carrying_bindings, &*bindings, ctx.factory(),
+                        ))
+                    };
+
                 // Phase 2.4: Environment trimming — remove bindings not referenced
                 // by the template. This reduces root set size at GC safepoints and
                 // avoids carrying dead bindings through nested let* chains.
@@ -3660,7 +3855,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 trimmed.insert(name, val.clone());
                             }
                         }
-                        Box::new(trimmed)
+                        std::sync::Arc::new(trimmed)
                     } else {
                         bindings
                     }
@@ -3684,8 +3879,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     let lookup = crate::backend::eval::cesk::with_thunk_table(|t| t.lookup(thunk_hash));
                     match lookup {
                         crate::backend::eval::cesk::ThunkLookup::Evaluated(cached) => {
+                            let cb = &*carrying_bindings;
                             work_stack.push(WorkItem::Resume {
-                                result: (cached.into_iter().map(bv).collect(), env),
+                                result: (if cb.is_empty() {
+                                    cached.into_iter().map(bv).collect()
+                                } else {
+                                    cached.into_iter().map(|v| bv_with(v, cb.clone())).collect()
+                                }, env),
                             });
                             continue;
                         }
@@ -3807,6 +4007,46 @@ fn eval_trampoline_inner<C: EvalContext>(
                         }
                         work_stack.push(WorkItem::Eval {
                             value: materialized, env, depth, is_tail_call, expected_type, demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                        continue;
+                    }
+
+                    // ── freeze-tuple: materialize args and freeze immediately ──
+                    // freeze-tuple must NOT go through the general Eval path
+                    // because the Eval path can cache/re-evaluate args.
+                    // Materialize args from bindings, construct tuple, freeze.
+                    if resolved_head_atom == Some("freeze-tuple") && items.len() >= 2 {
+                        let materialized_args: Vec<MettaValue> = items[1..]
+                            .iter()
+                            .map(|item| {
+                                let materialized = apply_bindings(item, &bindings, ctx.factory());
+                                if let Some(inner) = materialized.as_quoted() { inner } else { materialized }
+                            })
+                            .collect();
+                        let tuple = ctx.factory().sexpr(materialized_args);
+                        memoize_normal_form(&tuple);
+                        let cb = &*carrying_bindings;
+                        work_stack.push(WorkItem::Resume {
+                            result: (smallvec![if cb.is_empty() { bv(tuple) } else { bv_with(tuple, cb.clone()) }], env),
+                        });
+                        continue;
+                    }
+
+                    // ── collapse-bind materialization ──
+                    // collapse-bind needs its arg fully substituted so that
+                    // StartCollapseBind's tracked_vars extraction sees the
+                    // actual free variables (e.g. $who) rather than the
+                    // deferred binding's key (e.g. $term).
+                    if resolved_head_atom == Some("collapse-bind") && items.len() == 2 {
+                        let materialized = apply_bindings(&template, &bindings, ctx.factory());
+                        work_stack.push(WorkItem::Eval {
+                            value: materialized,
+                            env,
+                            depth,
+                            is_tail_call,
+                            expected_type,
+                            demand: None,
                             carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
@@ -4051,7 +4291,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             DeferredChainResult::Deferred { template: new_template, bindings: new_bindings } => {
                                 work_stack.push(WorkItem::EvalWithBindings {
                                     template: new_template,
-                                    bindings: Box::new(new_bindings),
+                                    bindings: std::sync::Arc::new(new_bindings),
                                     env, depth, is_tail_call, expected_type,
                                     carrying_bindings: carrying_bindings.clone(),
                                 });
@@ -4092,7 +4332,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &template, &bindings, head_name, arity, &env, ctx.factory(),
                             ) {
                                 if !matches.is_empty() {
-                                    dispatch_rule_matches(matches, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, None, &crate::backend::models::GenericBindings::new());
+                                    dispatch_rule_matches(matches, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, None, &*carrying_bindings);
                                     continue;
                                 }
                                 // matches is empty → no rule matched → self-evaluating
@@ -4185,6 +4425,54 @@ fn process_continuation<C: EvalContext>(
         crate::backend::environment::GenericEnvironmentShared<MettaValue>,
     >>,
 ) {
+    // Eval-trace binding-flow instrumentation (v5).
+    // Capture the Resume boundary's inputs BEFORE the match consumes cont
+    // and result. After the match we inspect the last pushed WorkItem:
+    //   - If it's a Resume, emit ContinuationEmit (+ BindingsDropped when
+    //     the output key-union is a strict subset of the input key-union).
+    //   - Otherwise (Done/Eval/EvalWithBindings pushed, or terminal arm),
+    //     emit ContinuationExitNoResume.
+    // Record-time volume mitigation: skip entirely when inputs are empty
+    // (no binding info to flow). All richer filtering is analyzer-side.
+    #[cfg(feature = "eval-trace")]
+    let trace_ctx: Option<(
+        String,
+        u64,
+        u32,
+        Vec<trace_format::BoundValueSnapshot>,
+        usize,
+    )> = if ctx.trace_collector().is_some()
+        && (in_collapse_bind_scope()
+            || result.0.iter().any(|(_, b)| !b.is_empty()))
+    {
+        let cont_kind = cont.discriminant_name().to_string();
+        let flow_id = next_flow_id();
+        let cont_depth = continuations.len() as u32;
+        let inputs = crate::backend::trace::convert::trace_bound_values(&result.0);
+        let tracked_vars: Vec<String> = active_tracked_vars()
+            .map(|tv| tv.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        if let Some(tc) = ctx.trace_collector() {
+            tc.emit_converted(
+                trace_format::TraceTier::TreeWalker,
+                cont_depth,
+                trace_format::TraceValue::Unit,
+                vec![],
+                None,
+                trace_format::TraceEventKind::ContinuationEnter {
+                    cont_kind: cont_kind.clone(),
+                    flow_id,
+                    cont_depth,
+                    inputs: inputs.clone(),
+                    tracked_vars,
+                },
+            );
+        }
+        Some((cont_kind, flow_id, cont_depth, inputs, work_stack.len()))
+    } else {
+        None
+    };
+
     match cont {
         Continuation::Done => {
             *final_result = Some(result);
@@ -4365,14 +4653,19 @@ fn process_continuation<C: EvalContext>(
                             factory,
                         );
                     crate::backend::eval::bindings::apply_chain_generic(&mut composed, factory);
-                    let projected = match &tracked_vars_hint {
-                        Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
-                            &composed,
-                            tv.as_slice(),
-                        ),
-                        None => composed,
-                    };
-                    (v, projected)
+                    // Layer A: projection moved to sidecar encoding in
+                    // ProcessCollapseEvalResults so user-named bindings (e.g.
+                    // $who=a) survive the entire pipeline and get projected
+                    // only at the observation point — matching HE's
+                    // Bindings::resolve() semantics (interpreter.rs:624).
+                    // let projected = match &tracked_vars_hint {
+                    //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
+                    //         &composed,
+                    //         tv.as_slice(),
+                    //     ),
+                    //     None => composed,
+                    // };
+                    (v, composed)
                 }).collect()
             };
             results.extend(composed);
@@ -4433,15 +4726,15 @@ fn process_continuation<C: EvalContext>(
                 // own independent bindings — no shared-mutable state.
                 // Stage 1d-revised: re-compose with outer_carrying so next
                 // branch's RHS results inherit the same ambient ancestry.
-                *current_branch_bindings = if outer_carrying.is_empty() {
+                current_branch_bindings = std::sync::Arc::new(if outer_carrying.is_empty() {
                     raw_bindings.clone()
                 } else {
                     crate::backend::eval::bindings::compose_outer_inner_generic(
                         &*outer_carrying, &raw_bindings, ctx.factory(),
                     )
-                };
+                });
 
-                let bindings = Box::new(raw_bindings);
+                let bindings = std::sync::Arc::new(raw_bindings);
 
                 // Trace: BranchStart for the next branch
                 #[cfg(feature = "eval-trace")]
@@ -4552,7 +4845,7 @@ fn process_continuation<C: EvalContext>(
                         depth,
                         is_tail_call: true,
                         expected_type: None,
-                        carrying_bindings: Box::new(rot_carrying),
+                        carrying_bindings: std::sync::Arc::new(rot_carrying),
                     });
                 } else {
                     if is_memoized_normal_form(&rhs) {
@@ -4572,7 +4865,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: Box::new(rot_carrying),
+                            carrying_bindings: std::sync::Arc::new(rot_carrying),
                         });
                     }
                 }
@@ -4608,14 +4901,19 @@ fn process_continuation<C: EvalContext>(
                             factory,
                         );
                     crate::backend::eval::bindings::apply_chain_generic(&mut c, factory);
-                    let projected = match &tracked_vars_hint {
-                        Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
-                            &c,
-                            tv.as_slice(),
-                        ),
-                        None => c,
-                    };
-                    (v, projected)
+                    // Layer A: projection moved to sidecar encoding — see
+                    // ProcessCollapseEvalResults. Preserve user-named
+                    // bindings through the pipeline; only the observation
+                    // point projects to the tracked set (HE Bindings::resolve
+                    // semantics).
+                    // let projected = match &tracked_vars_hint {
+                    //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
+                    //         &c,
+                    //         tv.as_slice(),
+                    //     ),
+                    //     None => c,
+                    // };
+                    (v, c)
                 }).collect()
             };
 
@@ -4633,13 +4931,13 @@ fn process_continuation<C: EvalContext>(
             } else if let Some((rhs, bindings)) = coroutine.next_branch() {
                 // Stage 1c: rotate to the next branch's bindings.
                 // Stage 1d-revised: re-compose with outer_carrying.
-                *current_branch_bindings = if outer_carrying.is_empty() {
+                current_branch_bindings = std::sync::Arc::new(if outer_carrying.is_empty() {
                     bindings.clone()
                 } else {
                     crate::backend::eval::bindings::compose_outer_inner_generic(
                         &*outer_carrying, &bindings, ctx.factory(),
                     )
-                };
+                });
 
                 // More branches to evaluate — push continuation and eval next
                 continuations.push(Continuation::ProcessRuleMatchesLazy {
@@ -4655,12 +4953,12 @@ fn process_continuation<C: EvalContext>(
                 if rhs.has_variables_fast() {
                     work_stack.push(WorkItem::EvalWithBindings {
                         template: rhs,
-                        bindings: Box::new(bindings),
+                        bindings: std::sync::Arc::new(bindings),
                         env: result_env,
                         depth: depth + 1,
                         is_tail_call: false,
                         expected_type: None,
-                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                        carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
                     });
                 } else {
                     work_stack.push(WorkItem::Eval {
@@ -4670,7 +4968,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                        carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
                     });
                 }
             } else {
@@ -4686,63 +4984,99 @@ fn process_continuation<C: EvalContext>(
             pending_arg_idx,
             env: _,
             depth,
-            mut arg_bindings,
+            arg_bindings,
         } => {
             let (result_values, result_env) = result;
 
-            // Stage 1d-revised: collect per-branch bindings for the arg's
-            // nondet results into a parallel `arg_branch_bindings` vector
-            // (same order as the values). When the grounded op eventually
-            // computes outputs via Cartesian product of per-arg results
-            // (e.g. AddOp step 2 iterates `a_results × b_results`), we
-            // re-tag each output with the MERGE of the specific (a_b, b_b)
-            // pair's bindings. This matches HE's per-alternative bindings
-            // model where each result is a `(value, bindings)` pair.
+            // HE-faithful per-alternative dispatch. When the arg's Eval
+            // returned N alternatives, MeTTa HE treats each as an
+            // independent plan-vector item: the grounded op is fired once
+            // per (substituted, single-valued) alternative, and outputs
+            // from all branches accumulate into a flat result list. See
+            // `eval_impl` / `execute_bindings` in
+            // `hyperon-experimental/lib/src/metta/interpreter.rs:504-549`.
             //
-            // For now, merge all branch bindings into arg_bindings (union of
-            // compatible pieces; conflicts ignored). Per-combination tagging
-            // requires grounded ops to return BoundValue — a separate
-            // refactor (GroundedOp trait signature change) tracked in the
-            // Stage 2 follow-up.
-            for (_, child_b) in result_values.iter() {
-                let _ = arg_bindings.merge(child_b);
-            }
+            // 0 alts → empty propagation (branch annihilation).
+            // 1 alt  → inline dispatch (fast path, no allocation).
+            // N alts → push `ProcessGroundedOpFanout` accumulator, then
+            //          dispatch the first alt inline. Remaining alts flow
+            //          back through the Fanout continuation which
+            //          self-repushes once per alternative.
+            let (chosen_value, chosen_bindings) = match result_values.len() {
+                0 => {
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![], result_env),
+                    });
+                    return;
+                }
+                1 => {
+                    let mut iter = result_values.into_iter();
+                    iter.next().unwrap()
+                }
+                _ => {
+                    let mut alts: Vec<BoundValue> = result_values.into_iter().collect();
+                    let first = alts.remove(0);
+                    continuations.push(Continuation::ProcessGroundedOpFanout {
+                        remaining_alts: alts.into_iter(),
+                        results: Vec::new(),
+                        template_state: state.clone(),
+                        pending_arg_idx,
+                        prior_arg_bindings: arg_bindings.clone(),
+                        env: result_env.clone(),
+                        depth,
+                    });
+                    first
+                }
+            };
 
-            // Set evaluated arg using the stored arg_idx from the EvalArg return
-            state.set_arg(pending_arg_idx, result_values.into_iter().map(|(v, _)| v).collect());
+            // Compose prior arg_bindings with this alt's branch bindings.
+            // On ground-value conflict, `compose_outer_inner_generic`
+            // returns an empty bindings bag — the value is retained but
+            // with no per-alt bindings recorded, matching HE's empty
+            // BindingsSet semantics for inconsistent merges (see
+            // `compose_outer_inner_generic` doc in `eval/bindings.rs`).
+            let composed: crate::backend::eval::trampoline::types::SharedBindings = std::sync::Arc::new(
+                crate::backend::eval::bindings::compose_outer_inner_generic(
+                    &*arg_bindings,
+                    &chosen_bindings,
+                    ctx.factory(),
+                ),
+            );
+
+            // Install the single-valued arg in state — each branch sees
+            // exactly one value at `pending_arg_idx`, matching HE where
+            // args are substituted before grounded execution.
+            state.set_arg(pending_arg_idx, vec![chosen_value]);
 
             // Try static dispatch first - works with generic type V (NO conversion)
             let op_name = state.op_name.clone();
             if let Some(work) = execute_grounded_op(&op_name, &mut state, ctx.factory()) {
                 match work {
                     GroundedWork::Done(results) => {
-                        // Results are already in correct type V - NO conversion
                         let values: Vec<MettaValue> = results
                             .into_iter()
                             .map(|(v, _)| v)
                             .collect();
-                        // Tag each grounded-op output with the merged arg bindings.
-                        let merged = (*arg_bindings).clone();
+                        let tag = (*composed).clone();
                         work_stack.push(WorkItem::Resume {
                             result: (
                                 values.into_iter()
-                                    .map(|v| (v, merged.clone()))
+                                    .map(|v| (v, tag.clone()))
                                     .collect(),
                                 result_env,
                             ),
                         });
                     }
                     GroundedWork::EvalArg { arg_idx, state: new_state } => {
-                        let arg_bindings_for_eval = arg_bindings.clone();
+                        let arg_bindings_for_eval = composed.clone();
                         continuations.push(Continuation::ProcessGroundedOp {
                             state: Box::new(new_state.clone()),
                             pending_arg_idx: arg_idx,
                             env: result_env.clone(),
                             depth,
-                            arg_bindings,
+                            arg_bindings: composed,
                         });
 
-                        // Arg already in correct type V - NO conversion
                         let arg_to_eval = new_state.args[arg_idx].clone();
                         work_stack.push(WorkItem::Eval {
                             value: arg_to_eval,
@@ -4755,10 +5089,9 @@ fn process_continuation<C: EvalContext>(
                         });
                     }
                     GroundedWork::Error(e) => {
-                        let merged = (*arg_bindings).clone();
+                        let tag = (*composed).clone();
                         match e {
                             ExecError::NoReduce => {
-                                // MeTTa HE semantics: return the original expression unreduced
                                 let mut expr_parts = Vec::with_capacity(1 + state.args.len());
                                 expr_parts.push(ctx.factory().atom(&state.op_name));
                                 for arg in state.args.iter() {
@@ -4766,7 +5099,7 @@ fn process_continuation<C: EvalContext>(
                                 }
                                 let unreduced = ctx.factory().sexpr(expr_parts);
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![(unreduced, merged)], result_env),
+                                    result: (smallvec![(unreduced, tag)], result_env),
                                 });
                             }
                             _ => {
@@ -4777,15 +5110,13 @@ fn process_continuation<C: EvalContext>(
                                     ExecError::NoReduce => unreachable!(),
                                 };
                                 work_stack.push(WorkItem::Resume {
-                                    result: (smallvec![(error_value, merged)], result_env),
+                                    result: (smallvec![(error_value, tag)], result_env),
                                 });
                             }
                         }
                     }
                 }
             } else {
-                // Operation not in generic registry - report error
-                // All 14 standard TCO operations are in the generic registry.
                 let error_value = ctx.factory().error(
                     &format!("Grounded operation '{}' not found in generic registry", state.op_name),
                     ctx.factory().atom("OperationNotFoundError"),
@@ -4794,6 +5125,133 @@ fn process_continuation<C: EvalContext>(
                     result: (smallvec![bv(error_value)], result_env),
                 });
             }
+        }
+
+        Continuation::ProcessGroundedOpFanout {
+            mut remaining_alts,
+            mut results,
+            template_state,
+            pending_arg_idx,
+            prior_arg_bindings,
+            env: _,
+            depth,
+        } => {
+            // On entry: `result` holds the just-finished branch's outputs.
+            // Extend the cumulative `results` with them.
+            let (branch_outs, result_env) = result;
+            results.extend(branch_outs.into_iter());
+
+            // Advance to next alternative, if any.
+            if let Some((v_i, alt_b_i)) = remaining_alts.next() {
+                // Compose this alt's bindings with the prior arg bag.
+                let composed: crate::backend::eval::trampoline::types::SharedBindings = std::sync::Arc::new(
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*prior_arg_bindings,
+                        &alt_b_i,
+                        ctx.factory(),
+                    ),
+                );
+
+                // Fresh state clone for this branch, install single value.
+                let mut state_i = (*template_state).clone();
+                state_i.set_arg(pending_arg_idx, vec![v_i]);
+
+                // Self-repush Fanout so the next alt's output lands here.
+                continuations.push(Continuation::ProcessGroundedOpFanout {
+                    remaining_alts,
+                    results,
+                    template_state,
+                    pending_arg_idx,
+                    prior_arg_bindings,
+                    env: result_env.clone(),
+                    depth,
+                });
+
+                // Drive this alt through the grounded-op state machine.
+                let op_name = state_i.op_name.clone();
+                if let Some(work) = execute_grounded_op(&op_name, &mut state_i, ctx.factory()) {
+                    match work {
+                        GroundedWork::Done(branch_results) => {
+                            let values: Vec<MettaValue> = branch_results
+                                .into_iter()
+                                .map(|(v, _)| v)
+                                .collect();
+                            let tag = (*composed).clone();
+                            work_stack.push(WorkItem::Resume {
+                                result: (
+                                    values.into_iter()
+                                        .map(|v| (v, tag.clone()))
+                                        .collect(),
+                                    result_env,
+                                ),
+                            });
+                        }
+                        GroundedWork::EvalArg { arg_idx, state: new_state } => {
+                            let arg_bindings_for_eval = composed.clone();
+                            continuations.push(Continuation::ProcessGroundedOp {
+                                state: Box::new(new_state.clone()),
+                                pending_arg_idx: arg_idx,
+                                env: result_env.clone(),
+                                depth,
+                                arg_bindings: composed,
+                            });
+
+                            let arg_to_eval = new_state.args[arg_idx].clone();
+                            work_stack.push(WorkItem::Eval {
+                                value: arg_to_eval,
+                                env: result_env,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: arg_bindings_for_eval,
+                            });
+                        }
+                        GroundedWork::Error(e) => {
+                            let tag = (*composed).clone();
+                            match e {
+                                ExecError::NoReduce => {
+                                    let mut expr_parts = Vec::with_capacity(1 + state_i.args.len());
+                                    expr_parts.push(ctx.factory().atom(&state_i.op_name));
+                                    for arg in state_i.args.iter() {
+                                        expr_parts.push(arg.clone());
+                                    }
+                                    let unreduced = ctx.factory().sexpr(expr_parts);
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (smallvec![(unreduced, tag)], result_env),
+                                    });
+                                }
+                                _ => {
+                                    let error_value = match e {
+                                        ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
+                                        ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
+                                        ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
+                                        ExecError::NoReduce => unreachable!(),
+                                    };
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (smallvec![(error_value, tag)], result_env),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let error_value = ctx.factory().error(
+                        &format!("Grounded operation '{}' not found in generic registry", state_i.op_name),
+                        ctx.factory().atom("OperationNotFoundError"),
+                    );
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(error_value)], result_env),
+                    });
+                }
+                return;
+            }
+
+            // All alternatives processed — emit accumulated results to
+            // the outer consumer.
+            work_stack.push(WorkItem::Resume {
+                result: (SmallVec::from_vec(results), result_env),
+            });
         }
 
         Continuation::ProcessCombinations {
@@ -4823,7 +5281,7 @@ fn process_continuation<C: EvalContext>(
                 if rhs.has_variables_fast() {
                     work_stack.push(WorkItem::EvalWithBindings {
                         template: rhs,
-                        bindings: Box::new(bindings),
+                        bindings: std::sync::Arc::new(bindings),
                         env: result_env,
                         depth,
                         is_tail_call: true,
@@ -4854,7 +5312,11 @@ fn process_continuation<C: EvalContext>(
 
                 if all_matches_with_types.is_empty() {
                     // No rule matches - expression is data
-                    results.push(bv(generic_sexpr));
+                    results.push(if outer_carrying.is_empty() {
+                        bv(generic_sexpr)
+                    } else {
+                        bv_with(generic_sexpr, (*outer_carrying).clone())
+                    });
 
                     continuations.push(Continuation::ProcessCombinations {
                         combinations,
@@ -4886,7 +5348,7 @@ fn process_continuation<C: EvalContext>(
                     });
 
                     // Dispatch rule matches (parallel or sequential)
-                    dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &crate::backend::models::GenericBindings::new());
+                    dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &*outer_carrying);
                 }
             } else {
                 // All combinations processed - results already contains generic values
@@ -4995,7 +5457,7 @@ fn process_continuation<C: EvalContext>(
                             BoundBody::Deferred(composed_bindings) => {
                                 work_stack.push(WorkItem::EvalWithBindings {
                                     template: body.clone(),
-                                    bindings: Box::new(composed_bindings),
+                                    bindings: std::sync::Arc::new(composed_bindings),
                                     env: result_env,
                                     depth,
                                     is_tail_call: true,
@@ -5062,11 +5524,18 @@ fn process_continuation<C: EvalContext>(
                         });
                     } else {
                         // ── Sequential path: process bodies one at a time ──
-                        // Use ProcessAmb continuation to evaluate instantiated bodies
-                        // sequentially and merge their results. This avoids re-pattern-
-                        // matching since bodies are already instantiated.
-                        let mut bodies_iter = instantiated_bodies.into_iter();
-                        let first_body = bodies_iter.next().expect("bodies is non-empty");
+                        // Use ProcessAmb continuation to evaluate instantiated
+                        // bodies sequentially and merge their results. Bodies
+                        // are already fully instantiated (no per-body bindings
+                        // to attach), so wrap each with empty bindings.
+                        let mut bodies_iter = instantiated_bodies
+                            .into_iter()
+                            .map(bv)
+                            .collect::<Vec<_>>()
+                            .into_iter();
+                        let (first_body, _first_b) = bodies_iter
+                            .next()
+                            .expect("bodies is non-empty");
 
                         continuations.push(Continuation::ProcessAmb {
                             remaining_alts: bodies_iter,
@@ -5145,7 +5614,7 @@ fn process_continuation<C: EvalContext>(
                                         let composed = ob.compose(&bindings);
                                         work_stack.push(WorkItem::EvalWithBindings {
                                             template: body,
-                                            bindings: Box::new(composed),
+                                            bindings: std::sync::Arc::new(composed),
                                             env: result_env,
                                             depth,
                                             is_tail_call: true,
@@ -5372,7 +5841,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: false,
                                 expected_type: None,
                                 demand: None,
-                                carrying_bindings: Box::new(combo_carrying),
+                                carrying_bindings: std::sync::Arc::new(combo_carrying),
                             });
                         }
                     } else {
@@ -5425,7 +5894,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: Box::new(first_carrying),
+                            carrying_bindings: std::sync::Arc::new(first_carrying),
                         });
                     }
                 }
@@ -5441,17 +5910,10 @@ fn process_continuation<C: EvalContext>(
             outer_carrying,
         } => {
             let (result_values, result_env) = result;
-            if std::env::var("MTN_DEBUG_CAR").is_ok() {
-                eprintln!("[CAR] received {} results, remaining={}, accumulated results={}",
-                    result_values.len(), remaining.len(), results.len());
-            }
             results.extend(result_values);
 
             if remaining.len() == 0 {
                 // All combinations evaluated — resume parent with collected results
-                if std::env::var("MTN_DEBUG_CAR").is_ok() {
-                    eprintln!("[CAR] final: {} results", results.len());
-                }
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
 
@@ -5491,7 +5953,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: Box::new(combo_carrying),
+                    carrying_bindings: std::sync::Arc::new(combo_carrying),
                 });
             }
         }
@@ -5654,10 +6116,32 @@ fn process_continuation<C: EvalContext>(
             // Stage 1d MERGE: the child's bindings (from inner rule dispatches)
             // are merged into acc_bindings; on conflict, emit zero results
             // (the fold branch is inconsistent).
-            let (accumulator, new_acc_bindings) = if result_values.is_empty() {
-                (ctx.factory().unit(), (*acc_bindings).clone())
-            } else {
+            // HE-parity: when an iteration produces zero results (a failed
+            // rule application in the operation body), fail the entire fold
+            // — don't continue folding with `Unit` as a synthetic accumulator
+            // value, because that would propagate a spurious placeholder into
+            // the final result. Similarly, if the iteration produced an
+            // `Empty` literal as its reduction result, treat it as a failed
+            // branch.
+            if result_values.is_empty() {
+                work_stack.push(WorkItem::Resume {
+                    result: (SmallVec::new(), result_env),
+                });
+                return;
+            }
+            let (accumulator, new_acc_bindings) = {
                 let (first_result, child_b) = result_values.swap_remove(0);
+
+                // Fail-fast: an iteration that reduced to `Empty` signals a
+                // failed rule application (see sexpr.rs "no rules matched"
+                // path). Propagating Empty through the fold would turn
+                // `Truth_ModusPonens acc Empty` into a literal bogus result.
+                if first_result.is_empty() {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                    return;
+                }
 
                 // Check for error propagation (bindings come along too)
                 if first_result.is_error() {
@@ -5667,16 +6151,23 @@ fn process_continuation<C: EvalContext>(
                     return;
                 }
 
-                // MERGE child bindings into accumulator bindings.
-                let mut merged = (*acc_bindings).clone();
-                if !merged.merge(&child_b) {
-                    // Conflict — drop the fold branch (zero results).
-                    work_stack.push(WorkItem::Resume {
-                        result: (SmallVec::new(), result_env),
-                    });
-                    return;
-                }
-                (first_result, merged)
+                // COMPOSE child bindings with accumulator bindings. Uses
+                // compose_outer_inner_generic (not plain merge) so that
+                // variable-aliases like `$__fr_4_a → $who` from acc compose
+                // with inner `$__fr_4_a → a` to yield `$who → a` via chain
+                // resolution. Plain merge would reject the conflict and
+                // drop $who=a, breaking binding propagation in PLN's
+                // foldl-based rule bodies.
+                let mut composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                    &*acc_bindings,
+                    &child_b,
+                    ctx.factory(),
+                );
+                crate::backend::eval::bindings::apply_chain_generic(
+                    &mut composed,
+                    ctx.factory(),
+                );
+                (first_result, composed)
             };
 
             if remaining_elements.len() == 0 {
@@ -5698,7 +6189,7 @@ fn process_continuation<C: EvalContext>(
                 );
 
                 // Update acc_bindings for the next iteration.
-                *acc_bindings = new_acc_bindings;
+                acc_bindings = std::sync::Arc::new(new_acc_bindings);
                 let acc_bindings_for_eval = acc_bindings.clone();
                 continuations.push(Continuation::ProcessFoldlAtom {
                     remaining_elements,
@@ -5710,15 +6201,35 @@ fn process_continuation<C: EvalContext>(
                     acc_bindings,
                 });
 
-                work_stack.push(WorkItem::Eval {
-                    value: instantiated,
-                    env: result_env,
-                    depth,
-                    is_tail_call: false,
-                    expected_type: None,
-                    demand: None,
-                    carrying_bindings: acc_bindings_for_eval,
-                });
+                // HE parity: when acc_bindings is non-empty, dispatch via
+                // EvalWithBindings so the inner rule-match path consults
+                // the accumulated bindings during unification. Plain `Eval`
+                // → `try_match_all_rules` ignores carrying_bindings at the
+                // rule-match step, so a shared variable (e.g. `$b` in
+                // `((father a $b) (father $b c))`) that's bound in iteration 1
+                // would be re-bound locally in iteration 2, producing a
+                // Cartesian product of inconsistent branches.
+                if acc_bindings_for_eval.is_empty() {
+                    work_stack.push(WorkItem::Eval {
+                        value: instantiated,
+                        env: result_env,
+                        depth,
+                        is_tail_call: false,
+                        expected_type: None,
+                        demand: None,
+                        carrying_bindings: acc_bindings_for_eval,
+                    });
+                } else {
+                    work_stack.push(WorkItem::EvalWithBindings {
+                        template: instantiated,
+                        bindings: acc_bindings_for_eval.clone(),
+                        env: result_env,
+                        depth,
+                        is_tail_call: false,
+                        expected_type: None,
+                        carrying_bindings: acc_bindings_for_eval,
+                    });
+                }
             }
         }
 
@@ -5900,7 +6411,23 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (cond_results, env_after_cond) = result;
 
-            if let Some((first, _b)) = cond_results.first() {
+            if let Some((first, first_b)) = cond_results.first() {
+                // Compose the condition's per-branch bindings with the
+                // ambient outer_carrying so the taken branch inherits the
+                // bindings that condition evaluation produced (HE-faithful).
+                let branch_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if first_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(first_b.clone())
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying,
+                            first_b,
+                            ctx.factory(),
+                        ))
+                    };
+
                 // Trace: condition-result phase
                 #[cfg(feature = "eval-trace")]
                 {
@@ -5981,7 +6508,7 @@ fn process_continuation<C: EvalContext>(
                                 depth,
                                 is_tail_call: true,
                                 expected_type: None,
-                                carrying_bindings: outer_carrying.clone(),
+                                carrying_bindings: branch_carrying,
                             });
                         } else {
                             work_stack.push(WorkItem::Eval {
@@ -5991,7 +6518,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
-                                carrying_bindings: outer_carrying.clone(),
+                                carrying_bindings: branch_carrying,
                             });
                         }
                     } else {
@@ -6002,7 +6529,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: branch_carrying,
                         });
                     }
                 } else {
@@ -6146,7 +6673,7 @@ fn process_continuation<C: EvalContext>(
                 cases,
                 env: atom_env.clone(),
                 depth,
-                current_raw_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                current_raw_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
                 outer_carrying: outer_carrying.clone(),
             });
 
@@ -6297,7 +6824,7 @@ fn process_continuation<C: EvalContext>(
                     cases,
                     env: eval_env.clone(),
                     depth,
-                    current_raw_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                    current_raw_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
                     outer_carrying: outer_carrying.clone(),
                 });
 
@@ -6453,10 +6980,24 @@ fn process_continuation<C: EvalContext>(
                 // Single result - evaluate it (TCO)
                 // Unwrap Quoted values: (eval (quote X)) → evaluate X.
                 // Quoted is self-evaluating, so without this unwrap we'd loop.
-                let (mut value, _b) = eval_results.into_iter().next().unwrap();
+                // Compose outer_carrying with this alt's per-branch bindings
+                // so the re-evaluation inherits the alt's binding context.
+                let (mut value, alt_b) = eval_results.into_iter().next().unwrap();
                 if let Some(inner) = value.as_quoted() {
                     value = inner;
                 }
+                let alt_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if alt_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(alt_b)
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying,
+                            &alt_b,
+                            ctx.factory(),
+                        ))
+                    };
                 work_stack.push(WorkItem::Eval {
                     value,
                     env: result_env,
@@ -6464,16 +7005,23 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: true,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: alt_carrying,
                 });
             } else {
-                // Multiple results - evaluate each (unwrap Quoted values)
-                let results_vec: Vec<_> = eval_results.into_iter().map(|(v, _)| {
-                    if let Some(inner) = v.as_quoted() { inner } else { v }
-                }).collect();
+                // Multiple results - fan out via ProcessAmb with per-alt bindings.
+                // Each alternative carries its own `b` so downstream
+                // evaluation inherits the alt's binding context (HE-faithful).
+                // Unwrap Quoted values while preserving bindings.
+                let results_vec: Vec<BoundValue> = eval_results
+                    .into_iter()
+                    .map(|(v, b)| {
+                        let unwrapped = if let Some(inner) = v.as_quoted() { inner } else { v };
+                        (unwrapped, b)
+                    })
+                    .collect();
                 let mut results_iter = results_vec.into_iter();
-                let amb_capacity = results_iter.len(); // total before consuming first
-                let first = results_iter.next().unwrap();
+                let amb_capacity = results_iter.len();
+                let (first_val, first_b) = results_iter.next().unwrap();
 
                 continuations.push(Continuation::ProcessAmb {
                     remaining_alts: results_iter,
@@ -6483,14 +7031,27 @@ fn process_continuation<C: EvalContext>(
                     outer_carrying: outer_carrying.clone(),
                 });
 
+                let first_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if first_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(first_b)
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying,
+                            &first_b,
+                            ctx.factory(),
+                        ))
+                    };
+
                 work_stack.push(WorkItem::Eval {
-                    value: first,
+                    value: first_val,
                     env: result_env,
                     depth,
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: first_carrying,
                 });
             }
         }
@@ -6560,12 +7121,35 @@ fn process_continuation<C: EvalContext>(
                     result: (SmallVec::new(), result_env),
                 });
             } else if expr_results.len() == 1 {
-                // Single result - substitute and evaluate body
+                // Single result - substitute and evaluate body with this
+                // alt's bindings composed into both ob (deferred) AND
+                // carrying_bindings (ambient for downstream rule matching).
+                let (first_val, first_b) = expr_results.into_iter().next().unwrap();
                 let var_name = var.as_atom().unwrap_or("");
-                // Phase C: Compose chain variable binding with outer_bindings
-                // and defer materialization via EvalWithBindings.
+                let alt_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if first_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(first_b.clone())
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying,
+                            &first_b,
+                            ctx.factory(),
+                        ))
+                    };
                 if let Some(mut ob) = outer_bindings {
-                    ob.insert(var_name, expr_results[0].0.clone());
+                    // Merge alt_b into ob so body-eval resolves alt-bound vars.
+                    // Layer C: `ob` is `SharedBindings` (Arc). Use `Arc::make_mut`
+                    // to gain mutable access — single-owner path is O(1) in-place,
+                    // shared path clones once (no worse than the old Box pattern).
+                    {
+                        let ob_mut = std::sync::Arc::make_mut(&mut ob);
+                        for (k, v) in first_b.iter() {
+                            ob_mut.insert(k, v.clone());
+                        }
+                        ob_mut.insert(var_name, first_val.clone());
+                    }
                     if body.has_variables_fast() {
                         work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
@@ -6574,7 +7158,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call: true,
                             expected_type: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: alt_carrying,
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -6584,14 +7168,14 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: alt_carrying,
                         });
                     }
                 } else {
                     let instantiated = substitute_variable_generic(
                         &body,
                         var_name,
-                        &expr_results[0].0,
+                        &first_val,
                         ctx.factory(),
                     );
                     work_stack.push(WorkItem::Eval {
@@ -6601,14 +7185,18 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: outer_carrying.clone(),
+                        carrying_bindings: alt_carrying,
                     });
                 }
             } else {
-                // Multiple results - chain evaluates each
-                let mut remaining_values = expr_results.into_iter().map(|(v, _)| v).collect::<Vec<_>>().into_iter();
-                let chain_capacity = remaining_values.len(); // total before consuming first
-                let first = remaining_values.next().unwrap();
+                // Multiple results - chain evaluates each alt with its own
+                // per-branch bindings composed into ob/carrying_bindings.
+                let chain_capacity = expr_results.len();
+                let mut remaining_values = expr_results
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                let (first_val, first_b) = remaining_values.next().unwrap();
 
                 continuations.push(Continuation::ProcessChainBody {
                     remaining_values,
@@ -6621,10 +7209,27 @@ fn process_continuation<C: EvalContext>(
                     outer_carrying: outer_carrying.clone(),
                 });
 
-                // Phase C: Compose chain variable binding with outer_bindings
                 let var_name = var.as_atom().unwrap_or("");
+                let alt_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if first_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(first_b.clone())
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying,
+                            &first_b,
+                            ctx.factory(),
+                        ))
+                    };
                 if let Some(mut ob) = outer_bindings {
-                    ob.insert(var_name, first);
+                    {
+                        let ob_mut = std::sync::Arc::make_mut(&mut ob);
+                        for (k, v) in first_b.iter() {
+                            ob_mut.insert(k, v.clone());
+                        }
+                        ob_mut.insert(var_name, first_val);
+                    }
                     if body.has_variables_fast() {
                         work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
@@ -6633,7 +7238,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call: false,
                             expected_type: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: alt_carrying,
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -6643,14 +7248,14 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: alt_carrying,
                         });
                     }
                 } else {
                     let instantiated = substitute_variable_generic(
                         &body,
                         var_name,
-                        &first,
+                        &first_val,
                         ctx.factory(),
                     );
                     work_stack.push(WorkItem::Eval {
@@ -6660,7 +7265,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: outer_carrying.clone(),
+                        carrying_bindings: alt_carrying,
                     });
                 }
             }
@@ -6679,7 +7284,7 @@ fn process_continuation<C: EvalContext>(
             let (body_results, _result_env) = result;
             results.extend(body_results);
 
-            if let Some(next_value) = remaining_values.next() {
+            if let Some((next_val, next_b)) = remaining_values.next() {
                 continuations.push(Continuation::ProcessChainBody {
                     remaining_values,
                     var: var.clone(),
@@ -6691,10 +7296,27 @@ fn process_continuation<C: EvalContext>(
                     outer_carrying: outer_carrying.clone(),
                 });
 
-                // Phase C: Compose chain variable binding with outer_bindings
                 let var_name = var.as_atom().unwrap_or("");
+                let alt_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if next_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(next_b.clone())
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying,
+                            &next_b,
+                            ctx.factory(),
+                        ))
+                    };
                 if let Some(mut ob) = outer_bindings {
-                    ob.insert(var_name, next_value);
+                    {
+                        let ob_mut = std::sync::Arc::make_mut(&mut ob);
+                        for (k, v) in next_b.iter() {
+                            ob_mut.insert(k, v.clone());
+                        }
+                        ob_mut.insert(var_name, next_val);
+                    }
                     if body.has_variables_fast() {
                         work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
@@ -6703,7 +7325,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call: false,
                             expected_type: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: alt_carrying,
                         });
                     } else {
                         work_stack.push(WorkItem::Eval {
@@ -6713,14 +7335,14 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: alt_carrying,
                         });
                     }
                 } else {
                     let instantiated = substitute_variable_generic(
                         &body,
                         var_name,
-                        &next_value,
+                        &next_val,
                         ctx.factory(),
                     );
                     work_stack.push(WorkItem::Eval {
@@ -6730,7 +7352,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: outer_carrying.clone(),
+                        carrying_bindings: alt_carrying,
                     });
                 }
             } else {
@@ -7665,9 +8287,11 @@ fn process_continuation<C: EvalContext>(
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: false,
-                    current_raw_bindings: Box::new(first_raw_b),
+                    current_raw_bindings: std::sync::Arc::new(first_raw_b),
                     env: result_env.clone(),
                     depth,
+                    // Plain `collapse` discards bindings — no projection needed.
+                    tracked_vars_hint: None,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -7700,6 +8324,15 @@ fn process_continuation<C: EvalContext>(
                 });
                 return;
             }
+
+            // Layer A: extract tracked_vars from the just-popped capture frame
+            // so the sidecar encoding site can project each result's bindings
+            // to just the user-visible set (matching HE's Bindings::resolve()
+            // at the observation point). None ⇒ no projection needed.
+            let tracked_vars_for_sidecar: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>> =
+                captured_frame
+                    .as_ref()
+                    .map(|f| std::sync::Arc::new(f.tracked_vars.clone()));
 
             // Stage 1b+: per-result bindings now travel with each BoundValue
             // (expr_results[i].1), so there is nothing to extract from the
@@ -7761,13 +8394,29 @@ fn process_continuation<C: EvalContext>(
                 let (first_raw, first_raw_bindings) =
                     remaining_raw.next().expect("expr_results is non-empty");
 
+                // Stage 1e fix: pass the raw's per-branch bindings as
+                // `carrying_bindings` for the re-eval. The raw value was
+                // produced by an inner evaluation that captured bindings
+                // like `$__fr_1_a=$who` (alias) and `$who=a` (concrete);
+                // those bindings must travel alongside the value during
+                // re-evaluation so downstream handlers can resolve
+                // caller-level variables. Without this, re-eval sees an
+                // empty binding context and user-named bindings like
+                // `$who=a` never reach the sidecar encoding at line
+                // ~8407 below. Matches HE's semantics where bindings flow
+                // hierarchically through collapse-bind re-interpretation.
+                let raw_bindings_for_eval = first_raw_bindings.clone();
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
                     is_bind: true,
-                    current_raw_bindings: Box::new(first_raw_bindings),
+                    current_raw_bindings: std::sync::Arc::new(first_raw_bindings),
                     env: result_env.clone(),
                     depth,
+                    // Layer A: carry the collapse-bind's tracked vars so the
+                    // sidecar encoding projects bindings at the observation
+                    // point, not earlier during match composition.
+                    tracked_vars_hint: tracked_vars_for_sidecar,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -7777,7 +8426,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                    carrying_bindings: std::sync::Arc::new(raw_bindings_for_eval),
                 });
             }
         }
@@ -7789,6 +8438,7 @@ fn process_continuation<C: EvalContext>(
             mut current_raw_bindings,
             env: _,
             depth,
+            tracked_vars_hint,
         } => {
             let (eval_results, result_env) = result;
 
@@ -7812,7 +8462,7 @@ fn process_continuation<C: EvalContext>(
 
             if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
                 // More results to evaluate — preserve state.
-                *current_raw_bindings = next_raw_bindings;
+                current_raw_bindings = std::sync::Arc::new(next_raw_bindings);
                 let current_raw_bindings_for_eval = current_raw_bindings.clone();
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
@@ -7821,6 +8471,7 @@ fn process_continuation<C: EvalContext>(
                     current_raw_bindings,
                     env: result_env.clone(),
                     depth,
+                    tracked_vars_hint,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -7837,8 +8488,53 @@ fn process_continuation<C: EvalContext>(
                 let result_list = if is_bind {
                     // collapse-bind: wrap each result as (result (Bindings ($var val) ...))
                     // Use per-result bindings from each BoundValue.
+                    //
+                    // Filter freshened rule-body variables (keys starting with
+                    // `$__fr_`) before encoding. Freshening generates synthetic
+                    // names per rule at load time; they exist only within the
+                    // rule's own scope and leaking them as "bindings" to the
+                    // caller surprises user code (e.g. PLN's `?` macro which
+                    // destructures `(Bindings ($var val) ...)` via `let`).
+                    //
+                    // CRITICAL: apply_chain_generic FIRST to resolve alias
+                    // chains like `$__fr_77_a = $who` + `$__fr_77_a = a` into
+                    // `$who = a`. Filtering `$__fr_*` before chain resolution
+                    // would drop the alias and lose the user-level binding.
+                    // This matches HE's `bindings.resolve(&var)` semantics in
+                    // `interpreter.rs:624` where bindings are resolved before
+                    // being surfaced to user code.
                     let pairs: Vec<MettaValue> = evaluated.into_iter().map(|(result_val, bindings)| {
-                        let bindings_sexpr = encode_bindings_as_sexpr(&bindings, ctx.factory());
+                        let mut resolved = bindings.clone();
+                        crate::backend::eval::bindings::apply_chain_generic(
+                            &mut resolved, ctx.factory(),
+                        );
+                        // Layer A: project to the collapse-bind frame's
+                        // tracked variables. This is the observation point
+                        // that matches HE's `bindings.resolve(&var)` semantics
+                        // (interpreter.rs:624) — all user-named bindings
+                        // survive the evaluation pipeline, and only here do
+                        // we narrow to the set the caller actually asked for.
+                        let projected = match &tracked_vars_hint {
+                            Some(tv) => {
+                                crate::backend::eval::bindings::project_bindings_generic(
+                                    &resolved,
+                                    tv.as_slice(),
+                                )
+                            }
+                            None => resolved,
+                        };
+                        let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
+                            let mut f = crate::backend::models::GenericBindings::new();
+                            for (name, val) in projected.iter() {
+                                if !name.starts_with("$__fr_") {
+                                    f.insert_or_replace(name, val.clone());
+                                }
+                            }
+                            f
+                        } else {
+                            projected
+                        };
+                        let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
                         ctx.factory().sexpr(vec![result_val, bindings_sexpr])
                     }).collect();
                     ctx.factory().sexpr(pairs)
@@ -7880,7 +8576,7 @@ fn process_continuation<C: EvalContext>(
             let (alt_results, result_env) = result;
             results.extend(alt_results);
 
-            if let Some(next_alt) = remaining_alts.next() {
+            if let Some((next_val, alt_b)) = remaining_alts.next() {
                 // Use the ORIGINAL env for each alternative (not result_env).
                 // Parallel path gives all branches the same pre-fork env;
                 // sequential must do the same to preserve semantics.
@@ -7892,14 +8588,30 @@ fn process_continuation<C: EvalContext>(
                     outer_carrying: outer_carrying.clone(),
                 });
 
+                // Compose outer_carrying with this alt's per-branch bindings
+                // so downstream evaluation inherits the alt's binding context.
+                // Matches HE's per-plan-item `(atom, bindings)` dispatch.
+                let alt_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if alt_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(alt_b)
+                    } else {
+                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying,
+                            &alt_b,
+                            ctx.factory(),
+                        ))
+                    };
+
                 work_stack.push(WorkItem::Eval {
-                    value: next_alt,
+                    value: next_val,
                     env,
                     depth: depth + 1,
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: alt_carrying,
                 });
             } else {
                 work_stack.push(WorkItem::Resume {
@@ -9146,7 +9858,6 @@ fn process_continuation<C: EvalContext>(
                     if let Some(cached) = memo_handle.lookup_generic(&expr, ctx.factory()) {
                         work_stack.push(WorkItem::Resume {
                             result: (cached.into_iter().map(bv).collect(), env_after),
-
                         });
                     } else {
                         // Not cached - evaluate and cache result
@@ -9408,16 +10119,28 @@ fn process_continuation<C: EvalContext>(
 
             // Deterministic fast path: single result → pattern match + accumulate
             if result_values.len() == 1 {
-                let (value, _) = &result_values[0];
+                // HE parity: compose the per-branch bindings from the value
+                // expression's rule-match into `accumulated_bindings` so
+                // subsequent pairs and the body see variables bound by the
+                // value expression (e.g. `$b` in `(father b $b)` ↔ `(father b c)`
+                // binds `$b=c`, which must be visible to later `(father $b c)`).
+                let (value, per_branch_bindings) = &result_values[0];
+                accumulated_bindings = std::sync::Arc::new(
+                    accumulated_bindings.compose(per_branch_bindings),
+                );
 
                 if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                     // Compose pattern-match bindings into accumulated
-                    accumulated_bindings = Box::new(accumulated_bindings.compose(&pm_bindings));
+                    accumulated_bindings = std::sync::Arc::new(accumulated_bindings.compose(&pm_bindings));
 
                     if remaining_pairs.is_empty() {
                         // I-5: Exit region — let* scope complete
                         crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
-                        // All bindings resolved — evaluate body with composed bindings
+                        // All bindings resolved — evaluate body with composed bindings.
+                        // Also carry them as ambient `carrying_bindings` so nested
+                        // chain/let/rule-match handlers can resolve variables bound
+                        // in this let* chain.
+                        let ambient = accumulated_bindings.clone();
                         work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
                             bindings: accumulated_bindings,
@@ -9425,7 +10148,7 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             is_tail_call,
                             expected_type: None,
-                            carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                            carrying_bindings: ambient,
                         });
                     } else {
                         // More pairs to process — pop next pair
@@ -9434,6 +10157,7 @@ fn process_continuation<C: EvalContext>(
                             &next_value_expr, &accumulated_bindings, ctx.factory(),
                         );
 
+                        let ambient = accumulated_bindings.clone();
                         continuations.push(Continuation::ProcessLetStar {
                             current_pattern: next_pattern,
                             remaining_pairs,
@@ -9445,6 +10169,10 @@ fn process_continuation<C: EvalContext>(
                             region_id, // I-5: propagate region through let* chain
                         });
 
+                        // Carry accumulated bindings into the next value expr's
+                        // evaluation so rules that reference let*-bound variables
+                        // (e.g. `(father $b c)` where $b was bound earlier)
+                        // unify against the already-bound variable, not a free one.
                         work_stack.push(WorkItem::Eval {
                             value: materialized_value,
                             env: result_env,
@@ -9452,7 +10180,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: false,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                            carrying_bindings: ambient,
                         });
                     }
                 } else {
@@ -9485,13 +10213,21 @@ fn process_continuation<C: EvalContext>(
                     ]);
                 }
 
-                // For each result value, pattern-match and evaluate the rest
-                let mut bound_bodies: Vec<MettaValue> = Vec::new();
-                for (value, _) in result_values.iter() {
+                // For each result value, pattern-match and evaluate the rest.
+                // HE parity: compose the per-branch rule-match bindings into
+                // the pattern-match bindings so variables bound by the value
+                // expression propagate through into subsequent iterations and
+                // the body (e.g. `$b=c` from `(father b $b) ↔ (father b c)`).
+                // Keep both the materialized body AND its composed bindings
+                // (as `carrying_bindings`) so downstream rule-matches can see
+                // the bound variable, not just its textual substitution.
+                let mut bound_bodies: Vec<(MettaValue, crate::backend::eval::trampoline::types::SharedBindings)> = Vec::new();
+                for (value, per_branch) in result_values.iter() {
                     if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
-                        let composed = accumulated_bindings.compose(&pm_bindings);
+                        let with_branch = accumulated_bindings.compose(per_branch);
+                        let composed = with_branch.compose(&pm_bindings);
                         let materialized = apply_bindings(&let_body, &composed, ctx.factory());
-                        bound_bodies.push(materialized);
+                        bound_bodies.push((materialized, std::sync::Arc::new(composed)));
                     }
                 }
 
@@ -9500,21 +10236,31 @@ fn process_continuation<C: EvalContext>(
                         result: (SmallVec::new(), result_env),
                     });
                 } else if bound_bodies.len() == 1 {
+                    let (materialized, ambient) = bound_bodies
+                        .into_iter()
+                        .next()
+                        .expect("len == 1");
                     work_stack.push(WorkItem::Eval {
-                        value: bound_bodies.into_iter().next().expect("len == 1"),
+                        value: materialized,
                         env: result_env,
                         depth,
                         is_tail_call,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                        carrying_bindings: ambient,
                     });
                 } else {
-                    let mut bodies_iter = bound_bodies.into_iter();
-                    let first = bodies_iter.next().expect("bodies non-empty");
+                    // Nondeterministic: fan out via ProcessAmb. Each alt carries
+                    // its own composed (accumulated ∘ per_branch ∘ pm) bindings
+                    // so the body's rule-matching sees the bound variables.
+                    let mut iter = bound_bodies.into_iter();
+                    let (first_val, first_ambient) = iter.next().expect("bodies non-empty");
+                    let rest: Vec<BoundValue> = iter
+                        .map(|(v, b)| (v, (*b).clone()))
+                        .collect();
 
                     continuations.push(Continuation::ProcessAmb {
-                        remaining_alts: bodies_iter,
+                        remaining_alts: rest.into_iter(),
                         results: Vec::new(),
                         env: result_env.clone(),
                         depth,
@@ -9522,13 +10268,13 @@ fn process_continuation<C: EvalContext>(
                     });
 
                     work_stack.push(WorkItem::Eval {
-                        value: first,
+                        value: first_val,
                         env: result_env,
                         depth: depth + 1,
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: Box::new(crate::backend::models::GenericBindings::new()),
+                        carrying_bindings: first_ambient,
                     });
                 }
             }
@@ -9605,6 +10351,232 @@ fn process_continuation<C: EvalContext>(
             work_stack.push(WorkItem::Resume {
                 result: (result_values, result_env),
             });
+        }
+
+        Continuation::CollectFreezeArgs {
+            mut args,
+            reducible_indices,
+            current_idx,
+            mut evaluated_results,
+            env: _,
+            depth,
+            outer_carrying,
+        } => {
+            let (result_values, result_env) = result;
+
+            evaluated_results.push(if result_values.is_empty() {
+                vec![]
+            } else {
+                result_values.into_vec()
+            });
+
+            let next_idx = current_idx + 1;
+            if next_idx < reducible_indices.len() {
+                let arg_idx = reducible_indices[next_idx];
+                let arg_to_eval = args[arg_idx].clone();
+
+                continuations.push(Continuation::CollectFreezeArgs {
+                    args,
+                    reducible_indices,
+                    current_idx: next_idx,
+                    evaluated_results,
+                    env: result_env.clone(),
+                    depth,
+                    outer_carrying: outer_carrying.clone(),
+                });
+
+                work_stack.push(WorkItem::Eval {
+                    value: arg_to_eval,
+                    env: result_env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                    demand: None,
+                    carrying_bindings: outer_carrying.clone(),
+                });
+            } else {
+                // All args evaluated. Build frozen tuples.
+                if evaluated_results.iter().any(|r| r.is_empty()) {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                } else {
+                    // Install single-result args directly.
+                    for (i, idx) in reducible_indices.iter().enumerate() {
+                        if evaluated_results[i].len() == 1 {
+                            args[*idx] = evaluated_results[i][0].0.clone();
+                        }
+                    }
+
+                    let all_single = evaluated_results.iter().all(|r| r.len() == 1);
+                    if all_single {
+                        let tuple = ctx.factory().sexpr(args);
+                        memoize_normal_form(&tuple);
+                        let cb = &*outer_carrying;
+                        work_stack.push(WorkItem::Resume {
+                            result: (smallvec![if cb.is_empty() { bv(tuple) } else { bv_with(tuple, cb.clone()) }], result_env),
+                        });
+                    } else {
+                        // Cartesian product for nondeterministic args.
+                        let mut sealed_results: SmallVec<[BoundValue; 2]> = SmallVec::new();
+                        let mut combo_indices = vec![0usize; evaluated_results.len()];
+                        loop {
+                            let mut combo_args = args.clone();
+                            for (i, idx) in reducible_indices.iter().enumerate() {
+                                combo_args[*idx] = evaluated_results[i][combo_indices[i]].0.clone();
+                            }
+                            let tuple = ctx.factory().sexpr(combo_args);
+                            memoize_normal_form(&tuple);
+                            let cb = &*outer_carrying;
+                            sealed_results.push(if cb.is_empty() { bv(tuple) } else { bv_with(tuple, cb.clone()) });
+
+                            let mut carry = true;
+                            for i in (0..combo_indices.len()).rev() {
+                                if carry {
+                                    combo_indices[i] += 1;
+                                    if combo_indices[i] < evaluated_results[i].len() {
+                                        carry = false;
+                                    } else {
+                                        combo_indices[i] = 0;
+                                    }
+                                }
+                            }
+                            if carry { break; }
+                        }
+                        work_stack.push(WorkItem::Resume {
+                            result: (sealed_results, result_env),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Eval-trace binding-flow instrumentation (v5) — post-match emission.
+    // Inspect the work item pushed by the handler:
+    //   - WorkItem::Resume → emit ContinuationEmit (+ BindingsDropped on
+    //     strict-subset key-union loss).
+    //   - Anything else    → emit ContinuationExitNoResume with exit_kind.
+    //   - Nothing pushed   → terminal arm (e.g., Done). Emit
+    //     ContinuationExitNoResume with exit_kind="done".
+    #[cfg(feature = "eval-trace")]
+    if let Some((cont_kind, flow_id, cont_depth, inputs, before_len)) = trace_ctx {
+        if let Some(tc) = ctx.trace_collector() {
+            let pushed = if work_stack.len() > before_len {
+                work_stack.last()
+            } else {
+                None
+            };
+            match pushed {
+                Some(WorkItem::Resume { result: (outputs, _) }) => {
+                    let site = format!("eval_loop:{}", line!());
+                    let output_snaps =
+                        crate::backend::trace::convert::trace_bound_values(outputs);
+
+                    // Compute key-union diff.
+                    let mut input_keys = std::collections::BTreeSet::<String>::new();
+                    for bv in inputs.iter() {
+                        for (k, _) in bv.bindings.iter() {
+                            input_keys.insert(k.clone());
+                        }
+                    }
+                    let mut output_keys = std::collections::BTreeSet::<String>::new();
+                    for bv in output_snaps.iter() {
+                        for (k, _) in bv.bindings.iter() {
+                            output_keys.insert(k.clone());
+                        }
+                    }
+                    let dropped_keys: Vec<String> = input_keys
+                        .difference(&output_keys)
+                        .cloned()
+                        .collect();
+
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        cont_depth,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::ContinuationEmit {
+                            cont_kind: cont_kind.clone(),
+                            flow_id,
+                            site: site.clone(),
+                            outputs: output_snaps,
+                        },
+                    );
+
+                    if !dropped_keys.is_empty() {
+                        // Collect sample (key,val) pairs for debugging.
+                        let mut sample: Vec<(String, trace_format::TraceValue)> =
+                            Vec::with_capacity(dropped_keys.len());
+                        for bv in inputs.iter() {
+                            for (k, v) in bv.bindings.iter() {
+                                if dropped_keys.contains(k)
+                                    && !sample.iter().any(|(sk, _)| sk == k)
+                                {
+                                    sample.push((k.clone(), v.clone()));
+                                }
+                            }
+                        }
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            cont_depth,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::BindingsDropped {
+                                cont_kind,
+                                flow_id,
+                                site,
+                                dropped_keys,
+                                sample,
+                            },
+                        );
+                    }
+                }
+                Some(WorkItem::Eval { .. }) => {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        cont_depth,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::ContinuationExitNoResume {
+                            cont_kind,
+                            flow_id,
+                            exit_kind: "eval".to_string(),
+                        },
+                    );
+                }
+                Some(WorkItem::EvalWithBindings { .. }) => {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        cont_depth,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::ContinuationExitNoResume {
+                            cont_kind,
+                            flow_id,
+                            exit_kind: "eval-with-bindings".to_string(),
+                        },
+                    );
+                }
+                _ => {
+                    tc.emit_converted(
+                        trace_format::TraceTier::TreeWalker,
+                        cont_depth,
+                        trace_format::TraceValue::Unit,
+                        vec![],
+                        None,
+                        trace_format::TraceEventKind::ContinuationExitNoResume {
+                            cont_kind,
+                            flow_id,
+                            exit_kind: "done".to_string(),
+                        },
+                    );
+                }
+            }
         }
     }
 }

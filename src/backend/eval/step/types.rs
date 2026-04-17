@@ -589,6 +589,22 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         /// Evaluation depth
         depth: usize,
     },
+
+    /// Start freeze-tuple: evaluate all arguments, construct a tuple from
+    /// results, and mark it as normal form so the trampoline's fixpoint
+    /// loop won't reduce it further. Fills a gap in MeTTa semantics:
+    /// S-expressions with reducible heads (e.g. `((grandfather a c) stv)`)
+    /// get further reduced, but `freeze-tuple` prevents that.
+    StartFreezeTuple {
+        /// Arguments (already stripped of the "freeze-tuple" head)
+        args: Vec<V>,
+        /// Indices within `args` that need evaluation
+        reducible_indices: Vec<usize>,
+        /// Environment
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
 }
 
 

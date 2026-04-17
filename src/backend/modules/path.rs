@@ -149,28 +149,69 @@ pub fn library_paths_snapshot() -> Vec<PathBuf> {
 /// candidate path exists. Callers should produce an error MettaValue on
 /// `None` (graceful failure, never panic).
 pub fn resolve_library_form(items: &[MettaValue]) -> Option<PathBuf> {
+    resolve_library_form_with_importer(items, None)
+}
+
+/// Resolve `(library …)` with an optional importing-file directory that
+/// takes priority over registered `library_paths`. This is the path used
+/// by the `import!` implementation: the directory of the `.metta` file
+/// doing the import becomes the primary search root, so libraries
+/// alongside the importer resolve without relying on external config,
+/// `repos/` auto-registration, or symlinked trees.
+pub fn resolve_library_form_with_importer(
+    items: &[MettaValue],
+    importer_dir: Option<&Path>,
+) -> Option<PathBuf> {
     let head = items.first()?.as_atom()?;
     if head != "library" {
         return None;
     }
 
-    let paths = library_paths_snapshot();
+    let registered = library_paths_snapshot();
+
+    // Assemble the search list. Importer-relative resolution is the
+    // primary "project root of the importing file" semantics: we walk
+    // upward from the importing file's directory, adding each ancestor
+    // as a search base, so layouts like
+    //   <project>/examples/Direct.metta + <project>/lib_pln.metta
+    // resolve without relying on external config, `repos/` auto-register,
+    // or symlinks. Walk cap: 16 levels — enough for any reasonable
+    // project depth, bounded so we don't walk to / in pathological cases.
+    let mut bases: Vec<PathBuf> = Vec::new();
+    if let Some(d) = importer_dir {
+        let mut cur: Option<&Path> = Some(d);
+        let mut hops = 0;
+        while let Some(p) = cur {
+            bases.push(p.to_path_buf());
+            hops += 1;
+            if hops >= 16 {
+                break;
+            }
+            cur = p.parent();
+        }
+    }
+    bases.extend(registered.into_iter());
 
     match items.len() {
         2 => {
-            // (library X) → <lib_root>/X.metta
+            // (library X) → <base>/X.metta
             let name = items[1].as_atom()?;
             let filename = if name.ends_with(".metta") {
                 name.to_string()
             } else {
                 format!("{}.metta", name)
             };
-            paths.iter()
+            bases.iter()
                 .map(|base| base.join(&filename))
                 .find(|p| p.exists())
         }
         3 => {
-            // (library X Y) → <lib_root>/../X/Y.metta
+            // (library X Y) → <base>/X/Y.metta (importer-relative) OR
+            //                 <base>/../X/Y.metta (sibling-repo, PeTTa style).
+            // Try the importer-relative shape first for each base, then
+            // fall back to the sibling-repo shape. This makes layouts
+            // like `<project>/Direct.metta` + `<project>/PLN/lib_pln.metta`
+            // resolve naturally via the importer_dir base.
             let x = items[1].as_atom()?;
             let y = items[2].as_atom()?;
             let filename = if y.ends_with(".metta") {
@@ -178,7 +219,16 @@ pub fn resolve_library_form(items: &[MettaValue]) -> Option<PathBuf> {
             } else {
                 format!("{}.metta", y)
             };
-            paths.iter()
+            // First pass: <base>/X/Y.metta
+            if let Some(p) = bases
+                .iter()
+                .map(|base| base.join(x).join(&filename))
+                .find(|p| p.exists())
+            {
+                return Some(p);
+            }
+            // Second pass: <base>/../X/Y.metta (PeTTa sibling-repo shape)
+            bases.iter()
                 .map(|base| {
                     let parent = base.parent().unwrap_or(base);
                     parent.join(x).join(&filename)

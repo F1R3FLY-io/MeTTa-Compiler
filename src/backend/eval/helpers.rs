@@ -38,7 +38,7 @@ pub fn needs_special_form_redispatch(op: &str) -> bool {
         // Evaluation control
         | "eval" | "quote" | "unquote"
         // Space operations that need special handling
-        | "collapse" | "collapse-bind" | "amb" | "guard" | "ground-with-bindings"
+        | "collapse" | "collapse-bind" | "amb" | "guard" | "ground-with-bindings" | "freeze-tuple"
         // State operations
         | "new-state" | "get-state" | "change-state!"
         // I/O operations

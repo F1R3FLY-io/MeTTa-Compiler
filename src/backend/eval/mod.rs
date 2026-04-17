@@ -373,8 +373,18 @@ fn eval_inner_with_trace(
         }
     }
 
-    // Environment-aware bytecode
-    if can_compile_with_env(&value) {
+    // Environment-aware bytecode. Gate out calls whose head has a declared
+    // arrow type with meta-typed parameters: the VM eagerly evaluates args,
+    // violating HE's `interpret_function` semantics (meta-typed args must
+    // pass unevaluated). The trampoline honors declared meta-types via
+    // `find_typed_arg_indices_generic`.
+    // Environment-aware bytecode. Gate out calls whose head has a declared
+    // arrow type with meta-typed parameters: the VM eagerly evaluates args,
+    // violating HE's `interpret_function` semantics (meta-typed args must
+    // pass unevaluated). The trampoline honors declared meta-types via
+    // `find_typed_arg_indices_generic`.
+    let has_meta_typed = expression_has_declared_meta_typed_params(&value, &env);
+    if can_compile_with_env(&value) && !has_meta_typed {
         collector.emit_converted(
             trace_format::TraceTier::BytecodeVM, 0,
             crate::backend::trace::trace_value_generic(&value),
@@ -571,7 +581,20 @@ fn eval_inner(
     // mechanism), so cut semantics only work in the tree-walker trampoline.
     // For `(! (foo 1))`, we need to check `foo`'s rules, not just `!`.
     let has_cut_rules = expression_involves_cut_rules(&value, &env);
-    if compilable_with_env && !has_cut_rules {
+    // Gate: skip the bytecode path when any sub-expression's head has a
+    // declared arrow type with meta-typed parameters. The VM's eager
+    // applicative arg evaluation reduces such args, violating HE's
+    // `interpret_function` semantics (which passes meta-typed args
+    // unevaluated). The trampoline honors per-arg meta-type declarations
+    // via `find_typed_arg_indices_generic`.
+    // Gate: skip the bytecode path when any sub-expression's head has a
+    // declared arrow type with meta-typed parameters. The VM's eager
+    // applicative arg evaluation reduces such args, violating HE's
+    // `interpret_function` semantics (which passes meta-typed args
+    // unevaluated). The trampoline honors per-arg meta-type declarations
+    // via `find_typed_arg_indices_generic`.
+    let has_meta_typed = expression_has_declared_meta_typed_params(&value, &env);
+    if compilable_with_env && !has_cut_rules && !has_meta_typed {
         // Reuse compilation_state from the record_execution at line 371 —
         // same expression hash, avoids redundant DashMap lookup + hash computation.
         let compilation_state_env = &compilation_state;
@@ -650,6 +673,64 @@ fn expression_involves_cut_rules(value: &MettaValue, env: &MettaEnvironment) -> 
     }
     if let Some(items) = value.as_sexpr() {
         return items.iter().any(|item| expression_involves_cut_rules(item, env));
+    }
+    false
+}
+
+/// Gate: skip the bytecode VM path when any sub-expression's head has a
+/// declared arrow type whose parameter positions include MeTTa meta-types
+/// (`Atom`, `Expression`, `Symbol`, etc.). The bytecode VM compiles user
+/// calls with eager applicative arg evaluation (fast Cartesian-preserving
+/// path), which violates HE's `interpret_function` semantics when the head
+/// declares a meta-typed parameter — HE passes meta-typed args unevaluated.
+///
+/// The tree-walker trampoline (`find_typed_arg_indices_generic` in
+/// `eval/step/sexpr.rs`) correctly honors per-arg meta-type declarations.
+/// Routing meta-typed calls through the trampoline preserves both
+/// HE bisimilarity for declared meta-types AND the existing applicative
+/// Cartesian fanout for value-typed args.
+///
+/// Returns `true` if any call head (anywhere in the expression tree) has
+/// an explicitly declared arrow type with at least one meta-typed formal
+/// parameter. Inferred types are ignored — only user-declared `(: f (-> ...))`
+/// assertions trigger this gate, matching HE's "declared types win" rule.
+fn expression_has_declared_meta_typed_params(
+    value: &MettaValue,
+    env: &MettaEnvironment,
+) -> bool {
+    // Hot-path fast exit: if the env has ANY atoms with declared type
+    // assertions (type_bloom non-empty for any key), walk the tree. Otherwise
+    // return false immediately in O(1). mmverify declares zero type
+    // assertions, so this shortcuts every eval_inner invocation to O(1).
+    if !env.has_any_declared_types() {
+        return false;
+    }
+    expression_has_declared_meta_typed_params_recursive(value, env)
+}
+
+#[inline]
+fn expression_has_declared_meta_typed_params_recursive(
+    value: &MettaValue,
+    env: &MettaEnvironment,
+) -> bool {
+    use crate::backend::eval::step::{extract_arg_types, is_meta_type};
+
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            if env.may_have_type(head) {
+                let op_types = env.get_types_generic(head);
+                for t in &op_types {
+                    if let Some(arg_types) = extract_arg_types(t) {
+                        if arg_types.iter().any(is_meta_type) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return items.iter().any(|item|
+            expression_has_declared_meta_typed_params_recursive(item, env)
+        );
     }
     false
 }

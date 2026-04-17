@@ -139,6 +139,10 @@ fn event_name(kind: &TraceEventKind) -> String {
         TraceEventKind::SelfEvaluating { reason, .. } => format!("SelfEvaluating:{reason}"),
         TraceEventKind::ParallelDispatch { branch_count, phase, .. } => format!("ParallelDispatch({branch_count}):{phase}"),
         TraceEventKind::TrampolineStep { work_kind, iteration, .. } => format!("TrampolineStep#{iteration}:{work_kind}"),
+        TraceEventKind::ContinuationEnter { cont_kind, flow_id, .. } => format!("ContEnter#{flow_id}:{cont_kind}"),
+        TraceEventKind::ContinuationEmit { cont_kind, flow_id, .. } => format!("ContEmit#{flow_id}:{cont_kind}"),
+        TraceEventKind::ContinuationExitNoResume { cont_kind, flow_id, exit_kind } => format!("ContExit#{flow_id}:{cont_kind}:{exit_kind}"),
+        TraceEventKind::BindingsDropped { cont_kind, flow_id, dropped_keys, .. } => format!("BindingsDropped#{flow_id}:{cont_kind}:{}", dropped_keys.join(",")),
     }
 }
 
@@ -179,5 +183,8 @@ fn event_category(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::SelfEvaluating { .. } => "eval",
         TraceEventKind::ParallelDispatch { .. } => "nondeterminism",
         TraceEventKind::TrampolineStep { .. } => "eval",
+        TraceEventKind::ContinuationEnter { .. } | TraceEventKind::ContinuationEmit { .. }
+        | TraceEventKind::ContinuationExitNoResume { .. }
+        | TraceEventKind::BindingsDropped { .. } => "binding-flow",
     }
 }

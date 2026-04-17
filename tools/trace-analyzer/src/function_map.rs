@@ -348,7 +348,11 @@ pub fn classify_trace_event(kind: &TraceEventKind) -> TraceCategory {
         | TraceEventKind::TablingDecision { .. }
         | TraceEventKind::BindingsApplied { .. }
         | TraceEventKind::RuleSelected { .. }
-        | TraceEventKind::RuleMatchAttempt { .. } => TraceCategory::Other,
+        | TraceEventKind::RuleMatchAttempt { .. }
+        | TraceEventKind::ContinuationEnter { .. }
+        | TraceEventKind::ContinuationEmit { .. }
+        | TraceEventKind::ContinuationExitNoResume { .. }
+        | TraceEventKind::BindingsDropped { .. } => TraceCategory::Other,
     }
 }
 

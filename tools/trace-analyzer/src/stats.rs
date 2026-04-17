@@ -220,5 +220,9 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::SelfEvaluating { .. } => "SelfEvaluating",
         TraceEventKind::ParallelDispatch { .. } => "ParallelDispatch",
         TraceEventKind::TrampolineStep { .. } => "TrampolineStep",
+        TraceEventKind::ContinuationEnter { .. } => "ContinuationEnter",
+        TraceEventKind::ContinuationEmit { .. } => "ContinuationEmit",
+        TraceEventKind::ContinuationExitNoResume { .. } => "ContinuationExitNoResume",
+        TraceEventKind::BindingsDropped { .. } => "BindingsDropped",
     }
 }

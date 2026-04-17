@@ -1266,9 +1266,20 @@ where
                     };
                 } else if arity == 3 {
                     // PeTTa 3-arg form: (foldl-atom list init f)
-                    // Build a left-fold chain: (f (f (f init h0) h1) h2) and return
-                    // it for the trampoline to evaluate. Each (f acc elem) reduction
-                    // happens via normal applicative-order rule dispatch.
+                    //
+                    // Route through the same `StartFoldlAtom` → `ProcessFoldlAtom`
+                    // pipeline as the 5-arg form, using synthesized accumulator
+                    // and item variable names. This ensures per-iteration binding
+                    // propagation: when the function body unifies a variable
+                    // against a rule, subsequent iterations see that binding
+                    // via `acc_bindings`. The previous pre-expansion to a
+                    // nested `(f (f init h0) h1)` chain evaluated each element
+                    // independently, losing shared-variable constraints across
+                    // iterations (e.g. `((father a $b) (father $b c))` needs
+                    // `$b` consistent, but pre-expansion let each premise pick
+                    // a local `$b` — producing spurious derivations for
+                    // PLN implication rules that share variables across the
+                    // antecedent list).
                     let list_arg = &items[1];
                     let init = items[2].clone();
                     let func = items[3].clone();
@@ -1278,15 +1289,27 @@ where
                         Err(step) => return step,
                     };
 
-                    let mut acc = init;
-                    for elem in elements {
-                        // Each step: (func acc elem)
-                        acc = ctx.factory().sexpr(vec![func.clone(), acc, elem]);
-                    }
-                    // Evaluate the fold chain — PeTTa's 3-arg foldl evaluates
-                    // each step via reduce(). Returning Done would leave the
-                    // chain unevaluated (e.g., literal (Truth_Revision (Truth_Revision ...))).
-                    return GenericEvalStep::EvalIfBranch { branch: acc, env, depth };
+                    // Synthesized variable names. Use a `$__fa_` prefix
+                    // (foldl-atom) with `acc` / `item` suffixes. These are
+                    // scoped to a single StartFoldlAtom invocation so no
+                    // cross-contamination between nested folds.
+                    let acc_var_name = "$__fa_acc".to_string();
+                    let item_var_name = "$__fa_item".to_string();
+                    let operation = ctx.factory().sexpr(vec![
+                        func,
+                        ctx.factory().atom(&acc_var_name),
+                        ctx.factory().atom(&item_var_name),
+                    ]);
+
+                    return GenericEvalStep::StartFoldlAtom {
+                        elements,
+                        init,
+                        acc_var_name,
+                        item_var_name,
+                        operation,
+                        env,
+                        depth,
+                    };
                 } else {
                     let err = ctx.factory().error(
                         &format!(
@@ -1436,6 +1459,31 @@ where
                 return GenericEvalStep::Done((SmallVec::from_vec(results), env));
             }
 
+            // freeze-tuple: construct a tuple from arguments AS-IS (no
+            // evaluation) and mark it as normal form so the trampoline's
+            // fixpoint loop won't reduce it. General-purpose data constructor.
+            // Callers that want args evaluated should use chain/let first.
+            // (freeze-tuple arg1 arg2 ... argN) → (arg1 arg2 ... argN) [frozen]
+            "freeze-tuple" => {
+                if items.len() < 2 {
+                    let err = ctx.factory().error(
+                        &format!(
+                            "freeze-tuple requires at least 1 argument, got {}. \
+                             Usage: (freeze-tuple expr1 expr2 ... exprN)",
+                            items.len() - 1
+                        ),
+                        ctx.factory().sexpr(items),
+                    );
+                    return GenericEvalStep::Done((smallvec![err], env));
+                }
+                let args: Vec<_> = items[1..].iter().map(|item| {
+                    if let Some(inner) = item.as_quoted() { inner } else { item.clone() }
+                }).collect();
+                let tuple = ctx.factory().sexpr(args);
+                crate::backend::eval::trampoline::dispatch_hints::memoize_normal_form(&tuple);
+                return GenericEvalStep::Done((smallvec![tuple], env));
+            }
+
             // ground-with-bindings: apply serialized bindings to a template.
             // (ground-with-bindings template (Bindings ($var val) ...)) → grounded template.
             // Used by the ? macro to apply captured collapse-bind bindings.
@@ -1457,13 +1505,14 @@ where
                     ctx.factory(),
                 );
                 if bindings.is_empty() {
-                    // No bindings to apply — return template unchanged.
-                    return GenericEvalStep::Done((smallvec![template], env));
+                    // Return quoted to prevent chain/let from further reducing
+                    // the surface form. freeze-tuple unwraps quotes.
+                    return GenericEvalStep::Done((smallvec![ctx.factory().quote(template)], env));
                 }
                 let grounded = crate::backend::eval::trampoline::engine::apply_bindings(
                     &template, &bindings, ctx.factory(),
                 );
-                return GenericEvalStep::Done((smallvec![grounded], env));
+                return GenericEvalStep::Done((smallvec![ctx.factory().quote(grounded)], env));
             }
 
             // sort-tuple - defers iteration to trampoline.
@@ -2419,8 +2468,16 @@ where
         }
     }
 
-    // Step 4: No rules matched, no pre-eval needed — data constructor / tuple path.
-    // Evaluates sub-elements independently (MeTTa HE's `interpret_tuple` path).
+    // Step 4: No rules matched. Fall through to tuple path (HE's
+    // `interpret_tuple`). Data constructors (no rules) evaluate as tuples;
+    // function calls with no matching rule return the call unreduced.
+    //
+    // NOTE: HE's strict "failed function app → Empty" semantics is NOT
+    // applied here globally — it would regress tests that rely on data
+    // atoms being stored in the space with the same head as rules (e.g.,
+    // `(number 42)` as space atoms alongside `(number ...)` rules).
+    // PLN's fail-fast behavior is achieved per-call via `ProcessFoldlAtom`'s
+    // Empty-value check (eval_loop.rs Continuation::ProcessFoldlAtom).
     GenericEvalStep::EvalSExpr { items, env, depth }
 }
 

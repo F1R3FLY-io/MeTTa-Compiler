@@ -104,7 +104,7 @@ fn is_known_pure_head(name: &str) -> bool {
         | ":" | "get-type" | "get-metatype" | "check-type"
         | "validate-atom" | "type-cast"
         // Collection operations
-        | "collapse" | "collapse-bind" | "superpose" | "amb" | "ground-with-bindings"
+        | "collapse" | "collapse-bind" | "superpose" | "amb" | "ground-with-bindings" | "freeze-tuple"
         | "map-atom" | "filter-atom" | "foldl-atom" | "sort-tuple"
         | "best-candidate"
         // Error handling

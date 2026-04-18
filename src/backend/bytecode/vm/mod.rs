@@ -58,7 +58,7 @@ pub use types::{VmConfig, VmError, VmResult};
 // Generic types
 pub use types::{
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
-    GenericCollapseFrame, TrailEntry,
+    GenericCollapseFrame, TrailEntry, VmBoundValue,
     Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseFrame,
 };
 
@@ -2483,8 +2483,14 @@ where
 
         let mut results = Vec::with_capacity(items.len());
         for item in items {
-            let result =
-                self.execute_generic_template_with_binding(Arc::clone(&template_chunk), item.clone())?;
+            // Phase 1b-B: discard template bindings here. Phase 1b-D will
+            // thread them correctly; for now the existing behavior is
+            // preserved.
+            let (result, _tmpl_bindings) = self
+                .execute_generic_template_with_binding(
+                    Arc::clone(&template_chunk),
+                    item.clone(),
+                )?;
             results.push(result);
         }
 
@@ -2511,7 +2517,10 @@ where
 
         let mut results = Vec::new();
         for item in items {
-            let result = self.execute_generic_template_with_binding(
+            // Phase 1b-B: discard predicate bindings here. Phase 1b-D will
+            // thread them so predicate-match bindings propagate to the
+            // filtered item.
+            let (result, _pred_bindings) = self.execute_generic_template_with_binding(
                 Arc::clone(&predicate_chunk),
                 item.clone(),
             )?;
@@ -2545,7 +2554,12 @@ where
 
         let mut acc = init;
         for item in items {
-            acc = self.execute_generic_foldl_template(Arc::clone(&op_chunk), acc, item.clone())?;
+            // Phase 1b-B: discard fold-step bindings here. Phase 1b-C will
+            // thread them per iteration so shared-variable premise lists
+            // unify correctly across iterations.
+            let (new_acc, _step_bindings) =
+                self.execute_generic_foldl_template(Arc::clone(&op_chunk), acc, item.clone())?;
+            acc = new_acc;
         }
 
         self.push(acc);
@@ -2556,15 +2570,27 @@ where
 
     /// Execute a template chunk with a single bound value (for map/filter).
     /// Saves and restores VM state around execution.
+    ///
+    /// Phase 1b-B: returns a `VmBoundValue<V>` — the produced value paired
+    /// with the `current_bindings` captured at the end of template execution.
+    /// Callers that don't yet plumb bindings can ignore `.1`; callers that
+    /// do (Phase 1b-C onwards) compose it into their per-iteration state.
+    ///
+    /// The caller's `current_bindings` is saved on entry and restored on
+    /// exit — the template's own bindings are returned separately.
     fn execute_generic_template_with_binding(
         &mut self,
         chunk: Arc<GenericBytecodeChunk<V>>,
         binding: V,
-    ) -> VmResult<V> {
+    ) -> VmResult<VmBoundValue<V>> {
         // Save state
         let saved_ip = self.ip;
         let saved_chunk = Arc::clone(&self.chunk);
         let saved_stack_base = self.value_stack.len();
+        // Phase 1b-B: isolate template's `current_bindings` from caller's.
+        // Template starts with empty bindings; anything it discovers is
+        // returned separately and the caller's register is restored.
+        let saved_current_bindings = std::mem::take(&mut self.current_bindings);
 
         // Setup for template execution
         self.chunk = chunk;
@@ -2590,12 +2616,21 @@ where
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
+                    let template_bindings = std::mem::replace(
+                        &mut self.current_bindings,
+                        saved_current_bindings,
+                    );
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
-                    return Ok(results.into_iter().next().unwrap_or_else(|| self.factory.unit()));
+                    let value = results
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| self.factory.unit());
+                    return Ok((value, template_bindings));
                 }
                 Err(e) => {
+                    self.current_bindings = saved_current_bindings;
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
@@ -2606,6 +2641,10 @@ where
 
         // Get result
         let result = self.pop().unwrap_or_else(|_| self.factory.unit());
+        let template_bindings = std::mem::replace(
+            &mut self.current_bindings,
+            saved_current_bindings,
+        );
 
         // Restore state
         self.ip = saved_ip;
@@ -2614,21 +2653,25 @@ where
         // Cleanup any remaining stack entries from template
         self.value_stack.truncate(saved_stack_base);
 
-        Ok(result)
+        Ok((result, template_bindings))
     }
 
     /// Execute a foldl template chunk with accumulator and item bindings.
     /// Saves and restores VM state around execution.
+    ///
+    /// Phase 1b-B: returns `VmBoundValue<V>` so the caller (Phase 1b-C
+    /// `op_foldl_atom`) can thread bindings between fold iterations.
     fn execute_generic_foldl_template(
         &mut self,
         chunk: Arc<GenericBytecodeChunk<V>>,
         acc: V,
         item: V,
-    ) -> VmResult<V> {
+    ) -> VmResult<VmBoundValue<V>> {
         // Save state
         let saved_ip = self.ip;
         let saved_chunk = Arc::clone(&self.chunk);
         let saved_stack_base = self.value_stack.len();
+        let saved_current_bindings = std::mem::take(&mut self.current_bindings);
 
         // Setup for template execution
         self.chunk = chunk;
@@ -2655,12 +2698,21 @@ where
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
+                    let template_bindings = std::mem::replace(
+                        &mut self.current_bindings,
+                        saved_current_bindings,
+                    );
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
-                    return Ok(results.into_iter().next().unwrap_or_else(|| self.factory.unit()));
+                    let value = results
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| self.factory.unit());
+                    return Ok((value, template_bindings));
                 }
                 Err(e) => {
+                    self.current_bindings = saved_current_bindings;
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
@@ -2671,13 +2723,17 @@ where
 
         // Get result
         let result = self.pop().unwrap_or_else(|_| self.factory.unit());
+        let template_bindings = std::mem::replace(
+            &mut self.current_bindings,
+            saved_current_bindings,
+        );
 
         // Restore state
         self.ip = saved_ip;
         self.chunk = saved_chunk;
         self.value_stack.truncate(saved_stack_base);
 
-        Ok(result)
+        Ok((result, template_bindings))
     }
 
     fn op_index_atom(&mut self) -> VmResult<()> {

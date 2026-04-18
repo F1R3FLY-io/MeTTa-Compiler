@@ -3123,6 +3123,7 @@ where
                 alternatives,
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
             });
             self.push(first);
         }
@@ -3166,6 +3167,7 @@ where
                 alternatives,
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
             });
             self.push(first);
         }
@@ -3307,6 +3309,10 @@ where
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
+            // Phase 1b-E3: restore VM's current_bindings to what it
+            // was when this choice point was pushed. A BoundValue alt
+            // (below) may OVERWRITE this with its per-alt bindings.
+            self.current_bindings = cp.saved_current_bindings.clone();
 
             if cp.alternatives.is_empty() {
                 // No more alternatives at this choice point — continue popping
@@ -4066,6 +4072,7 @@ where
                 alternatives: alternatives[1..].to_vec(),
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
             };
             self.choice_points.push(cp);
         }
@@ -4095,6 +4102,12 @@ where
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
+            // Phase 1b-E3: restore VM's current_bindings to what it
+            // was when this choice point was pushed. The picked
+            // alternative (below) may OVERWRITE this for BoundValue
+            // alts — that's intentional: per-alt bindings are the
+            // authoritative ambient for that alternative's branch.
+            self.current_bindings = cp.saved_current_bindings.clone();
 
             if cp.alternatives.is_empty() {
                 // No more alternatives at this choice point
@@ -4147,6 +4160,8 @@ where
                 }
                 GenericAlternative::BoundValue { value, bindings } => {
                     // Phase 1b-A: restore (value, bindings) pair together.
+                    // Phase 1b-E3: overwrites saved_current_bindings
+                    // restored above — per-alt bindings take priority.
                     self.value_stack.push(value);
                     self.current_bindings = bindings;
                 }
@@ -4293,6 +4308,7 @@ where
             alternatives,
             saved_unreduced: self.unreduced,
             trail_height: self.trail.len(),
+            saved_current_bindings: self.current_bindings.clone(),
         });
 
         // Push first alternative
@@ -4698,6 +4714,7 @@ where
                                 alternatives,
                                 saved_unreduced: self.unreduced,
                                 trail_height: self.trail.len(),
+                                saved_current_bindings: self.current_bindings.clone(),
                             });
                         }
                         self.push(first);
@@ -4941,6 +4958,7 @@ where
                     alternatives,
                     saved_unreduced: self.unreduced,
                     trail_height: self.trail.len(),
+                    saved_current_bindings: self.current_bindings.clone(),
                 });
             }
 
@@ -5454,6 +5472,7 @@ where
                 alternatives,
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
             });
             self.push(first);
         }

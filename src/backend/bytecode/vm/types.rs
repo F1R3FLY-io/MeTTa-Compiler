@@ -344,6 +344,14 @@ where
     /// choice point was created. This complements the coarse bindings_stack
     /// truncation with fine-grained undo within surviving frames.
     pub trail_height: usize,
+    /// Phase 1b-E3: saved VM `current_bindings` at the moment the
+    /// choice point was created. On backtrack, `op_fail` restores
+    /// this as the default ambient; if the picked alternative is a
+    /// `BoundValue`, that alt's bindings then OVERWRITE this default.
+    /// Without this, bindings established after the choice point was
+    /// pushed would leak into the alt-branch evaluation, violating
+    /// HE's per-alt (Stack, Bindings) semantics.
+    pub saved_current_bindings: GenericBindings<V>,
 }
 
 // ============================================================================

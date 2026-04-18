@@ -2471,6 +2471,7 @@ fn test_vm_alternative_index() {
         alternatives: vec![Alternative::Index(alt_offset)],
         saved_unreduced: false,
         trail_height: vm.trail.len(),
+        saved_current_bindings: vm.current_bindings.clone(),
     });
 
     let results = vm.run().expect("VM should succeed");

@@ -2467,7 +2467,19 @@ where
     /// Map a template chunk over each element of an S-expression.
     /// Operand: u16 chunk_idx
     /// Stack: [list] -> [mapped_list]
+    ///
+    /// Phase 1b-D (HE-bisimilarity): each item is substituted with the
+    /// VM's ambient `current_bindings` before template dispatch so
+    /// caller-scope free variables in the item expression resolve
+    /// correctly. Iterations are independent — per-item template
+    /// bindings do NOT thread across iterations (unlike `foldl-atom`),
+    /// matching HE's `metta/runner/stdlib/core.rs` `MapAtomOp`
+    /// semantics. Each iteration's template bindings are discarded
+    /// after the iteration's value is collected; only the value
+    /// flows into the mapped list.
     fn op_map_atom(&mut self) -> VmResult<()> {
+        use crate::backend::eval::bindings::apply_bindings_generic;
+
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
 
@@ -2482,14 +2494,17 @@ where
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
 
         let mut results = Vec::with_capacity(items.len());
+        let ambient = self.current_bindings.clone();
         for item in items {
-            // Phase 1b-B: discard template bindings here. Phase 1b-D will
-            // thread them correctly; for now the existing behavior is
-            // preserved.
+            let substituted_item = if ambient.is_empty() {
+                item.clone()
+            } else {
+                apply_bindings_generic(item, &ambient, &self.factory)
+            };
             let (result, _tmpl_bindings) = self
                 .execute_generic_template_with_binding(
                     Arc::clone(&template_chunk),
-                    item.clone(),
+                    substituted_item,
                 )?;
             results.push(result);
         }
@@ -2501,7 +2516,17 @@ where
     /// Filter elements of an S-expression using a predicate chunk.
     /// Operand: u16 chunk_idx
     /// Stack: [list] -> [filtered_list]
+    ///
+    /// Phase 1b-D (HE-bisimilarity): each item is substituted with the
+    /// VM's ambient `current_bindings` before predicate dispatch so
+    /// caller-scope free variables resolve correctly. Iterations are
+    /// independent. When the predicate yields `true`, the ORIGINAL
+    /// item (not substituted) is pushed to the filtered list —
+    /// matching HE's `FilterAtomOp` semantics where the filter
+    /// preserves structural identity.
     fn op_filter_atom(&mut self) -> VmResult<()> {
+        use crate::backend::eval::bindings::apply_bindings_generic;
+
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
 
@@ -2516,13 +2541,16 @@ where
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
 
         let mut results = Vec::new();
+        let ambient = self.current_bindings.clone();
         for item in items {
-            // Phase 1b-B: discard predicate bindings here. Phase 1b-D will
-            // thread them so predicate-match bindings propagate to the
-            // filtered item.
+            let substituted_item = if ambient.is_empty() {
+                item.clone()
+            } else {
+                apply_bindings_generic(item, &ambient, &self.factory)
+            };
             let (result, _pred_bindings) = self.execute_generic_template_with_binding(
                 Arc::clone(&predicate_chunk),
-                item.clone(),
+                substituted_item,
             )?;
             // Check if predicate returned true
             if result.as_bool() == Some(true) {

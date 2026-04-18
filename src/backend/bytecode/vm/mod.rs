@@ -5070,7 +5070,7 @@ where
     /// value. Otherwise the raw s-expression is preserved — structural
     /// operations see the syntactic form (e.g. `(car-atom (grandfather a b))`
     /// returns `grandfather`, never forcing a rule call on user-defined heads).
-    fn maybe_pre_eval_structural(&self, v: V) -> VmResult<V> {
+    fn maybe_pre_eval_structural(&mut self, v: V) -> VmResult<V> {
         use crate::backend::eval::{is_grounded_op, is_eager_special_form};
         use crate::backend::eval::step::should_pre_eval_by_type;
 
@@ -5164,12 +5164,32 @@ where
     /// Returns the first result from the trampoline (deterministic selection
     /// for applicative pre-evaluation). Data constructors are returned unchanged
     /// since the trampoline returns them as-is when no rules match.
+    /// Phase 1b-E: evaluate a sub-expression via the trampoline and
+    /// COMPOSE its resulting bindings into the VM's `current_bindings`.
+    /// Returns just the value. The caller composes nothing further —
+    /// subsequent operations in the same applicative pre-eval context
+    /// automatically observe the bindings established here through
+    /// `self.current_bindings`, matching HE's InterpretedAtom
+    /// per-alt (Stack, Bindings) threading.
+    ///
+    /// When no results are produced, returns the expression unchanged
+    /// (self-evaluating data constructor) and leaves `current_bindings`
+    /// unchanged.
+    ///
+    /// On genuine ground/ground conflict between the existing
+    /// `current_bindings` and the sub-expression's bindings, this
+    /// method returns `VmError::Runtime` so the VM's Fail path can
+    /// prune the inconsistent branch — HE-faithful.
     fn eval_sub_expr_vm(
-        &self,
+        &mut self,
         sub_expr: V,
         env: GenericEnvironment<V, F>,
     ) -> VmResult<V> {
+        use crate::backend::eval::bindings::{
+            apply_chain_generic, compose_outer_inner_generic,
+        };
         use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
+        use crate::backend::models::GenericBindings;
 
         // Create a lightweight EvalContext adapter for the trampoline.
         let ctx = VmEvalContext {
@@ -5199,12 +5219,53 @@ where
         // Returns (Vec<results>, final_env).
         let (results, _final_env) = eval_trampoline(metta_sub_expr.clone(), metta_env, &ctx);
 
-        if let Some((first, _b)) = results.into_iter().next() {
-            // SAFETY: V == MettaValue verified above. Transmute result back.
-            Ok(unsafe { std::ptr::read(&first as *const MettaValue as *const V) })
+        if let Some((first_metta, first_b_metta)) = results.into_iter().next() {
+            // SAFETY: V == MettaValue verified above. Transmute back.
+            let value: V = unsafe {
+                std::ptr::read(&first_metta as *const MettaValue as *const V)
+            };
+            let sub_bindings: GenericBindings<V> = unsafe {
+                std::ptr::read(
+                    &first_b_metta as *const GenericBindings<MettaValue>
+                        as *const GenericBindings<V>,
+                )
+            };
+            std::mem::forget(first_metta);
+            std::mem::forget(first_b_metta);
+
+            // Phase 1b-E: compose the sub-expression's bindings into
+            // current_bindings so subsequent arg pre-evals see this
+            // arg's ambient context.
+            if !sub_bindings.is_empty() {
+                let mut composed = compose_outer_inner_generic(
+                    &self.current_bindings,
+                    &sub_bindings,
+                    &self.factory,
+                );
+                if composed.is_empty()
+                    && !self.current_bindings.is_empty()
+                    && !sub_bindings.is_empty()
+                {
+                    // Genuine user-level binding inconsistency — the
+                    // applicative pre-eval branch is inconsistent.
+                    // Signal via Runtime error so the VM's Fail path
+                    // can prune (HE-faithful strict unification).
+                    return Err(VmError::Runtime(
+                        "eval_sub_expr_vm: ground/ground binding conflict (branch inconsistent)".to_string(),
+                    ));
+                }
+                apply_chain_generic(&mut composed, &self.factory);
+                self.current_bindings = composed;
+            }
+            Ok(value)
         } else {
-            // No results — return expression unchanged (data constructor)
-            Ok(unsafe { std::ptr::read(&metta_sub_expr as *const MettaValue as *const V) })
+            // No results — return expression unchanged (data constructor).
+            // current_bindings unchanged.
+            let value: V = unsafe {
+                std::ptr::read(&metta_sub_expr as *const MettaValue as *const V)
+            };
+            std::mem::forget(metta_sub_expr);
+            Ok(value)
         }
     }
 

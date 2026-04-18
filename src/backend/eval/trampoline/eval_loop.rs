@@ -6102,113 +6102,156 @@ fn process_continuation<C: EvalContext>(
         }
 
         Continuation::ProcessFoldlAtom {
-            mut remaining_elements,
+            remaining_elements,
             acc_var_name,
             item_var_name,
             operation,
             env: _,
             depth,
-            mut acc_bindings,
+            acc_bindings,
         } => {
             let (mut result_values, result_env) = result;
 
-            // Get the new accumulator value + bindings from the result.
-            // Stage 1d MERGE: the child's bindings (from inner rule dispatches)
-            // are merged into acc_bindings; on conflict, emit zero results
-            // (the fold branch is inconsistent).
-            // HE-parity: when an iteration produces zero results (a failed
-            // rule application in the operation body), fail the entire fold
-            // — don't continue folding with `Unit` as a synthetic accumulator
-            // value, because that would propagate a spurious placeholder into
-            // the final result. Similarly, if the iteration produced an
-            // `Empty` literal as its reduction result, treat it as a failed
-            // branch.
+            // Phase 1 (HE-bisimilar foldl-atom binding threading):
+            //
+            // HE's `foldl-atom` is a recursive user-level MeTTa definition:
+            //
+            //   (= (foldl-atom $list $init $op)
+            //      (if (== $list ())
+            //          $init
+            //          (foldl-atom (cdr-atom $list) ($op $init (car-atom $list)) $op)))
+            //
+            // When the op evaluates nondeterministically to N branches at
+            // iteration K, HE's interpreter dispatches the outer recursive
+            // `foldl-atom` call N TIMES — once per branch — with each
+            // branch's own accumulator value and bindings. Subsequent
+            // iterations therefore see each branch's per-branch bindings
+            // as their ambient context, and a premise that references a
+            // variable bound in iteration K (e.g. `(father $b c)` after
+            // `(father $a $b)` bound `$b=c`) substitutes → `(father c c)`
+            // → no rule match → that branch dies. HE's semantics naturally
+            // prune inconsistent branches via this per-branch substitution.
+            //
+            // MeTTaTron previously took `result_values.swap_remove(0)` —
+            // collapsing all N branches into the FIRST by arbitrary order,
+            // discarding the other N-1. That broke PLN's `=>` macro (and
+            // any foldl-atom over a premise list with shared variables),
+            // because spurious branches with inconsistent variable bindings
+            // could "win" depending on rule-dispatch enumeration order.
+            //
+            // Fix: fan out N branches as N independent `(foldl-atom
+            // <rest> <branch_acc> <op>)` sub-evaluations, each under its
+            // own branch_bindings. ProcessAmb collects their final results,
+            // preserving all surviving branches' outputs. This mirrors HE's
+            // natural recursive nondeterministic fanout. MeTTa's
+            // nondeterministic enumeration order is preserved — no sorts,
+            // no determinism-forcing; results are merged in whatever order
+            // ProcessAmb dispatches them.
+
+            // Fail-fast: iteration produced no results → fold fails.
             if result_values.is_empty() {
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), result_env),
                 });
                 return;
             }
-            let (accumulator, new_acc_bindings) = {
+
+            // Prune: Empty literals (failed rule applications) are dead
+            // branches; discard them. Keep error branches (they propagate).
+            result_values.retain(|(v, _)| !v.is_empty());
+
+            if result_values.is_empty() {
+                work_stack.push(WorkItem::Resume {
+                    result: (SmallVec::new(), result_env),
+                });
+                return;
+            }
+
+            // Error propagation: if any branch produced an error, bubble
+            // the first one up (matching HE's error-short-circuit on
+            // reserved Error/_erratom).
+            if let Some(err_pos) = result_values.iter().position(|(v, _)| v.is_error()) {
+                let err_bv = result_values.swap_remove(err_pos);
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![err_bv], result_env),
+                });
+                return;
+            }
+
+            // Materialize remaining_elements — we'll reuse the list across
+            // branches (each branch's sub-foldl needs its own iterator).
+            let remaining_vec: Vec<MettaValue> = remaining_elements.collect();
+            let has_more = !remaining_vec.is_empty();
+
+            if !has_more {
+                // Final iteration: every surviving branch is a final
+                // accumulator. Compose each branch's bindings with the
+                // fold's accumulated bindings (which capture previous
+                // iterations' per-branch substitutions) and emit them all.
+                let final_results: SmallVec<[BoundValue; 2]> = result_values
+                    .into_iter()
+                    .map(|(v, child_b)| {
+                        let mut composed =
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*acc_bindings, &child_b, ctx.factory(),
+                            );
+                        crate::backend::eval::bindings::apply_chain_generic(
+                            &mut composed, ctx.factory(),
+                        );
+                        (v, composed)
+                    })
+                    .collect();
+                work_stack.push(WorkItem::Resume {
+                    result: (final_results, result_env),
+                });
+                return;
+            }
+
+            if result_values.len() == 1 {
+                // Fast path: single surviving branch. Continue the fold
+                // linearly — this is the common case (most folds operate
+                // on ground-valued expressions that produce one result
+                // per iteration).
                 let (first_result, child_b) = result_values.swap_remove(0);
 
-                // Fail-fast: an iteration that reduced to `Empty` signals a
-                // failed rule application (see sexpr.rs "no rules matched"
-                // path). Propagating Empty through the fold would turn
-                // `Truth_ModusPonens acc Empty` into a literal bogus result.
-                if first_result.is_empty() {
-                    work_stack.push(WorkItem::Resume {
-                        result: (SmallVec::new(), result_env),
-                    });
-                    return;
-                }
-
-                // Check for error propagation (bindings come along too)
-                if first_result.is_error() {
-                    work_stack.push(WorkItem::Resume {
-                        result: (smallvec![(first_result, child_b)], result_env),
-                    });
-                    return;
-                }
-
-                // COMPOSE child bindings with accumulator bindings. Uses
-                // compose_outer_inner_generic (not plain merge) so that
-                // variable-aliases like `$__fr_4_a → $who` from acc compose
-                // with inner `$__fr_4_a → a` to yield `$who → a` via chain
-                // resolution. Plain merge would reject the conflict and
-                // drop $who=a, breaking binding propagation in PLN's
-                // foldl-based rule bodies.
-                let mut composed = crate::backend::eval::bindings::compose_outer_inner_generic(
-                    &*acc_bindings,
-                    &child_b,
-                    ctx.factory(),
-                );
+                // Compose child bindings with accumulator bindings.
+                let mut composed =
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*acc_bindings, &child_b, ctx.factory(),
+                    );
                 crate::backend::eval::bindings::apply_chain_generic(
-                    &mut composed,
-                    ctx.factory(),
+                    &mut composed, ctx.factory(),
                 );
-                (first_result, composed)
-            };
+                let new_acc_bindings = std::sync::Arc::new(composed);
 
-            if remaining_elements.len() == 0 {
-                // All elements processed - return final accumulator with the
-                // merged bindings accumulated across every iteration.
-                work_stack.push(WorkItem::Resume {
-                    result: (smallvec![(accumulator, new_acc_bindings)], result_env),
-                });
-            } else {
-                // More elements to process
-                let next_element = remaining_elements.next().expect("remaining_elements is non-empty");
+                let mut remaining_iter = remaining_vec.into_iter();
+                let next_element = remaining_iter
+                    .next()
+                    .expect("remaining_vec.is_empty() short-circuited above");
 
-                // Use generic substitute - NO conversion needed
                 let instantiated = substitute_variable_generic(
-                    &operation, &acc_var_name, &accumulator, ctx.factory(),
+                    &operation, &acc_var_name, &first_result, ctx.factory(),
                 );
                 let instantiated = substitute_variable_generic(
                     &instantiated, &item_var_name, &next_element, ctx.factory(),
                 );
 
-                // Update acc_bindings for the next iteration.
-                acc_bindings = std::sync::Arc::new(new_acc_bindings);
-                let acc_bindings_for_eval = acc_bindings.clone();
+                let acc_bindings_for_eval = new_acc_bindings.clone();
                 continuations.push(Continuation::ProcessFoldlAtom {
-                    remaining_elements,
+                    remaining_elements: remaining_iter,
                     acc_var_name,
                     item_var_name,
                     operation,
                     env: result_env.clone(),
                     depth,
-                    acc_bindings,
+                    acc_bindings: new_acc_bindings,
                 });
 
                 // HE parity: when acc_bindings is non-empty, dispatch via
                 // EvalWithBindings so the inner rule-match path consults
-                // the accumulated bindings during unification. Plain `Eval`
-                // → `try_match_all_rules` ignores carrying_bindings at the
-                // rule-match step, so a shared variable (e.g. `$b` in
-                // `((father a $b) (father $b c))`) that's bound in iteration 1
-                // would be re-bound locally in iteration 2, producing a
-                // Cartesian product of inconsistent branches.
+                // the accumulated bindings during unification. This lets
+                // a variable bound in iteration K influence rule matching
+                // in iteration K+1 (the core of the HE-faithful fix).
                 if acc_bindings_for_eval.is_empty() {
                     work_stack.push(WorkItem::Eval {
                         value: instantiated,
@@ -6230,7 +6273,80 @@ fn process_continuation<C: EvalContext>(
                         carrying_bindings: acc_bindings_for_eval,
                     });
                 }
+                return;
             }
+
+            // Multi-branch: iteration produced N > 1 nondeterministic
+            // results. Fan out N independent sub-folds, each continuing
+            // the fold over `remaining_vec` with its own accumulator and
+            // composed bindings. ProcessAmb sequentially dispatches each
+            // alt (preserving enumeration order without forcing it) and
+            // collects all survivors at the end.
+            //
+            // Each alt is the 5-arg foldl-atom form
+            //   (foldl-atom <remaining-list> <branch_acc> $acc $item <op>)
+            // where `op` is ProcessFoldlAtom's existing `operation` field
+            // (an already-wrapped substitution template `(func $acc $item)`).
+            // The 5-arg form routes through StartFoldlAtom → ProcessFoldlAtom,
+            // seeding acc_bindings from carrying_bindings so each sub-fold
+            // starts with its branch's accumulated state intact.
+            //
+            // We must NOT use the 3-arg form here: it would re-wrap
+            // `operation` into `(operation $__fa_acc $__fa_item)`, producing
+            // a spurious double-wrap and breaking the fold.
+            let remaining_list = ctx.factory().sexpr(remaining_vec);
+            let foldl_sym = ctx.factory().atom("foldl-atom");
+            let acc_var_atom = ctx.factory().atom(acc_var_name.as_str());
+            let item_var_atom = ctx.factory().atom(item_var_name.as_str());
+
+            let alternatives: Vec<BoundValue> = result_values
+                .into_iter()
+                .map(|(branch_acc, child_b)| {
+                    let mut composed =
+                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*acc_bindings, &child_b, ctx.factory(),
+                        );
+                    crate::backend::eval::bindings::apply_chain_generic(
+                        &mut composed, ctx.factory(),
+                    );
+                    let sub_foldl = ctx.factory().sexpr(vec![
+                        foldl_sym,
+                        remaining_list.clone(),
+                        branch_acc,
+                        acc_var_atom,
+                        item_var_atom,
+                        operation.clone(),
+                    ]);
+                    (sub_foldl, composed)
+                })
+                .collect();
+
+            let mut alts_iter = alternatives.into_iter();
+            let (first_val, first_b) =
+                alts_iter.next().expect("result_values.len() > 1");
+
+            // ProcessAmb collects each alt's results into one merged
+            // Resume. outer_carrying is empty here because each alt's
+            // bindings already subsume acc_bindings via the compose
+            // above — no need for ProcessAmb to re-compose.
+            continuations.push(Continuation::ProcessAmb {
+                remaining_alts: alts_iter.collect::<Vec<_>>().into_iter(),
+                results: Vec::new(),
+                env: result_env.clone(),
+                depth,
+                outer_carrying:
+                    crate::backend::eval::trampoline::types::empty_shared_bindings(),
+            });
+
+            work_stack.push(WorkItem::Eval {
+                value: first_val,
+                env: result_env,
+                depth: depth + 1,
+                is_tail_call: false,
+                expected_type: None,
+                demand: None,
+                carrying_bindings: std::sync::Arc::new(first_b),
+            });
         }
 
         Continuation::ProcessSortTuple {

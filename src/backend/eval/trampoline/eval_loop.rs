@@ -453,52 +453,31 @@ fn dispatch_rule_matches<C: EvalContext>(
                         outer_carrying, &bindings, ctx.factory(),
                     )
                 }
-            } else if rhs.has_variables_fast() {
-                // Variable RHS: `bindings` is handed to EvalWithBindings for
-                // template substitution. The rule-body variables ($__fr_*)
-                // resolve via that path — don't duplicate them in carrying.
-                //
-                // BUT: user-named bindings (e.g., `$who = a` from unifying a
-                // caller-level variable against a rule literal, or aliases
-                // like `$__fr_X_a = $who`) MUST propagate so enclosing
-                // handlers can resolve user variables. This matches HE's
-                // `Bindings::resolve()` semantics where aliases chain from
-                // rule-local names to user-visible ones.
-                //
-                // Filter: keep bindings whose KEY is user-named OR whose
-                // VALUE references a user-named variable (the alias case).
-                //
-                // Layer B (DEFERRED): merging this branch into the ground-RHS
-                // filter regresses Direct.metta tests 2/3 — some branch
-                // selection dynamic depends on the variable-RHS filter
-                // retaining fewer bindings. Left in place; rationale
-                // documented in plan §Phase 2.
-                let mut user_bindings = crate::backend::models::GenericBindings::new();
-                for (name, val) in bindings.iter() {
-                    let key_user = !name.starts_with("$__fr_");
-                    let val_user = val.as_atom()
-                        .map(|a| a.starts_with('$') && !a.starts_with("$__fr_"))
-                        .unwrap_or(false);
-                    if key_user || val_user {
-                        user_bindings.insert_or_replace(name, val.clone());
-                    }
-                }
-                if outer_carrying.is_empty() && user_bindings.is_empty() {
-                    crate::backend::models::GenericBindings::new()
-                } else if user_bindings.is_empty() {
-                    outer_carrying.clone()
-                } else if outer_carrying.is_empty() {
-                    user_bindings
-                } else {
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                        outer_carrying, &user_bindings, ctx.factory(),
-                    )
-                }
             } else {
-                // Ground RHS: filter freshened rule-body vars before
-                // propagating rule-match bindings. User-named variables
-                // (like `$b` from `(father b $b)`) MUST propagate so
-                // enclosing `let`/`foldl`/`chain` handlers can observe them.
+                // Phase 3 (Layer B merge): unified filter for both ground and
+                // variable RHS. Previously split on `rhs.has_variables_fast()`
+                // — the variable-RHS branch filtered `$__fr_*` keys with ground
+                // values (keeping only user-named keys or alias values). The
+                // split was a workaround for cecfcf4's prefer-outer semantics:
+                // retaining `$__fr_*` ground bindings in `rhs_carrying` would
+                // create compose conflicts that silently preserved
+                // wrong-branch values.
+                //
+                // Phase 1 (foldl-atom binding threading) + Phase 2B (strict
+                // compose on genuine ground/ground conflicts) eliminated
+                // that motivation: conflicts are now either rewrite-stage
+                // variants (compose correctly prefers the ground side) or
+                // genuine inconsistencies (compose correctly returns empty,
+                // branch dies).
+                //
+                // The remaining filter strips `$__fr_*` freshened keys from
+                // `rhs_carrying`. This is cheap housekeeping — freshened
+                // rule-body variables are scoped to the rule's own body
+                // and substituted during EvalWithBindings template
+                // materialization; they don't need to propagate as ambient
+                // context. User-named variables (e.g. `$b` bound by
+                // unification against a rule literal) DO propagate so
+                // enclosing let/chain/foldl handlers can observe them.
                 let filtered = if bindings.is_empty() {
                     crate::backend::models::GenericBindings::new()
                 } else {

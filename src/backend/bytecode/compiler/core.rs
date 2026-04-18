@@ -1124,23 +1124,48 @@ where
                 self.compile(&body).map(Some)
             }
             // `foldl-atom` PeTTa 3-arg form: (foldl-atom tuple init func)
-            // Compile-time desugar to a nested application chain when the
-            // tuple is a static literal: (foldl-atom (a b c) i f) →
-            // (f (f (f i a) b) c). For dynamic-list inputs, fall through
-            // to the existing 5-arg / tree-walker handling.
+            //
+            // Phase 1b-C (HE-bisimilarity): translate to the 5-arg form
+            // `(foldl-atom tuple init $__fa_acc $__fa_item (func $__fa_acc $__fa_item))`
+            // which routes through Opcode::FoldlAtom (compiled at
+            // iterative.rs). The previous compile-time unroll
+            // `(f (f (f i a) b) c)` is incorrect: the unrolled form
+            // evaluates each iteration's arg via the VM's applicative
+            // pre-eval, which does NOT thread bindings across arguments.
+            // Premise lists with shared free variables (e.g. PLN's
+            // `((father $a $b) (father $b $c))`) produced spurious
+            // derivations because iteration 2's `$b` re-bound
+            // independently of iteration 1's.
+            //
+            // `Opcode::FoldlAtom` (with the Phase 1b-C binding-threading
+            // fix in `op_foldl_atom`) correctly threads `acc_bindings`
+            // across iterations via `apply_bindings_generic` before each
+            // template dispatch, matching HE's recursive `foldl-atom`
+            // semantics.
             "foldl-atom" if args.len() == 3 => {
-                let init = &args[1];
-                let func = &args[2];
-                if let Some(elems) = args[0].as_sexpr() {
-                    let mut acc = init.clone();
-                    let elems_owned: Vec<_> = elems.iter().cloned().collect();
-                    for elem in elems_owned {
-                        acc = self.factory.sexpr(vec![func.clone(), acc, elem]);
-                    }
-                    return self.compile(&acc).map(Some);
-                }
-                // Dynamic list: fall through to tree-walker via no-match.
-                Ok(None)
+                let list_arg = args[0].clone();
+                let init = args[1].clone();
+                let func = args[2].clone();
+                // Synthesized var names (rule-local; no collision risk
+                // with caller-level names). Must match the convention
+                // used by sexpr.rs:1267 for tree-walker consistency.
+                let acc_var = self.factory.atom("$__fa_acc");
+                let item_var = self.factory.atom("$__fa_item");
+                let operation = self.factory.sexpr(vec![
+                    func,
+                    acc_var.clone(),
+                    item_var.clone(),
+                ]);
+                let foldl_sym = self.factory.atom("foldl-atom");
+                let five_arg = self.factory.sexpr(vec![
+                    foldl_sym,
+                    list_arg,
+                    init,
+                    acc_var,
+                    item_var,
+                    operation,
+                ]);
+                return self.compile(&five_arg).map(Some);
             }
 
             // Additional list operations (MeTTaTron extensions)

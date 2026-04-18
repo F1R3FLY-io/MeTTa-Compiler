@@ -317,6 +317,43 @@ fn release_budget(n: u32, depth: u32) {
 /// - **Sequential**: pops first match, pushes `ProcessRuleMatches` continuation
 ///   for remaining, pushes Eval for first branch's instantiated RHS.
 ///
+/// Filter bindings to those that should propagate across fold iterations.
+///
+/// **Retained**: user-level bindings (not `$__fr_` prefixed) AND any
+/// freshened bindings whose name appears as a free variable in
+/// `propagate_keys`. The latter captures outer-rule freshened vars
+/// (like `$__fr_7_b` from an enclosing rule's body) that are shared
+/// across fold iterations via the fold's item list.
+///
+/// **Filtered out**: freshened bindings whose name does NOT appear in
+/// `propagate_keys`. Those are the op's own per-invocation rule-match
+/// bindings (e.g. Truth_ModusPonens's `$__fr_0_*` pattern vars) — they
+/// are per-call state and DO NOT propagate between iterations.
+///
+/// MeTTaTron freshens rule variables ONCE at rule load time, so each
+/// invocation of the same rule contributes identically-named freshened
+/// bindings with potentially-different values. Composing an iteration
+/// K's op-match bindings with iteration K-1's would produce spurious
+/// ground/ground conflicts with no HE analogue (HE freshens per-
+/// invocation, so equivalent names don't collide). The
+/// `propagate_keys` set is the ITEMS' free variables — those are
+/// shared across iterations by construction and must thread.
+#[inline]
+fn filter_fold_propagating_bindings(
+    bindings: &crate::backend::models::GenericBindings<MettaValue>,
+    propagate_keys: &[&'static str],
+) -> crate::backend::models::GenericBindings<MettaValue> {
+    let mut out = crate::backend::models::GenericBindings::new();
+    for (name, val) in bindings.iter() {
+        let is_user = !name.starts_with("$__fr_");
+        let is_caller_freshened = propagate_keys.contains(&name);
+        if is_user || is_caller_freshened {
+            out.insert_or_replace(name, val.clone());
+        }
+    }
+    out
+}
+
 /// # Precondition
 ///
 /// `matches` must be non-empty. The caller must handle the empty-matches case
@@ -454,50 +491,36 @@ fn dispatch_rule_matches<C: EvalContext>(
                     )
                 }
             } else {
-                // Phase 3 (Layer B merge): unified filter for both ground and
-                // variable RHS. Previously split on `rhs.has_variables_fast()`
-                // — the variable-RHS branch filtered `$__fr_*` keys with ground
-                // values (keeping only user-named keys or alias values). The
-                // split was a workaround for cecfcf4's prefer-outer semantics:
-                // retaining `$__fr_*` ground bindings in `rhs_carrying` would
-                // create compose conflicts that silently preserved
-                // wrong-branch values.
+                // Phase 1b-C (Phase 3 filter removed): do NOT filter
+                // $__fr_* keys from bindings here. The previous filter
+                // was too coarse — it stripped BOTH rule-pattern vars
+                // (which are rule-local, should filter) AND caller-scope
+                // freshened vars (which ARE caller-visible state and
+                // must propagate). The distinction cannot be made from
+                // key name alone: MeTTaTron's one-time freshening
+                // produces identically-prefixed names for both scopes.
                 //
-                // Phase 1 (foldl-atom binding threading) + Phase 2B (strict
-                // compose on genuine ground/ground conflicts) eliminated
-                // that motivation: conflicts are now either rewrite-stage
-                // variants (compose correctly prefers the ground side) or
-                // genuine inconsistencies (compose correctly returns empty,
-                // branch dies).
+                // HE-bisimilarity requires that all caller-visible
+                // bindings flow through rhs_carrying. Rule-local
+                // pattern vars will accumulate in the ambient, but:
+                // - they're bound via rule match to ground values
+                // - subsequent rule matches that re-use the same
+                //   freshened names will produce ground/ground
+                //   conflicts — Phase 2B's strict compose correctly
+                //   handles those (either as rewrite-stage variants
+                //   or as genuine inconsistency).
                 //
-                // The remaining filter strips `$__fr_*` freshened keys from
-                // `rhs_carrying`. This is cheap housekeeping — freshened
-                // rule-body variables are scoped to the rule's own body
-                // and substituted during EvalWithBindings template
-                // materialization; they don't need to propagate as ambient
-                // context. User-named variables (e.g. `$b` bound by
-                // unification against a rule literal) DO propagate so
-                // enclosing let/chain/foldl handlers can observe them.
-                let filtered = if bindings.is_empty() {
-                    crate::backend::models::GenericBindings::new()
-                } else {
-                    let mut f = crate::backend::models::GenericBindings::new();
-                    for (name, val) in bindings.iter() {
-                        if !name.starts_with("$__fr_") {
-                            f.insert_or_replace(name, val.clone());
-                        }
-                    }
-                    f
-                };
-                if outer_carrying.is_empty() && filtered.is_empty() {
+                // Downstream handlers (foldl-atom, etc.) apply their
+                // own scope-aware filters where needed.
+                if outer_carrying.is_empty() && bindings.is_empty() {
                     crate::backend::models::GenericBindings::new()
                 } else if outer_carrying.is_empty() {
-                    filtered
-                } else if filtered.is_empty() {
+                    bindings.clone()
+                } else if bindings.is_empty() {
                     outer_carrying.clone()
                 } else {
                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                        outer_carrying, &filtered, ctx.factory(),
+                        outer_carrying, &bindings, ctx.factory(),
                     )
                 }
             };
@@ -6162,6 +6185,33 @@ fn process_continuation<C: EvalContext>(
             let remaining_vec: Vec<MettaValue> = remaining_elements.collect();
             let has_more = !remaining_vec.is_empty();
 
+            // Collect free variables of REMAINING items — these are the
+            // caller-scope (possibly outer-rule-freshened) vars that
+            // must thread across iterations because subsequent items
+            // reference them. The op's own per-invocation freshened
+            // vars are NOT in this set (they're scoped to the op body).
+            //
+            // Note: we also include vars from the current iteration's
+            // item path via acc_bindings' existing keys — anything
+            // previously-bound stays bound.
+            let propagate_keys: Vec<&'static str> = {
+                let mut keys: Vec<&'static str> = Vec::new();
+                for item in &remaining_vec {
+                    for v in item.free_variables() {
+                        if !keys.contains(&v) {
+                            keys.push(v);
+                        }
+                    }
+                }
+                // Plus anything already in acc_bindings (carried forward).
+                for (k, _) in acc_bindings.iter() {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+                keys
+            };
+
             if !has_more {
                 // Final iteration: every surviving branch is a final
                 // accumulator. Compose each branch's bindings with the
@@ -6169,15 +6219,27 @@ fn process_continuation<C: EvalContext>(
                 // iterations' per-branch substitutions) and emit them all.
                 let final_results: SmallVec<[BoundValue; 2]> = result_values
                     .into_iter()
-                    .map(|(v, child_b)| {
+                    .filter_map(|(v, child_b)| {
+                        let filtered =
+                            filter_fold_propagating_bindings(&child_b, &propagate_keys);
                         let mut composed =
                             crate::backend::eval::bindings::compose_outer_inner_generic(
-                                &*acc_bindings, &child_b, ctx.factory(),
+                                &*acc_bindings, &filtered, ctx.factory(),
                             );
+                        // Prune branches whose final USER-LEVEL bindings
+                        // are inconsistent (compose returned empty from
+                        // two non-empty user-bindings inputs — HE's
+                        // strict unification rejection).
+                        if composed.is_empty()
+                            && !acc_bindings.is_empty()
+                            && !filtered.is_empty()
+                        {
+                            return None;
+                        }
                         crate::backend::eval::bindings::apply_chain_generic(
                             &mut composed, ctx.factory(),
                         );
-                        (v, composed)
+                        Some((v, composed))
                     })
                     .collect();
                 work_stack.push(WorkItem::Resume {
@@ -6193,11 +6255,36 @@ fn process_continuation<C: EvalContext>(
                 // per iteration).
                 let (first_result, child_b) = result_values.swap_remove(0);
 
-                // Compose child bindings with accumulator bindings.
+                // Filter child_b to retain only bindings that should
+                // thread across iterations: user-level vars OR caller-
+                // scope freshened vars (those appearing in remaining
+                // items' free variables). The op's per-invocation
+                // freshened vars are dropped — they'd otherwise cause
+                // spurious ground/ground conflicts on repeat invocations
+                // of the same op rule (MeTTaTron one-time-freshening
+                // artifact with no HE analogue).
+                let filtered_child_b =
+                    filter_fold_propagating_bindings(&child_b, &propagate_keys);
+
+                // Compose user-level child bindings with accumulator
+                // bindings. Genuine user-level conflicts still abort the
+                // fold (HE-faithful).
                 let mut composed =
                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*acc_bindings, &child_b, ctx.factory(),
+                        &*acc_bindings, &filtered_child_b, ctx.factory(),
                     );
+                if composed.is_empty()
+                    && !acc_bindings.is_empty()
+                    && !filtered_child_b.is_empty()
+                {
+                    // Genuine user-level binding inconsistency — branch
+                    // dies. Matches HE's `Bindings::merge` strict
+                    // rejection.
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                    return;
+                }
                 crate::backend::eval::bindings::apply_chain_generic(
                     &mut composed, ctx.factory(),
                 );
@@ -6280,11 +6367,21 @@ fn process_continuation<C: EvalContext>(
 
             let alternatives: Vec<BoundValue> = result_values
                 .into_iter()
-                .map(|(branch_acc, child_b)| {
+                .filter_map(|(branch_acc, child_b)| {
+                    let filtered =
+                        filter_fold_propagating_bindings(&child_b, &propagate_keys);
                     let mut composed =
                         crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*acc_bindings, &child_b, ctx.factory(),
+                            &*acc_bindings, &filtered, ctx.factory(),
                         );
+                    // Prune branches with genuinely inconsistent
+                    // USER-LEVEL bindings.
+                    if composed.is_empty()
+                        && !acc_bindings.is_empty()
+                        && !filtered.is_empty()
+                    {
+                        return None;
+                    }
                     crate::backend::eval::bindings::apply_chain_generic(
                         &mut composed, ctx.factory(),
                     );
@@ -6296,13 +6393,21 @@ fn process_continuation<C: EvalContext>(
                         item_var_atom,
                         operation.clone(),
                     ]);
-                    (sub_foldl, composed)
+                    Some((sub_foldl, composed))
                 })
                 .collect();
 
+            // If all branches are inconsistent, the fold fails entirely.
+            if alternatives.is_empty() {
+                work_stack.push(WorkItem::Resume {
+                    result: (SmallVec::new(), result_env),
+                });
+                return;
+            }
+
             let mut alts_iter = alternatives.into_iter();
             let (first_val, first_b) =
-                alts_iter.next().expect("result_values.len() > 1");
+                alts_iter.next().expect("alternatives.is_empty() short-circuited above");
 
             // ProcessAmb collects each alt's results into one merged
             // Resume. outer_carrying is empty here because each alt's

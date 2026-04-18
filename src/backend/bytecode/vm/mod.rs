@@ -2537,7 +2537,35 @@ where
     /// Left fold over an S-expression using a template chunk.
     /// Operand: u16 chunk_idx
     /// Stack: [list, init] -> [result]
+    ///
+    /// Phase 1b-C (HE-bisimilarity): each fold step's `current_bindings`
+    /// is composed into an `acc_bindings` register via
+    /// `compose_outer_inner_generic`. Before dispatching the next
+    /// iteration, the accumulated bindings are applied to the item
+    /// (via `apply_bindings_generic`) so rules matched in iteration K
+    /// resolve shared variables before iteration K+1 evaluates its item.
+    ///
+    /// This mirrors HE's recursive `foldl-atom` definition:
+    ///
+    ///   (= (foldl-atom $list $init $op)
+    ///      (if (== $list ())
+    ///          $init
+    ///          (foldl-atom (cdr-atom $list) ($op $init (car-atom $list)) $op)))
+    ///
+    /// where the recursive structure naturally threads bindings via
+    /// normal rule dispatch: iteration K+1's `(car-atom $list)` is
+    /// evaluated under whatever bindings iteration K established.
+    ///
+    /// On compose producing empty bindings (genuine ground/ground
+    /// conflict per `compose_outer_inner_generic` — see bindings.rs
+    /// Phase 2B), the branch is inconsistent and the fold fails with
+    /// no result. Matches HE's strict `Bindings::merge` rejection.
     fn op_foldl_atom(&mut self) -> VmResult<()> {
+        use crate::backend::eval::bindings::{
+            apply_bindings_generic, apply_chain_generic, compose_outer_inner_generic,
+        };
+        use crate::backend::models::GenericBindings;
+
         let chunk_idx = self.read_u16()?;
         let init = self.pop()?;
         let list = self.pop()?;
@@ -2553,14 +2581,92 @@ where
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
 
         let mut acc = init;
+        // Phase 1b-C: per-fold accumulated propagating bindings.
+        // Retains user-level bindings AND any freshened bindings whose
+        // names appear as free variables in remaining fold items. The
+        // op's per-invocation freshened vars (e.g. Truth_ModusPonens's
+        // pattern vars) are dropped to avoid spurious cross-iteration
+        // ground/ground conflicts (MeTTaTron one-time-freshening
+        // artifact; HE freshens per-invocation so equivalent names
+        // don't collide).
+        let mut acc_bindings: GenericBindings<V> = GenericBindings::new();
+
+        // Collect item free variables (remaining items). These are the
+        // caller-scope freshened vars that must thread across
+        // iterations. Items' vars are stable: the full list at fold
+        // start is a superset of any single iteration's remaining.
+        let items_free_vars: Vec<&'static str> = {
+            let mut keys: Vec<&'static str> = Vec::new();
+            for item in items {
+                for v in item.free_variables() {
+                    if !keys.contains(&v) {
+                        keys.push(v);
+                    }
+                }
+            }
+            keys
+        };
+
         for item in items {
-            // Phase 1b-B: discard fold-step bindings here. Phase 1b-C will
-            // thread them per iteration so shared-variable premise lists
-            // unify correctly across iterations.
-            let (new_acc, _step_bindings) =
-                self.execute_generic_foldl_template(Arc::clone(&op_chunk), acc, item.clone())?;
+            // Substitute any previously-accumulated bindings into this
+            // item before dispatching the template. If iteration K-1
+            // bound `$b=c`, iteration K's `(father $b c)` becomes
+            // `(father c c)` and evaluates (or fails to match) under
+            // that constraint.
+            let substituted_item = if acc_bindings.is_empty() {
+                item.clone()
+            } else {
+                apply_bindings_generic(item, &acc_bindings, &self.factory)
+            };
+
+            let (new_acc, step_bindings) = self.execute_generic_foldl_template(
+                Arc::clone(&op_chunk),
+                acc,
+                substituted_item,
+            )?;
+
+            // Filter step_bindings: retain user-level vars AND caller-
+            // scope freshened vars (appearing in items' free variables).
+            // Drop the op's per-invocation rule-match bindings.
+            let mut step_propagating: GenericBindings<V> = GenericBindings::new();
+            for (name, val) in step_bindings.iter() {
+                let is_user = !name.starts_with("$__fr_");
+                let is_caller_freshened = items_free_vars.contains(&name);
+                if is_user || is_caller_freshened {
+                    step_propagating.insert_or_replace(name, val.clone());
+                }
+            }
+
+            // Compose into running acc_bindings. Returns empty on
+            // genuine ground/ground conflict (Phase 2B). A branch with
+            // such a conflict dies — HE-faithful.
+            let mut composed = compose_outer_inner_generic(
+                &acc_bindings,
+                &step_propagating,
+                &self.factory,
+            );
+            if composed.is_empty()
+                && !acc_bindings.is_empty()
+                && !step_propagating.is_empty()
+            {
+                self.push(self.factory.empty());
+                return Ok(());
+            }
+            apply_chain_generic(&mut composed, &self.factory);
+            acc_bindings = composed;
             acc = new_acc;
         }
+
+        // Preserve the fold's accumulated bindings as the VM's
+        // current_bindings so the caller (which composed its outer
+        // context into `acc_bindings` implicitly via the per-step
+        // template exec) continues with the right context.
+        self.current_bindings = compose_outer_inner_generic(
+            &self.current_bindings,
+            &acc_bindings,
+            &self.factory,
+        );
+        apply_chain_generic(&mut self.current_bindings, &self.factory);
 
         self.push(acc);
         Ok(())

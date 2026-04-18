@@ -1182,6 +1182,40 @@ where
                 // value and continue. Returning empty here silently drops
                 // all user-visible bindings (e.g. $who=a) and causes Layer A
                 // projection to miss them at the sidecar.
+                //
+                // Phase 2A diagnostic: log every prefer-outer conflict so
+                // we can empirically verify whether the "rewrite stage"
+                // case still fires post-Phase-1 (where foldl-atom now
+                // threads bindings correctly). If Phase 1 eliminated
+                // this source of conflict, we can switch to strict
+                // empty-on-conflict in Phase 2B without regression.
+                #[cfg(feature = "eval-trace")]
+                {
+                    crate::backend::trace::with_trace_collector_ref(|tc| {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            0,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::BindingsDropped {
+                                cont_kind: "compose_outer_inner_generic".to_string(),
+                                flow_id: 0,
+                                site: format!(
+                                    "bindings.rs:compose-conflict name={} outer={:?} inner={:?}",
+                                    name,
+                                    crate::backend::trace::convert::trace_value_generic(outer_val),
+                                    crate::backend::trace::convert::trace_value_generic(inner_val),
+                                ),
+                                dropped_keys: vec![name.to_string()],
+                                sample: vec![(
+                                    name.to_string(),
+                                    crate::backend::trace::convert::trace_value_generic(outer_val),
+                                )],
+                            },
+                        );
+                    });
+                }
                 result.insert_or_replace(name, outer_val.clone());
             }
         } else {

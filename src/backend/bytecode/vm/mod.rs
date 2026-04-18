@@ -5004,11 +5004,41 @@ where
             }
         }
 
-        // Pre-evaluate non-meta-typed S-expr arguments
+        // Pre-evaluate non-meta-typed S-expr arguments.
+        //
+        // Phase 1b-E2 (HE-bisimilar arg-by-arg binding threading):
+        //
+        // HE's `query` (hyperon-experimental/lib/src/metta/interpreter.rs:
+        // 604-640) threads the ambient `Bindings` through each
+        // `InterpretedAtom` as successive arguments are pre-evaluated.
+        // An arg K+1 is resolved under whatever bindings arg K
+        // established — so `(Truth_ModusPonens (father b $b) (father $b c))`
+        // where arg 1 binds `$b=c` must have arg 2 substituted to
+        // `(father c c)` before its own pre-eval.
+        //
+        // Implementation:
+        //  1. Mutate `evaluated_items` in place. Read `evaluated_items[i]`
+        //     (NOT `items[i]`) so earlier arg's result is visible to
+        //     subsequent iterations.
+        //  2. Before each `eval_sub_expr_vm` call, apply the VM's
+        //     current `self.current_bindings` (which accumulates bindings
+        //     from arg 1..K-1 via Phase 1b-E1's side-effect compose) to
+        //     the current item. This materializes the already-bound
+        //     variables in the item's expression form.
+        //  3. `eval_sub_expr_vm` then runs the sub-VM on the
+        //     substituted form; on return it composes this arg's
+        //     bindings into `current_bindings` automatically (E1).
+        //  4. The loop is scoped: `current_bindings` on entry is saved
+        //     and restored on exit so bindings established inside the
+        //     pre-eval don't leak to unrelated outer opcodes. (Callers
+        //     that NEED the pre-eval bindings — rule match dispatchers —
+        //     are in the same op_dispatch_rules call chain where
+        //     current_bindings is alive.)
+        use crate::backend::eval::bindings::apply_bindings_generic;
         let mut evaluated_items: Vec<V> = items.to_vec();
         let mut changed = false;
 
-        for (i, item) in items.iter().enumerate().skip(1) {
+        for i in 1..items.len() {
             let arg_idx = i - 1; // 0-based arg index
 
             // If formal type is a meta-type in ALL arrow types, skip.
@@ -5020,8 +5050,25 @@ where
                 continue;
             }
 
-            // Only pre-evaluate S-expression arguments
-            if item.as_sexpr().is_none() {
+            // Apply accumulated ambient bindings to this item BEFORE
+            // pre-eval. Freezes arg K-1's bindings into arg K's
+            // expression form so the sub-VM sees the grounded item.
+            let mut item_to_eval = evaluated_items[i].clone();
+            if !self.current_bindings.is_empty() {
+                item_to_eval =
+                    apply_bindings_generic(&item_to_eval, &self.current_bindings, &self.factory);
+            }
+
+            // Only pre-evaluate S-expression arguments. (We re-check
+            // on the substituted form; if substitution collapsed the
+            // arg to a non-sexpr, skip.)
+            if item_to_eval.as_sexpr().is_none() {
+                // Substitution may still have produced a different
+                // value (e.g. a ground atom); reflect it.
+                if item_to_eval != evaluated_items[i] {
+                    evaluated_items[i] = item_to_eval;
+                    changed = true;
+                }
                 continue;
             }
 
@@ -5041,9 +5088,9 @@ where
             // Clone the environment (CoW — O(1) ref-count increment) so the
             // sub-VM can access rules without borrowing self.
             let sub_env = self.env.as_ref().expect("env checked above").clone();
-            let sub_result = self.eval_sub_expr_vm(item.clone(), sub_env)?;
+            let sub_result = self.eval_sub_expr_vm(item_to_eval.clone(), sub_env)?;
 
-            if sub_result != *item {
+            if sub_result != evaluated_items[i] {
                 evaluated_items[i] = sub_result;
                 changed = true;
             }

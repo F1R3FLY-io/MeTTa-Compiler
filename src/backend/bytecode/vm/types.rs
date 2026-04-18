@@ -266,6 +266,17 @@ where
         /// Pattern variable bindings from matching
         bindings: GenericBindings<V>,
     },
+    /// Phase 1b-A: a value paired with the bindings under which it was
+    /// produced. Restored together on backtrack so nondeterministic
+    /// fanout (e.g. multiple rule matches for a sub-expression) carries
+    /// each alternative's ambient binding context. Mirrors HE's
+    /// `InterpretedAtom(Stack, Bindings)` shape at the VM level.
+    BoundValue {
+        /// The produced value
+        value: V,
+        /// Bindings active for this alternative
+        bindings: GenericBindings<V>,
+    },
 }
 
 /// Generic call frame on the call stack.
@@ -274,7 +285,10 @@ where
 ///
 /// - `C`: The bytecode chunk type
 #[derive(Debug, Clone)]
-pub struct GenericCallFrame<C> {
+pub struct GenericCallFrame<V, C>
+where
+    V: MettaValueTrait + Clone + Send + Sync + 'static,
+{
     /// Return instruction pointer
     pub return_ip: usize,
     /// Return chunk
@@ -287,6 +301,12 @@ pub struct GenericCallFrame<C> {
     /// and backtracks via `op_fail` instead of continuing to the calling chunk.
     /// Used for outermost nondeterministic dispatch (multi-match DispatchRules).
     pub yield_on_return: bool,
+    /// Phase 1b-A: caller's `current_bindings` captured at call time. Phase 1b-F
+    /// composes it back with the frame's final bindings on Return so that
+    /// bindings established during RHS execution (e.g. by deeper rule
+    /// dispatches) propagate up to the caller's ambient context. Mirrors
+    /// HE's `Stack` frame-level binding retention.
+    pub saved_bindings: GenericBindings<V>,
 }
 
 /// Generic choice point for nondeterminism.
@@ -392,4 +412,11 @@ pub struct GenericCollapseFrame<V: MettaValueTrait + Clone + Send + Sync + 'stat
 pub type CollapseFrame = GenericCollapseFrame<MettaValue>;
 
 /// Call frame on the call stack (concrete type alias).
-pub type CallFrame = GenericCallFrame<BytecodeChunk>;
+pub type CallFrame = GenericCallFrame<MettaValue, BytecodeChunk>;
+
+/// Phase 1b-A: VM-level `InterpretedAtom` — a produced value paired with
+/// the bindings under which it was produced. Matches HE's
+/// `InterpretedAtom(Stack, Bindings)` at `interpreter.rs:145`. Used as
+/// the return type of template helpers and as the unit of exchange
+/// across applicative pre-eval boundaries in the VM.
+pub type VmBoundValue<V> = (V, GenericBindings<V>);

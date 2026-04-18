@@ -148,7 +148,25 @@ where
     pub(crate) value_stack: Vec<V>,
 
     /// Call stack for function frames
-    pub(crate) call_stack: Vec<GenericCallFrame<GenericBytecodeChunk<V>>>,
+    pub(crate) call_stack: Vec<GenericCallFrame<V, GenericBytecodeChunk<V>>>,
+
+    /// Phase 1b-A: VM-level "current bindings" register. Holds the
+    /// bindings active for the most-recently-produced result on the
+    /// value stack (or the ambient context when the stack is empty at
+    /// an applicative boundary). Mirrors HE's `Bindings` travelling
+    /// alongside `InterpretedAtom.Stack`.
+    ///
+    /// Conceptually: every `Call/TailCall/DispatchRules` path that
+    /// evaluates a sub-expression composes that sub-expression's
+    /// bindings into this register (via `compose_outer_inner_generic`)
+    /// and then applies the composed bindings to remaining arguments
+    /// before dispatching further. On backtrack to a
+    /// `Alternative::BoundValue` choice point, `current_bindings` is
+    /// restored to the alternative's captured bindings.
+    ///
+    /// Starts empty. Cleared after top-level Return. Saved/restored
+    /// around template helper invocations (Phase 1b-B).
+    pub(crate) current_bindings: GenericBindings<V>,
 
     /// Bindings stack for pattern variables
     pub(crate) bindings_stack: Vec<GenericBindingFrame<V>>,
@@ -306,6 +324,7 @@ where
             trail: Vec::new(),
             trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
+            current_bindings: GenericBindings::new(),
         }
     }
 
@@ -338,6 +357,7 @@ where
             trail: Vec::new(),
             trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
+            current_bindings: GenericBindings::new(),
         }
     }
 
@@ -373,6 +393,7 @@ where
             trail: Vec::new(),
             trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
+            current_bindings: GenericBindings::new(),
         }
     }
 
@@ -3136,6 +3157,7 @@ where
                         base_ptr: self.value_stack.len(),
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
+                        saved_bindings: self.current_bindings.clone(),
                     });
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
@@ -3145,6 +3167,13 @@ where
                     self.bindings_stack.push(frame);
                     self.chunk = chunk;
                     self.ip = 0;
+                }
+                GenericAlternative::BoundValue { value, bindings } => {
+                    // Phase 1b-A: backtrack to a (value, bindings) pair
+                    // produced by an earlier nondeterministic branch.
+                    // Restore bindings alongside the value.
+                    self.value_stack.push(value);
+                    self.current_bindings = bindings;
                 }
             }
 
@@ -3914,6 +3943,7 @@ where
                         base_ptr: self.value_stack.len(),
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
+                        saved_bindings: self.current_bindings.clone(),
                     });
                     // Push new binding frame (don't pollute existing frames)
                     let depth = self.bindings_stack.len() as u32;
@@ -3924,6 +3954,11 @@ where
                     self.bindings_stack.push(frame);
                     self.chunk = chunk;
                     self.ip = 0;
+                }
+                GenericAlternative::BoundValue { value, bindings } => {
+                    // Phase 1b-A: restore (value, bindings) pair together.
+                    self.value_stack.push(value);
+                    self.current_bindings = bindings;
                 }
             }
 
@@ -4593,6 +4628,7 @@ where
                         base_ptr: self.value_stack.len(),
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
+                        saved_bindings: self.current_bindings.clone(),
                     });
 
                     // Push new binding frame with match bindings.

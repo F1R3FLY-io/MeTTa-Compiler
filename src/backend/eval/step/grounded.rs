@@ -41,10 +41,16 @@ pub fn is_arrow_type<V: MettaValueTrait>(typ: &V) -> bool {
 /// Meta-types represent syntactic categories — arguments of these types are
 /// passed unevaluated per MeTTa HE semantics.
 ///
-/// Meta-types: `Atom`, `Expression`, `Symbol`, `Variable`, `Grounded`, `Pattern`
+/// Meta-types: `Atom`, `Expression`, `Symbol`, `Variable`, `Grounded`, `Pattern`,
+/// and `%Undefined%` (unknown parameter type from inferred signatures — HE's
+/// `interpret_function` only pre-evaluates args with a **concrete** declared
+/// parameter type, falling through to unification otherwise).
 pub fn is_meta_type<V: MettaValueTrait>(typ: &V) -> bool {
     if let Some(name) = typ.as_atom() {
-        matches!(name, "Atom" | "Expression" | "Symbol" | "Variable" | "Grounded" | "Pattern")
+        matches!(
+            name,
+            "Atom" | "Expression" | "Symbol" | "Variable" | "Grounded" | "Pattern" | "%Undefined%"
+        )
     } else {
         false
     }

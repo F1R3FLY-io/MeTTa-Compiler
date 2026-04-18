@@ -16,6 +16,7 @@ use super::work_item::{
 use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
+use crate::backend::eval::{is_eager_special_form, is_grounded_op};
 use crate::backend::models::{register_root_provider, MettaValue, RootProvider, ValueView};
 
 // ============================================================================
@@ -729,12 +730,38 @@ impl Compiler {
                 cont_id: 0,
             });
 
-            // Compile this argument
-            work_stack.push(CompileWork::CompileExpr {
-                expr: arg,
-                in_tail_position: false,
-                cont_id: 0,
-            });
+            // MeTTa HE parity: S-expr args to a user-defined call are
+            // compiled as literal data unless their head is a grounded
+            // operator or eager special form (which are always-eager in
+            // HE's `interpret_function`). The runtime
+            // `vm_type_driven_pre_eval` inside `op_dispatch_rules`
+            // decides per-arg whether to reduce, consulting the live
+            // environment's declared + inferred types. Compile-time
+            // eager emission (via `CompileExpr`) would reduce user-
+            // defined args before the type system can classify them,
+            // breaking HE semantics for heads with meta / inferred /
+            // undefined parameter types.
+            let use_literal = match arg.view() {
+                ValueView::SExpr(items) => {
+                    match items.first().and_then(|v| v.as_atom()) {
+                        Some(h) => !(is_grounded_op(h) || is_eager_special_form(h)),
+                        None => true,
+                    }
+                }
+                _ => false,
+            };
+            if use_literal {
+                work_stack.push(CompileWork::CompileAsLiteralSExpr {
+                    expr: arg,
+                    cont_id: 0,
+                });
+            } else {
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: arg,
+                    in_tail_position: false,
+                    cont_id: 0,
+                });
+            }
         } else {
             // All args compiled, emit the call.
             // Reuse original head value to avoid redundant slab allocation.

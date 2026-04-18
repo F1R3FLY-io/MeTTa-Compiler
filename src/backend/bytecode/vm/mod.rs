@@ -4680,9 +4680,44 @@ where
         }
 
         // Type-driven applicative evaluation (MeTTa HE parity):
-        // If the head has an arrow type `(-> T1 T2 ... Tret)`, pre-evaluate
-        // non-meta-typed S-expr arguments before rule matching.
-        let expr = self.vm_type_driven_pre_eval(expr)?;
+        // Pre-evaluate non-meta-typed S-expr arguments, producing ALL
+        // Cartesian-product combinations over nondeterministic args.
+        //
+        // HE bisimilarity: when an arg at a concrete-typed position
+        // reduces to N > 1 values, the parent expression fans out into
+        // N copies (one per result). For multi-arg nondet, we fan out
+        // across the Cartesian product, with per-combination bindings
+        // composed from each sub-result.
+        //
+        // Return shape:
+        //   [(expr, bindings)]        — deterministic (len == 1)
+        //   [(e1, b1), (e2, b2), …]   — nondeterministic (len > 1)
+        //   []                        — impossible; function always
+        //                               returns at least the original
+        //                               expr when no changes apply
+        let saved_pre_eval_bindings = self.current_bindings.clone();
+        let pre_eval_combinations = self.vm_type_driven_pre_eval(expr.clone())?;
+
+        if pre_eval_combinations.len() > 1 {
+            // Multi-combination fanout: iterate each combination
+            // through the full dispatch pipeline, collect results, and
+            // expose them as a choice point with BoundValue alternatives.
+            return self.op_dispatch_rules_multi_combo(
+                pre_eval_combinations,
+                saved_pre_eval_bindings,
+            );
+        }
+
+        // Single combination (len == 1 after pre-eval) — fall through
+        // to the existing deterministic dispatch with the combined
+        // bindings already composed into `self.current_bindings`.
+        let (expr, combo_b) = pre_eval_combinations
+            .into_iter()
+            .next()
+            .expect("pre_eval returns at least one combination");
+        if !combo_b.is_empty() {
+            self.current_bindings = combo_b;
+        }
 
         // Dispatch memo: check if we've already evaluated this exact expression.
         // When backtracking causes re-dispatch (Cartesian product scenario like
@@ -4969,46 +5004,203 @@ where
         Ok(())
     }
 
-    /// Type-driven applicative pre-evaluation for rule dispatch.
+    /// Dispatch rules for a multi-combination pre-eval result.
     ///
-    /// If the expression head has an arrow type `(-> T1 T2 ... Tret)`,
-    /// pre-evaluate non-meta-typed S-expr arguments. Meta-typed args
-    /// (`Atom`, `Expression`, `Symbol`, `Variable`, `Grounded`, `Pattern`)
-    /// are passed unevaluated per MeTTa HE semantics.
+    /// HE parity for nondeterministic applicative pre-evaluation: when
+    /// an arg at a concrete-typed position reduces to N > 1 values, the
+    /// parent expression fans out into N copies. This function takes
+    /// the full Cartesian product of combinations, runs the rule-match
+    /// + RHS-eval pipeline for each, and exposes the union of all
+    /// results via a choice point with `BoundValue` alternatives so
+    /// per-combination bindings are restored on backtrack.
     ///
-    /// Returns the expression unchanged if:
-    /// - No environment is available
-    /// - Head has no arrow type
-    /// - No args changed after pre-evaluation (fixpoint)
-    fn vm_type_driven_pre_eval(&mut self, expr: V) -> VmResult<V> {
+    /// Mirrors the tree-walker's `CollectGroundedArg` →
+    /// `CollectApplicativeResults` chain.
+    fn op_dispatch_rules_multi_combo(
+        &mut self,
+        combinations: Vec<(V, crate::backend::models::GenericBindings<V>)>,
+        saved_bindings: crate::backend::models::GenericBindings<V>,
+    ) -> VmResult<()> {
+        use crate::backend::eval::bindings::apply_bindings_generic;
+
+        let env = match &self.env {
+            Some(e) => e.clone(),
+            None => {
+                // No env — push first expr unchanged, stale combinations.
+                let first = combinations
+                    .into_iter()
+                    .next()
+                    .expect("multi-combo called with non-empty list")
+                    .0;
+                self.push(first);
+                return Ok(());
+            }
+        };
+
+        // For each combination, run the rule-match + RHS-eval pipeline
+        // and collect (value, bindings) outcomes. Combinations whose
+        // rules fail to match contribute themselves as irreducible
+        // outcomes (HE: the unreduced expr is a valid evaluation
+        // result for data constructors or unmatched calls).
+        let mut all_outcomes: Vec<(V, crate::backend::models::GenericBindings<V>)> =
+            Vec::with_capacity(combinations.len());
+
+        for (combo_expr, combo_b) in combinations {
+            // Per-combination, install combo_b as the ambient bindings
+            // before dispatch. Restore to `saved_bindings` before the
+            // next iteration so combinations don't leak into each other.
+            self.current_bindings = combo_b.clone();
+
+            let matches = env.match_rules_native(&combo_expr, apply_bindings_generic);
+            // Phase 9.2/9.3 expected_type pruning
+            let matches = if let Some(ref expected) = self.expected_type {
+                use crate::backend::eval::types::types_match_generic;
+                matches
+                    .into_iter()
+                    .filter(|m| match &m.rhs_type {
+                        Some(rt) => types_match_generic(rt, expected),
+                        None => true,
+                    })
+                    .collect()
+            } else {
+                matches
+            };
+
+            if matches.is_empty() {
+                // No rules for this combination — the expression is
+                // irreducible. Contribute it as a result with its own
+                // per-combination bindings.
+                all_outcomes.push((combo_expr, combo_b));
+                continue;
+            }
+
+            // For each matched rule, evaluate the instantiated RHS via
+            // the trampoline, collecting all sub-results with bindings.
+            for m in matches {
+                let rhs = m.instantiated_rhs;
+                let sub_results = self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone());
+                if sub_results.is_empty() {
+                    continue;
+                }
+                for (v, sub_b) in sub_results {
+                    // Per-result bindings layer on top of the combo's
+                    // ambient. sub_b may be empty for deterministic
+                    // ground results.
+                    let merged = if sub_b.is_empty() {
+                        combo_b.clone()
+                    } else if combo_b.is_empty() {
+                        sub_b
+                    } else {
+                        use crate::backend::eval::bindings::compose_outer_inner_generic;
+                        let composed = compose_outer_inner_generic(&combo_b, &sub_b, &self.factory);
+                        if composed.is_empty() && !combo_b.is_empty() && !sub_b.is_empty() {
+                            continue;
+                        }
+                        composed
+                    };
+                    all_outcomes.push((v, merged));
+                }
+            }
+        }
+
+        self.expected_type = None;
+
+        // Restore the outer ambient bindings; the chosen alternative
+        // below will overwrite it with its own per-alt bindings.
+        self.current_bindings = saved_bindings.clone();
+
+        if all_outcomes.is_empty() {
+            self.unreduced = true;
+            // No combination produced any result — push the first
+            // original combination's expression as the irreducible form.
+            // (Shouldn't happen given the per-combo fallback above.)
+            return Ok(());
+        }
+
+        if all_outcomes.len() == 1 {
+            let (v, b) = all_outcomes.into_iter().next().expect("len == 1");
+            self.current_bindings = b;
+            self.push(v);
+            return Ok(());
+        }
+
+        // Multiple outcomes — push first, create a choice point with
+        // BoundValue alternatives for the rest. Per-alt bindings are
+        // restored when the alt is picked (`op_fail`'s BoundValue arm).
+        let mut iter = all_outcomes.into_iter();
+        let (first_v, first_b) = iter.next().expect("non-empty");
+        let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = iter
+            .map(|(v, b)| GenericAlternative::BoundValue { value: v, bindings: b })
+            .collect();
+        if !alternatives.is_empty() {
+            self.choice_points.push(GenericChoicePoint {
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                alternatives,
+                saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
+                saved_current_bindings: saved_bindings.clone(),
+            });
+        }
+        self.current_bindings = first_b;
+        self.push(first_v);
+        Ok(())
+    }
+
+    /// Type-driven applicative pre-evaluation producing ALL combinations.
+    ///
+    /// HE bisimilarity: when an S-expression arg at a non-meta-typed
+    /// parameter position reduces nondeterministically to multiple
+    /// values, the parent expression MUST fan out into one variant per
+    /// combination (Cartesian product across args). The tree-walker
+    /// realizes this via `CollectGroundedArg` → `CollectApplicativeResults`;
+    /// the VM must match.
+    ///
+    /// Return semantics:
+    /// - `vec![(expr, empty_bindings)]` — no pre-eval fired (no arg types,
+    ///   no concrete formal types, or no arg was an S-expression).
+    /// - `vec![(expr', combined_bindings)]` — deterministic pre-eval: every
+    ///   arg reduced to a single value; combined bindings merge all sub-
+    ///   result bindings under `self.current_bindings`.
+    /// - `vec![(expr_i, bindings_i); N]` with N > 1 — Cartesian fanout;
+    ///   each combination has its own substituted expression and merged
+    ///   bindings. Conflicting combinations (ground/ground binding clash)
+    ///   are dropped, not errored.
+    fn vm_type_driven_pre_eval(
+        &mut self,
+        expr: V,
+    ) -> VmResult<Vec<(V, crate::backend::models::GenericBindings<V>)>> {
+        use crate::backend::eval::bindings::{apply_bindings_generic, compose_outer_inner_generic};
         use crate::backend::eval::step::{extract_arg_types, is_meta_type};
+        use crate::backend::models::GenericBindings;
+
+        let empty_b = GenericBindings::new();
 
         let items = match expr.as_sexpr() {
             Some(items) => items,
-            None => return Ok(expr),
+            None => return Ok(vec![(expr, empty_b)]),
         };
 
         let head = match items.first().and_then(|v| v.as_atom()) {
             Some(h) => h,
-            None => return Ok(expr),
+            None => return Ok(vec![(expr, empty_b)]),
         };
 
         let env = match &self.env {
             Some(e) => e,
-            None => return Ok(expr),
+            None => return Ok(vec![(expr, empty_b)]),
         };
 
-        // Look up the operator's type signatures (may have multiple)
         let op_types = env.get_types_generic(head);
-
-        // Collect all arrow types for this operator
         let mut all_arg_types: Vec<Vec<V>> = op_types
             .iter()
             .filter_map(|t| extract_arg_types(t))
             .collect();
 
         // Phase 9.4: Inferred-type fallback from Phase 10 deep type inference.
-        // If no declared arrow types exist, check inferred function types.
         if all_arg_types.is_empty() {
             if env.has_inferred_type(head) {
                 let inferred = env.get_inferred_fn_types(head);
@@ -5018,107 +5210,131 @@ where
                     .collect();
             }
             if all_arg_types.is_empty() {
-                return Ok(expr);
+                return Ok(vec![(expr, empty_b)]);
             }
         }
 
-        // Pre-evaluate non-meta-typed S-expr arguments.
+        // Per-argument results: one inner Vec<(V, bindings)> per arg
+        // position. For args that are meta-typed or not S-exprs, the
+        // inner vec has a single element (the unchanged item + empty
+        // bindings). For pre-eval'd args, it has the sub-VM's full
+        // result list (1..N entries).
         //
-        // Phase 1b-E2 (HE-bisimilar arg-by-arg binding threading):
-        //
-        // HE's `query` (hyperon-experimental/lib/src/metta/interpreter.rs:
-        // 604-640) threads the ambient `Bindings` through each
-        // `InterpretedAtom` as successive arguments are pre-evaluated.
-        // An arg K+1 is resolved under whatever bindings arg K
-        // established — so `(Truth_ModusPonens (father b $b) (father $b c))`
-        // where arg 1 binds `$b=c` must have arg 2 substituted to
-        // `(father c c)` before its own pre-eval.
-        //
-        // Implementation:
-        //  1. Mutate `evaluated_items` in place. Read `evaluated_items[i]`
-        //     (NOT `items[i]`) so earlier arg's result is visible to
-        //     subsequent iterations.
-        //  2. Before each `eval_sub_expr_vm` call, apply the VM's
-        //     current `self.current_bindings` (which accumulates bindings
-        //     from arg 1..K-1 via Phase 1b-E1's side-effect compose) to
-        //     the current item. This materializes the already-bound
-        //     variables in the item's expression form.
-        //  3. `eval_sub_expr_vm` then runs the sub-VM on the
-        //     substituted form; on return it composes this arg's
-        //     bindings into `current_bindings` automatically (E1).
-        //  4. The loop is scoped: `current_bindings` on entry is saved
-        //     and restored on exit so bindings established inside the
-        //     pre-eval don't leak to unrelated outer opcodes. (Callers
-        //     that NEED the pre-eval bindings — rule match dispatchers —
-        //     are in the same op_dispatch_rules call chain where
-        //     current_bindings is alive.)
-        use crate::backend::eval::bindings::apply_bindings_generic;
-        let mut evaluated_items: Vec<V> = items.to_vec();
-        let mut changed = false;
+        // `per_arg_results[0]` is the HEAD (always a single entry).
+        let mut per_arg_results: Vec<Vec<(V, GenericBindings<V>)>> = Vec::with_capacity(items.len());
+        per_arg_results.push(vec![(items[0].clone(), empty_b.clone())]);
+
+        let mut any_multi = false;
+        let mut any_changed = false;
 
         for i in 1..items.len() {
-            let arg_idx = i - 1; // 0-based arg index
+            let arg_idx = i - 1;
 
-            // If formal type is a meta-type in ALL arrow types, skip.
-            // Conservative: if ANY arrow type says value-typed at this position, pre-eval.
             let all_meta = all_arg_types.iter().all(|arg_types| {
                 arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx])
             });
             if all_meta {
+                per_arg_results.push(vec![(items[i].clone(), empty_b.clone())]);
                 continue;
             }
 
-            // Apply accumulated ambient bindings to this item BEFORE
-            // pre-eval. Freezes arg K-1's bindings into arg K's
-            // expression form so the sub-VM sees the grounded item.
-            let mut item_to_eval = evaluated_items[i].clone();
+            // Substitute current ambient bindings into the arg before
+            // pre-eval so earlier-argument bindings materialize in
+            // later-argument expression form.
+            let mut item_to_eval = items[i].clone();
             if !self.current_bindings.is_empty() {
                 item_to_eval =
                     apply_bindings_generic(&item_to_eval, &self.current_bindings, &self.factory);
+                if item_to_eval != items[i] {
+                    any_changed = true;
+                }
             }
 
-            // Only pre-evaluate S-expression arguments. (We re-check
-            // on the substituted form; if substitution collapsed the
-            // arg to a non-sexpr, skip.)
             if item_to_eval.as_sexpr().is_none() {
-                // Substitution may still have produced a different
-                // value (e.g. a ground atom); reflect it.
-                if item_to_eval != evaluated_items[i] {
-                    evaluated_items[i] = item_to_eval;
-                    changed = true;
-                }
+                per_arg_results.push(vec![(item_to_eval, empty_b.clone())]);
                 continue;
             }
 
-            // Phase 9.2/9.3: Derive expected_type for this argument position.
-            // Tier 1: Builtin signatures. Tier 2: User-declared arrow types.
+            // Derive expected_type for this argument position.
             {
                 use crate::backend::builtin_signatures;
-                let arg_pos = i - 1;
                 self.expected_type = builtin_signatures::get_signature(head)
-                    .and_then(|sig| builtin_signatures::get_expected_type_at_position(sig, arg_pos))
+                    .and_then(|sig| builtin_signatures::get_expected_type_at_position(sig, arg_idx))
                     .and_then(builtin_signatures::type_expr_to_expected_type_name)
                     .map(|name| self.factory.atom(name));
-                // TODO: Tier 2 user-arrow fallback (extract_consistent_arg_type equivalent)
             }
 
-            // Evaluate sub-expression using a recursive VM invocation.
-            // Clone the environment (CoW — O(1) ref-count increment) so the
-            // sub-VM can access rules without borrowing self.
+            // Multi-result pre-eval — collect ALL sub-VM results for
+            // this arg. Empty vec means irreducible; treat as literal.
             let sub_env = self.env.as_ref().expect("env checked above").clone();
-            let sub_result = self.eval_sub_expr_vm(item_to_eval.clone(), sub_env)?;
+            let sub_results =
+                self.eval_sub_expr_vm_all_with_bindings(item_to_eval.clone(), sub_env);
 
-            if sub_result != evaluated_items[i] {
-                evaluated_items[i] = sub_result;
-                changed = true;
+            self.expected_type = None;
+
+            if sub_results.is_empty() {
+                per_arg_results.push(vec![(item_to_eval, empty_b.clone())]);
+                continue;
             }
+
+            if sub_results.len() > 1 {
+                any_multi = true;
+                any_changed = true;
+            } else if sub_results[0].0 != item_to_eval {
+                any_changed = true;
+            }
+            per_arg_results.push(sub_results);
         }
 
-        if changed {
-            Ok(self.factory.sexpr(evaluated_items))
-        } else {
-            Ok(expr)
+        if !any_changed && !any_multi {
+            return Ok(vec![(expr, empty_b)]);
         }
+
+        // Cartesian product across per-arg results. Each combo carries
+        // merged bindings; ground/ground conflicts drop the combination.
+        // Start with the outer ambient bindings already in
+        // `self.current_bindings` so sub-result bindings compose ON TOP.
+        let initial_b = self.current_bindings.clone();
+        let mut combinations: Vec<(Vec<V>, GenericBindings<V>)> =
+            vec![(Vec::with_capacity(items.len()), initial_b)];
+
+        for arg_results in per_arg_results.into_iter() {
+            let mut new_combos: Vec<(Vec<V>, GenericBindings<V>)> =
+                Vec::with_capacity(combinations.len() * arg_results.len());
+            for (items_so_far, bindings_so_far) in combinations.iter() {
+                for (val, sub_b) in arg_results.iter() {
+                    let merged = if sub_b.is_empty() {
+                        bindings_so_far.clone()
+                    } else {
+                        let composed = compose_outer_inner_generic(
+                            bindings_so_far,
+                            sub_b,
+                            &self.factory,
+                        );
+                        if composed.is_empty()
+                            && !bindings_so_far.is_empty()
+                            && !sub_b.is_empty()
+                        {
+                            // Ground/ground conflict — drop this
+                            // combination (tree-walker parity).
+                            continue;
+                        }
+                        composed
+                    };
+                    let mut new_items = items_so_far.clone();
+                    new_items.push(val.clone());
+                    new_combos.push((new_items, merged));
+                }
+            }
+            combinations = new_combos;
+        }
+
+        let result: Vec<(V, GenericBindings<V>)> = combinations
+            .into_iter()
+            .map(|(items, b)| (self.factory.sexpr(items), b))
+            .collect();
+
+        Ok(result)
     }
 
     /// Decide whether a `car-atom`/`cdr-atom` argument should be pre-evaluated
@@ -5331,6 +5547,59 @@ where
             };
             std::mem::forget(metta_sub_expr);
             Ok(value)
+        }
+    }
+
+    /// Evaluate a sub-expression via the trampoline, returning ALL
+    /// `(value, bindings)` pairs. Companion to `eval_sub_expr_vm_all`
+    /// that preserves per-result bindings for downstream Cartesian-
+    /// product composition (HE-bisimilar multi-result pre-eval).
+    fn eval_sub_expr_vm_all_with_bindings(
+        &self,
+        sub_expr: V,
+        env: GenericEnvironment<V, F>,
+    ) -> Vec<(V, crate::backend::models::GenericBindings<V>)> {
+        use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
+        use crate::backend::models::GenericBindings;
+
+        let ctx = VmEvalContext {
+            factory: crate::backend::models::global_factory(),
+        };
+
+        assert_eq!(
+            TypeId::of::<V>(), TypeId::of::<MettaValue>(),
+            "eval_sub_expr_vm_all_with_bindings: V must be MettaValue"
+        );
+        // SAFETY: V == MettaValue verified above. Identical layouts.
+        let metta_sub_expr: MettaValue = unsafe {
+            std::ptr::read(&sub_expr as *const V as *const MettaValue)
+        };
+        let metta_env: crate::backend::eval::trampoline::MettaEnvironment = unsafe {
+            std::ptr::read(
+                &env as *const GenericEnvironment<V, F>
+                    as *const crate::backend::eval::trampoline::MettaEnvironment,
+            )
+        };
+        // Suppress the old-value drops — `metta_sub_expr` and
+        // `metta_env` now own those Arc refs (ptr::read doesn't
+        // increment the refcount). Dropping `sub_expr` / `env` would
+        // under-decrement and trigger an Arc-counter underflow later.
+        std::mem::forget(sub_expr);
+        std::mem::forget(env);
+
+        let (results, _final_env) = eval_trampoline(metta_sub_expr, metta_env, &ctx);
+        // eval_trampoline returns SmallVec; materialize into Vec so the
+        // caller can consume via into_iter() regardless of inline size.
+        let metta_results: Vec<(MettaValue, GenericBindings<MettaValue>)> = results.into_vec();
+        // SAFETY: V == MettaValue verified above. Transmute the Vec element
+        // type from MettaValue to V (identical layout).
+        unsafe {
+            let mut v_results = std::mem::ManuallyDrop::new(metta_results);
+            Vec::from_raw_parts(
+                v_results.as_mut_ptr() as *mut (V, GenericBindings<V>),
+                v_results.len(),
+                v_results.capacity(),
+            )
         }
     }
 

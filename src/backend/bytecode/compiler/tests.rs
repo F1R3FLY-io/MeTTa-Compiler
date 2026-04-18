@@ -916,6 +916,95 @@ fn test_compile_cdr_atom_user_sexpr_preserves_structure() {
 }
 
 #[test]
+fn test_compile_user_call_user_sexpr_arg_is_literal() {
+    // HE parity: when a user-defined call has an S-expr arg whose head is
+    // also a user-defined atom, the arg must be materialized via
+    // `MakeSExpr` (literal data), NOT emitted as a nested `Call`. Runtime
+    // `vm_type_driven_pre_eval` inside `op_dispatch_rules` decides per-arg
+    // whether to reduce, consulting the live env's declared + inferred
+    // types. Compile-time eager emission would pre-reduce the arg before
+    // the type system can classify it — breaking HE semantics for heads
+    // with meta / inferred-%Undefined% parameter types.
+    //
+    // Example: `(test-q (f a))` must compile so the arg `(f a)` arrives
+    // at the VM unreduced. Without this, `(= (f a) 1)` would turn the
+    // call into `(test-q 1)` before pattern-matching could bind
+    // `$term = (f a)`.
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("test-q".to_string()),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("f".to_string()),
+            MettaValue::Atom("a".to_string()),
+        ]),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // Outer call must still emit `Call test-q 1`.
+    assert!(
+        disasm.contains("call"),
+        "outer user call should emit a Call opcode; got:\n{}",
+        disasm
+    );
+    // Inner arg `(f a)` must be materialized via MakeSExpr (literal form),
+    // proving the compiler did NOT emit a nested `Call f 1` for the arg.
+    assert!(
+        disasm.contains("make_sexpr"),
+        "user-defined S-expr arg must materialize via make_sexpr; got:\n{}",
+        disasm
+    );
+    // The disassembly should mention `test-q` as a constant, and `f` as a
+    // constant pushed for MakeSExpr — but must not emit `call f`.
+    assert!(
+        !disasm.contains("call f"),
+        "compiler must NOT emit Call for user-defined S-expr arg; got:\n{}",
+        disasm
+    );
+}
+
+#[test]
+fn test_compile_user_call_grounded_sexpr_arg_still_eager() {
+    // Complement to `test_compile_user_call_user_sexpr_arg_is_literal`.
+    // Grounded operators (`+`, `*`, …) and eager special forms are
+    // always-eager in HE's `interpret_function`. The compiler preserves
+    // the existing fast path for those heads — their args go through
+    // `self.compile` (direct builtin opcodes) rather than
+    // `compile_as_literal_sexpr`.
+    //
+    // Uses a variable to defeat constant folding; `(+ $x 1)` must emit
+    // the direct `add` opcode (not `MakeSExpr`), proving that grounded
+    // heads are still compiled eagerly as args to a user call.
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("let".to_string()),
+        MettaValue::Atom("$x".to_string()),
+        MettaValue::Long(5),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Long(1),
+            ]),
+        ]),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+    // `+` must compile to `add` (direct builtin), not to MakeSExpr.
+    // Match "add" as a whole word in the disassembly (the disassembler
+    // prefixes each line with byte offsets like "0007    1  add").
+    assert!(
+        disasm.split_whitespace().any(|tok| tok == "add"),
+        "grounded `+` arg must compile to direct Add opcode; got:\n{}",
+        disasm
+    );
+    // `Call foo 1` must still fire for the outer user-defined call.
+    assert!(
+        disasm.contains("call"),
+        "outer user call should emit a Call opcode; got:\n{}",
+        disasm
+    );
+}
+
+#[test]
 fn test_compile_size_atom() {
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("size-atom".to_string()),
@@ -958,7 +1047,19 @@ fn test_compile_unknown_operation() {
 
 #[test]
 fn test_compile_nested_call() {
-    // (foo (bar 1)) - nested calls: inner is not in tail position
+    // (foo (bar 1)) — nested user-defined call.
+    //
+    // **HE parity** (since the compile-args-as-literal fix): the INNER
+    // call `(bar 1)` must NOT emit a `Call bar 1` opcode — it's an arg
+    // to a user-defined call `foo`, so it's materialized as literal
+    // data via `PushAtom bar; PushLong 1; MakeSExpr 2`. The OUTER
+    // `foo` emits the only call (as a `tail_call` since the top-level
+    // expression is in tail position).
+    //
+    // Before the fix, this test asserted 1 regular `Call` + 1
+    // `TailCall`. That assertion encoded the pre-fix bytecode where
+    // inner args were eagerly reduced, breaking HE semantics for
+    // meta / inferred-%Undefined% parameter types.
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("foo".to_string()),
         MettaValue::SExpr(vec![
@@ -968,14 +1069,34 @@ fn test_compile_nested_call() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    // Inner call (bar 1) should be regular call, not tail_call
-    assert!(disasm.contains("call")); // Will match both "call" and "tail_call"
-                                      // Count occurrences
-    let call_count = disasm.matches("call").count();
+    // Inner arg must be materialized as literal S-expr.
+    assert!(
+        disasm.contains("make_sexpr"),
+        "inner arg must materialize via make_sexpr; got:\n{}",
+        disasm
+    );
+    // Outer call must emit a call opcode (tail_call at top level).
+    assert!(
+        disasm.contains("tail_call"),
+        "outer call should emit tail_call at top level; got:\n{}",
+        disasm
+    );
+    // There must be exactly ONE `tail_call` (outer foo) and ZERO
+    // regular `Call` opcodes — the inner `bar` is literal data.
     let tail_call_count = disasm.matches("tail_call").count();
-    // Should have one regular call (bar) and one tail call (foo)
-    assert_eq!(call_count, 2); // "call" appears in both "call" and "tail_call"
-    assert_eq!(tail_call_count, 1);
+    let call_count = disasm.matches("call").count();
+    assert_eq!(
+        tail_call_count, 1,
+        "expected 1 tail_call; got {}:\n{}",
+        tail_call_count, disasm
+    );
+    // "call" appears as a substring of "tail_call"; with the literal-
+    // arg fix, that's the only occurrence.
+    assert_eq!(
+        call_count, 1,
+        "expected `call` to appear only as substring of tail_call; got {}:\n{}",
+        call_count, disasm
+    );
 }
 
 #[test]

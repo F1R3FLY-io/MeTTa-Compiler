@@ -12,6 +12,7 @@ use super::context::CompileContext;
 use super::error::{CompileError, CompileResult};
 use crate::backend::bytecode::chunk::{GenericBytecodeChunk, GenericChunkBuilder, JumpLabel};
 use crate::backend::bytecode::opcodes::Opcode;
+use crate::backend::eval::{is_eager_special_form, is_grounded_op};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
 /// Generic bytecode compiler that works with any value type.
@@ -269,15 +270,49 @@ where
         self.compile(expr)
     }
 
+    /// Compile a single argument to a user-defined call.
+    ///
+    /// **MeTTa HE parity.** HE's `interpret_function` only pre-evaluates an
+    /// argument when the callee's DECLARED parameter type is concrete
+    /// (non-meta). Unknown / meta / inferred-%Undefined% parameter types cause
+    /// the argument to be passed unevaluated into unification-based rule
+    /// matching. We can't decide that at compile time — declared types are
+    /// registered during interpretation, and inferred types (Phase 10) don't
+    /// appear in the registry until rules execute. So the compiler MUST NOT
+    /// pre-reduce S-expr args whose head is user-defined: it constructs the
+    /// arg as literal data, and `op_dispatch_rules` → `vm_type_driven_pre_eval`
+    /// decides per-arg at runtime using the live type environment.
+    ///
+    /// Exception: grounded operators (`+`, `*`, `cons-atom`, …) and eager
+    /// special forms (`collapse`, `reduce`, …) are always-eager in HE — they
+    /// reduce before being passed to any caller. We preserve the existing
+    /// fast-path for those heads: they compile through `self.compile`, which
+    /// emits the direct builtin opcodes, avoiding a needless round-trip
+    /// through the trampoline.
+    fn compile_arg_for_user_call(&mut self, arg: &V) -> CompileResult<()> {
+        if let Some(items) = arg.as_sexpr() {
+            if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+                if is_grounded_op(head) || is_eager_special_form(head) {
+                    return self.compile(arg);
+                }
+            }
+        }
+        self.compile_as_literal_sexpr(arg)
+    }
+
     /// Compile a function call to a user-defined rule
     fn compile_call(&mut self, head: &str, args: &[V]) -> CompileResult<()> {
         let arity = args.len();
 
-        // Compile arguments (left-to-right) - not in tail position
+        // Compile arguments (left-to-right) - not in tail position.
+        // User-defined call args go through `compile_arg_for_user_call` so
+        // S-expr args with user-defined heads reach the VM as literal data,
+        // letting `vm_type_driven_pre_eval` apply the HE meta-type rule at
+        // runtime against the live env.
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
         for arg in args {
-            self.compile(arg)?;
+            self.compile_arg_for_user_call(arg)?;
         }
         self.in_tail_position = saved_tail;
 

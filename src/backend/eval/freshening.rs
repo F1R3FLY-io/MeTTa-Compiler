@@ -17,9 +17,11 @@
 //! `$__fr_{epoch}_{name}` where epoch is a globally unique counter. Non-variable
 //! atoms (`&self`, `&kb`, `&stack`, literals) pass through unchanged.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 /// Global counter for freshening epochs. Each call to `freshen_variables_generic`
 /// gets a unique epoch to ensure cross-call variable isolation.
@@ -56,6 +58,213 @@ where
 {
     let epoch = FRESHEN_COUNTER.fetch_add(1, Ordering::Relaxed);
     freshen_with_epoch(value, epoch, factory)
+}
+
+/// Allocate a unique freshening epoch from the global counter.
+///
+/// Used to mint per-invocation epochs at rule-match time so each rule
+/// dispatch produces globally-distinct `$__fr_{epoch}_*` variable
+/// names (mirrors HE's `CachingMapper::new(|v| v.make_unique())` at
+/// `/home/dylon/Workspace/f1r3fly.io/hyperon-experimental/hyperon-space/src/index/trie.rs:262`).
+#[inline]
+pub fn allocate_epoch() -> u64 {
+    FRESHEN_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Freshen all variables in `value` under a caller-supplied `epoch`.
+///
+/// Unlike `freshen_variables_generic` which mints a fresh epoch per
+/// call, this variant reuses the caller's epoch so multiple calls
+/// within the same rule dispatch (LHS + RHS + bindings keys) share
+/// variable identity. Mirrors HE's per-query `CachingMapper` which
+/// caches the renaming within a single query invocation.
+pub fn freshen_variables_with_epoch<V, F>(value: &V, epoch: u64, factory: &F) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    freshen_with_epoch(value, epoch, factory)
+}
+
+/// Thread-local cache of interned fresh names keyed on `(epoch, bare_name)`.
+///
+/// Amortizes the `format!("$__fr_{epoch}_{bare}")` + `alloc_str` cost
+/// when a single rule match freshens the same variable name multiple
+/// times (LHS pattern, bindings keys, RHS template all share the
+/// rule's variable set). Because the epoch changes per match, entries
+/// age out quickly — the cache bounds size, evicting oldest via simple
+/// HashMap with periodic clear.
+thread_local! {
+    static FRESH_NAME_CACHE: RefCell<HashMap<(u64, &'static str), &'static str>> =
+        RefCell::new(HashMap::with_capacity(64));
+}
+
+/// Cap the thread-local cache size so long-running processes don't
+/// accumulate unboundedly. 1024 entries ≈ 128 epochs × 8 vars/epoch.
+const FRESH_NAME_CACHE_CAP: usize = 1024;
+
+/// Look up or allocate an interned fresh name for `(epoch, bare_name)`.
+///
+/// Returns a `&'static str` pointing into the global slab allocator.
+#[inline]
+fn intern_fresh_name(epoch: u64, bare_name: &'static str) -> &'static str {
+    FRESH_NAME_CACHE.with(|cache| {
+        let mut c = cache.borrow_mut();
+        if let Some(&s) = c.get(&(epoch, bare_name)) {
+            return s;
+        }
+        if c.len() >= FRESH_NAME_CACHE_CAP {
+            c.clear();
+        }
+        let formatted = format!("$__fr_{}_{}", epoch, bare_name);
+        let interned: &'static str =
+            crate::backend::models::global_allocator().alloc_str(&formatted);
+        c.insert((epoch, bare_name), interned);
+        interned
+    })
+}
+
+/// Rename `GenericBindings` keys in-place using a per-match epoch.
+///
+/// For every binding `(name, value)`: if `name` is listed in
+/// `rule_var_names` (the rule's LHS/RHS variable set), replace it with
+/// `$__fr_{epoch}_{bare_name}` (same format as
+/// `freshen_variables_with_epoch`). Otherwise, keep the key unchanged.
+///
+/// **Use case**: `StructuralMatcher::try_match` produces bindings keyed
+/// on the rule's ORIGINAL variable names (`$a`, `$b`). Immediately
+/// after the match, this function rewrites those keys to per-epoch
+/// unique names so they cannot collide with a sibling nondet branch's
+/// bindings for the same rule variables. Mirrors HE's
+/// `Bindings::from(CachingMapper(rule_vars))` pattern.
+///
+/// Bindings WHOSE KEY IS NOT IN `rule_var_names` are preserved
+/// verbatim — these are caller-level variables (e.g., query vars like
+/// `$who`) that must retain their user-facing names.
+///
+/// Values are NOT rewritten here. A rule's bindings values rarely
+/// contain its own LHS vars (they contain caller-side atoms), but if
+/// that case arises (e.g. bidirectional unify of `(f $x)` against
+/// `(f $y)` producing `$x → $y`), the caller should additionally run
+/// `freshen_value_occurrences_with_epoch`.
+pub fn freshen_bindings_keys_with_epoch<V>(
+    bindings: GenericBindings<V>,
+    epoch: u64,
+    rule_var_names: &[&'static str],
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone,
+{
+    if bindings.is_empty() || rule_var_names.is_empty() {
+        return bindings;
+    }
+    let mut renamed = GenericBindings::<V>::new();
+    for (name, value) in bindings.iter() {
+        if let Some(idx) = rule_var_names.iter().position(|n| *n == name) {
+            let bare = &rule_var_names[idx][1..]; // strip leading '$'
+            let fresh = intern_fresh_name(epoch, bare);
+            renamed.insert_or_replace(fresh, value.clone());
+        } else {
+            renamed.insert_or_replace(name, value.clone());
+        }
+    }
+    renamed
+}
+
+/// Rename only the variable occurrences within `value` whose bare name
+/// matches one in `rule_var_names`, using the per-match `epoch`.
+///
+/// Used when a bound value contains rule-LHS variable references (the
+/// bidirectional-unify case). Variables NOT in `rule_var_names` (e.g.
+/// caller-level vars like `$who`) pass through unchanged, unlike
+/// `freshen_variables_with_epoch` which renames every `$`-prefixed
+/// atom.
+pub fn freshen_value_occurrences_with_epoch<V, F>(
+    value: &V,
+    epoch: u64,
+    rule_var_names: &[&'static str],
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    if rule_var_names.is_empty() {
+        return value.clone();
+    }
+    selective_freshen_with_epoch(value, epoch, rule_var_names, factory)
+}
+
+/// Selective freshening: only rewrites variable atoms whose exact name
+/// appears in `only`. Mirrors the structure of `freshen_with_epoch`
+/// but uses the rule's variable-name set as a filter.
+fn selective_freshen_with_epoch<V, F>(
+    value: &V,
+    epoch: u64,
+    only: &[&'static str],
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    let mut work_stack: Vec<FreshenWork<V>> = Vec::with_capacity(32);
+    let mut result_stack: Vec<V> = Vec::with_capacity(32);
+
+    work_stack.push(FreshenWork::Process(value));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            FreshenWork::Process(val) => {
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$')
+                        && name != "_"
+                        && only.iter().any(|n| *n == name)
+                    {
+                        let bare = &name[1..];
+                        let fresh = intern_fresh_name(epoch, bare);
+                        result_stack.push(factory.atom(fresh));
+                    } else {
+                        result_stack.push(val.clone());
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(FreshenWork::BuildSExpr(items.len()));
+                        for item in items.iter().rev() {
+                            work_stack.push(FreshenWork::Process(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(FreshenWork::BuildConjunction(goals.len()));
+                        for goal in goals.iter().rev() {
+                            work_stack.push(FreshenWork::Process(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val.clone());
+                }
+            }
+            FreshenWork::BuildSExpr(count) => {
+                let start = result_stack.len() - count;
+                let children: Vec<V> = result_stack.drain(start..).collect();
+                result_stack.push(factory.sexpr(children));
+            }
+            FreshenWork::BuildConjunction(count) => {
+                let start = result_stack.len() - count;
+                let children: Vec<V> = result_stack.drain(start..).collect();
+                result_stack.push(factory.conjunction(children));
+            }
+        }
+    }
+
+    result_stack
+        .pop()
+        .expect("Result stack should not be empty after freshening")
 }
 
 /// Freshen variables with a specific epoch (used internally and by tests).

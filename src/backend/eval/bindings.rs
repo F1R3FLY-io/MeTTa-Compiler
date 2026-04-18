@@ -1172,51 +1172,102 @@ where
                 }
                 result.insert_or_replace(name, outer_val.clone());
             } else {
-                // Both ground but unequal. This commonly arises when outer
-                // holds a POST-pre-eval value (e.g. $__fr_1_stv1=(stv 1 0.9)
-                // after applicative pre-eval of the arg) while inner still
-                // carries the PRE-pre-eval form (e.g. $__fr_1_stv1=(father
-                // $who b)) from the child's own match. These are not truly
-                // inconsistent — they are the same term before and after
-                // applicative reduction. Prefer the outer (more-resolved)
-                // value and continue. Returning empty here silently drops
-                // all user-visible bindings (e.g. $who=a) and causes Layer A
-                // projection to miss them at the sidecar.
+                // Phase 2B (revised): distinguish two sub-cases:
                 //
-                // Phase 2A diagnostic: log every prefer-outer conflict so
-                // we can empirically verify whether the "rewrite stage"
-                // case still fires post-Phase-1 (where foldl-atom now
-                // threads bindings correctly). If Phase 1 eliminated
-                // this source of conflict, we can switch to strict
-                // empty-on-conflict in Phase 2B without regression.
-                #[cfg(feature = "eval-trace")]
-                {
-                    crate::backend::trace::with_trace_collector_ref(|tc| {
-                        tc.emit_converted(
-                            trace_format::TraceTier::TreeWalker,
-                            0,
-                            trace_format::TraceValue::Unit,
-                            vec![],
-                            None,
-                            trace_format::TraceEventKind::BindingsDropped {
-                                cont_kind: "compose_outer_inner_generic".to_string(),
-                                flow_id: 0,
-                                site: format!(
-                                    "bindings.rs:compose-conflict name={} outer={:?} inner={:?}",
-                                    name,
-                                    crate::backend::trace::convert::trace_value_generic(outer_val),
-                                    crate::backend::trace::convert::trace_value_generic(inner_val),
-                                ),
-                                dropped_keys: vec![name.to_string()],
-                                sample: vec![(
-                                    name.to_string(),
-                                    crate::backend::trace::convert::trace_value_generic(outer_val),
-                                )],
-                            },
-                        );
-                    });
+                // A. "Rewrite-stage" variants: outer holds the POST-eval
+                //    form (more reduced / more bound), inner holds the
+                //    PRE-eval syntactic form (retaining free variables).
+                //    OR vice versa. These are not inconsistent — they
+                //    are the same term at different reduction points in
+                //    the evaluation pipeline. Prefer the more-resolved
+                //    side (fewer free variables).
+                //
+                // B. Genuinely inconsistent: both sides are fully ground
+                //    (no free variables) but name DIFFERENT concrete
+                //    values. HE's `Bindings::merge` rejects this → branch
+                //    dies. We return empty.
+                //
+                // The `outer.has_variables_fast()` test is a cheap
+                // structural proxy for "more/less resolved". Two terms
+                // that both still have variables are indeterminate and
+                // get treated as inconsistent (conservatively empty).
+                let outer_has_vars = outer_val.has_variables_fast();
+                let inner_has_vars = inner_val.has_variables_fast();
+                match (outer_has_vars, inner_has_vars) {
+                    (true, false) => {
+                        // Inner is more resolved — prefer inner.
+                        result.insert_or_replace(name, inner_val.clone());
+                    }
+                    (false, true) => {
+                        // Outer is more resolved — prefer outer.
+                        result.insert_or_replace(name, outer_val.clone());
+                    }
+                    (false, false) => {
+                        // Both ground and unequal — genuinely
+                        // inconsistent branch. HE-faithful: return empty.
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            crate::backend::trace::with_trace_collector_ref(|tc| {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    0,
+                                    trace_format::TraceValue::Unit,
+                                    vec![],
+                                    None,
+                                    trace_format::TraceEventKind::BindingsDropped {
+                                        cont_kind: "compose_outer_inner_generic"
+                                            .to_string(),
+                                        flow_id: 0,
+                                        site: format!(
+                                            "bindings.rs:compose-conflict-ground-ground name={} outer={:?} inner={:?}",
+                                            name,
+                                            crate::backend::trace::convert::trace_value_generic(outer_val),
+                                            crate::backend::trace::convert::trace_value_generic(inner_val),
+                                        ),
+                                        dropped_keys: vec![name.to_string()],
+                                        sample: vec![(
+                                            name.to_string(),
+                                            crate::backend::trace::convert::trace_value_generic(outer_val),
+                                        )],
+                                    },
+                                );
+                            });
+                        }
+                        return GenericBindings::new();
+                    }
+                    (true, true) => {
+                        // Both still have free variables — unresolvable
+                        // without more information. Conservatively treat
+                        // as inconsistent.
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            crate::backend::trace::with_trace_collector_ref(|tc| {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    0,
+                                    trace_format::TraceValue::Unit,
+                                    vec![],
+                                    None,
+                                    trace_format::TraceEventKind::BindingsDropped {
+                                        cont_kind: "compose_outer_inner_generic"
+                                            .to_string(),
+                                        flow_id: 0,
+                                        site: format!(
+                                            "bindings.rs:compose-conflict-nonground name={}",
+                                            name,
+                                        ),
+                                        dropped_keys: vec![name.to_string()],
+                                        sample: vec![(
+                                            name.to_string(),
+                                            crate::backend::trace::convert::trace_value_generic(outer_val),
+                                        )],
+                                    },
+                                );
+                            });
+                        }
+                        return GenericBindings::new();
+                    }
                 }
-                result.insert_or_replace(name, outer_val.clone());
             }
         } else {
             // Only outer has it.

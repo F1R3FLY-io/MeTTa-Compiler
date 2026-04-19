@@ -505,11 +505,20 @@ pub fn try_match_all_rules(
     if let Some(head) = expr.as_sexpr().and_then(|items| items.first()).and_then(|h| h.as_atom()) {
         if let Some(cache_entry) = operator_cache_get(head, expr_arity) {
             if cache_entry.all_structural && cache_entry.candidate_count == 1 {
-                // Fast path: skip hash, skip match_result_cache, go straight to structural match
+                // Fast path: skip hash, skip match_result_cache, go straight to structural match.
+                // Phase 3.2-A: the trampoline downstream applies bindings to
+                // the template via `EvalWithBindings`. Under per-match
+                // freshening, `match_rules_native` has ALREADY substituted
+                // bindings into a per-match-freshened RHS (stored in
+                // `instantiated_rhs`). Returning `(instantiated_rhs,
+                // empty_bindings)` lets the downstream apply-bindings
+                // pass be a no-op — preserving the per-match freshened
+                // names (essential for branch isolation) without double-
+                // substituting against original-keyed bindings.
                 let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v);
                 return results
                     .into_iter()
-                    .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
+                    .map(|r| (r.instantiated_rhs, Bindings::new(), r.rhs_type))
                     .collect();
             }
         }
@@ -524,10 +533,12 @@ pub fn try_match_all_rules(
 
     // Use native byte-level matching via RuleIndex + extract_data.
     // match_rules_native also populates the operator cache for Phase E.
+    // Phase 3.2-A: emit `(instantiated_rhs, empty_bindings)` — same
+    // rationale as the fast-path above.
     let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v);
     let result_vec: Vec<(MettaValue, Bindings, Option<MettaValue>)> = results
         .into_iter()
-        .map(|r| (r.rhs_template, r.bindings, r.rhs_type))
+        .map(|r| (r.instantiated_rhs, Bindings::new(), r.rhs_type))
         .collect();
 
     // Store in match result cache
@@ -587,18 +598,26 @@ pub fn enumerate_rules_via_unification(
         if !is_rule_live(entry.global_rule_index) {
             continue;
         }
-        // entry.lhs is already Fix-3B-freshened (alpha-renamed via
-        // freshen_variables_generic on the combined `(= lhs rhs)` at insertion
-        // time), so the rule's variables are guaranteed disjoint from the
-        // caller's. Unify directly without re-freshening.
-        if let Some(bindings) = bidirectional_unify_generic(&entry.lhs, query) {
-            // Instantiate the RHS with the unified bindings. The bindings
-            // contain BOTH rule-local variables (originating from entry.lhs)
-            // AND query variables (originating from `query`); applying them
-            // to the rule's RHS produces a value that may still contain
-            // query variables (which is the point — the caller's eval
-            // continuation needs to see them propagate).
-            let instantiated = apply_bindings(&entry.rhs, &bindings, factory);
+        // Phase 3.2-A per-invocation freshening: rules are stored with
+        // Fix-3B per-load-freshened names (`$__fr_{N}_*`). Before
+        // unifying we allocate a PER-MATCH epoch and rename the LHS
+        // (and later the RHS) under that epoch, so the rule's vars are
+        // guaranteed disjoint from BOTH (a) caller's query variables
+        // and (b) any sibling nondet branch's match of the same rule.
+        // HE parity: `CachingMapper` per query at
+        // `/home/dylon/Workspace/f1r3fly.io/hyperon-experimental/hyperon-space/src/index/trie.rs:262`.
+        use crate::backend::eval::freshening::{
+            allocate_epoch, freshen_variables_with_epoch,
+        };
+        let epoch = allocate_epoch();
+        let lhs_freshened = freshen_variables_with_epoch(&entry.lhs, epoch, factory);
+        if let Some(bindings) = bidirectional_unify_generic(&lhs_freshened, query) {
+            let rhs_freshened = if entry.rhs_has_variables {
+                freshen_variables_with_epoch(&entry.rhs, epoch, factory)
+            } else {
+                entry.rhs.clone()
+            };
+            let instantiated = apply_bindings(&rhs_freshened, &bindings, factory);
             out.push((instantiated, bindings, entry.rhs_type.clone()));
         }
     }

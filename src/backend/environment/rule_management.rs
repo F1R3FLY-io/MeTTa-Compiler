@@ -1720,6 +1720,31 @@ fn count_newvar_tags(bytes: &[u8]) -> usize {
 /// Returns `(var_names, wildcard_indices)` where:
 /// - `var_names[i]` is the full variable name including `$` prefix for De Bruijn index `i`
 /// - `wildcard_indices` contains indices of anonymous wildcard variables
+/// Walk a value tree and collect every `$`-prefixed atom name into
+/// `out` (strings, not pointer identities). Used by the Phase 3.2-B
+/// trace emission to show which variable occurrences exist in a RHS
+/// template before/after freshening.
+#[cfg(feature = "eval-trace")]
+fn collect_variable_names_into<V: MettaValueTrait>(value: &V, out: &mut Vec<String>) {
+    let mut stack: Vec<&V> = Vec::new();
+    stack.push(value);
+    while let Some(v) = stack.pop() {
+        if let Some(name) = v.as_atom() {
+            if name.starts_with('$') && name != "_" {
+                out.push(name.to_string());
+            }
+        } else if let Some(items) = v.as_sexpr() {
+            for item in items.iter() {
+                stack.push(item);
+            }
+        } else if let Some(goals) = v.as_conjunction() {
+            for goal in goals.iter() {
+                stack.push(goal);
+            }
+        }
+    }
+}
+
 fn build_var_names_and_wildcards(
     ctx_var_names: &[String],
     lhs_var_count: usize,
@@ -2704,14 +2729,31 @@ where
                                         );
                                     }
                                     if let Some(bindings) = bindings {
+                                        // Phase 3.2-A: per-invocation freshening (parallel path).
+                                        // Keep bindings with ORIGINAL keys (for the VM's
+                                        // compiled_rhs path). Freshen only the RHS template
+                                        // variables, then substitute using a temporarily-
+                                        // freshened copy of bindings. See sequential path
+                                        // for rationale.
+                                        use crate::backend::eval::freshening::{
+                                            allocate_epoch, freshen_bindings_keys_with_epoch,
+                                            freshen_variables_with_epoch,
+                                        };
+                                        let epoch = allocate_epoch();
                                         let instantiated_rhs = if entry.rhs_has_variables {
-                                            // SAFETY: V is MettaValue, fac is GcFactory (TypeId checked).
-                                            let v_ref: &crate::backend::models::MettaValue =
+                                            // SAFETY: V is MettaValue, fac is GcFactory (TypeId checked at outer scope).
+                                            let rhs_mv: &crate::backend::models::MettaValue =
                                                 unsafe { &*(&entry.rhs as *const V as *const crate::backend::models::MettaValue) };
+                                            let rhs_freshened_mv: crate::backend::models::MettaValue =
+                                                freshen_variables_with_epoch(rhs_mv, epoch, &fac);
+                                            let bindings_for_apply: crate::backend::models::GenericBindings<V> =
+                                                freshen_bindings_keys_with_epoch(
+                                                    bindings.clone(), epoch, &entry.var_names,
+                                                );
                                             let b_ref: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
-                                                unsafe { &*(&bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
+                                                unsafe { &*(&bindings_for_apply as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
                                             let result = crate::backend::eval::trampoline::engine::apply_bindings(
-                                                v_ref, b_ref, &fac,
+                                                &rhs_freshened_mv, b_ref, &fac,
                                             );
                                             // SAFETY: MettaValue and V are the same type
                                             unsafe { std::mem::transmute_copy::<crate::backend::models::MettaValue, V>(&result) }
@@ -2817,8 +2859,137 @@ where
                     if let Some(bindings) = bindings {
                         // Match succeeded — commit choice point
                         arena.commit_choice_point();
+
+                        // Phase 3.2-A: per-invocation freshening.
+                        //
+                        // We rename the RHS template's variables under a
+                        // per-match `epoch` so sibling nondet branches of the
+                        // same rule can't have their RHS sub-evaluations share
+                        // `$__fr_N_*` keys (which would collide inside
+                        // `compose_outer_inner_generic` chains and produce
+                        // ghost `collapse-bind` pairs).
+                        //
+                        // The `bindings` themselves keep the ORIGINAL rule
+                        // variable names (post-load-freshening, `$__fr_N_*`).
+                        // The rule's pre-compiled bytecode (in
+                        // `compiled_rhs`) references those same original
+                        // names via `PushVariable` opcodes, so keeping the
+                        // bindings' keys stable is REQUIRED for the
+                        // bytecode VM path. For cross-branch isolation of
+                        // rule-body variables (e.g. a `chain`'s bind
+                        // target), the RHS freshening is what matters —
+                        // `instantiated_rhs` below substitutes bindings
+                        // into the freshened RHS, leaving freshened body-
+                        // only vars (epoch-unique) for downstream.
+                        //
+                        // HE parity: mirrors `CachingMapper` per-query at
+                        // `/home/dylon/Workspace/f1r3fly.io/hyperon-experimental/hyperon-space/src/index/trie.rs:262`.
+                        use crate::backend::eval::freshening::{
+                            allocate_epoch, freshen_variables_with_epoch,
+                        };
+                        let epoch = allocate_epoch();
+                        // Phase 3.2-B: emit `BindingsExtracted` so the
+                        // analyzer can see what the matcher produced.
+                        #[cfg(feature = "eval-trace")]
+                        {
+                            let bindings_tv: Vec<(String, trace_format::TraceValue)> =
+                                bindings
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        (
+                                            k.to_string(),
+                                            crate::backend::trace::trace_value_generic(v),
+                                        )
+                                    })
+                                    .collect();
+                            let var_names_tv: Vec<String> = entry
+                                .var_names
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect();
+                            crate::backend::trace::thread_local_sink::with_trace_collector_ref(
+                                |tc| {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        0,
+                                        crate::backend::trace::trace_value_generic(expr),
+                                        vec![],
+                                        None,
+                                        trace_format::TraceEventKind::BindingsExtracted {
+                                            source: "structural".to_string(),
+                                            head: head.to_string(),
+                                            arity: arity as u32,
+                                            bindings: bindings_tv.clone(),
+                                            var_names: var_names_tv.clone(),
+                                        },
+                                    );
+                                },
+                            );
+                        }
                         let instantiated_rhs = if entry.rhs_has_variables {
-                            apply_bindings(&entry.rhs, &bindings, &self.factory)
+                            let rhs_freshened = freshen_variables_with_epoch(
+                                &entry.rhs,
+                                epoch,
+                                &self.factory,
+                            );
+                            // Apply the ORIGINAL bindings to the freshened
+                            // RHS: LHS-bound vars in the freshened RHS have
+                            // keys like `$__fr_{epoch}___fr_{N}_x`, but
+                            // `bindings` has keys like `$__fr_{N}_x`. To
+                            // make the substitution work, we also freshen
+                            // the bindings keys for apply_bindings purposes
+                            // only — keeping the un-freshened copy in the
+                            // returned `RuleMatchResult.bindings` for the
+                            // bytecode VM's compiled_rhs path.
+                            use crate::backend::eval::freshening::freshen_bindings_keys_with_epoch;
+                            let bindings_for_apply = freshen_bindings_keys_with_epoch(
+                                bindings.clone(),
+                                epoch,
+                                &entry.var_names,
+                            );
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                let after_tv: Vec<(String, trace_format::TraceValue)> =
+                                    bindings_for_apply
+                                        .iter()
+                                        .map(|(k, v)| {
+                                            (
+                                                k.to_string(),
+                                                crate::backend::trace::trace_value_generic(v),
+                                            )
+                                        })
+                                        .collect();
+                                let rhs_before: Vec<String> = {
+                                    let mut out = Vec::new();
+                                    collect_variable_names_into(&entry.rhs, &mut out);
+                                    out
+                                };
+                                let rhs_after: Vec<String> = {
+                                    let mut out = Vec::new();
+                                    collect_variable_names_into(&rhs_freshened, &mut out);
+                                    out
+                                };
+                                crate::backend::trace::thread_local_sink::with_trace_collector_ref(
+                                    |tc| {
+                                        tc.emit_converted(
+                                            trace_format::TraceTier::TreeWalker,
+                                            0,
+                                            crate::backend::trace::trace_value_generic(expr),
+                                            vec![],
+                                            None,
+                                            trace_format::TraceEventKind::BindingsFreshened {
+                                                source: "structural".to_string(),
+                                                epoch,
+                                                before: Vec::new(),
+                                                after: after_tv,
+                                                rhs_before_var_occurrences: rhs_before,
+                                                rhs_after_var_occurrences: rhs_after,
+                                            },
+                                        );
+                                    },
+                                );
+                            }
+                            crate::backend::eval::bindings::apply_bindings_generic(&rhs_freshened, &bindings_for_apply, &self.factory)
                         } else {
                             entry.rhs.clone()
                         };
@@ -2965,8 +3136,21 @@ where
                             );
                         }
                         if let Some(bindings) = try_result {
+                            // Phase 3.2-A per-invocation freshening (MORK-slow-path, structural-matcher branch).
+                            // Keep bindings with ORIGINAL keys (VM compat); use a
+                            // temporarily-freshened copy only for apply_bindings.
+                            use crate::backend::eval::freshening::{
+                                allocate_epoch, freshen_bindings_keys_with_epoch,
+                                freshen_variables_with_epoch,
+                            };
+                            let epoch = allocate_epoch();
                             let instantiated_rhs = if entry.rhs_has_variables {
-                                apply_bindings(&entry.rhs, &bindings, &self.factory)
+                                let rhs_freshened =
+                                    freshen_variables_with_epoch(&entry.rhs, epoch, &self.factory);
+                                let bindings_for_apply = freshen_bindings_keys_with_epoch(
+                                    bindings.clone(), epoch, &entry.var_names,
+                                );
+                                crate::backend::eval::bindings::apply_bindings_generic(&rhs_freshened, &bindings_for_apply, &self.factory)
                             } else {
                                 entry.rhs.clone()
                             };
@@ -3024,8 +3208,21 @@ where
                     };
 
                     if let Some(bindings) = matched_bindings {
+                        // Phase 3.2-A per-invocation freshening (MORK-wide/pattern-match branch).
+                        // Keep bindings with ORIGINAL keys (VM compat); use a
+                        // temporarily-freshened copy only for apply_bindings.
+                        use crate::backend::eval::freshening::{
+                            allocate_epoch, freshen_bindings_keys_with_epoch,
+                            freshen_variables_with_epoch,
+                        };
+                        let epoch = allocate_epoch();
                         let instantiated_rhs = if entry.rhs_has_variables {
-                            apply_bindings(&entry.rhs, &bindings, &self.factory)
+                            let rhs_freshened =
+                                freshen_variables_with_epoch(&entry.rhs, epoch, &self.factory);
+                            let bindings_for_apply = freshen_bindings_keys_with_epoch(
+                                bindings.clone(), epoch, &entry.var_names,
+                            );
+                            crate::backend::eval::bindings::apply_bindings_generic(&rhs_freshened, &bindings_for_apply, &self.factory)
                         } else {
                             entry.rhs.clone()
                         };
@@ -3230,10 +3427,23 @@ where
                     )
                 };
 
+                // Phase 3.2-A per-invocation freshening (MORK-fast-path, hits iteration).
+                // Keep bindings with ORIGINAL keys (VM compat); use a
+                // temporarily-freshened copy only for apply_bindings.
+                use crate::backend::eval::freshening::{
+                    allocate_epoch, freshen_bindings_keys_with_epoch,
+                    freshen_variables_with_epoch,
+                };
+                let epoch = allocate_epoch();
                 // Apply bindings to the cached RHS template.
                 // Phase 6: Skip apply_bindings for ground RHS (no variables).
                 let instantiated_rhs = if entry.rhs_has_variables {
-                    apply_bindings(&entry.rhs, &bindings, &self.factory)
+                    let rhs_freshened =
+                        freshen_variables_with_epoch(&entry.rhs, epoch, &self.factory);
+                    let bindings_for_apply = freshen_bindings_keys_with_epoch(
+                        bindings.clone(), epoch, &entry.var_names,
+                    );
+                    crate::backend::eval::bindings::apply_bindings_generic(&rhs_freshened, &bindings_for_apply, &self.factory)
                 } else {
                     entry.rhs.clone()
                 };

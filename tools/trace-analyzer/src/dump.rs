@@ -440,6 +440,49 @@ fn print_kind_details(kind: &TraceEventKind) {
                 sample_str.join(", "),
             );
         }
+        TraceEventKind::BindingsExtracted { source, head, arity, bindings, var_names } => {
+            let b_str: Vec<String> = bindings
+                .iter()
+                .map(|(k, v)| format!("{}→{}", k, format_trace_value(v)))
+                .collect();
+            println!(
+                "  BindingsExtracted source={source} head={head} arity={arity} var_names={var_names:?} bindings=[{}]",
+                b_str.join(", "),
+            );
+        }
+        TraceEventKind::BindingsFreshened {
+            source,
+            epoch,
+            before,
+            after,
+            rhs_before_var_occurrences,
+            rhs_after_var_occurrences,
+        } => {
+            let before_str: Vec<String> = before
+                .iter()
+                .map(|(k, v)| format!("{}→{}", k, format_trace_value(v)))
+                .collect();
+            let after_str: Vec<String> = after
+                .iter()
+                .map(|(k, v)| format!("{}→{}", k, format_trace_value(v)))
+                .collect();
+            println!(
+                "  BindingsFreshened source={source} epoch={epoch} before=[{}] after=[{}] rhs_before={rhs_before_var_occurrences:?} rhs_after={rhs_after_var_occurrences:?}",
+                before_str.join(", "),
+                after_str.join(", "),
+            );
+        }
+        TraceEventKind::VariableLookupFailed {
+            context,
+            var_name,
+            available_keys,
+            template_excerpt,
+        } => {
+            println!(
+                "  ⚠ VariableLookupFailed context={context} var={var_name} available={available_keys:?} template={}",
+                format_trace_value(template_excerpt),
+            );
+        }
     }
 }
 

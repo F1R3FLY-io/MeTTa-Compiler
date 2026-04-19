@@ -224,5 +224,8 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ContinuationEmit { .. } => "ContinuationEmit",
         TraceEventKind::ContinuationExitNoResume { .. } => "ContinuationExitNoResume",
         TraceEventKind::BindingsDropped { .. } => "BindingsDropped",
+        TraceEventKind::BindingsExtracted { .. } => "BindingsExtracted",
+        TraceEventKind::BindingsFreshened { .. } => "BindingsFreshened",
+        TraceEventKind::VariableLookupFailed { .. } => "VariableLookupFailed",
     }
 }

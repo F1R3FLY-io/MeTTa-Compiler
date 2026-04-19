@@ -143,6 +143,9 @@ fn event_name(kind: &TraceEventKind) -> String {
         TraceEventKind::ContinuationEmit { cont_kind, flow_id, .. } => format!("ContEmit#{flow_id}:{cont_kind}"),
         TraceEventKind::ContinuationExitNoResume { cont_kind, flow_id, exit_kind } => format!("ContExit#{flow_id}:{cont_kind}:{exit_kind}"),
         TraceEventKind::BindingsDropped { cont_kind, flow_id, dropped_keys, .. } => format!("BindingsDropped#{flow_id}:{cont_kind}:{}", dropped_keys.join(",")),
+        TraceEventKind::BindingsExtracted { source, head, arity, .. } => format!("BindingsExtracted:{source}:{head}/{arity}"),
+        TraceEventKind::BindingsFreshened { source, epoch, .. } => format!("BindingsFreshened:{source}:epoch={epoch}"),
+        TraceEventKind::VariableLookupFailed { context, var_name, .. } => format!("VariableLookupFailed:{context}:{var_name}"),
     }
 }
 
@@ -185,6 +188,9 @@ fn event_category(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::TrampolineStep { .. } => "eval",
         TraceEventKind::ContinuationEnter { .. } | TraceEventKind::ContinuationEmit { .. }
         | TraceEventKind::ContinuationExitNoResume { .. }
-        | TraceEventKind::BindingsDropped { .. } => "binding-flow",
+        | TraceEventKind::BindingsDropped { .. }
+        | TraceEventKind::BindingsExtracted { .. }
+        | TraceEventKind::BindingsFreshened { .. }
+        | TraceEventKind::VariableLookupFailed { .. } => "binding-flow",
     }
 }

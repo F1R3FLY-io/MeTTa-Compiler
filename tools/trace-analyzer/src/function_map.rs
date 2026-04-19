@@ -352,7 +352,10 @@ pub fn classify_trace_event(kind: &TraceEventKind) -> TraceCategory {
         | TraceEventKind::ContinuationEnter { .. }
         | TraceEventKind::ContinuationEmit { .. }
         | TraceEventKind::ContinuationExitNoResume { .. }
-        | TraceEventKind::BindingsDropped { .. } => TraceCategory::Other,
+        | TraceEventKind::BindingsDropped { .. }
+        | TraceEventKind::BindingsExtracted { .. }
+        | TraceEventKind::BindingsFreshened { .. }
+        | TraceEventKind::VariableLookupFailed { .. } => TraceCategory::Other,
     }
 }
 

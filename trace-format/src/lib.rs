@@ -809,6 +809,67 @@ pub enum TraceEventKind {
         /// Sample of the dropped `(key, value)` pairs for debugging.
         sample: Vec<(String, TraceValue)>,
     },
+
+    // ---- Phase 3.2 Per-Invocation Freshening Diagnostics ----
+    //
+    // These three events form a diagnostic triad for tracking variable-
+    // name flow through the rule-match + apply_bindings pipeline. They
+    // were introduced to diagnose ghost-branch binding contamination
+    // caused by MeTTaTron's per-rule-load freshening strategy (vs HE's
+    // per-query `CachingMapper`). Enabling the `eval-trace` feature
+    // emits them; the `trace-analyzer bindings --freshening`
+    // subcommand summarizes them.
+    //
+    /// Emitted immediately after a rule match produces bindings, BEFORE
+    /// any per-match freshening pass. Captures what the matcher
+    /// actually produced so we can compare to the rule's `var_names`
+    /// list and detect key-set mismatches.
+    BindingsExtracted {
+        /// `"structural"` | `"structural-parallel"` | `"enhanced"` |
+        /// `"mork-extract"` | `"mork-wide"` | `"pattern-match-fallback"` |
+        /// `"bidirectional-unify"`
+        source: String,
+        head: String,
+        arity: u32,
+        bindings: Vec<(String, TraceValue)>,
+        /// The rule's stored `var_names` (keyed through MORK ctx at
+        /// insertion time). Used to spot mismatches with `bindings`'
+        /// keys.
+        var_names: Vec<String>,
+    },
+
+    /// Emitted right after a per-match freshening pass
+    /// (`freshen_bindings_keys_with_epoch` +
+    /// `freshen_variables_with_epoch` on the RHS template) completes.
+    /// Captures the epoch, before/after binding keys, and samples of
+    /// the RHS variable occurrences so we can verify that both
+    /// renamings aligned onto the same `&'static str` pointers.
+    BindingsFreshened {
+        /// Same source set as `BindingsExtracted`.
+        source: String,
+        epoch: u64,
+        before: Vec<(String, TraceValue)>,
+        after: Vec<(String, TraceValue)>,
+        /// Variable names observed in the RHS template BEFORE freshening.
+        rhs_before_var_occurrences: Vec<String>,
+        /// Variable names observed in the RHS template AFTER freshening.
+        rhs_after_var_occurrences: Vec<String>,
+    },
+
+    /// Emitted by `apply_bindings_generic` when a `$`-prefixed atom in
+    /// the template has no matching key in the supplied bindings set.
+    /// Throttled to bound trace volume — see `LOOKUP_FAIL_LIMIT` in
+    /// `src/backend/eval/bindings.rs`.
+    VariableLookupFailed {
+        /// `"apply_bindings/rhs"` | `"apply_bindings/wb-template"` |
+        /// `"apply_bindings/foldl-step"` | other call-site strings.
+        context: String,
+        var_name: String,
+        /// All keys present in the bindings at the failing lookup.
+        available_keys: Vec<String>,
+        /// Short excerpt of the template containing the missing var.
+        template_excerpt: TraceValue,
+    },
 }
 
 /// One nondeterministic alternative at a Resume boundary: a value paired

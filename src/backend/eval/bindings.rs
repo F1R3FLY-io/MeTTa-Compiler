@@ -551,6 +551,40 @@ where
                             // also get substituted.
                             work_stack.push(Work::ProcessOwned(bound.clone()));
                         } else {
+                            // Phase 3.2-B: emit a `VariableLookupFailed`
+                            // diagnostic trace when a `$`-prefixed atom
+                            // in the template has no matching key in
+                            // the supplied bindings. Throttled globally
+                            // so runaway traces don't explode.
+                            #[cfg(feature = "eval-trace")]
+                            {
+                                use std::sync::atomic::{AtomicU32, Ordering as AOrd};
+                                static LOOKUP_FAIL_EMITTED: AtomicU32 = AtomicU32::new(0);
+                                const LOOKUP_FAIL_LIMIT: u32 = 256;
+                                let n = LOOKUP_FAIL_EMITTED.fetch_add(1, AOrd::Relaxed);
+                                if n < LOOKUP_FAIL_LIMIT {
+                                    let keys: Vec<String> =
+                                        bindings.iter().map(|(k, _)| k.to_string()).collect();
+                                    crate::backend::trace::thread_local_sink::with_trace_collector_ref(
+                                        |tc| {
+                                            tc.emit_converted(
+                                                trace_format::TraceTier::TreeWalker,
+                                                0,
+                                                crate::backend::trace::trace_value_generic(val),
+                                                vec![],
+                                                None,
+                                                trace_format::TraceEventKind::VariableLookupFailed {
+                                                    context: "apply_bindings/template".to_string(),
+                                                    var_name: name.to_string(),
+                                                    available_keys: keys.clone(),
+                                                    template_excerpt:
+                                                        crate::backend::trace::trace_value_generic(val),
+                                                },
+                                            );
+                                        },
+                                    );
+                                }
+                            }
                             result_stack.push(val.clone());
                         }
                     } else {

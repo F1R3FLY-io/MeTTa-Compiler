@@ -326,6 +326,31 @@ pub enum Continuation {
         outer_carrying: SharedBindings,
     },
 
+    /// Phase 2.B: binding-preserving Cartesian-product iteration.
+    ///
+    /// Used when `CollectSExpr` detects multi-alternative children. Each
+    /// yielded combination already carries its composed bindings (with
+    /// conflicts pruned inside the iterator). `pending_combo_bindings` is
+    /// the current combo's bindings while its rule matches are dispatched.
+    ProcessCombinationsBound {
+        combinations: Box<crate::backend::eval::processing::ops::GenericCartesianProductBoundIter>,
+        results: Vec<BoundValue>,
+        pending_rule_matches: Vec<(MettaValue, GenericBindings<MettaValue>)>,
+        /// The current combo's composed bindings — threaded to
+        /// `dispatch_rule_matches` as `outer_carrying` for RHS evaluation,
+        /// and attached to no-match data results.
+        pending_combo_bindings: GenericBindings<MettaValue>,
+        env: SharedEnv,
+        depth: usize,
+        /// Ambient bindings from the caller's context. NOTE: these are NOT
+        /// the same as `pending_combo_bindings` — they are the outer context
+        /// INPUT to CollectSExpr. The iterator already composed them into
+        /// each combo's bindings, so this field is retained only for
+        /// symmetry with `ProcessCombinations` (unused at dispatch time;
+        /// see `dispatch_rule_matches` call sites).
+        outer_carrying: SharedBindings,
+    },
+
     /// Processing let binding
     ProcessLet {
         pending_values: Option<Vec<BoundValue>>,
@@ -1253,6 +1278,29 @@ impl Continuation {
                 }
             }
 
+            Self::ProcessCombinationsBound { combinations, results, pending_rule_matches, pending_combo_bindings, .. } => {
+                // Iterator inputs: each alternative carries value + bindings
+                // (both need GC tracking to survive mark-sweep).
+                for input_vec in combinations.inputs() {
+                    for (v, bindings) in input_vec.iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
+                }
+                // Iterator's outer_carrying also needs tracking.
+                collect_bindings_values(combinations.outer_carrying(), out);
+                // Current combo's composed bindings (during rule-match dispatch).
+                collect_bindings_values(pending_combo_bindings, out);
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                for (rhs, bindings) in pending_rule_matches {
+                    out.push(*rhs);
+                    collect_bindings_values(bindings, out);
+                }
+            }
+
             Self::ProcessLet { pending_values, pattern, body, outer_bindings, results, .. } => {
                 if let Some(pending) = pending_values {
                     for (v, bindings) in pending.iter() {
@@ -1651,6 +1699,7 @@ impl Continuation {
             | Self::ProcessGroundedOp { depth, .. }
             | Self::ProcessGroundedOpFanout { depth, .. }
             | Self::ProcessCombinations { depth, .. }
+            | Self::ProcessCombinationsBound { depth, .. }
             | Self::ProcessLet { depth, .. }
             | Self::CollectGroundedArg { depth, .. }
             | Self::CollectApplicativeResults { depth, .. }
@@ -1725,6 +1774,7 @@ impl Continuation {
             Self::ProcessGroundedOp { .. } => "ProcessGroundedOp",
             Self::ProcessGroundedOpFanout { .. } => "ProcessGroundedOpFanout",
             Self::ProcessCombinations { .. } => "ProcessCombinations",
+            Self::ProcessCombinationsBound { .. } => "ProcessCombinationsBound",
             Self::ProcessLet { .. } => "ProcessLet",
             Self::CollectGroundedArg { .. } => "CollectGroundedArg",
             Self::CollectApplicativeResults { .. } => "CollectApplicativeResults",

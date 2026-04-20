@@ -252,10 +252,12 @@ thread_local! {
     /// Doubled from 8192 (sweet spot found via benchmarking) to reduce eviction
     /// churn for Robot's deep recursive PLN inference. Larger sizes (32768)
     /// cause LRU lookup overhead that exceeds the benefit.
-    /// Each entry stores (mutation_epoch, scope_gen, results) so lookups can
-    /// validate freshness and scope visibility without clearing the entire
-    /// cache on every mutation or branch transition.
-    static EVAL_MEMO: RefCell<LruCache<u64, (u64, u64, SmallVec<[MettaValue; 4]>), IdentityU64BuildHasher>> =
+    /// Each entry stores (query_gen, mutation_epoch, scope_gen, results) so lookups can
+    /// validate freshness, scope visibility, and cross-query isolation without
+    /// clearing the entire cache on every mutation or branch transition.
+    /// The query_gen is bumped at each top-level `!` so entries from prior
+    /// top-level queries are naturally invalidated (LRU reclaims them lazily).
+    static EVAL_MEMO: RefCell<LruCache<u64, (u64, u64, u64, SmallVec<[MettaValue; 4]>), IdentityU64BuildHasher>> =
         RefCell::new(LruCache::with_hasher(NonZeroUsize::new(16384).expect("non-zero"), IdentityU64BuildHasher));
 
     /// Mutation epoch counter for cache correctness.
@@ -282,6 +284,35 @@ thread_local! {
 
     /// Stack of watermarks for nested forks.
     static WATERMARK_STACK: RefCell<SmallVec<[u64; 4]>> = RefCell::new(SmallVec::new());
+
+    /// Query generation — bumped at every top-level `!` evaluation boundary.
+    ///
+    /// Used to invalidate EVAL_MEMO and MATCH_RESULT_CACHE across top-level
+    /// queries without bulk-clearing them. Entries carry the query_gen at
+    /// insertion time; lookups reject entries whose stored gen differs from
+    /// the current thread-local gen. LRU eviction reclaims stale entries
+    /// lazily, preserving within-query cache utility.
+    static QUERY_GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Returns the current query generation for this thread.
+///
+/// Bumped at top-level `!` boundaries (see eval_loop.rs). Cache entries
+/// tagged with a different query_gen are from a prior top-level query
+/// and must not be served to the current query.
+#[inline]
+pub fn query_generation() -> u64 {
+    QUERY_GENERATION.with(|g| g.get())
+}
+
+/// Increment the query generation.
+///
+/// Called at the start of each top-level `!` evaluation (when
+/// `!is_resuming`). Invalidates all EVAL_MEMO and MATCH_RESULT_CACHE
+/// entries from previous top-level queries without touching LRU state.
+#[inline]
+pub fn increment_query_generation() {
+    QUERY_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
 }
 
 /// Returns the current mutation epoch for this thread.
@@ -443,13 +474,17 @@ pub fn should_memoize_with_env(
 #[inline]
 pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
     let current_epoch = mutation_epoch();
+    let current_query_gen = query_generation();
     EVAL_MEMO.with(|memo_cell| {
         let mut memo = memo_cell.borrow_mut();
         // get_mut: single hash lookup for the hot path (valid hit).
         // NLL allows pop after the if-let borrow ends.
         let mut stale = false;
-        if let Some((cached_epoch, cached_gen, entries)) = memo.get_mut(&expr_hash) {
-            if *cached_epoch == current_epoch && is_scope_visible(*cached_gen) {
+        if let Some((cached_query_gen, cached_epoch, cached_gen, entries)) = memo.get_mut(&expr_hash) {
+            if *cached_query_gen == current_query_gen
+                && *cached_epoch == current_epoch
+                && is_scope_visible(*cached_gen)
+            {
                 return Some(entries.to_vec());
             }
             stale = true;
@@ -464,11 +499,12 @@ pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
 /// Store evaluation results in the memo cache.
 #[inline]
 pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
+    let query_gen = query_generation();
     let epoch = mutation_epoch();
     let gen = cache_generation();
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
-        memo_cell.borrow_mut().put(expr_hash, (epoch, gen, entries));
+        memo_cell.borrow_mut().put(expr_hash, (query_gen, epoch, gen, entries));
     });
 }
 
@@ -479,7 +515,7 @@ pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
 pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
     EVAL_MEMO.with(|memo_cell| {
         let memo = memo_cell.borrow();
-        for (_hash, (_epoch, _gen, entries)) in memo.iter() {
+        for (_hash, (_query_gen, _epoch, _gen, entries)) in memo.iter() {
             out.extend_from_slice(entries);
         }
     });
@@ -522,10 +558,16 @@ thread_local! {
     /// Thread-local rule-match result cache.
     ///
     /// Key: expression content hash (via `hash_value()`)
-    /// Value: (rule_epoch, arity, cached match results)
+    /// Value: (query_gen, rule_epoch, mutation_epoch, arity, cached match results)
     ///
-    /// 4096 entries × ~120 bytes avg = ~480 KB per thread. LRU eviction bounds memory.
-    static MATCH_RESULT_CACHE: RefCell<LruCache<u64, (u64, usize, MatchResultEntry), IdentityU64BuildHasher>> =
+    /// The query_gen is bumped at each top-level `!` so entries from prior
+    /// top-level queries are naturally invalidated (LRU reclaims them lazily).
+    /// The mutation_epoch catches add-atom / remove-atom invalidations within
+    /// the same top-level query. The rule_epoch catches environment-wide rule
+    /// changes (e.g., module loads).
+    ///
+    /// 4096 entries × ~128 bytes avg = ~512 KB per thread. LRU eviction bounds memory.
+    static MATCH_RESULT_CACHE: RefCell<LruCache<u64, (u64, u64, u64, usize, MatchResultEntry), IdentityU64BuildHasher>> =
         RefCell::new(LruCache::with_hasher(NonZeroUsize::new(4096).expect("non-zero"), IdentityU64BuildHasher));
 }
 
@@ -542,11 +584,19 @@ pub fn match_result_get(
     expr_arity: usize,
 ) -> Option<Vec<(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)>> {
     // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
-    let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
+    let current_rule_epoch = RULE_EPOCH.load(Ordering::Acquire);
+    let current_mutation_epoch = mutation_epoch();
+    let current_query_gen = query_generation();
     MATCH_RESULT_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
-        if let Some((stored_epoch, stored_arity, entries)) = cache.get(&expr_hash) {
-            if *stored_epoch == current_epoch && *stored_arity == expr_arity {
+        if let Some((stored_query_gen, stored_rule_epoch, stored_mutation_epoch, stored_arity, entries)) =
+            cache.get(&expr_hash)
+        {
+            if *stored_query_gen == current_query_gen
+                && *stored_rule_epoch == current_rule_epoch
+                && *stored_mutation_epoch == current_mutation_epoch
+                && *stored_arity == expr_arity
+            {
                 return Some(entries.iter().cloned().collect());
             }
         }
@@ -561,10 +611,15 @@ pub fn match_result_put(
     expr_arity: usize,
     results: &[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)],
 ) {
-    let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
+    let current_rule_epoch = RULE_EPOCH.load(Ordering::Acquire);
+    let current_mutation_epoch = mutation_epoch();
+    let current_query_gen = query_generation();
     let entries: MatchResultEntry = results.iter().cloned().collect();
     MATCH_RESULT_CACHE.with(|cache_cell| {
-        cache_cell.borrow_mut().put(expr_hash, (current_epoch, expr_arity, entries));
+        cache_cell.borrow_mut().put(
+            expr_hash,
+            (current_query_gen, current_rule_epoch, current_mutation_epoch, expr_arity, entries),
+        );
     });
 }
 
@@ -575,7 +630,7 @@ pub fn match_result_put(
 pub fn collect_match_result_roots(out: &mut Vec<MettaValue>) {
     MATCH_RESULT_CACHE.with(|cache_cell| {
         let cache = cache_cell.borrow();
-        for (_hash, (_epoch, _arity, entries)) in cache.iter() {
+        for (_hash, (_query_gen, _rule_epoch, _mutation_epoch, _arity, entries)) in cache.iter() {
             for (rhs, bindings, rhs_type) in entries.iter() {
                 out.push(*rhs);
                 for (_name, val) in bindings.iter() {

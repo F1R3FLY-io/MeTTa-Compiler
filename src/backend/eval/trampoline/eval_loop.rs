@@ -88,7 +88,6 @@ use super::dispatch_hints::{
     is_normal_form_bounded,
     derive_arg_expected_type,
     should_memoize, should_memoize_with_env, eval_memo_get, eval_memo_put,
-    clear_eval_memo, clear_match_result_cache,
     collect_eval_memo_roots, collect_match_result_roots,
     mutation_epoch, increment_mutation_epoch, set_mutation_epoch,
     enter_fork_scope, next_branch_scope, leave_fork_scope,
@@ -124,6 +123,7 @@ fn continuation_to_stack_symbol(
         | Continuation::ProcessGroundedOpFanout { .. }
         | Continuation::CollectFreezeArgs { .. } => SchedulerStackSymbol::GroundedOp,
         Continuation::ProcessCombinations { .. } => SchedulerStackSymbol::Combinations,
+        Continuation::ProcessCombinationsBound { .. } => SchedulerStackSymbol::Combinations,
         Continuation::ProcessLet { .. }
         | Continuation::ProcessLetStar { .. } => {
             SchedulerStackSymbol::LetChain { depth: 0 }
@@ -427,14 +427,25 @@ fn dispatch_rule_matches<C: EvalContext>(
         // gets tagged with the UNION of both.
         if in_collapse_bind_scope() || !outer_carrying.is_empty() {
             let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
+            // Phase 2.B Issue #5 fix: strict compose — conflict between
+            // outer_carrying and this match's bindings means the branch is
+            // inconsistent. Emit zero results and return (HE-bisimilar
+            // silent pruning). The old unchecked compose produced empty
+            // bindings that attached to the RHS → ghost branch downstream.
             let composed = if outer_carrying.is_empty() {
                 bindings.clone()
             } else {
-                crate::backend::eval::bindings::compose_outer_inner_generic(
-                    outer_carrying,
-                    &bindings,
-                    ctx.factory(),
-                )
+                match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                    outer_carrying, &bindings, ctx.factory(),
+                ) {
+                    Some(b) => b,
+                    None => {
+                        work_stack.push(WorkItem::Resume {
+                            result: (base_results, env),
+                        });
+                        return;
+                    }
+                }
             };
             let current_branch_bindings = std::sync::Arc::new(composed);
             continuations.push(Continuation::ProcessRuleMatches {
@@ -477,6 +488,11 @@ fn dispatch_rule_matches<C: EvalContext>(
         //     per level (mmverify has ~200 nested dispatches → quadratic).
         //
         //   Collapse-bind scope: compose ALL bindings; sidecar needs them.
+        //
+        // Phase 2.B Issue #5 fix: strict compose. If outer_carrying and
+        // bindings conflict (e.g., outer says $a=b, match says $a=a),
+        // this rule match is inconsistent with the caller's context —
+        // emit zero results and return (HE-bisimilar silent pruning).
         let rhs_carrying: crate::backend::models::GenericBindings<MettaValue> =
             if outer_carrying.is_empty() && bindings.is_empty() {
                 crate::backend::models::GenericBindings::new()
@@ -486,32 +502,19 @@ fn dispatch_rule_matches<C: EvalContext>(
                 } else if bindings.is_empty() {
                     outer_carrying.clone()
                 } else {
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                         outer_carrying, &bindings, ctx.factory(),
-                    )
+                    ) {
+                        Some(b) => b,
+                        None => {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                            return;
+                        }
+                    }
                 }
             } else {
-                // Phase 1b-C (Phase 3 filter removed): do NOT filter
-                // $__fr_* keys from bindings here. The previous filter
-                // was too coarse — it stripped BOTH rule-pattern vars
-                // (which are rule-local, should filter) AND caller-scope
-                // freshened vars (which ARE caller-visible state and
-                // must propagate). The distinction cannot be made from
-                // key name alone: MeTTaTron's one-time freshening
-                // produces identically-prefixed names for both scopes.
-                //
-                // HE-bisimilarity requires that all caller-visible
-                // bindings flow through rhs_carrying. Rule-local
-                // pattern vars will accumulate in the ambient, but:
-                // - they're bound via rule match to ground values
-                // - subsequent rule matches that re-use the same
-                //   freshened names will produce ground/ground
-                //   conflicts — Phase 2B's strict compose correctly
-                //   handles those (either as rewrite-stage variants
-                //   or as genuine inconsistency).
-                //
-                // Downstream handlers (foldl-atom, etc.) apply their
-                // own scope-aware filters where needed.
                 if outer_carrying.is_empty() && bindings.is_empty() {
                     crate::backend::models::GenericBindings::new()
                 } else if outer_carrying.is_empty() {
@@ -519,9 +522,17 @@ fn dispatch_rule_matches<C: EvalContext>(
                 } else if bindings.is_empty() {
                     outer_carrying.clone()
                 } else {
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                         outer_carrying, &bindings, ctx.factory(),
-                    )
+                    ) {
+                        Some(b) => b,
+                        None => {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                            return;
+                        }
+                    }
                 }
             };
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings.
@@ -597,12 +608,21 @@ fn dispatch_rule_matches<C: EvalContext>(
             // Stage 1c: stash this branch's match bindings so incoming sub-eval
             // results get composed with them (per-branch provenance).
             // Stage 1d-revised: compose with outer_carrying (caller's ambient).
+            // Phase 2.B Issue #5 fix: strict compose — drop branch on conflict.
             let current_branch_bindings = std::sync::Arc::new(if outer_carrying.is_empty() {
                 bindings.clone()
             } else {
-                crate::backend::eval::bindings::compose_outer_inner_generic(
+                match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                     outer_carrying, &bindings, ctx.factory(),
-                )
+                ) {
+                    Some(b) => b,
+                    None => {
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), env),
+                        });
+                        return;
+                    }
+                }
             });
             let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
             continuations.push(Continuation::ProcessRuleMatchesLazy {
@@ -615,13 +635,22 @@ fn dispatch_rule_matches<C: EvalContext>(
                 tracked_vars_hint,
             });
             // Stage 1d-revised: Lazy first branch RHS carrying = compose(outer, match).
+            // Reuse the same strict-composed value (already validated non-conflict above).
             let lazy_carrying: crate::backend::models::GenericBindings<MettaValue> =
                 if outer_carrying.is_empty() && !in_collapse_bind_scope() {
                     crate::backend::models::GenericBindings::new()
+                } else if outer_carrying.is_empty() {
+                    bindings.clone()
                 } else {
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                    // Already composed above for current_branch_bindings; re-derive
+                    // locally (same strict compose — can't fail here since we got
+                    // past the first compose, but keep the safety check).
+                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                         outer_carrying, &bindings, ctx.factory(),
-                    )
+                    ) {
+                        Some(b) => b,
+                        None => crate::backend::models::GenericBindings::new(),
+                    }
                 };
             // Evaluate the first branch
             if rhs.has_variables_fast() {
@@ -850,13 +879,29 @@ fn dispatch_rule_matches<C: EvalContext>(
 
         // Stage 1d-revised: compose outer_carrying with this branch's match
         // bindings so the first branch's RHS result carries the full ancestry.
+        //
+        // Phase 2.B Issue #5 fix: use strict compose. On conflict (outer vs
+        // match bindings), emit zero for this match and fall through to the
+        // next. This is the SEQUENTIAL-first-branch path — the ProcessRuleMatches
+        // continuation has already been pushed, so emitting empty Resume
+        // advances to the next branch via the continuation's iterator.
         let seq_carrying: crate::backend::models::GenericBindings<MettaValue> =
             if outer_carrying.is_empty() && !in_collapse_bind_scope() {
                 crate::backend::models::GenericBindings::new()
+            } else if outer_carrying.is_empty() {
+                bindings.clone()
             } else {
-                crate::backend::eval::bindings::compose_outer_inner_generic(
+                match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                     outer_carrying, &bindings, ctx.factory(),
-                )
+                ) {
+                    Some(b) => b,
+                    None => {
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), env),
+                        });
+                        return;
+                    }
+                }
             };
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings
         if rhs.has_variables_fast() {
@@ -1800,9 +1845,16 @@ fn eval_trampoline_inner<C: EvalContext>(
     // I-4/I-6: Clear subgoal and thunk tables between top-level evaluations
     // to prevent stale cached results from previous evaluations.
     // Skip when resuming — tables were already cleared on the initial call.
+    //
+    // Phase 3.2: Bump the query_generation counter so EVAL_MEMO and
+    // MATCH_RESULT_CACHE entries from the prior top-level `!` are treated
+    // as stale on lookup. LRU reclaims them lazily — no bulk clear cost,
+    // but cross-query contamination is eliminated. This is the root-cause
+    // fix for Direct.metta's order-dependent result sets.
     if !is_resuming {
         crate::backend::eval::cesk::clear_subgoal_table();
         crate::backend::eval::cesk::clear_thunk_table();
+        crate::backend::eval::trampoline::dispatch_hints::increment_query_generation();
     }
 
     // Deferred environment drops: hold Arc clones to dying environments' shared
@@ -2096,13 +2148,18 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     );
                                 }
                             }
-                            let cb = &*carrying_bindings;
+                            // Cross-branch isolation is enforced by scope_gen
+                            // (per-branch watermark) + query_generation
+                            // (per-`!` watermark). A cache hit only occurs
+                            // within the same branch (or pre-fork visible to
+                            // all branches), so tagging with the retrieving
+                            // branch's carrying_bindings is HE-bisimilar.
+                            let resumed: smallvec::SmallVec<[BoundValue; 2]> = cached
+                                .into_iter()
+                                .map(|v| bv_with(v, (*carrying_bindings).clone()))
+                                .collect();
                             work_stack.push(WorkItem::Resume {
-                                result: (if cb.is_empty() {
-                                    cached.into_iter().map(bv).collect()
-                                } else {
-                                    cached.into_iter().map(|v| bv_with(v, cb.clone())).collect()
-                                }, env),
+                                result: (resumed, env),
                             });
                             continue;
                         }
@@ -4490,11 +4547,96 @@ fn process_continuation<C: EvalContext>(
             collected.push(result);
 
             if remaining.len() == 0 {
-                // Stage 1d MERGE: compute the merged bindings from each
-                // collected child's first result. The constructed sexpr's
-                // bindings = merge of children's bindings. On conflict, the
-                // sexpr has empty bindings (branch is inconsistent but we
-                // preserve the value itself so the evaluator can proceed).
+                // Phase 2.B: gate on whether any child returned multiple
+                // alternatives. If so, route through the binding-preserving
+                // slow path, which composes per-combination bindings and
+                // drops conflict-failed combinations (HE-bisimilar).
+                //
+                // Single-alternative children (deterministic) continue to
+                // use the existing fast path — zero overhead.
+                let nondet_children = collected.iter().any(|(v, _)| v.len() > 1);
+
+                if nondet_children {
+                    // Slow path: preserve BoundValue alternatives through the
+                    // Cartesian product, compose bindings per combination.
+                    let collected_bound: Vec<(SmallVec<[BoundValue; 2]>, MettaEnvironment)> =
+                        collected
+                            .into_iter()
+                            .map(|(vals, shared_env)| (vals, (*shared_env).clone()))
+                            .collect();
+                    let processed_bound = crate::backend::eval::processing::ops::process_collected_sexpr_bound_generic(
+                        collected_bound,
+                        (*outer_carrying).clone(),
+                        (*original_env).clone(),
+                        depth,
+                        ctx.factory(),
+                    );
+
+                    use crate::backend::eval::processing::ops::GenericProcessedSExprBound;
+                    match processed_bound {
+                        GenericProcessedSExprBound::Done((results, env)) => {
+                            work_stack.push(WorkItem::Resume {
+                                result: (results, Arc::new(env)),
+                            });
+                        }
+                        GenericProcessedSExprBound::EvalRuleMatches { matches, env, depth, base_results } => {
+                            if matches.is_empty() {
+                                work_stack.push(WorkItem::Resume {
+                                    result: (base_results, Arc::new(env)),
+                                });
+                            } else {
+                                // Single-combo rule matches: use its composed
+                                // bindings as the dispatch outer_carrying so
+                                // RHS eval sees the correct context.
+                                let combo_b = base_results
+                                    .first()
+                                    .map(|(_, b)| b.clone())
+                                    .unwrap_or_else(|| (*outer_carrying).clone());
+                                dispatch_rule_matches(
+                                    matches,
+                                    base_results,
+                                    env, depth, ctx, work_stack, continuations, None,
+                                    &combo_b,
+                                );
+                            }
+                        }
+                        GenericProcessedSExprBound::EvalCombinations { combinations, env, depth } => {
+                            let env: SharedEnv = Arc::new(env);
+                            continuations.push(Continuation::ProcessCombinationsBound {
+                                combinations: Box::new(combinations),
+                                results: Vec::with_capacity(8),
+                                pending_rule_matches: Vec::new(),
+                                pending_combo_bindings: crate::backend::models::GenericBindings::new(),
+                                env: env.clone(),
+                                depth,
+                                outer_carrying: outer_carrying.clone(),
+                            });
+
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                        }
+                        GenericProcessedSExprBound::RedispatchSExpr { items, combo_bindings, env, depth: redispatch_depth } => {
+                            let sexpr = ctx.factory().sexpr(items);
+                            work_stack.push(WorkItem::EvalWithBindings {
+                                template: sexpr,
+                                bindings: Arc::new(combo_bindings),
+                                env: Arc::new(env),
+                                depth: redispatch_depth,
+                                is_tail_call: false,
+                                expected_type: None,
+                                carrying_bindings: outer_carrying.clone(),
+                            });
+                        }
+                    }
+                } else {
+                // Fast path (single-alternative children):
+                // Compute the merged bindings from each collected child's
+                // only result. On conflict (HE-bisimilar): emit ZERO results
+                // to silently drop this combination, matching HE's
+                // `BindingsSet::empty()` pruning. The old behavior reset
+                // merged_bindings to empty and continued, producing ghost
+                // tuples downstream with wrong/empty bindings.
                 let mut merged_bindings = crate::backend::models::GenericBindings::new();
                 let mut merge_ok = true;
                 for (vals, _) in collected.iter() {
@@ -4506,7 +4648,13 @@ fn process_continuation<C: EvalContext>(
                     }
                 }
                 if !merge_ok {
-                    merged_bindings = crate::backend::models::GenericBindings::new();
+                    // Phase 2.B fix: drop this combination (HE-bisimilar).
+                    // Emits zero results so the caller sees no contribution
+                    // from this tuple assembly.
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), original_env.clone()),
+                    });
+                    return;
                 }
 
                 // Use generic version - zero conversion needed!
@@ -4585,6 +4733,7 @@ fn process_continuation<C: EvalContext>(
                             carrying_bindings: outer_carrying.clone(),
                         });
                     }
+                }
                 }
             } else {
                 let next = remaining.next().expect("remaining is non-empty");
@@ -5032,18 +5181,27 @@ fn process_continuation<C: EvalContext>(
             };
 
             // Compose prior arg_bindings with this alt's branch bindings.
-            // On ground-value conflict, `compose_outer_inner_generic`
-            // returns an empty bindings bag — the value is retained but
-            // with no per-alt bindings recorded, matching HE's empty
-            // BindingsSet semantics for inconsistent merges (see
-            // `compose_outer_inner_generic` doc in `eval/bindings.rs`).
-            let composed: crate::backend::eval::trampoline::types::SharedBindings = std::sync::Arc::new(
-                crate::backend::eval::bindings::compose_outer_inner_generic(
+            //
+            // Phase 2.B Issue #4 fix: use the strict variant. On genuine
+            // conflict (non-empty inputs → empty result), this alt is
+            // inconsistent — emit zero results rather than firing the
+            // grounded op with empty bindings (which produced ghost
+            // outputs downstream). HE-bisimilar silent pruning.
+            let composed: crate::backend::eval::trampoline::types::SharedBindings = match
+                crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                     &*arg_bindings,
                     &chosen_bindings,
                     ctx.factory(),
-                ),
-            );
+                ) {
+                Some(b) => std::sync::Arc::new(b),
+                None => {
+                    // Conflicting alt: emit zero and return.
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                    return;
+                }
+            };
 
             // Install the single-valued arg in state — each branch sees
             // exactly one value at `pending_arg_idx`, matching HE where
@@ -5143,17 +5301,41 @@ fn process_continuation<C: EvalContext>(
             let (branch_outs, result_env) = result;
             results.extend(branch_outs.into_iter());
 
-            // Advance to next alternative, if any.
-            if let Some((v_i, alt_b_i)) = remaining_alts.next() {
-                // Compose this alt's bindings with the prior arg bag.
-                let composed: crate::backend::eval::trampoline::types::SharedBindings = std::sync::Arc::new(
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*prior_arg_bindings,
-                        &alt_b_i,
-                        ctx.factory(),
-                    ),
-                );
+            // Advance to next alternative, skipping conflict alts.
+            //
+            // Phase 2.B Issue #4 fix: use strict compose. Conflicting alts
+            // are skipped locally (continue the loop) rather than dispatched
+            // with empty bindings. HE-bisimilar: no ghost results from
+            // inconsistent arg combinations.
+            let (v_i, composed) = loop {
+                match remaining_alts.next() {
+                    Some((v_i, alt_b_i)) => {
+                        match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                            &*prior_arg_bindings,
+                            &alt_b_i,
+                            ctx.factory(),
+                        ) {
+                            Some(b) => {
+                                let composed: crate::backend::eval::trampoline::types::SharedBindings =
+                                    std::sync::Arc::new(b);
+                                break (v_i, composed);
+                            }
+                            None => continue, // conflict → skip this alt
+                        }
+                    }
+                    None => {
+                        // All alternatives exhausted (or all remaining were
+                        // conflicts) — emit accumulated results to the outer
+                        // consumer.
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::from_vec(results), result_env),
+                        });
+                        return;
+                    }
+                }
+            };
 
+            {
                 // Fresh state clone for this branch, install single value.
                 let mut state_i = (*template_state).clone();
                 state_i.set_arg(pending_arg_idx, vec![v_i]);
@@ -5248,12 +5430,8 @@ fn process_continuation<C: EvalContext>(
                 }
                 return;
             }
-
-            // All alternatives processed — emit accumulated results to
-            // the outer consumer.
-            work_stack.push(WorkItem::Resume {
-                result: (SmallVec::from_vec(results), result_env),
-            });
+            // (exhaust-all-alts branch is handled in the `None =>` arm of
+            // the loop above.)
         }
 
         Continuation::ProcessCombinations {
@@ -5313,12 +5491,32 @@ fn process_continuation<C: EvalContext>(
                 let all_matches_with_types = try_match_all_rules(&generic_sexpr, &result_env, *ctx.factory());
 
                 if all_matches_with_types.is_empty() {
-                    // No rule matches - expression is data
-                    results.push(if outer_carrying.is_empty() {
-                        bv(generic_sexpr)
-                    } else {
-                        bv_with(generic_sexpr, (*outer_carrying).clone())
-                    });
+                    // Phase 2.B HE-bisimilarity fix: distinguish function with
+                    // no matching rules (→ empty) from data constructor (→ data).
+                    let is_function = generic_sexpr
+                        .get_head_symbol()
+                        .map(|h| {
+                            let arity = generic_sexpr.get_arity();
+                            result_env
+                                .shared
+                                .rule_index
+                                .read()
+                                .get_candidates(h, arity, None)
+                                .next()
+                                .is_some()
+                        })
+                        .unwrap_or(false);
+
+                    if !is_function {
+                        // Data constructor: retain as-is.
+                        results.push(if outer_carrying.is_empty() {
+                            bv(generic_sexpr)
+                        } else {
+                            bv_with(generic_sexpr, (*outer_carrying).clone())
+                        });
+                    }
+                    // Function with no matching rules → drop this combination
+                    // (HE-bisimilar silent pruning).
 
                     continuations.push(Continuation::ProcessCombinations {
                         combinations,
@@ -5357,6 +5555,134 @@ fn process_continuation<C: EvalContext>(
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),
 
+                });
+            }
+        }
+
+        Continuation::ProcessCombinationsBound {
+            mut combinations,
+            mut results,
+            mut pending_rule_matches,
+            pending_combo_bindings,
+            env,
+            depth,
+            outer_carrying,
+        } => {
+            let (combo_results, result_env) = result;
+            results.extend(combo_results);
+
+            // Process pending rule matches for the CURRENT combo first.
+            if let Some((rhs, bindings)) = pending_rule_matches.pop() {
+                let combo_b_arc = Arc::new(pending_combo_bindings.clone());
+                continuations.push(Continuation::ProcessCombinationsBound {
+                    combinations,
+                    results,
+                    pending_rule_matches,
+                    pending_combo_bindings: pending_combo_bindings.clone(),
+                    env: result_env.clone(),
+                    depth,
+                    outer_carrying: outer_carrying.clone(),
+                });
+
+                // Thread pending_combo_bindings as outer_carrying so the
+                // RHS evaluation sees the correct per-combo context.
+                if rhs.has_variables_fast() {
+                    work_stack.push(WorkItem::EvalWithBindings {
+                        template: rhs,
+                        bindings: Arc::new(bindings),
+                        env: result_env,
+                        depth,
+                        is_tail_call: true,
+                        expected_type: None,
+                        carrying_bindings: combo_b_arc,
+                    });
+                } else {
+                    work_stack.push(WorkItem::Eval {
+                        value: rhs,
+                        env: result_env,
+                        depth,
+                        is_tail_call: true,
+                        expected_type: None,
+                        demand: None,
+                        carrying_bindings: combo_b_arc,
+                    });
+                }
+                return;
+            }
+
+            // Pull the next combination (iterator already prunes conflicts).
+            if let Some((combo, combo_bindings)) = combinations.next() {
+                let generic_sexpr = ctx.factory().sexpr(combo.to_vec());
+
+                let all_matches_with_types =
+                    try_match_all_rules(&generic_sexpr, &result_env, *ctx.factory());
+
+                if all_matches_with_types.is_empty() {
+                    // Phase 2.B HE-bisimilarity: function with no matching
+                    // rules → drop combination; data constructor → keep.
+                    let is_function = generic_sexpr
+                        .get_head_symbol()
+                        .map(|h| {
+                            let arity = generic_sexpr.get_arity();
+                            result_env
+                                .shared
+                                .rule_index
+                                .read()
+                                .get_candidates(h, arity, None)
+                                .next()
+                                .is_some()
+                        })
+                        .unwrap_or(false);
+                    if !is_function {
+                        results.push(bv_with(generic_sexpr, combo_bindings));
+                    }
+
+                    continuations.push(Continuation::ProcessCombinationsBound {
+                        combinations,
+                        results,
+                        pending_rule_matches,
+                        pending_combo_bindings: crate::backend::models::GenericBindings::new(),
+                        env: result_env.clone(),
+                        depth,
+                        outer_carrying: outer_carrying.clone(),
+                    });
+
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                } else {
+                    // Rules matched: dispatch with combo_bindings as outer_carrying.
+                    let matches_deque: Vec<_> = all_matches_with_types
+                        .into_iter()
+                        .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                        .collect();
+
+                    // Capture combo_bindings for the ProcessCombinationsBound
+                    // re-push; pass reference to dispatch_rule_matches.
+                    let combo_b_for_continuation = combo_bindings.clone();
+
+                    continuations.push(Continuation::ProcessCombinationsBound {
+                        combinations,
+                        results,
+                        pending_rule_matches: Vec::new(), // dispatch handles all
+                        pending_combo_bindings: combo_b_for_continuation,
+                        env: result_env.clone(),
+                        depth,
+                        outer_carrying: outer_carrying.clone(),
+                    });
+
+                    dispatch_rule_matches(
+                        matches_deque,
+                        SmallVec::new(),
+                        (*result_env).clone(),
+                        depth, ctx, work_stack, continuations, None,
+                        &combo_bindings,
+                    );
+                }
+            } else {
+                // All combinations processed.
+                work_stack.push(WorkItem::Resume {
+                    result: (SmallVec::from_vec(results), env),
                 });
             }
         }
@@ -5423,9 +5749,18 @@ fn process_continuation<C: EvalContext>(
                         }
                         if let Some(pm_bindings) = pattern_match(&pattern, value) {
                             if let Some(ref ob) = outer_bindings {
-                                // Compose outer + pattern-match bindings, defer body
-                                let composed = ob.compose(&pm_bindings);
-                                bound_bodies.push(BoundBody::Deferred(composed));
+                                // Compose outer + pattern-match bindings, defer body.
+                                // Phase 2.B Issue #2 fix: use strict compose so
+                                // a conflict between outer and pattern-match
+                                // bindings drops this alternative (HE-bisimilar).
+                                match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                    ob, &pm_bindings, ctx.factory(),
+                                ) {
+                                    Some(composed) => {
+                                        bound_bodies.push(BoundBody::Deferred(composed));
+                                    }
+                                    None => continue, // conflict → drop this alt
+                                }
                             } else {
                                 // No outer bindings — materialize body as before
                                 let instantiated = apply_bindings(&body, &pm_bindings, ctx.factory());
@@ -5599,21 +5934,30 @@ fn process_continuation<C: EvalContext>(
                                         }
                                     }
 
-                                    // Restore continuation for collecting more results
-                                    continuations.push(Continuation::ProcessLet {
-                                        pending_values: Some(remaining_values),
-                                        pattern,
-                                        body: body.clone(),
-                                        outer_bindings: outer_bindings.clone(),
-                                        results,
-                                        env: result_env.clone(),
-                                        depth,
-                                        outer_carrying: outer_carrying.clone(),
-                                    });
-
-                                    // Pattern matches - evaluate body with bindings
+                                    // Pattern matches - evaluate body with bindings.
+                                    // Phase 2.B Issue #2 fix: strict compose so a
+                                    // conflict between outer_bindings and the
+                                    // pattern-match bindings drops this alternative
+                                    // (continue to next value in remaining_values).
+                                    // The old code used `.compose()` which silently
+                                    // overwrote conflicts, producing ghost results.
                                     if let Some(ref ob) = outer_bindings {
-                                        let composed = ob.compose(&bindings);
+                                        let composed = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                            ob, &bindings, ctx.factory(),
+                                        ) {
+                                            Some(b) => b,
+                                            None => continue, // conflict → try next value
+                                        };
+                                        continuations.push(Continuation::ProcessLet {
+                                            pending_values: Some(remaining_values),
+                                            pattern,
+                                            body: body.clone(),
+                                            outer_bindings: outer_bindings.clone(),
+                                            results,
+                                            env: result_env.clone(),
+                                            depth,
+                                            outer_carrying: outer_carrying.clone(),
+                                        });
                                         work_stack.push(WorkItem::EvalWithBindings {
                                             template: body,
                                             bindings: std::sync::Arc::new(composed),
@@ -5624,6 +5968,16 @@ fn process_continuation<C: EvalContext>(
                                             carrying_bindings: outer_carrying.clone(),
                                         });
                                     } else {
+                                        continuations.push(Continuation::ProcessLet {
+                                            pending_values: Some(remaining_values),
+                                            pattern,
+                                            body: body.clone(),
+                                            outer_bindings: outer_bindings.clone(),
+                                            results,
+                                            env: result_env.clone(),
+                                            depth,
+                                            outer_carrying: outer_carrying.clone(),
+                                        });
                                         let instantiated_body = apply_bindings(&body, &bindings, ctx.factory());
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_body,
@@ -5758,29 +6112,26 @@ fn process_continuation<C: EvalContext>(
                     loop {
                         // Build this combination's items
                         let mut combo_items = items.clone();
-                        // Merge bindings across chosen args. On conflict, skip
-                        // this combination (empty bindings — combo still valid
-                        // for value semantics, just no binding provenance).
+                        // Merge bindings across chosen args.
+                        //
+                        // Phase 2.B Issue #5 fix: on conflict, DROP the
+                        // combination entirely (HE-bisimilar silent pruning).
+                        // Previously we emitted the combo with empty bindings,
+                        // producing ghost results downstream.
                         let mut merged_b = crate::backend::models::GenericBindings::new();
                         let mut skip_combo = false;
                         for (i, grounded_idx) in grounded_indices.iter().enumerate() {
                             let (ref v, ref b) = evaluated_results[i][combo_indices[i]];
                             combo_items[*grounded_idx] = v.clone();
                             if !merged_b.merge(b) {
-                                // Conflicting bindings across args — this combo
-                                // won't contribute consistent bindings, but the
-                                // value is still evaluable.
                                 skip_combo = true;
                                 break;
                             }
                         }
-                        combinations.push(ctx.factory().sexpr(combo_items));
-                        combo_bindings.push(if skip_combo {
-                            crate::backend::models::GenericBindings::new()
-                        } else {
-                            merged_b
-                        });
-
+                        if !skip_combo {
+                            combinations.push(ctx.factory().sexpr(combo_items));
+                            combo_bindings.push(merged_b);
+                        }
                         // Advance indices (mixed-radix increment)
                         let mut carry = true;
                         for i in (0..combo_indices.len()).rev() {
@@ -5796,6 +6147,14 @@ fn process_continuation<C: EvalContext>(
                         if carry {
                             break; // All combinations exhausted
                         }
+                    }
+
+                    // If all combinations conflicted, emit zero.
+                    if combinations.is_empty() {
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), result_env),
+                        });
+                        return;
                     }
 
                     // Stage 1d-revised: zip combinations with their
@@ -8647,16 +9006,25 @@ fn process_continuation<C: EvalContext>(
             // same value for ground raws (no new bindings), but in case the
             // raw was a further-evaluable expression, both sources are
             // combined. Filter empty (pruned) branches.
+            //
+            // Phase 2.B Issue #3 fix: on merge conflict between carrying
+            // (raw's match-time bindings) and child_b (re-eval's bindings),
+            // DROP the branch — HE-bisimilar silent pruning. The old code
+            // used `let _ = merged.merge(&child_b)` which silently masked
+            // conflicts, producing ghost pairs whose bindings didn't
+            // reflect any consistent evaluation.
             let carrying = (*current_raw_bindings).clone();
             evaluated.extend(
                 eval_results.into_iter()
                     .filter(|(v, _)| !v.is_empty())
-                    .map(|(v, child_b)| {
+                    .filter_map(|(v, child_b)| {
                         let mut merged = carrying.clone();
-                        // If merge conflicts, keep the carrying bindings as
-                        // the branch's identity (raw was the producer).
-                        let _ = merged.merge(&child_b);
-                        (v, merged)
+                        if !merged.merge(&child_b) {
+                            // Conflict: this branch is inconsistent. Drop.
+                            None
+                        } else {
+                            Some((v, merged))
+                        }
                     })
             );
 
@@ -9199,11 +9567,11 @@ fn process_continuation<C: EvalContext>(
                         // Named space: add to SpaceHandle (match queries SpaceHandle
                         // for non-&self spaces via handle.collapse_generic()).
                         handle.add_atom_generic(&atom);
-                        // Invalidate match_result_cache and eval_memo — cached results
-                        // may reference patterns that now have new matches.
-                        clear_match_result_cache();
-                        clear_eval_memo();
                     }
+                    // Phase 3.2: Bump mutation_epoch alone. EVAL_MEMO and
+                    // MATCH_RESULT_CACHE both gate lookups on mutation_epoch, so
+                    // this makes all prior entries stale without a bulk clear.
+                    // LRU reclaims stale entries lazily as new entries evict them.
                     increment_mutation_epoch();
 
                     work_stack.push(WorkItem::Resume {
@@ -9289,9 +9657,9 @@ fn process_continuation<C: EvalContext>(
                     } else {
                         // Named space: remove from SpaceHandle
                         handle.remove_atom_generic(&atom);
-                        clear_match_result_cache();
-                        clear_eval_memo();
                     }
+                    // Phase 3.2: Bump mutation_epoch alone; EVAL_MEMO and
+                    // MATCH_RESULT_CACHE gate lookups on mutation_epoch.
                     increment_mutation_epoch();
 
                     work_stack.push(WorkItem::Resume {
@@ -10324,14 +10692,45 @@ fn process_continuation<C: EvalContext>(
                 // subsequent pairs and the body see variables bound by the
                 // value expression (e.g. `$b` in `(father b $b)` ↔ `(father b c)`
                 // binds `$b=c`, which must be visible to later `(father $b c)`).
+                //
+                // Phase 2.B Issue #1 fix: use `compose_outer_inner_strict_generic`
+                // so conflicts between `accumulated_bindings` and per-branch /
+                // pattern-match bindings cause the branch to die (HE-bisimilar
+                // silent pruning). The previous `.compose()` was a silent
+                // union that masked conflicts and produced ghost outputs.
                 let (value, per_branch_bindings) = &result_values[0];
-                accumulated_bindings = std::sync::Arc::new(
-                    accumulated_bindings.compose(per_branch_bindings),
-                );
+                let composed_outer = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                    &*accumulated_bindings, per_branch_bindings, ctx.factory(),
+                ) {
+                    Some(b) => b,
+                    None => {
+                        // Binding conflict: per-branch bindings contradict accumulated.
+                        crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), result_env),
+                        });
+                        return;
+                    }
+                };
+                accumulated_bindings = std::sync::Arc::new(composed_outer);
 
                 if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                     // Compose pattern-match bindings into accumulated
-                    accumulated_bindings = std::sync::Arc::new(accumulated_bindings.compose(&pm_bindings));
+                    let composed_pm = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                        &*accumulated_bindings, &pm_bindings, ctx.factory(),
+                    ) {
+                        Some(b) => b,
+                        None => {
+                            // PM bindings conflict with accumulated
+                            // (e.g. let* re-binds $x to a different value).
+                            crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), result_env),
+                            });
+                            return;
+                        }
+                    };
+                    accumulated_bindings = std::sync::Arc::new(composed_pm);
 
                     if remaining_pairs.is_empty() {
                         // I-5: Exit region — let* scope complete
@@ -10421,11 +10820,23 @@ fn process_continuation<C: EvalContext>(
                 // Keep both the materialized body AND its composed bindings
                 // (as `carrying_bindings`) so downstream rule-matches can see
                 // the bound variable, not just its textual substitution.
+                // Phase 2.B Issue #1 fix: use strict compose in fallback
+                // fold so conflicting alternatives are silently dropped.
                 let mut bound_bodies: Vec<(MettaValue, crate::backend::eval::trampoline::types::SharedBindings)> = Vec::new();
                 for (value, per_branch) in result_values.iter() {
                     if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
-                        let with_branch = accumulated_bindings.compose(per_branch);
-                        let composed = with_branch.compose(&pm_bindings);
+                        let with_branch = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                            &*accumulated_bindings, per_branch, ctx.factory(),
+                        ) {
+                            Some(b) => b,
+                            None => continue, // conflict → drop this alternative
+                        };
+                        let composed = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                            &with_branch, &pm_bindings, ctx.factory(),
+                        ) {
+                            Some(b) => b,
+                            None => continue,
+                        };
                         let materialized = apply_bindings(&let_body, &composed, ctx.factory());
                         bound_bodies.push((materialized, std::sync::Arc::new(composed)));
                     }
@@ -10497,9 +10908,17 @@ fn process_continuation<C: EvalContext>(
             // If the epoch changed, the expression (or something it
             // transitively called) performed a side effect — caching
             // would suppress re-execution on future calls.
+            //
+            // Cache values only; cross-branch isolation is enforced by
+            // scope_gen (per-branch watermark) + query_generation
+            // (per-`!` watermark). Sibling-branch hits are prevented by
+            // is_scope_visible, so re-tagging with the retrieving
+            // branch's carrying_bindings is safe.
             if start_epoch == mutation_epoch() {
-                let cached: smallvec::SmallVec<[MettaValue; 2]> =
-                    result_values.iter().map(|(v, _)| v.clone()).collect();
+                let cached: smallvec::SmallVec<[MettaValue; 2]> = result_values
+                    .iter()
+                    .map(|(v, _b)| v.clone())
+                    .collect();
                 crate::backend::eval::cesk::with_subgoal_table(|t| {
                     t.complete(expr_hash, cached);
                 });

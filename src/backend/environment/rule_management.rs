@@ -2679,7 +2679,12 @@ where
                     // std::thread::scope since the generic F doesn't promise Send.
                     let factory_ptr = &self.factory as *const F as *const crate::backend::models::GcFactory;
                     let gc_factory: crate::backend::models::GcFactory = unsafe { *factory_ptr };
-                    let mut all_results: Vec<RuleMatchResult<V>> = Vec::new();
+                    // Collect (rule_idx, result) pairs so we can canonicalize order
+                    // after thread join. Chunks partition candidate range, so within
+                    // a chunk rule_idx is monotonic; across chunks, thread-scheduling
+                    // could reorder if we extended naively. Explicit post-sort makes
+                    // the output stable across runs.
+                    let mut all_indexed: Vec<(usize, RuleMatchResult<V>)> = Vec::new();
 
                     std::thread::scope(|s| {
                         let handles: Vec<_> = chunks.iter().map(|&(start, end)| {
@@ -2687,9 +2692,10 @@ where
                             let chunk = &candidates[start..end];
                             let fac = gc_factory;
                             s.spawn(move || {
-                                let mut chunk_results = Vec::new();
+                                let mut chunk_results: Vec<(usize, RuleMatchResult<V>)> = Vec::new();
                                 for (i, entry) in chunk.iter().enumerate() {
-                                    let _rule_idx_u32 = (chunk_offset + i) as u32;
+                                    let rule_idx = chunk_offset + i;
+                                    let _rule_idx_u32 = rule_idx as u32;
                                     let bindings = if let Some(ref m) = entry.structural_matcher {
                                         m.try_match(expr)
                                     } else if let Some(ref m) = entry.enhanced_matcher {
@@ -2762,7 +2768,7 @@ where
                                         };
                                         let multiplicity = entry.multiplicity.max(1);
                                         for _ in 0..multiplicity {
-                                            chunk_results.push(RuleMatchResult {
+                                            chunk_results.push((rule_idx, RuleMatchResult {
                                                 instantiated_rhs: instantiated_rhs.clone(),
                                                 rhs_template: entry.rhs.clone(),
                                                 bindings: bindings.clone(),
@@ -2770,7 +2776,7 @@ where
                                                 rhs_type: entry.rhs_type.clone(),
                                                 rhs_has_variables: entry.rhs_has_variables,
                                                 compiled_rhs: entry.compiled_rhs.clone(),
-                                            });
+                                            }));
                                         }
                                     }
                                 }
@@ -2779,9 +2785,17 @@ where
                         }).collect();
 
                         for handle in handles {
-                            all_results.extend(handle.join().expect("speculative match thread panicked"));
+                            all_indexed.extend(handle.join().expect("speculative match thread panicked"));
                         }
                     });
+
+                    // Canonical order: sort by rule_idx so output is stable
+                    // regardless of thread scheduling. Stable sort preserves the
+                    // multiplicity-duplicate ordering (all copies of the same
+                    // rule_idx remain contiguous in insertion order).
+                    all_indexed.sort_by_key(|(idx, _)| *idx);
+                    let all_results: Vec<RuleMatchResult<V>> =
+                        all_indexed.into_iter().map(|(_, r)| r).collect();
 
                     return all_results;
                 }

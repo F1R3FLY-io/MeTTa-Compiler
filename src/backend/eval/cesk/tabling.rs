@@ -92,9 +92,16 @@ pub fn clear_active_eval_set() {
 // ============================================================================
 
 /// A cached evaluation result in the subgoal table.
+///
+/// Cross-branch isolation is enforced by the `scope_gen` field (per-branch
+/// cache generation watermark) plus top-level `query_generation` bumps at
+/// each `!` boundary. The cache stores only values; bindings are
+/// re-attached at retrieval time from the retrieving branch's
+/// `carrying_bindings`. Sibling-branch contamination is prevented by
+/// `is_scope_visible` on lookup.
 #[derive(Debug, Clone)]
-pub struct TableEntry<V: MettaValueTrait> {
-    /// Cached results (final).
+pub struct TableEntry<V: MettaValueTrait + Clone> {
+    /// Cached result values (final).
     pub results: SmallVec<[V; 2]>,
 
     /// Number of times this entry was looked up (diagnostics).
@@ -114,7 +121,7 @@ pub struct TableEntry<V: MettaValueTrait> {
 
 /// Lookup result from the subgoal table.
 #[derive(Debug)]
-pub enum TableLookup<V: MettaValueTrait> {
+pub enum TableLookup<V: MettaValueTrait + Clone> {
     /// Expression not cached — caller should evaluate.
     Absent,
 
@@ -171,8 +178,15 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
         }
     }
 
-    /// Store completed results for an expression hash.
-    pub fn complete(&mut self, expr_hash: u64, results: SmallVec<[V; 2]>) {
+    /// Store completed values for an expression hash.
+    ///
+    /// Cross-branch isolation is enforced by scope_gen (per-branch
+    /// watermark) and query_generation (per-`!` watermark) on lookup.
+    pub fn complete(
+        &mut self,
+        expr_hash: u64,
+        results: SmallVec<[V; 2]>,
+    ) {
         let epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         let gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
         self.entries.insert(expr_hash, TableEntry {

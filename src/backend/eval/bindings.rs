@@ -1317,6 +1317,48 @@ where
     result
 }
 
+/// Strict variant of `compose_outer_inner_generic`: returns `None` on
+/// binding conflict, distinguishing "conflict → drop branch" from
+/// "empty inputs → empty output".
+///
+/// `compose_outer_inner_generic` returns empty `GenericBindings` both when
+/// all inputs are empty (a normal flow) and when two non-empty inputs
+/// have an unresolvable conflict (a branch-dies signal). Callers that need
+/// HE-bisimilar silent pruning (drop the combination on conflict) can't
+/// distinguish these cases. This wrapper does:
+///
+///   - `Some(inner.clone())` when `outer` is empty.
+///   - `Some(outer.clone())` when `inner` is empty.
+///   - `None` when both are non-empty AND the compose result is empty
+///     (genuine conflict — inconsistent branch).
+///   - `Some(result)` otherwise.
+///
+/// HE semantics: use `None` as the trigger to drop the combination (skip
+/// the alternative, `continue`, emit zero results, etc.), matching
+/// `BindingsSet::empty()` filtering in hyperon-experimental.
+pub fn compose_outer_inner_strict_generic<V, F>(
+    outer: &GenericBindings<V>,
+    inner: &GenericBindings<V>,
+    factory: &F,
+) -> Option<GenericBindings<V>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    if outer.is_empty() {
+        return Some(inner.clone());
+    }
+    if inner.is_empty() {
+        return Some(outer.clone());
+    }
+    let result = compose_outer_inner_generic(outer, inner, factory);
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
 /// Transitive chain resolution: for every (v, val) in the bindings, rewrite
 /// `val` via `apply_bindings(val, self)` until a fixed point.
 ///

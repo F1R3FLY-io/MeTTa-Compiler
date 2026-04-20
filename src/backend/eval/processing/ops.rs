@@ -10,6 +10,8 @@ use crate::backend::environment::GenericEnvironment;
 use crate::backend::grounded::{execute_grounded_op, has_grounded_op, GroundedState, GroundedWork};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
+use crate::backend::eval::bindings::compose_outer_inner_generic;
+use crate::backend::eval::trampoline::types::{bv_with, BoundValue};
 use crate::backend::models::{MettaValue, GcFactory};
 use super::super::trampoline::try_match_all_rules;
 // NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
@@ -278,8 +280,37 @@ pub fn process_single_combination_generic(
         };
     }
 
-    // No rules matched - add to space at top level and return as data constructor
-    // Reuse the sexpr already built above (avoids redundant allocation)
+    // No rules matched.
+    //
+    // Phase 2.B HE-bisimilarity fix: distinguish "function with no matching
+    // rules" from "data constructor". Data constructors (heads never
+    // registered with a rule) evaluate to themselves — MeTTa's ADD-mode data
+    // semantics. Functions (heads that have SOME rule but none match these
+    // args) produce EMPTY — this is how HE's `match` semantics work and
+    // prevents ghost results from flowing through conjunctions where an
+    // argument-bound call like `(father c $x)` fails to match any rule.
+    //
+    // At depth == 0 (top level), we retain the old ADD-mode behavior of
+    // adding to space and returning the data — user programs rely on this
+    // for their own data constructors.
+    if depth > 0 {
+        if let Some(head) = sexpr.get_head_symbol() {
+            let arity = sexpr.get_arity();
+            let has_any_rules = unified_env
+                .shared
+                .rule_index
+                .read()
+                .get_candidates(head, arity, None)
+                .next()
+                .is_some();
+            if has_any_rules {
+                // Function with no matching rules → empty (HE semantics).
+                return GenericProcessedSExpr::Done((SmallVec::new(), unified_env));
+            }
+        }
+    }
+
+    // Data constructor OR top-level add — return unreduced sexpr.
     if depth == 0 {
         unified_env.add_to_space(&sexpr);
     }
@@ -312,6 +343,402 @@ where
         env.add_to_space(&sexpr);
     }
     sexpr
+}
+
+// ============================================================================
+// Phase 2.A — Binding-Preserving Cartesian Product
+// ============================================================================
+//
+// The existing `GenericCartesianProductIter` + `process_collected_sexpr_generic`
+// path assumes each child of an S-expression returns ONE alternative, so the
+// code merges the first alternative's bindings from each child and applies
+// that single merged binding set to every tuple in the Cartesian product.
+//
+// When children return MULTIPLE alternatives (nondet), that logic produces
+// "ghost" combinations: tuples whose actual contributing alternatives would
+// have conflicting bindings (so the combination should be DROPPED per HE
+// `BindingsSet::empty()` semantics), but the code instead tags them with
+// the first-result merge and forwards them as ghosts.
+//
+// The bound iterator below carries `BoundValue` per alternative, composes
+// bindings per-combination using `compose_outer_inner_generic`, and SKIPS
+// combinations whose composition yields empty bindings (conflict) — exactly
+// matching HE's silent-pruning semantics.
+//
+// This path is wired only for the nondet-children case (`total_combinations
+// > 1`). Single-alternative children continue to use the existing fast path.
+
+/// Cartesian product iterator that preserves per-result bindings.
+///
+/// Each step composes the bindings of the chosen alternatives (starting
+/// from `outer_carrying`) using `compose_outer_inner_generic`. A combination
+/// whose composed bindings are empty — despite at least one contributor
+/// being non-empty — is silently skipped (HE-bisimilar conflict pruning).
+#[derive(Debug, Clone)]
+pub struct GenericCartesianProductBoundIter {
+    /// Input vectors of alternatives, one Vec per child expression.
+    inputs: Vec<Vec<BoundValue>>,
+    /// Current mixed-radix indices into each input vector.
+    indices: Vec<usize>,
+    /// Whether all combinations have been produced.
+    exhausted: bool,
+    /// Ambient bindings at the point of S-expr construction. Composed into
+    /// every combination's merged bindings (left-most operand of the fold).
+    outer_carrying: GenericBindings<MettaValue>,
+    /// Factory needed for `compose_outer_inner_generic`. `GcFactory` is Copy.
+    factory: GcFactory,
+}
+
+impl GenericCartesianProductBoundIter {
+    /// Create a new bound Cartesian product iterator.
+    pub fn new(
+        inputs: Vec<Vec<BoundValue>>,
+        outer_carrying: GenericBindings<MettaValue>,
+        factory: GcFactory,
+    ) -> Self {
+        let exhausted = inputs.iter().any(|v| v.is_empty());
+        let indices = vec![0; inputs.len()];
+        Self {
+            inputs,
+            indices,
+            exhausted,
+            outer_carrying,
+            factory,
+        }
+    }
+
+    /// Get a reference to the input vectors (for GC root collection).
+    #[inline]
+    pub fn inputs(&self) -> &[Vec<BoundValue>] {
+        &self.inputs
+    }
+
+    /// Get a reference to the outer carrying bindings (for GC root collection).
+    #[inline]
+    pub fn outer_carrying(&self) -> &GenericBindings<MettaValue> {
+        &self.outer_carrying
+    }
+
+    /// Advance the mixed-radix index. Sets `exhausted` when wrapping.
+    fn advance_indices(&mut self) {
+        let mut i = self.indices.len();
+        while i > 0 {
+            i -= 1;
+            self.indices[i] += 1;
+            if self.indices[i] < self.inputs[i].len() {
+                return;
+            }
+            self.indices[i] = 0;
+            if i == 0 {
+                self.exhausted = true;
+                return;
+            }
+        }
+        self.exhausted = true;
+    }
+}
+
+impl Iterator for GenericCartesianProductBoundIter {
+    /// Yields `(combo_values, composed_bindings)` for each non-conflicting
+    /// combination. Conflicting combinations are silently skipped.
+    type Item = (SmallVec<[MettaValue; 8]>, GenericBindings<MettaValue>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.exhausted {
+                return None;
+            }
+
+            // Build current combo's values.
+            let combo_values: SmallVec<[MettaValue; 8]> = self
+                .inputs
+                .iter()
+                .zip(self.indices.iter())
+                .map(|(vec, &idx)| vec[idx].0)
+                .collect();
+
+            // Compose bindings: fold each alternative's bindings into
+            // `outer_carrying`. If any composition step yields empty from two
+            // non-empty inputs, that's a conflict — skip this combination.
+            let mut merged = self.outer_carrying.clone();
+            let mut conflict = false;
+            for (vec, &idx) in self.inputs.iter().zip(self.indices.iter()) {
+                let item_bindings = &vec[idx].1;
+                if item_bindings.is_empty() {
+                    continue;
+                }
+                let was_merged_empty = merged.is_empty();
+                let merged_next =
+                    compose_outer_inner_generic(&merged, item_bindings, &self.factory);
+                // compose returns empty only on conflict (empty-inputs are
+                // short-circuited inside compose). So merged_next.is_empty()
+                // combined with at-least-one-non-empty input => conflict.
+                if merged_next.is_empty() && !was_merged_empty {
+                    conflict = true;
+                    break;
+                }
+                merged = merged_next;
+            }
+
+            self.advance_indices();
+
+            if !conflict {
+                return Some((combo_values, merged));
+            }
+            // else: loop and try the next combination
+        }
+    }
+}
+
+/// Binding-preserving analogue of `GenericProcessedSExpr`.
+///
+/// Each variant carries per-result or per-combination bindings so that
+/// downstream continuations can dispatch with accurate `outer_carrying`
+/// contexts rather than a shared "first-result merge".
+pub enum GenericProcessedSExprBound<
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone = crate::backend::models::GcFactory,
+> {
+    /// Evaluation complete — return bound results.
+    Done((SmallVec<[BoundValue; 2]>, GenericEnvironment<V, F>)),
+
+    /// Rule matches found — need to evaluate RHS. `base_results` carry their
+    /// per-result bindings (composed from the single Cartesian combination
+    /// that produced them).
+    EvalRuleMatches {
+        matches: Vec<(V, GenericBindings<V>)>,
+        env: GenericEnvironment<V, F>,
+        depth: usize,
+        base_results: SmallVec<[BoundValue; 2]>,
+    },
+
+    /// Multiple combinations — need lazy processing. Iterator yields
+    /// `(combo_values, composed_bindings)` per surviving combination;
+    /// conflicts are already pruned inside the iterator.
+    EvalCombinations {
+        combinations: GenericCartesianProductBoundIter,
+        env: GenericEnvironment<V, F>,
+        depth: usize,
+    },
+
+    /// Special form redispatch (single combination path). Carries the
+    /// combo's merged bindings so the redispatched `EvalWithBindings` can
+    /// thread them through.
+    RedispatchSExpr {
+        items: Vec<V>,
+        combo_bindings: GenericBindings<V>,
+        env: GenericEnvironment<V, F>,
+        depth: usize,
+    },
+}
+
+/// Compose bindings of a single combination with `outer_carrying`.
+/// Returns `None` on conflict, `Some(merged)` otherwise.
+#[inline]
+fn compose_combo_bindings(
+    combo_bindings: &[&GenericBindings<MettaValue>],
+    outer_carrying: &GenericBindings<MettaValue>,
+    factory: &GcFactory,
+) -> Option<GenericBindings<MettaValue>> {
+    let mut merged = outer_carrying.clone();
+    for item in combo_bindings.iter() {
+        if item.is_empty() {
+            continue;
+        }
+        let was_merged_empty = merged.is_empty();
+        let merged_next = compose_outer_inner_generic(&merged, item, factory);
+        if merged_next.is_empty() && !was_merged_empty {
+            return None;
+        }
+        merged = merged_next;
+    }
+    Some(merged)
+}
+
+/// Binding-preserving analogue of `process_collected_sexpr_generic`.
+///
+/// Used by `Continuation::CollectSExpr` when children return multiple
+/// alternatives (the fast path is still `process_collected_sexpr_generic`).
+/// Composes bindings per-combination using `compose_outer_inner_generic`,
+/// dropping combinations whose composition conflicts.
+pub fn process_collected_sexpr_bound_generic(
+    collected: Vec<(SmallVec<[BoundValue; 2]>, MettaEnvironment)>,
+    outer_carrying: GenericBindings<MettaValue>,
+    original_env: MettaEnvironment,
+    depth: usize,
+    factory: &GcFactory,
+) -> GenericProcessedSExprBound<MettaValue, GcFactory> {
+    // Check for errors in sub-expression results — propagate the first error
+    // found, preserving its bindings if present.
+    for (results, new_env) in &collected {
+        if let Some((first_v, first_b)) = results.first() {
+            if first_v.is_error() {
+                return GenericProcessedSExprBound::Done((
+                    smallvec![bv_with(first_v.clone(), first_b.clone())],
+                    new_env.clone(),
+                ));
+            }
+        }
+    }
+
+    // Split: eval_results_bound: Vec<Vec<BoundValue>>, envs: Vec<MettaEnvironment>
+    let (eval_results_bound, envs): (Vec<Vec<BoundValue>>, Vec<_>) = collected
+        .into_iter()
+        .map(|(sv, env)| (sv.into_vec(), env))
+        .unzip();
+
+    let unified_env = original_env.union_all(&envs);
+
+    // Empty any child → no combinations → empty output (HE-bisimilar).
+    if eval_results_bound.iter().any(|v| v.is_empty()) {
+        return GenericProcessedSExprBound::Done((SmallVec::new(), unified_env));
+    }
+
+    // Fast-path: single combination (each child has exactly one alternative).
+    let total_combinations: usize = eval_results_bound.iter().map(|v| v.len()).product();
+    if total_combinations == 1 {
+        // Collect the single combo's values and compose its bindings.
+        let combo_values: Vec<MettaValue> = eval_results_bound
+            .iter()
+            .map(|v| v[0].0)
+            .collect();
+        let combo_b_refs: Vec<&GenericBindings<MettaValue>> = eval_results_bound
+            .iter()
+            .map(|v| &v[0].1)
+            .collect();
+        match compose_combo_bindings(&combo_b_refs, &outer_carrying, factory) {
+            Some(combo_bindings) => {
+                return process_single_combination_bound_generic(
+                    combo_values, combo_bindings, unified_env, depth, factory,
+                );
+            }
+            None => {
+                // Conflict: single combo dropped → zero output.
+                return GenericProcessedSExprBound::Done((SmallVec::new(), unified_env));
+            }
+        }
+    }
+
+    // Slow-path: lazy iterator with per-combo composition.
+    let iter = GenericCartesianProductBoundIter::new(eval_results_bound, outer_carrying, *factory);
+    GenericProcessedSExprBound::EvalCombinations {
+        combinations: iter,
+        env: unified_env,
+        depth,
+    }
+}
+
+/// Binding-preserving analogue of `process_single_combination_generic`.
+///
+/// Given a combination's values and its already-composed bindings, checks
+/// for grounded operations / special forms / rule matches (matching the
+/// non-bound version's dispatch logic), attaching the combo bindings to
+/// the produced `BoundValue` results.
+pub fn process_single_combination_bound_generic(
+    evaled_items: Vec<MettaValue>,
+    combo_bindings: GenericBindings<MettaValue>,
+    mut unified_env: MettaEnvironment,
+    depth: usize,
+    factory: &GcFactory,
+) -> GenericProcessedSExprBound<MettaValue, GcFactory> {
+    if let Some(first) = evaled_items.first() {
+        if let Some(op) = first.as_atom() {
+            // Grounded operation: execute and tag result(s) with combo bindings.
+            if has_grounded_op(op) {
+                let args: Vec<MettaValue> = evaled_items[1..].to_vec();
+                let mut state = GroundedState::new(op.to_string(), args);
+
+                if let Some(work) = execute_grounded_op(op, &mut state, factory) {
+                    match work {
+                        GroundedWork::Done(results) => {
+                            let values: SmallVec<[BoundValue; 2]> = results
+                                .into_iter()
+                                .map(|(v, _)| bv_with(v, combo_bindings.clone()))
+                                .collect();
+                            return GenericProcessedSExprBound::Done((values, unified_env));
+                        }
+                        GroundedWork::EvalArg { .. } => {
+                            // Grounded op needs arg evaluation (unusual at this
+                            // point since args are already evaluated). Fall
+                            // through to the rule-match / data path below.
+                        }
+                        GroundedWork::Error(e) => {
+                            let err = factory.error(
+                                &format!("{:?}", e),
+                                factory.atom("GroundedError"),
+                            );
+                            return GenericProcessedSExprBound::Done((
+                                smallvec![bv_with(err, combo_bindings)],
+                                unified_env,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Special form redispatch — pass combo bindings through.
+            if needs_special_form_redispatch(op) {
+                return GenericProcessedSExprBound::RedispatchSExpr {
+                    items: evaled_items,
+                    combo_bindings,
+                    env: unified_env,
+                    depth,
+                };
+            }
+        }
+    }
+
+    // Try rule matching using the same generic helper as the non-bound path.
+    let sexpr = factory.sexpr(evaled_items);
+    let all_matches_with_types = try_match_all_rules(&sexpr, &unified_env, *factory);
+
+    if !all_matches_with_types.is_empty() {
+        // Rules matched — downstream `dispatch_rule_matches` will thread
+        // `combo_bindings` into each RHS evaluation as the `outer_carrying`.
+        return GenericProcessedSExprBound::EvalRuleMatches {
+            matches: all_matches_with_types
+                .into_iter()
+                .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                .collect(),
+            env: unified_env,
+            depth,
+            // base_results = empty (no fallback data to emit alongside rule
+            // matches); if all matches produce no result downstream, the
+            // caller is responsible for the fallback emit.
+            base_results: SmallVec::new(),
+        };
+    }
+
+    // No rules matched.
+    //
+    // Phase 2.B HE-bisimilarity fix (mirrors process_single_combination_generic):
+    // distinguish "function with no matching rules" (→ empty) from "data
+    // constructor" (→ data). This is the bound-path fast-path that was missing
+    // the check, producing ghost results for free-variable queries like
+    // `(grandfather $who $x)` where a combo like `(grandfather b c)` has no
+    // matching rule.
+    if depth > 0 {
+        if let Some(head) = sexpr.get_head_symbol() {
+            let arity = sexpr.get_arity();
+            let has_any_rules = unified_env
+                .shared
+                .rule_index
+                .read()
+                .get_candidates(head, arity, None)
+                .next()
+                .is_some();
+            if has_any_rules {
+                // Function with no matching rules → empty (HE semantics).
+                return GenericProcessedSExprBound::Done((SmallVec::new(), unified_env));
+            }
+        }
+    }
+
+    // Data constructor OR top-level add: return with combo bindings.
+    if depth == 0 {
+        unified_env.add_to_space(&sexpr);
+    }
+    GenericProcessedSExprBound::Done((smallvec![bv_with(sexpr, combo_bindings)], unified_env))
 }
 
 #[cfg(test)]

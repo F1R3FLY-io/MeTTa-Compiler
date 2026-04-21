@@ -562,9 +562,15 @@ pub enum Continuation {
         outer_carrying: SharedBindings,
     },
 
-    /// Processing unify pattern1 iteration
+    /// Processing unify pattern1 iteration.
+    ///
+    /// Phase 2 Part A fix (task #64): `remaining_pattern1_results` carries
+    /// `BoundValue` so per-pattern1-result bindings (from the pattern1 eval)
+    /// compose into both the pattern-2 eval and the success-body eval.
+    /// Previously `IntoIter<MettaValue>` stripped per-result bindings,
+    /// losing variable unifications established by pattern1.
     ProcessUnifyPattern1Iter {
-        remaining_pattern1_results: std::vec::IntoIter<MettaValue>,
+        remaining_pattern1_results: std::vec::IntoIter<BoundValue>,
         pattern2: MettaValue,
         success_body: MettaValue,
         failure_body: MettaValue,
@@ -995,9 +1001,15 @@ pub enum Continuation {
         outer_carrying: SharedBindings,
     },
 
-    /// Processing case multi-results
+    /// Processing case multi-results.
+    ///
+    /// Phase 2 Part A fix (task #63): `remaining_atoms` carries BoundValue
+    /// so per-scrutinee-result bindings (from the scrutinee's evaluation)
+    /// compose with the outer carrying and flow into the case body eval.
+    /// Previously `IntoIter<MettaValue>` stripped per-result bindings,
+    /// making variables bound in the scrutinee invisible to the case body.
     ProcessCaseMultiResults {
-        remaining_atoms: std::vec::IntoIter<MettaValue>,
+        remaining_atoms: std::vec::IntoIter<BoundValue>,
         cases: MettaValue,
         collected: Vec<BoundValue>,
         env: SharedEnv,
@@ -1437,7 +1449,10 @@ impl Continuation {
             Self::ProcessUnifyPattern1Iter {
                 remaining_pattern1_results, pattern2, success_body, failure_body, all_results, ..
             } => {
-                out.extend(remaining_pattern1_results.as_slice().iter().copied());
+                for (v, bindings) in remaining_pattern1_results.as_slice().iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
                 out.push(*pattern2);
                 out.push(*success_body);
                 out.push(*failure_body);
@@ -1621,7 +1636,10 @@ impl Continuation {
             }
 
             Self::ProcessCaseMultiResults { remaining_atoms, cases, collected, .. } => {
-                out.extend(remaining_atoms.as_slice().iter().copied());
+                for (v, bindings) in remaining_atoms.as_slice().iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
                 out.push(*cases);
                 for (v, bindings) in collected.iter() {
                     out.push(*v);
@@ -2005,7 +2023,7 @@ mod tests {
     fn test_continuation_unify_pattern1_iter_collects_all() {
         let f = factory();
         let cont = Continuation::ProcessUnifyPattern1Iter {
-            remaining_pattern1_results: vec![f.long(1)].into_iter(),
+            remaining_pattern1_results: vec![bv(f.long(1))].into_iter(),
             pattern2: f.atom("p2"),
             success_body: f.atom("ok"),
             failure_body: f.atom("fail"),

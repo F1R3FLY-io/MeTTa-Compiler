@@ -39,5 +39,8 @@ tests/proptest/eval/arithmetics/mod.proptest-regressions
 Makefile.conf
 
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 repos/
+
+._*

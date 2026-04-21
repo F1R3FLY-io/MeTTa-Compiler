@@ -757,13 +757,24 @@ fn dispatch_rule_matches<C: EvalContext>(
 
         let results = parallel_branch_eval(branches, metta_env, actual_budget_acquired, current_depth);
 
-        // Merge with base_results from prior branches (e.g., from EvalRuleMatches)
+        // Phase 2 Part A: results now carry per-branch bindings. Compose each
+        // with outer_carrying if present; otherwise use branch bindings as-is.
         let mut merged = base_results;
-        merged.extend(if outer_carrying.is_empty() {
-            results.into_iter().map(bv).collect::<Vec<_>>()
+        if outer_carrying.is_empty() {
+            merged.extend(results.into_iter());
         } else {
-            results.into_iter().map(|v| bv_with(v, outer_carrying.clone())).collect::<Vec<_>>()
-        });
+            let oc = outer_carrying.clone();
+            merged.extend(results.into_iter().map(|(v, b)| {
+                if b.is_empty() {
+                    bv_with(v, oc.clone())
+                } else {
+                    let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &oc, &b, ctx.factory(),
+                    );
+                    bv_with(v, composed)
+                }
+            }));
+        }
 
         work_stack.push(WorkItem::Resume {
             result: (merged, env),
@@ -1198,12 +1209,19 @@ fn leave_fork() {
 ///
 /// # Returns
 /// Flat vector of all results from all branches, concatenated in branch order.
+/// Parallel evaluation of rule-match branches.
+///
+/// Phase 2 Part A fix (task #67): returns `Vec<BoundValue>` preserving
+/// per-branch bindings. Previously returned `Vec<MettaValue>` which
+/// dropped the evaluation-bindings from each branch — forcing callers to
+/// re-wrap everything with a single `outer_carrying` and losing the
+/// downstream binding-threading HE expects.
 fn parallel_branch_eval(
     branches: Vec<crate::backend::models::MettaValue>,
     env: crate::backend::environment::core::MettaEnvironment,
     budget_acquired: u32,
     caller_depth: u32,
-) -> Vec<crate::backend::models::MettaValue> {
+) -> Vec<crate::backend::eval::trampoline::types::BoundValue> {
     use std::sync::{Arc, Condvar, Mutex};
 
     use super::context::ParallelBranchContext;
@@ -1237,8 +1255,10 @@ fn parallel_branch_eval(
         });
     }
 
-    // Pre-allocate result slots: Vec<Option<Vec<MettaValue>>>
-    let results: Arc<Mutex<Vec<Option<Vec<MettaValue>>>>> =
+    // Pre-allocate result slots: Vec<Option<Vec<BoundValue>>>
+    // Phase 2 Part A: preserve per-branch evaluation bindings.
+    use crate::backend::eval::trampoline::types::BoundValue;
+    let results: Arc<Mutex<Vec<Option<Vec<BoundValue>>>>> =
         Arc::new(Mutex::new(vec![None; num_branches]));
     let remaining = Arc::new(AtomicU32::new((num_branches - 1) as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
@@ -1299,10 +1319,10 @@ fn parallel_branch_eval(
             let (eval_results, _new_env) =
                 eval_trampoline(branch_expr, env, &ctx);
 
-            // Store result in pre-allocated slot (no contention per slot)
+            // Store result with bindings (Phase 2 Part A fix).
             {
                 let mut guard = results.lock().expect("results mutex poisoned");
-                guard[slot] = Some(eval_results.into_iter().map(|(v, _)| v).collect());
+                guard[slot] = Some(eval_results.into_iter().collect());
             }
 
             // Decrement barrier; if last task, notify waiter
@@ -1334,10 +1354,10 @@ fn parallel_branch_eval(
         eval_results
     };
 
-    // Store branch 0 results
+    // Store branch 0 results (Phase 2 Part A: preserve bindings).
     {
         let mut guard = results.lock().expect("results mutex poisoned");
-        guard[0] = Some(branch0_results.into_iter().map(|(v, _)| v).collect());
+        guard[0] = Some(branch0_results.into_iter().collect());
     }
 
     // Trace: ParallelDispatch branch0-done
@@ -1472,24 +1492,33 @@ const PARALLEL_COLLAPSE_THRESHOLD: usize = 16;
 ///
 /// # Returns
 /// Vec of all evaluated results (empty values filtered out), in item order.
+/// Parallel evaluation of collapse/collapse-bind items.
+///
+/// Phase 2 Part A fix (task #66): returns `Vec<BoundValue>` so callers can
+/// access per-item bindings. Previously returned `Vec<MettaValue>` which
+/// silently dropped bindings — a correctness bug for `collapse-bind` whose
+/// output is `((value bindings) ...)` pairs.
+///
+/// Each worker seeds `carrying_bindings` from the item's own bindings
+/// (passed via the `items` Vec of `BoundValue`).
 fn parallel_collapse_eval(
-    items: Vec<crate::backend::models::MettaValue>,
+    items: Vec<crate::backend::eval::trampoline::types::BoundValue>,
     env: crate::backend::environment::core::MettaEnvironment,
     budget_acquired: u32,
     caller_depth: u32,
     eval_depth: usize,
-) -> Vec<crate::backend::models::MettaValue> {
+) -> Vec<crate::backend::eval::trampoline::types::BoundValue> {
     use std::sync::{Arc, Condvar, Mutex};
 
     use super::context::ParallelBranchContext;
-
-    type MettaValue = crate::backend::models::MettaValue;
+    use crate::backend::eval::trampoline::types::BoundValue;
 
     let num_items = items.len();
     debug_assert!(num_items >= 2, "parallel_collapse_eval requires at least 2 items");
 
-    // Pre-allocate result slots: Vec<Option<Vec<MettaValue>>>
-    let results: Arc<Mutex<Vec<Option<Vec<MettaValue>>>>> =
+    // Pre-allocate result slots: Vec<Option<Vec<BoundValue>>> so each
+    // item's per-result bindings are preserved through the barrier.
+    let results: Arc<Mutex<Vec<Option<Vec<BoundValue>>>>> =
         Arc::new(Mutex::new(vec![None; num_items]));
     let remaining = Arc::new(AtomicU32::new((num_items - 1) as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
@@ -1497,9 +1526,15 @@ fn parallel_collapse_eval(
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
-    // Spawn items 1..N to the work pool
-    for (slot, item_expr) in items.iter().enumerate().skip(1) {
+    // Spawn items 1..N to the work pool.
+    // Phase 2 Part A fix: each worker seeds with the item's own bindings
+    // (passed via `items` as BoundValue) — callers pre-substitute via
+    // `carrying_bindings` flow so the item_expr already reflects the item's
+    // ambient context; the bindings are retained on the result for sidecar
+    // encoding at the collapse-bind output stage.
+    for (slot, (item_expr, item_bindings)) in items.iter().enumerate().skip(1) {
         let item_expr = item_expr.clone();
+        let _item_bindings = item_bindings.clone(); // reserved for future carrying_bindings plumbing
         let env = env.clone();
         let results = Arc::clone(&results);
         let remaining = Arc::clone(&remaining);
@@ -1540,10 +1575,10 @@ fn parallel_collapse_eval(
             let (eval_results, _new_env) =
                 eval_trampoline(item_expr, env, &ctx);
 
-            // Store result in pre-allocated slot
+            // Store result in pre-allocated slot with bindings preserved.
             {
                 let mut guard = results.lock().expect("results mutex poisoned");
-                guard[slot] = Some(eval_results.into_iter().map(|(v, _)| v).collect());
+                guard[slot] = Some(eval_results.into_iter().collect());
             }
 
             // Decrement barrier; if last task, notify waiter
@@ -1569,15 +1604,15 @@ fn parallel_collapse_eval(
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
         let ctx = ParallelBranchContext::get();
         let (eval_results, _new_env) =
-            eval_trampoline(items[0].clone(), env.clone(), &ctx);
+            eval_trampoline(items[0].0.clone(), env.clone(), &ctx);
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
         eval_results
     };
 
-    // Store item 0 results
+    // Store item 0 results with bindings preserved.
     {
         let mut guard = results.lock().expect("results mutex poisoned");
-        guard[0] = Some(item0_results.into_iter().map(|(v, _)| v).collect());
+        guard[0] = Some(item0_results.into_iter().collect());
     }
 
     // Wait for all spawned tasks to complete, with work-stealing
@@ -1640,13 +1675,14 @@ fn parallel_collapse_eval(
     // Release budget slots back to the depth level they were acquired from
     release_budget(budget_acquired, caller_depth);
 
-    // Merge results in item order, filtering empty values
-    let _ = eval_depth; // depth used by caller for trace; items already eval'd at depth+1
-    let mut merged = Vec::new();
+    // Merge results in item order, filtering empty values.
+    // Phase 2 Part A fix: merge BoundValue (preserves bindings).
+    let _ = eval_depth;
+    let mut merged: Vec<crate::backend::eval::trampoline::types::BoundValue> = Vec::new();
     let guard = results.lock().expect("results mutex poisoned");
     for slot_result in guard.iter() {
         if let Some(ref item_results) = slot_result {
-            merged.extend(item_results.iter().filter(|v| !v.is_empty()).cloned());
+            merged.extend(item_results.iter().filter(|(v, _)| !v.is_empty()).cloned());
         }
     }
 
@@ -3367,8 +3403,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     alternatives, metta_env, par_budget, current_depth,
                                 );
 
+                                // Phase 2 Part A: results are BoundValue; extend directly.
                                 work_stack.push(WorkItem::Resume {
-                                    result: (results.into_iter().map(bv).collect(), env),
+                                    result: (results.into_iter().collect(), env),
                                 });
                             } else {
                                 // ── Sequential path (original) ──
@@ -5737,7 +5774,7 @@ fn process_continuation<C: EvalContext>(
                     }
 
                     let mut bound_bodies: Vec<BoundBody> = Vec::new();
-                    for (value, _b) in result_values.iter() {
+                    for (value, b) in result_values.iter() {
                         // Phase 8.5: Type pre-check for typed patterns
                         if let Some(ref tc) = type_constraint {
                             if get_ground_type(value).is_some() {
@@ -5748,22 +5785,38 @@ fn process_continuation<C: EvalContext>(
                             }
                         }
                         if let Some(pm_bindings) = pattern_match(&pattern, value) {
+                            // Task #70 gap-fix: compose per-scrutinee-result
+                            // bindings (b) with pattern-match bindings so the
+                            // body sees variables bound by both. Previously `_b`
+                            // was discarded, losing scrutinee-level bindings
+                            // like `$y=$b` from `(rule $y) → $y=<ground>`.
+                            let pm_with_scrutinee: crate::backend::models::GenericBindings<MettaValue> =
+                                if b.is_empty() {
+                                    pm_bindings
+                                } else {
+                                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                        b, &pm_bindings, ctx.factory(),
+                                    ) {
+                                        Some(composed) => composed,
+                                        None => continue, // conflict → drop
+                                    }
+                                };
                             if let Some(ref ob) = outer_bindings {
-                                // Compose outer + pattern-match bindings, defer body.
-                                // Phase 2.B Issue #2 fix: use strict compose so
-                                // a conflict between outer and pattern-match
-                                // bindings drops this alternative (HE-bisimilar).
                                 match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                                    ob, &pm_bindings, ctx.factory(),
+                                    ob, &pm_with_scrutinee, ctx.factory(),
                                 ) {
                                     Some(composed) => {
                                         bound_bodies.push(BoundBody::Deferred(composed));
                                     }
                                     None => continue, // conflict → drop this alt
                                 }
+                            } else if !pm_with_scrutinee.is_empty() && body.has_variables_fast() {
+                                // Defer via EvalWithBindings when body has vars
+                                // to resolve via scrutinee bindings.
+                                bound_bodies.push(BoundBody::Deferred(pm_with_scrutinee));
                             } else {
-                                // No outer bindings — materialize body as before
-                                let instantiated = apply_bindings(&body, &pm_bindings, ctx.factory());
+                                // No outer, no scrutinee — materialize body as before
+                                let instantiated = apply_bindings(&body, &pm_with_scrutinee, ctx.factory());
                                 bound_bodies.push(BoundBody::Materialized(instantiated));
                             }
                         }
@@ -5851,9 +5904,9 @@ fn process_continuation<C: EvalContext>(
                             instantiated_bodies, metta_env, par_budget, current_depth,
                         );
 
-                        // Merge with accumulated results
+                        // Phase 2 Part A: results are BoundValue; extend directly.
                         let mut merged = results;
-                        merged.extend(par_results.into_iter().map(bv));
+                        merged.extend(par_results.into_iter());
 
                         work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(merged), result_env),
@@ -5902,11 +5955,8 @@ fn process_continuation<C: EvalContext>(
                     // Try next value
                     loop {
                         match remaining_values.pop() {
-                            Some((value, _b)) => {
+                            Some((value, scrutinee_b)) => {
                                 // Phase 8.5: Type pre-check for typed patterns (: $var Type)
-                                // Only apply to ground-type values (Number/Bool/String) where
-                                // type inference is definitive. S-expressions and atoms may
-                                // structurally match the pattern even if type inference says otherwise.
                                 if let Some(ref tc) = type_constraint {
                                     if get_ground_type(&value).is_some() {
                                         let value_type = infer_type_generic(&value, ctx.factory(), &result_env);
@@ -5915,7 +5965,25 @@ fn process_continuation<C: EvalContext>(
                                         }
                                     }
                                 }
+                                // Task #70 gap-fix: compose scrutinee_b (per-value
+                                // bindings, previously `_b` discarded) into the
+                                // pattern-match bindings so body eval sees them.
+                                let pm_and_scrutinee = |pm: crate::backend::models::GenericBindings<MettaValue>|
+                                    -> Option<crate::backend::models::GenericBindings<MettaValue>>
+                                {
+                                    if scrutinee_b.is_empty() {
+                                        Some(pm)
+                                    } else {
+                                        crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                            &scrutinee_b, &pm, ctx.factory(),
+                                        )
+                                    }
+                                };
                                 if let Some(bindings) = pattern_match(&pattern, &value) {
+                                    let bindings = match pm_and_scrutinee(bindings) {
+                                        Some(b) => b,
+                                        None => continue, // scrutinee/pattern conflict → drop
+                                    };
                                     // Trace: pattern-match phase (subsequent resumption)
                                     #[cfg(feature = "eval-trace")]
                                     {
@@ -6347,12 +6415,17 @@ fn process_continuation<C: EvalContext>(
             }
 
             if remaining_elements.len() == 0 {
-                // All elements processed - return result list
+                // All elements processed - return result list.
+                // Phase 2 Part A fix (task #65): attach outer_carrying to the
+                // emitted list so the caller's ambient bindings propagate.
+                // Previously `bv(result_list)` stripped bindings, which broke
+                // HE bisimilarity for list ops inside binding-threading
+                // contexts (e.g. foldl-atom over a map-atom result).
                 let result_list = ctx.factory().sexpr(
                     collected_results.into_iter().map(|(v, _)| v).collect()
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(result_list)], result_env),
+                    result: (smallvec![bv_with(result_list, (*outer_carrying).clone())], result_env),
                 });
             } else {
                 // More elements to process
@@ -6423,12 +6496,13 @@ fn process_continuation<C: EvalContext>(
             }
 
             if remaining_elements.len() == 0 {
-                // All elements processed - return filtered list
+                // All elements processed - return filtered list.
+                // Phase 2 Part A fix (task #65): attach outer_carrying.
                 let result_list = ctx.factory().sexpr(
                     filtered_results.into_iter().map(|(v, _)| v).collect()
                 );
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(result_list)], result_env),
+                    result: (smallvec![bv_with(result_list, (*outer_carrying).clone())], result_env),
                 });
             } else {
                 // More elements to process
@@ -7224,7 +7298,24 @@ fn process_continuation<C: EvalContext>(
             // the already-evaluated results. We mirror this by evaluating each raw
             // scrutinee result before matching.
             let mut remaining_raw = filtered_results.into_iter();
-            let (first_raw, _b) = remaining_raw.next().expect("filtered_results is non-empty");
+            let (first_raw, first_raw_bindings) = remaining_raw.next().expect("filtered_results is non-empty");
+
+            // Task #68 gap-fix: preserve first_raw's bindings as
+            // current_raw_bindings so the scrutinee re-eval inherits the
+            // scrutinee-evaluation bindings (e.g. $who=a from rule match).
+            // Previously this was `empty_shared_bindings()`, silently
+            // dropping all scrutinee-level variable bindings.
+            let first_raw_carrying = if first_raw_bindings.is_empty() {
+                outer_carrying.clone()
+            } else if outer_carrying.is_empty() {
+                std::sync::Arc::new(first_raw_bindings.clone())
+            } else {
+                std::sync::Arc::new(
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*outer_carrying, &first_raw_bindings, ctx.factory(),
+                    )
+                )
+            };
 
             continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
                 remaining_raw,
@@ -7232,10 +7323,14 @@ fn process_continuation<C: EvalContext>(
                 cases,
                 env: atom_env.clone(),
                 depth,
-                current_raw_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+                current_raw_bindings: std::sync::Arc::new(first_raw_bindings),
                 outer_carrying: outer_carrying.clone(),
             });
 
+            // Re-evaluate with the scrutinee's own bindings threaded through
+            // carrying_bindings so rule matches inside the re-eval can resolve
+            // variables bound by earlier rule matches in the scrutinee's
+            // derivation chain.
             work_stack.push(WorkItem::Eval {
                 value: first_raw,
                 env: atom_env,
@@ -7243,7 +7338,7 @@ fn process_continuation<C: EvalContext>(
                 is_tail_call: false,
                 expected_type: None,
                 demand: None,
-                carrying_bindings: outer_carrying.clone(),
+                carrying_bindings: first_raw_carrying,
             });
         }
 
@@ -7258,7 +7353,38 @@ fn process_continuation<C: EvalContext>(
             let (results, _result_env) = result;
             collected.extend(results);
 
-            if let Some(next_atom) = remaining_atoms.next() {
+            if let Some((next_atom, atom_bindings)) = remaining_atoms.next() {
+                // Phase 2 Part A fix (task #63): compose per-atom bindings with
+                // outer_carrying so scrutinee-bound variables flow into the
+                // case body. Strict compose drops the case match on conflict.
+                let per_atom_carrying: std::sync::Arc<crate::backend::models::GenericBindings<MettaValue>> =
+                    if atom_bindings.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(atom_bindings.clone())
+                    } else {
+                        match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                            &*outer_carrying, &atom_bindings, ctx.factory(),
+                        ) {
+                            Some(b) => std::sync::Arc::new(b),
+                            None => {
+                                // Conflict — skip this atom (HE-bisimilar drop).
+                                continuations.push(Continuation::ProcessCaseMultiResults {
+                                    remaining_atoms,
+                                    cases,
+                                    collected,
+                                    env: env.clone(),
+                                    depth,
+                                    outer_carrying: outer_carrying.clone(),
+                                });
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), env),
+                                });
+                                return;
+                            }
+                        }
+                    };
+
                 // Check if atom is empty - use trait methods, NO conversion
                 let is_empty_atom = next_atom.is_empty()
                     || next_atom.as_sexpr().map_or(false, |items| items.is_empty());
@@ -7306,15 +7432,34 @@ fn process_continuation<C: EvalContext>(
                             outer_carrying: outer_carrying.clone(),
                         });
 
-                        work_stack.push(WorkItem::Eval {
-                            value: template,
-                            env,
-                            depth,
-                            is_tail_call: true,
-                            expected_type: None,
-                            demand: None,
-                            carrying_bindings: outer_carrying.clone(),
-                        });
+                        // Task #68 gap-fix: WorkItem::Eval does NOT consume
+                        // carrying_bindings for variable substitution — it
+                        // only threads them as leaf metadata. When the case
+                        // body references scrutinee-bound variables (not
+                        // captured by the case pattern), they must be
+                        // substituted via EvalWithBindings. Mirrors
+                        // ProcessLet/ProcessChainBody precedent.
+                        if template.has_variables_fast() && !per_atom_carrying.is_empty() {
+                            work_stack.push(WorkItem::EvalWithBindings {
+                                template,
+                                bindings: per_atom_carrying,
+                                env,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                carrying_bindings: outer_carrying.clone(),
+                            });
+                        } else {
+                            work_stack.push(WorkItem::Eval {
+                                value: template,
+                                env,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: per_atom_carrying,
+                            });
+                        }
                     }
                     SwitchResult::Error(err) => {
                         // Collect error and continue
@@ -7375,7 +7520,20 @@ fn process_continuation<C: EvalContext>(
             // Collect non-empty evaluated results
             evaluated.extend(eval_results.into_iter().filter(|(v, _)| !v.is_empty()));
 
-            if let Some((next_raw, _b)) = remaining_raw.next() {
+            if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
+                // Task #68 gap-fix: preserve next_raw's bindings (previously
+                // underscored and replaced with empty_shared_bindings()).
+                let next_raw_carrying = if next_raw_bindings.is_empty() {
+                    outer_carrying.clone()
+                } else if outer_carrying.is_empty() {
+                    std::sync::Arc::new(next_raw_bindings.clone())
+                } else {
+                    std::sync::Arc::new(
+                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*outer_carrying, &next_raw_bindings, ctx.factory(),
+                        )
+                    )
+                };
                 // More raw scrutinee results to evaluate — reuse cont slot
                 continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
                     remaining_raw,
@@ -7383,7 +7541,7 @@ fn process_continuation<C: EvalContext>(
                     cases,
                     env: eval_env.clone(),
                     depth,
-                    current_raw_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+                    current_raw_bindings: std::sync::Arc::new(next_raw_bindings),
                     outer_carrying: outer_carrying.clone(),
                 });
 
@@ -7394,7 +7552,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: next_raw_carrying,
                 });
             } else {
                 // All raw results evaluated — now perform pattern matching
@@ -7427,10 +7585,47 @@ fn process_continuation<C: EvalContext>(
                     return;
                 }
 
-                // Match each evaluated result against cases
-                let mut eval_atoms = evaluated.into_iter().map(|(v, _)| v).collect::<Vec<_>>().into_iter();
+                // Match each evaluated result against cases.
+                // Phase 2 Part A fix (task #63): preserve per-atom bindings
+                // in the iterator so the case body sees scrutinee bindings.
+                let mut eval_atoms = evaluated.into_iter().collect::<Vec<_>>().into_iter();
 
-                if let Some(first_atom) = eval_atoms.next() {
+                if let Some((first_atom, first_atom_bindings)) = eval_atoms.next() {
+                    // Compose per-atom bindings with outer_carrying for this
+                    // atom's case body evaluation. Strict: drop on conflict.
+                    let first_carrying: std::sync::Arc<crate::backend::models::GenericBindings<MettaValue>> =
+                        if first_atom_bindings.is_empty() {
+                            outer_carrying.clone()
+                        } else if outer_carrying.is_empty() {
+                            std::sync::Arc::new(first_atom_bindings.clone())
+                        } else {
+                            match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                &*outer_carrying, &first_atom_bindings, ctx.factory(),
+                            ) {
+                                Some(b) => std::sync::Arc::new(b),
+                                None => {
+                                    // Conflict on first atom — move to rest.
+                                    if eval_atoms.len() == 0 {
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                    } else {
+                                        continuations.push(Continuation::ProcessCaseMultiResults {
+                                            remaining_atoms: eval_atoms,
+                                            cases,
+                                            collected: vec![],
+                                            env: eval_env.clone(),
+                                            depth,
+                                            outer_carrying: outer_carrying.clone(),
+                                        });
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                    }
+                                    return;
+                                }
+                            }
+                        };
                     let is_empty_atom = first_atom.is_empty()
                         || first_atom.as_sexpr().map_or(false, |items| items.is_empty());
                     let switch_atom = if is_empty_atom {
@@ -7459,16 +7654,32 @@ fn process_continuation<C: EvalContext>(
                                 }
                             }
 
+                            // Task #68 gap-fix: route case body through
+                            // EvalWithBindings when template has free vars
+                            // and per-atom carrying is non-empty. Mirrors
+                            // ProcessCaseMultiResults fix at ~7383.
                             if eval_atoms.len() == 0 {
-                                work_stack.push(WorkItem::Eval {
-                                    value: template,
-                                    env: eval_env,
-                                    depth,
-                                    is_tail_call: true,
-                                    expected_type: None,
-                                    demand: None,
-                                    carrying_bindings: outer_carrying.clone(),
-                                });
+                                if template.has_variables_fast() && !first_carrying.is_empty() {
+                                    work_stack.push(WorkItem::EvalWithBindings {
+                                        template,
+                                        bindings: first_carrying,
+                                        env: eval_env,
+                                        depth,
+                                        is_tail_call: true,
+                                        expected_type: None,
+                                        carrying_bindings: outer_carrying.clone(),
+                                    });
+                                } else {
+                                    work_stack.push(WorkItem::Eval {
+                                        value: template,
+                                        env: eval_env,
+                                        depth,
+                                        is_tail_call: true,
+                                        expected_type: None,
+                                        demand: None,
+                                        carrying_bindings: first_carrying,
+                                    });
+                                }
                             } else {
                                 continuations.push(Continuation::ProcessCaseMultiResults {
                                     remaining_atoms: eval_atoms,
@@ -7476,18 +7687,33 @@ fn process_continuation<C: EvalContext>(
                                     collected: vec![],
                                     env: eval_env.clone(),
                                     depth,
+                                    // Remaining atoms still use outer_carrying as their
+                                    // fallback ambient; each atom composes its own bindings
+                                    // when it's popped for processing.
                                     outer_carrying: outer_carrying.clone(),
                                 });
 
-                                work_stack.push(WorkItem::Eval {
-                                    value: template,
-                                    env: eval_env,
-                                    depth,
-                                    is_tail_call: true,
-                                    expected_type: None,
-                                    demand: None,
-                                    carrying_bindings: outer_carrying.clone(),
-                                });
+                                if template.has_variables_fast() && !first_carrying.is_empty() {
+                                    work_stack.push(WorkItem::EvalWithBindings {
+                                        template,
+                                        bindings: first_carrying,
+                                        env: eval_env,
+                                        depth,
+                                        is_tail_call: true,
+                                        expected_type: None,
+                                        carrying_bindings: outer_carrying.clone(),
+                                    });
+                                } else {
+                                    work_stack.push(WorkItem::Eval {
+                                        value: template,
+                                        env: eval_env,
+                                        depth,
+                                        is_tail_call: true,
+                                        expected_type: None,
+                                        demand: None,
+                                        carrying_bindings: first_carrying,
+                                    });
+                                }
                             }
                         }
                         SwitchResult::Error(err) => {
@@ -8132,8 +8358,11 @@ fn process_continuation<C: EvalContext>(
                     carrying_bindings: outer_carrying.clone(),
                 });
             } else if pattern1_results.len() == 1 {
-                // Single result - check if it's a Space (special handling)
-                let (val1, _b) = pattern1_results.into_iter().next().unwrap();
+                // Single result - check if it's a Space (special handling).
+                // Task #68 gap-fix: preserve val1_bindings (previously underscored
+                // and discarded). These bindings must compose into success_body
+                // when the pattern2 unification produces more bindings.
+                let (val1, val1_bindings) = pattern1_results.into_iter().next().unwrap();
 
                 if let Some(handle) = val1.as_space() {
                     // Space unification - match pattern2 against space atoms
@@ -8179,13 +8408,24 @@ fn process_continuation<C: EvalContext>(
                                     carrying_bindings: outer_carrying.clone(),
                                 });
                             } else {
-                                // Build bodies to evaluate for each match - values already generic
+                                // Build bodies to evaluate for each match - values already generic.
+                                // Task #68 gap-fix: compose val1_bindings with each match's
+                                // unification bindings so variables bound by the pattern1
+                                // source expression (e.g. $who from rule match) flow into
+                                // the success_body, not just pattern2's unification vars.
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for (generic_value, count) in &matches {
                                     if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, generic_value) {
                                         found_match = true;
-                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
+                                        let composed = if val1_bindings.is_empty() {
+                                            bindings
+                                        } else {
+                                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                                &val1_bindings, &bindings, ctx.factory(),
+                                            )
+                                        };
+                                        let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
                                         for _ in 0..*count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
@@ -8261,13 +8501,21 @@ fn process_continuation<C: EvalContext>(
                                     carrying_bindings: outer_carrying.clone(),
                                 });
                             } else {
-                                // Build bodies to evaluate for each match - NO conversion needed
+                                // Build bodies to evaluate for each match - NO conversion needed.
+                                // Task #68 gap-fix: compose val1_bindings with unify bindings.
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for m in &matches {
                                     if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, &m.value) {
                                         found_match = true;
-                                        let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
+                                        let composed = if val1_bindings.is_empty() {
+                                            bindings
+                                        } else {
+                                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                                &val1_bindings, &bindings, ctx.factory(),
+                                            )
+                                        };
+                                        let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
                                         for _ in 0..m.count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
@@ -8328,7 +8576,10 @@ fn process_continuation<C: EvalContext>(
                         }
                     }
                 } else {
-                    // Non-space: evaluate pattern2
+                    // Non-space: evaluate pattern2.
+                    // Task #68 gap-fix: if val1 produced bindings, those variables
+                    // may appear in pattern2 and must be substituted before eval.
+                    // Use EvalWithBindings when pattern2 has variables.
                     continuations.push(Continuation::ProcessUnifyPattern2 {
                         val1,
                         pattern2: pattern2.clone(),
@@ -8339,22 +8590,38 @@ fn process_continuation<C: EvalContext>(
                         outer_carrying: outer_carrying.clone(),
                     });
 
-                    work_stack.push(WorkItem::Eval {
-                        value: pattern2,
-                        env: result_env,
-                        depth: depth + 1,
-                        is_tail_call: false,
-                        expected_type: None,
-                        demand: None,
-                        carrying_bindings: outer_carrying.clone(),
-                    });
+                    if pattern2.has_variables_fast() && !val1_bindings.is_empty() {
+                        work_stack.push(WorkItem::EvalWithBindings {
+                            template: pattern2,
+                            bindings: std::sync::Arc::new(val1_bindings),
+                            env: result_env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            carrying_bindings: outer_carrying.clone(),
+                        });
+                    } else {
+                        work_stack.push(WorkItem::Eval {
+                            value: pattern2,
+                            env: result_env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: outer_carrying.clone(),
+                        });
+                    }
                 }
             } else {
-                // Multiple results - iterate over them
-                let remaining_vec: Vec<_> = pattern1_results.into_iter().map(|(v, _)| v).collect();
+                // Multiple results - iterate over them.
+                // Phase 2 Part A fix (task #64): preserve per-pattern1-result
+                // bindings. Task #68 gap-fix: compose first_b with unification
+                // bindings for space-path bodies (symmetric to single-result
+                // path above).
+                let remaining_vec: Vec<BoundValue> = pattern1_results.into_iter().collect();
                 let mut remaining = remaining_vec.into_iter();
-                let iter_capacity = remaining.len(); // total before consuming first
-                let first = remaining.next().unwrap();
+                let iter_capacity = remaining.len();
+                let (first, first_b) = remaining.next().unwrap();
 
                 continuations.push(Continuation::ProcessUnifyPattern1Iter {
                     remaining_pattern1_results: remaining,
@@ -8378,13 +8645,21 @@ fn process_continuation<C: EvalContext>(
                                 .map(|m| (m.value, m.count))
                                 .collect();
 
-                        // Build bodies for matches - values already generic
+                        // Build bodies for matches - values already generic.
+                        // Task #68 gap-fix: compose first_b (val1's bindings).
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for (generic_value, count) in &matches {
                             if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, generic_value) {
                                 found_match = true;
-                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
+                                let composed = if first_b.is_empty() {
+                                    bindings
+                                } else {
+                                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                                        &first_b, &bindings, ctx.factory(),
+                                    )
+                                };
+                                let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..*count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -8427,13 +8702,21 @@ fn process_continuation<C: EvalContext>(
                         let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
                             handle.collapse_with_multiplicity_generic(ctx.factory());
 
-                        // Build bodies for matches - NO conversion needed
+                        // Build bodies for matches - NO conversion needed.
+                        // Task #68 gap-fix: compose first_b (val1's bindings).
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
                             if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, &m.value) {
                                 found_match = true;
-                                let generic_body = apply_bindings(&success_body, &bindings, ctx.factory());
+                                let composed = if first_b.is_empty() {
+                                    bindings
+                                } else {
+                                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                                        &first_b, &bindings, ctx.factory(),
+                                    )
+                                };
+                                let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -8511,8 +8794,11 @@ fn process_continuation<C: EvalContext>(
             // Accumulate results from the pattern1 value we just processed
             all_results.extend(body_results);
 
-            // Get next pattern1 value to process
-            if let Some(val1) = remaining_pattern1_results.next() {
+            // Get next pattern1 value to process.
+            // Task #68 gap-fix: preserve val1's bindings and compose with
+            // each match's unification bindings so the success_body sees
+            // variables bound by the pattern1 source expression.
+            if let Some((val1, val1_bindings)) = remaining_pattern1_results.next() {
                 // Create new iterator continuation for the REMAINING values
                 // (after this one we're about to process)
                 continuations.push(Continuation::ProcessUnifyPattern1Iter {
@@ -8567,13 +8853,23 @@ fn process_continuation<C: EvalContext>(
                                 handle.collapse_with_multiplicity_generic(ctx.factory())
                             };
 
+                        // Task #68 gap-fix: compose val1_bindings with each
+                        // match's unification bindings before applying to
+                        // success_body.
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
                             if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern, &m.value) {
                                 found_match = true;
+                                let composed = if val1_bindings.is_empty() {
+                                    bindings
+                                } else {
+                                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                                        &val1_bindings, &bindings, ctx.factory(),
+                                    )
+                                };
                                 let instantiated =
-                                    apply_bindings(&success_body, &bindings, ctx.factory());
+                                    apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(instantiated.clone());
                                 }
@@ -8619,15 +8915,30 @@ fn process_continuation<C: EvalContext>(
                         depth,
                         outer_carrying: outer_carrying.clone(),
                     });
-                    work_stack.push(WorkItem::Eval {
-                        value: pattern2,
-                        env: env_after,
-                        depth: depth + 1,
-                        is_tail_call: false,
-                        expected_type: None,
-                        demand: None,
-                        carrying_bindings: outer_carrying.clone(),
-                    });
+                    // Task #68 gap-fix: substitute val1_bindings into pattern2 via
+                    // EvalWithBindings when pattern2 has variables. Plain Eval
+                    // would lose val1's bindings.
+                    if pattern2.has_variables_fast() && !val1_bindings.is_empty() {
+                        work_stack.push(WorkItem::EvalWithBindings {
+                            template: pattern2,
+                            bindings: std::sync::Arc::new(val1_bindings),
+                            env: env_after,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            carrying_bindings: outer_carrying.clone(),
+                        });
+                    } else {
+                        work_stack.push(WorkItem::Eval {
+                            value: pattern2,
+                            env: env_after,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: outer_carrying.clone(),
+                        });
+                    }
                 }
             } else {
                 // No more pattern1 values - return all accumulated results
@@ -8803,15 +9114,20 @@ fn process_continuation<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                let metta_items: Vec<MettaValue> = expr_results.into_iter().map(|(v, _)| v).collect();
+                // Phase 2 Part A fix: pass BoundValue (preserves bindings).
+                let metta_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
+                    expr_results.into_iter().collect();
                 let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
                     metta_items, metta_env, par_budget, current_depth, depth,
                 );
 
-                // Assemble the tuple
-                let result_list = ctx.factory().sexpr(evaluated);
+                // Plain collapse: emit values only (bindings discarded, per
+                // collapse semantics which produces a value list).
+                let result_list = ctx.factory().sexpr(
+                    evaluated.into_iter().map(|(v, _)| v).collect()
+                );
 
                 // Trace: collapse-result phase
                 #[cfg(feature = "eval-trace")]
@@ -8916,14 +9232,50 @@ fn process_continuation<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                let metta_items: Vec<MettaValue> = expr_results.into_iter().map(|(v, _)| v).collect();
+                // Phase 2 Part A fix (task #66): pass BoundValue so the parallel
+                // path preserves per-item bindings through collapse-bind's
+                // sidecar encoding. Previously the parallel path dropped all
+                // bindings, silently breaking collapse-bind's core semantic
+                // of "capture per-branch bindings".
+                let metta_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
+                    expr_results.into_iter().collect();
                 let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
                     metta_items, metta_env, par_budget, current_depth, depth,
                 );
 
-                let result_list = ctx.factory().sexpr(evaluated);
+                // Encode each (value, bindings) pair as (value (Bindings ...))
+                // mirroring the sequential path's encoding at lines ~9126-9157.
+                let pairs: Vec<MettaValue> = evaluated.into_iter().map(|(result_val, bindings)| {
+                    let mut resolved = bindings.clone();
+                    crate::backend::eval::bindings::apply_chain_generic(
+                        &mut resolved, ctx.factory(),
+                    );
+                    let projected = match &tracked_vars_for_sidecar {
+                        Some(tv) => {
+                            crate::backend::eval::bindings::project_bindings_generic(
+                                &resolved,
+                                tv.as_slice(),
+                            )
+                        }
+                        None => resolved,
+                    };
+                    let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
+                        let mut f = crate::backend::models::GenericBindings::new();
+                        for (name, val) in projected.iter() {
+                            if !name.starts_with("$__fr_") {
+                                f.insert_or_replace(name, val.clone());
+                            }
+                        }
+                        f
+                    } else {
+                        projected
+                    };
+                    let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
+                    ctx.factory().sexpr(vec![result_val, bindings_sexpr])
+                }).collect();
+                let result_list = ctx.factory().sexpr(pairs);
 
                 #[cfg(feature = "eval-trace")]
                 {

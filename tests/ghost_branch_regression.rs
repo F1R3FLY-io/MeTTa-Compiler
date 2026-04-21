@@ -322,6 +322,216 @@ fn vm_tier_op_return_composes_bindings() {
     );
 }
 
+// ============================================================================
+// Plan Phase 2 Part A — binding-drop propagation tests
+// ============================================================================
+//
+// These cover the wider scope of the original plan's "Phase 2 Part A"
+// binding-propagation fixes (tasks #63-67). Each test exercises a specific
+// continuation or parallel path that previously dropped BoundValue bindings.
+
+/// Task #63: ProcessCaseMultiResults no longer produces ghost results when
+/// multiple scrutinee results flow through case. Smoke test that case with
+/// multiple scrutinees evaluates without panics and produces results.
+#[test]
+fn case_multi_results_smoke() {
+    // case with a nondet scrutinee — should not panic; should produce
+    // at least one result.
+    let source = r#"
+        (= (choose) 1)
+        (= (choose) 2)
+        !(case (choose)
+            ((1 one)
+             (2 two)))
+    "#;
+    let results = eval_last(source);
+    // Expect at least one of "one", "two" — depending on nondet order,
+    // MeTTa semantics may produce one or both.
+    assert!(
+        !results.is_empty(),
+        "case over nondet scrutinee produced no results"
+    );
+}
+
+/// Task #65: ProcessMapAtom preserves outer_carrying on emitted list.
+#[test]
+fn map_atom_preserves_outer_carrying() {
+    // map-atom should not strip the ambient bindings on its output list.
+    let source = r#"
+        !(let $x 10
+            (map-atom (1 2 3) $y (+ $y $x)))
+    "#;
+    let results = eval_last(source);
+    // Outer $x=10 must propagate into each (+ $y $x) evaluation.
+    // Expected: (11 12 13).
+    assert_eq!(results.len(), 1);
+    let s = &results[0];
+    assert!(s.contains("11") && s.contains("12") && s.contains("13"),
+        "map-atom lost outer binding: {}", s);
+}
+
+/// Task #66: parallel_collapse_eval returns BoundValue so collapse-bind's
+/// parallel path preserves per-item bindings for sidecar encoding.
+///
+/// This exercises the parallel-collapse path (triggered when result count
+/// >= PARALLEL_COLLAPSE_THRESHOLD = 16).
+#[test]
+fn parallel_collapse_bind_preserves_bindings() {
+    // Generate >= 16 nondeterministic branches to trigger parallel path.
+    let source = r#"
+        (= (pick a) 1)
+        (= (pick b) 2)
+        (= (pick c) 3)
+        (= (pick d) 4)
+        (= (pick e) 5)
+        (= (pick f) 6)
+        (= (pick g) 7)
+        (= (pick h) 8)
+        (= (pick i) 9)
+        (= (pick j) 10)
+        (= (pick k) 11)
+        (= (pick l) 12)
+        (= (pick m) 13)
+        (= (pick n) 14)
+        (= (pick o) 15)
+        (= (pick p) 16)
+        !(collapse-bind (pick $x))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    let s = &results[0];
+    // All 16 bindings $x=a..p must be present.
+    for c in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h',
+              'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p'] {
+        let binding = format!("($x {})", c);
+        assert!(
+            s.contains(&binding),
+            "parallel collapse-bind lost binding {}: {}",
+            binding, s
+        );
+    }
+}
+
+// ============================================================================
+// Cache architecture prophylactic (within-query caller isolation)
+// ============================================================================
+//
+// MeTTaTron's subgoal/thunk/memo caches store VALUES ONLY, not per-result
+// bindings. On cache hit, consumers re-tag with the RETRIEVING CALLER's
+// `carrying_bindings` — the "values-only + retag-on-hit" architecture.
+//
+// A rejected alternative (Phase 3.2-G, commit 2e669c0 revert) would have
+// stored `(V, GenericBindings<V>)` pairs. That approach is UNSAFE because
+// two callers within one query that hit the same cached subgoal would see
+// Caller A's bindings attached to Caller B's result — a within-query ghost
+// contamination that `query_generation` cannot prevent (it only isolates
+// across top-level `!`).
+//
+// This test locks in the values-only contract: a cached `(r $x)` subgoal
+// must yield correct per-caller bindings when nondeterministically
+// evaluated with a free variable. If someone reintroduces pair-caching,
+// this test would either produce only one result or attach the wrong
+// binding to one of the results.
+
+// ============================================================================
+// Case/Let binding propagation — valid scenarios locked in
+// ============================================================================
+
+/// Outer let binding flows into case body via apply_bindings(&cases, ob).
+///
+/// This tests the ProcessCaseAtom materialization path (line ~7226) which
+/// substitutes outer_bindings into cases before switching.
+#[test]
+fn outer_let_binding_flows_into_case_body() {
+    let source = r#"
+        (= (foo) ok)
+        !(let $x 42 (case (foo) ((ok (got $x)))))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], "(got 42)", "outer let $x=42 didn't flow into case body: {:?}", results);
+}
+
+/// Pattern variable captures scrutinee value, body references pattern var.
+#[test]
+fn case_pattern_captures_and_body_uses() {
+    let source = r#"
+        (= (produce) hello)
+        !(case (produce) (($x (wrapped $x))))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], "(wrapped hello)");
+}
+
+/// Multi-alt scrutinee: each result triggers pattern match, each binds its own
+/// pattern variable independently.
+#[test]
+fn case_multi_alt_scrutinee_independent_bindings() {
+    let source = r#"
+        (= (choose) 1)
+        (= (choose) 2)
+        (= (choose) 3)
+        !(collapse (case (choose) (($n (n $n)))))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    let s = &results[0];
+    assert!(s.contains("(n 1)"), "missing (n 1): {}", s);
+    assert!(s.contains("(n 2)"), "missing (n 2): {}", s);
+    assert!(s.contains("(n 3)"), "missing (n 3): {}", s);
+}
+
+/// Let body with pattern variable binding (scope semantics).
+#[test]
+fn let_pattern_binds_and_body_uses() {
+    let source = r#"
+        !(let $x 100 (double $x))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], "(double 100)");
+}
+
+/// Nested let bindings flow correctly.
+#[test]
+fn nested_let_bindings_compose() {
+    let source = r#"
+        !(let $x 1 (let $y 2 (pair $x $y)))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], "(pair 1 2)");
+}
+
+/// Within-query cache caller isolation — each caller must reconstitute its
+/// own `carrying_bindings` on cache hit, never see a prior caller's context.
+#[test]
+fn within_query_cache_isolation_contract() {
+    let source = r#"
+        (= (q a) 1)
+        (= (q b) 2)
+        (= (r $x) (q $x))
+        !(collapse-bind (r $y))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    let s = &results[0];
+
+    // Both $y=a and $y=b must appear (neither eaten by the other's cache).
+    assert!(s.contains("($y a)"), "$y=a binding missing: {}", s);
+    assert!(s.contains("($y b)"), "$y=b binding missing: {}", s);
+
+    // Neither caller's binding should leak into the other's pair.
+    // A correct output contains exactly 2 "($y ..." substrings.
+    let y_count = s.matches("($y ").count();
+    assert_eq!(
+        y_count, 2,
+        "expected exactly 2 $y bindings (no cross-caller leak); got {}: {}",
+        y_count, s
+    );
+}
+
 /// This mirrors the user's requested verification harness: the main Direct.metta
 /// reproducer must produce identical result SETS across 20 runs.
 #[test]

@@ -11002,6 +11002,14 @@ fn process_continuation<C: EvalContext>(
             // Only cache results if no mutations occurred during evaluation.
             // If the epoch advanced, a side effect happened transitively,
             // so the result may depend on mutable state and must not be cached.
+            //
+            // Values-only cache contract (intentional discard of bindings):
+            // `eval_memo_put` stores values independent of caller context.
+            // On cache hit (line ~2241), consumer re-tags with the retrieving
+            // caller's carrying_bindings. Storing bindings here would leak
+            // cross-caller within the same query. The `should_memoize` gate
+            // restricts caching to ground-input expressions, so cached
+            // values are themselves ground.
             if mutation_epoch() == saved_epoch {
                 eval_memo_put(expr_hash, &result_values.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>());
             }
@@ -11267,6 +11275,14 @@ fn process_continuation<C: EvalContext>(
             // is_scope_visible, so re-tagging with the retrieving
             // branch's carrying_bindings is safe.
             if start_epoch == mutation_epoch() {
+                // Values-only cache contract (intentional discard of `_b`):
+                // the cache stores results independent of caller context.
+                // On cache hit (line ~2193), consumers re-tag with THEIR OWN
+                // `carrying_bindings`. Storing `_b` would leak Caller A's
+                // bindings to Caller B's hit — a within-query ghost that
+                // `query_generation` cannot prevent. See
+                // tests/ghost_branch_regression.rs::
+                // within_query_cache_isolation_contract for enforcement.
                 let cached: smallvec::SmallVec<[MettaValue; 2]> = result_values
                     .iter()
                     .map(|(v, _b)| v.clone())
@@ -11311,6 +11327,12 @@ fn process_continuation<C: EvalContext>(
             let (result_values, result_env) = result;
 
             // Only cache if no mutations occurred during evaluation.
+            // Values-only cache contract: thunk hash ALREADY includes the
+            // template's bindings (line ~3966), so each (template, bindings)
+            // combination gets its own cache entry. Values alone suffice —
+            // the caller's carrying_bindings is reconstituted at cache hit
+            // (line ~3977) via bv_with(v, cb.clone()). Storing bindings here
+            // would leak cross-caller within the same query.
             if start_epoch == mutation_epoch() {
                 let cached: smallvec::SmallVec<[MettaValue; 2]> =
                     result_values.iter().map(|(v, _)| v.clone()).collect();

@@ -99,6 +99,18 @@ pub fn clear_active_eval_set() {
 /// re-attached at retrieval time from the retrieving branch's
 /// `carrying_bindings`. Sibling-branch contamination is prevented by
 /// `is_scope_visible` on lookup.
+///
+/// **IMPORTANT**: This is NOT a bug — storing `(V, GenericBindings<V>)` pairs
+/// would cause within-query cross-caller contamination. Caller A with
+/// `carrying_bindings = {$who=a}` and Caller B with `{$who=b}` hitting the
+/// same cached subgoal must each reconstitute THEIR OWN `$who` on retrieval.
+/// Storing bindings would leak Caller A's `$who=a` into Caller B's result —
+/// a ghost that `query_generation` cannot prevent (it only isolates across
+/// top-level `!`). Phase 3.2-G attempted pair-storage and was reverted
+/// (commit 2e669c0) for this reason.
+///
+/// See `tests/ghost_branch_regression.rs::within_query_cache_isolation_contract`
+/// for the regression guard.
 #[derive(Debug, Clone)]
 pub struct TableEntry<V: MettaValueTrait + Clone> {
     /// Cached result values (final).

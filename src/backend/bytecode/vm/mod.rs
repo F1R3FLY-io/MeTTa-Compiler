@@ -1464,6 +1464,11 @@ where
             Opcode::TrailUndo => self.trail_undo(),
             Opcode::UnifyDeep => self.op_unify_deep()?,
             Opcode::UnifyDeepBind => self.op_unify_deep_bind()?,
+            Opcode::Unify4 => self.op_unify4()?,
+            Opcode::MatchExternal => self.op_match_external()?,
+            Opcode::MatchExternalOr => self.op_match_external_or()?,
+            Opcode::CollapseBindBegin => self.op_collapse_bind_begin()?,
+            Opcode::CollapseBindEnd => self.op_collapse_bind_end()?,
             Opcode::OccursCheck => self.op_occurs_check()?,
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
@@ -3128,6 +3133,217 @@ where
     /// Native match against &self space.
     /// Stack: [pattern, template] → [result]
     /// Calls `env.match_space()` directly. Multiple results create choice points.
+    /// Phase A: native 4-arg `unify` — non-space val1 path.
+    ///
+    /// Stack: [val1, pattern2] → []
+    /// Operand: i16 fail_offset (relative to position after reading operand).
+    ///
+    /// On successful unification: installs bindings into current frame (trailed),
+    /// then falls through to the success body bytecode.
+    /// On no match: jumps to fail_offset where the failure body lives.
+    ///
+    /// **Limitation (documented)**: space-val1 `(unify &space pat succ fail)` is
+    /// handled as unify-failure in this native path — `bidirectional_unify_generic`
+    /// returns None for space values. The compiler should statically gate out
+    /// space-val1 cases at emission time; runtime space-val1 therefore represents
+    /// a dynamically-typed code path and semantically falls to the failure body.
+    /// Full HE-bisimilar space-val1 unify (matching ProcessUnifyPattern1Iter's
+    /// 3-way split) remains in the trampoline path.
+    fn op_unify4(&mut self) -> VmResult<()> {
+        let offset = self.read_i16()?;
+        let pattern2 = self.pop()?;
+        let val1 = self.pop()?;
+
+        // Non-space native path: bidirectional unify val1 ↔ pattern2.
+        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&val1, &pattern2) {
+            // Trail all new bindings so backtracking can restore state.
+            let frame_index = self.bindings_stack.len().saturating_sub(1);
+            for (name, _val) in bindings.iter() {
+                self.trail.push(TrailEntry::NewBinding {
+                    frame_index,
+                    name,
+                });
+            }
+            // Install bindings in current frame; success body's LoadBinding ops
+            // will resolve via frame lookup.
+            for (name, val) in bindings.iter() {
+                self.set_binding(name.to_string(), val.clone());
+            }
+            // Fall through to success body (next bytecode after Unify4's operand).
+        } else {
+            // No match: jump to failure body.
+            let jump_from = self.ip;
+            self.ip = (jump_from as isize + offset as isize) as usize;
+        }
+        Ok(())
+    }
+
+    /// Phase E: native `match` for external / non-`&self` named spaces.
+    ///
+    /// Stack: [space_ref, pattern, template] → [result(s)] (choice point for N>1)
+    ///
+    /// Delegates to `env.match_space` for module/self spaces (already handled
+    /// by `op_match_self`) OR `SpaceHandle::collapse_with_multiplicity_generic`
+    /// for external named spaces.
+    fn op_match_external(&mut self) -> VmResult<()> {
+        let template = self.pop()?;
+        let pattern = self.pop()?;
+        let space_ref = self.pop()?;
+
+        let Some(handle) = space_ref.as_space() else {
+            // Not a space — signal unreduced for tree-walker fallback.
+            self.unreduced = true;
+            self.push(self.make_sexpr(vec![]));
+            return Ok(());
+        };
+
+        // Route by space kind:
+        let matches: Vec<V> = if handle.is_module_space() || handle.name == "self" {
+            // Module / &self space: use env.match_space (native to op_match_self path).
+            let env = self.env.as_ref().ok_or_else(|| {
+                VmError::Runtime("match: no environment available".to_string())
+            })?;
+            env.match_space(&pattern, &template)
+                .into_iter()
+                .flat_map(|m| std::iter::repeat(m.value).take(m.count))
+                .collect()
+        } else {
+            // External named space: collapse with multiplicity, then unify each atom.
+            let atoms = handle.collapse_with_multiplicity_generic(&self.factory);
+            let mut out = Vec::new();
+            for m in atoms.into_iter() {
+                if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&pattern, &m.value) {
+                    // Apply bindings to template for each match.
+                    let instantiated = crate::backend::eval::bindings::apply_bindings_generic(
+                        &template, &bindings, &self.factory,
+                    );
+                    for _ in 0..m.count {
+                        out.push(instantiated.clone());
+                    }
+                }
+            }
+            out
+        };
+
+        if matches.is_empty() {
+            self.unreduced = true;
+            self.push(self.make_sexpr(vec![]));
+        } else if matches.len() == 1 {
+            self.push(matches.into_iter().next().expect("non-empty"));
+        } else {
+            let mut iter = matches.into_iter();
+            let first = iter.next().expect("non-empty");
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                iter.map(GenericAlternative::Value).collect();
+            self.choice_points.push(GenericChoicePoint {
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                alternatives,
+                saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
+            });
+            self.push(first);
+        }
+        Ok(())
+    }
+
+    /// Phase E: native `match-or` for external / non-`&self` named spaces.
+    /// Stack: [space_ref, pattern, template, default] → [result(s)]
+    fn op_match_external_or(&mut self) -> VmResult<()> {
+        let template = self.pop()?;
+        let default = self.pop()?;
+        let pattern = self.pop()?;
+        let space_ref = self.pop()?;
+
+        let Some(handle) = space_ref.as_space() else {
+            self.unreduced = true;
+            self.push(default);
+            return Ok(());
+        };
+
+        let matches: Vec<V> = if handle.is_module_space() || handle.name == "self" {
+            let env = self.env.as_ref().ok_or_else(|| {
+                VmError::Runtime("match-or: no environment available".to_string())
+            })?;
+            env.match_space(&pattern, &template)
+                .into_iter()
+                .flat_map(|m| std::iter::repeat(m.value).take(m.count))
+                .collect()
+        } else {
+            let atoms = handle.collapse_with_multiplicity_generic(&self.factory);
+            let mut out = Vec::new();
+            for m in atoms.into_iter() {
+                if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&pattern, &m.value) {
+                    let instantiated = crate::backend::eval::bindings::apply_bindings_generic(
+                        &template, &bindings, &self.factory,
+                    );
+                    for _ in 0..m.count {
+                        out.push(instantiated.clone());
+                    }
+                }
+            }
+            out
+        };
+
+        if matches.is_empty() {
+            self.push(default);
+        } else if matches.len() == 1 {
+            self.push(matches.into_iter().next().expect("non-empty"));
+        } else {
+            let mut iter = matches.into_iter();
+            let first = iter.next().expect("non-empty");
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                iter.map(GenericAlternative::Value).collect();
+            self.choice_points.push(GenericChoicePoint {
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                alternatives,
+                saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
+            });
+            self.push(first);
+        }
+        Ok(())
+    }
+
+    /// Phase C: native `collapse-bind` scope begin (Task #26).
+    ///
+    /// Operand: u16 tracked_vars_const_idx (constant pool index of tracked_vars list).
+    ///
+    /// Pushes a `CollapseBindFrame` onto the VM so that subsequent `Fail` / `Yield`
+    /// opcodes collect per-result `(value, bindings_snapshot)` pairs for sidecar encoding
+    /// at `op_collapse_bind_end`.
+    fn op_collapse_bind_begin(&mut self) -> VmResult<()> {
+        let _tracked_vars_idx = self.read_u16()?;
+        // Placeholder: VM native collapse-bind requires CollapseBindFrame infrastructure
+        // (per-result bindings accumulator, tracked_vars projection). For now, signal
+        // unreduced so eval_inner falls through to tree-walker's ProcessCollapseBind
+        // which handles the full semantics.
+        //
+        // Phase C completion requires:
+        // - GenericCollapseBindFrame<V> in vm/types.rs (superset of CollapseFrame).
+        // - collapse_bind_frames: Vec<...> on VM.
+        // - Yield → push (current_value, current_bindings_snapshot, projected) onto frame.
+        // - op_collapse_bind_end → encode pairs via encode_bindings_as_sexpr, push list.
+        self.unreduced = true;
+        Ok(())
+    }
+
+    /// Phase C: native `collapse-bind` scope end.
+    fn op_collapse_bind_end(&mut self) -> VmResult<()> {
+        // Placeholder — see op_collapse_bind_begin above. Delegates via unreduced flag.
+        self.unreduced = true;
+        Ok(())
+    }
+
     fn op_match_self(&mut self) -> VmResult<()> {
         let template = self.pop()?;
         let pattern = self.pop()?;

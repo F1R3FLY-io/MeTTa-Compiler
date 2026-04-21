@@ -2436,7 +2436,11 @@ impl JitCompiler {
             | Opcode::UCheckSExpr | Opcode::UCheckArity | Opcode::UCheckAtom
             | Opcode::UGetChild | Opcode::UBindVar | Opcode::UCheckLong
             | Opcode::UCheckValue | Opcode::UWildcard
-            | Opcode::UnifyDeep | Opcode::UnifyDeepBind | Opcode::OccursCheck => {
+            | Opcode::UnifyDeep | Opcode::UnifyDeepBind | Opcode::OccursCheck
+            | Opcode::Unify4 | Opcode::MatchExternal | Opcode::MatchExternalOr
+            | Opcode::CollapseBindBegin | Opcode::CollapseBindEnd => {
+                // Phase A-E native opcodes: JIT bail-out for now;
+                // Phases B and D will add JIT-native compile paths.
                 return Err(JitError::NotCompilable(
                     format!("Opcode {:?} not yet JIT-compiled — falls back to bytecode VM", op),
                 ));

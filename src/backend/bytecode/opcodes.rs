@@ -140,6 +140,40 @@ pub enum Opcode {
     /// identical results.
     StructUniqueAtom = 0x27,
 
+    // === Native Special-Form Opcodes (0x28-0x2F) ===
+    // Phase A–E of tier-native propagation: eliminate trampoline delegation.
+
+    /// 4-arg `unify` special form (Phase A).
+    /// Stack: [val1, pattern2] -> [success_body | failure_body (instantiated)]
+    /// Operands: success_offset: i16, failure_offset: i16, done_offset: i16
+    /// Routes val1 by kind: module/self space → env.match_space; external space →
+    /// SpaceHandle::collapse_with_multiplicity_generic; non-space → bidirectional_unify.
+    /// Composes val1's carrying bindings with each match's unification bindings
+    /// via compose_outer_inner_strict_generic (drop on conflict).
+    Unify4 = 0x28,
+
+    /// External-space `match` form (Phase E).
+    /// Stack: [space_ref, pattern, template] -> [result] (or choice point for nondet)
+    /// Non-&self / non-module spaces. Native handler invokes
+    /// SpaceHandle::collapse_with_multiplicity_generic + bidirectional_unify.
+    MatchExternal = 0x29,
+
+    /// External-space `match-or` form (Phase E).
+    /// Stack: [space_ref, pattern, template, default] -> [result | default (on no match)]
+    MatchExternalOr = 0x2A,
+
+    /// Begin collapse-bind scope (Phase C / Task #26).
+    /// Operand: tracked_vars_idx: u16 (constant-pool index of tracked_vars list)
+    /// Pushes a CollapseBindFrame capturing choice-point base, value-stack height,
+    /// and tracked_vars. Per-result bindings accumulate on the frame.
+    CollapseBindBegin = 0x2B,
+
+    /// End collapse-bind scope (Phase C / Task #26).
+    /// Pops the CollapseBindFrame, encodes each (value, bindings) as
+    /// (value (Bindings ($var val) ...)) via encode_bindings_as_sexpr,
+    /// and pushes the result list.
+    CollapseBindEnd = 0x2C,
+
     // === Variable Operations (0x30-0x3F) ===
     /// Load value from local slot, index is next byte
     LoadLocal = 0x30,
@@ -724,7 +758,10 @@ impl Opcode {
             | Self::TakeAtom
             | Self::DropAtom
             | Self::Msort
-            | Self::StructUniqueAtom => 0,
+            | Self::StructUniqueAtom
+            | Self::MatchExternal
+            | Self::MatchExternalOr
+            | Self::CollapseBindEnd => 0,
 
             // 1-byte immediate
             Self::PushLongSmall
@@ -786,7 +823,9 @@ impl Opcode {
             | Self::UCheckSExpr
             | Self::UnifyDeep
             | Self::UnifyDeepBind
-            | Self::OccursCheck => 2,
+            | Self::OccursCheck
+            | Self::Unify4
+            | Self::CollapseBindBegin => 2,
 
             // 3-byte immediate (2-byte head_index + 1-byte arity)
             Self::Call
@@ -899,6 +938,11 @@ impl Opcode {
             Self::MatchGuard => "match_guard",
             Self::Unify => "unify",
             Self::UnifyBind => "unify_bind",
+            Self::Unify4 => "unify4",
+            Self::MatchExternal => "match_external",
+            Self::MatchExternalOr => "match_external_or",
+            Self::CollapseBindBegin => "collapse_bind_begin",
+            Self::CollapseBindEnd => "collapse_bind_end",
             Self::IsVariable => "is_variable",
             Self::IsSExpr => "is_sexpr",
             Self::IsSymbol => "is_symbol",
@@ -1045,6 +1089,10 @@ impl Opcode {
                 | Self::CollapseBegin
                 | Self::CaseBarrierBegin
                 | Self::JumpIfIdentical
+                | Self::Unify4
+                | Self::UnifyDeep
+                | Self::UnifyDeepBind
+                | Self::CollapseBindBegin
         )
     }
 
@@ -1128,6 +1176,13 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x25] = Some(Opcode::OccursCheck);
     table[0x26] = Some(Opcode::Msort);
     table[0x27] = Some(Opcode::StructUniqueAtom);
+
+    // Native special-form opcodes (0x28-0x2F)
+    table[0x28] = Some(Opcode::Unify4);
+    table[0x29] = Some(Opcode::MatchExternal);
+    table[0x2A] = Some(Opcode::MatchExternalOr);
+    table[0x2B] = Some(Opcode::CollapseBindBegin);
+    table[0x2C] = Some(Opcode::CollapseBindEnd);
 
     // Variable operations
     table[0x30] = Some(Opcode::LoadLocal);
@@ -1393,9 +1448,12 @@ mod tests {
     fn test_invalid_opcode() {
         // Test that gaps in the opcode space return None
         assert!(Opcode::from_byte(0x10).is_none()); // Gap between compiled unification and value creation
-        // 0x26 is Msort, 0x27 is StructUniqueAtom (allocated next to
-        // OccursCheck=0x25); use 0x28 as the next free slot.
-        assert!(Opcode::from_byte(0x28).is_none()); // Free slot after StructUniqueAtom=0x27
+        // 0x26 = Msort, 0x27 = StructUniqueAtom, 0x28-0x2C = native special-form
+        // opcodes (Unify4, MatchExternal, MatchExternalOr, CollapseBindBegin,
+        // CollapseBindEnd). 0x2D-0x2F are still free.
+        assert!(Opcode::from_byte(0x2D).is_none());
+        assert!(Opcode::from_byte(0x2E).is_none());
+        assert!(Opcode::from_byte(0x2F).is_none());
     }
 
     #[test]

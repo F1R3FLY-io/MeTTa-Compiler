@@ -26,6 +26,8 @@ pub struct PatternMatchingFuncIds {
     pub unify_bind_func_id: FuncId,
     /// Full bidirectional M-M unification (UnifyDeep)
     pub unify_deep_func_id: FuncId,
+    /// Native 4-arg `(unify val1 pattern2 success failure)` (Unify4)
+    pub unify4_func_id: FuncId,
     /// Check if value is S-expression
     pub u_check_sexpr_func_id: FuncId,
     /// Check S-expression arity
@@ -72,6 +74,10 @@ impl<T> PatternMatchingInit for T {
         builder.symbol(
             "jit_runtime_unify_deep",
             runtime::jit_runtime_unify_deep as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_unify4",
+            runtime::jit_runtime_unify4 as *const u8,
         );
         builder.symbol(
             "jit_runtime_u_check_sexpr",
@@ -192,6 +198,14 @@ impl<T> PatternMatchingInit for T {
                 JitError::CompilationError(format!("Failed to declare jit_runtime_unify_deep: {}", e))
             })?;
 
+        // unify4: fn(ctx, val1, pattern2, ip) -> 0/1 signal (NOT NaN-boxed)
+        // Shares the same 4-arg I64->I64 signature as unify_sig.
+        let unify4_func_id = module
+            .declare_function("jit_runtime_unify4", Linkage::Import, &unify_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_unify4: {}", e))
+            })?;
+
         // u_check_sexpr: fn(ctx, value, operand, ip) -> bool
         let u_check_sexpr_func_id = module
             .declare_function("jit_runtime_u_check_sexpr", Linkage::Import, &match_arity_sig)
@@ -221,6 +235,7 @@ impl<T> PatternMatchingInit for T {
             unify_func_id,
             unify_bind_func_id,
             unify_deep_func_id,
+            unify4_func_id,
             u_check_sexpr_func_id,
             u_check_arity_func_id,
             u_get_child_func_id,

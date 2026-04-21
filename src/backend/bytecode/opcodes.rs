@@ -1092,7 +1092,6 @@ impl Opcode {
                 | Self::Unify4
                 | Self::UnifyDeep
                 | Self::UnifyDeepBind
-                | Self::CollapseBindBegin
         )
     }
 

@@ -1,16 +1,20 @@
 //! Pattern matching operation handlers for JIT compilation
 //!
-//! Handles: Match, MatchBind, MatchHead, MatchArity, MatchGuard, Unify, UnifyBind
+//! Handles: Match, MatchBind, MatchHead, MatchArity, MatchGuard, Unify, UnifyBind, Unify4
+
+use std::collections::HashMap;
 
 use cranelift::prelude::*;
+
+use cranelift::codegen::ir::BlockArg;
 
 use cranelift_jit::JITModule;
 
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
-use crate::backend::bytecode::jit::types::JitResult;
-use crate::backend::bytecode::BytecodeChunk;
+use crate::backend::bytecode::jit::types::{JitError, JitResult};
+use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 /// Context for pattern matching handlers that need runtime function access
 
@@ -22,6 +26,7 @@ pub struct PatternMatchingHandlerContext<'m> {
     pub match_arity_func_id: FuncId,
     pub unify_func_id: FuncId,
     pub unify_bind_func_id: FuncId,
+    pub unify4_func_id: FuncId,
 }
 
 /// Compile Match opcode
@@ -253,4 +258,104 @@ pub fn compile_unify_bind<'a, 'b>(
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())
+}
+
+/// Compile Unify4 opcode — native 4-arg `(unify val1 pattern2 success failure)`.
+///
+/// Stack: [val1, pattern2] → [] (pattern2 and val1 both popped)
+/// Operand: 2-byte signed offset to failure-body block.
+///
+/// Semantics (mirrors VM's op_unify4 at vm/mod.rs:3152):
+///   - Call jit_runtime_unify4(ctx, val1, pattern2, ip) which returns 1 on
+///     success (bindings installed) or 0 on failure (no bindings).
+///   - On success: fall through to success body (next instruction).
+///   - On failure: jump to the fail-offset block.
+///
+/// Modeled on compile_jump_if_false's conditional-branch structure, with the
+/// brif direction inverted so success (non-zero result) falls through.
+pub fn compile_unify4<'a, 'b>(
+    ctx: &mut PatternMatchingHandlerContext<'_>,
+    codegen: &mut CodegenContext<'a, 'b>,
+    chunk: &BytecodeChunk,
+    offset: usize,
+    offset_to_block: &HashMap<usize, Block>,
+    merge_blocks: &HashMap<usize, bool>,
+) -> JitResult<()> {
+    // Pop pattern2 (top), then val1 (bottom).
+    let pattern2 = codegen.pop()?;
+    let val1 = codegen.pop()?;
+
+    let func_ref = ctx
+        .module
+        .declare_func_in_func(ctx.unify4_func_id, codegen.builder.func);
+
+    let ctx_ptr = codegen.ctx_ptr();
+    let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, val1, pattern2, ip_val]);
+    // Result is a plain 0/1 signal (NOT NaN-boxed TAG_BOOL).
+    let result = codegen.builder.inst_results(call_inst)[0];
+
+    // Narrow to i8 for brif (non-zero = success, zero = failure).
+    let result_i8 = codegen.builder.ins().ireduce(types::I8, result);
+
+    let op = Opcode::Unify4;
+    let instr_size = 1 + op.immediate_size();
+    let next_ip = offset + instr_size;
+    let rel_offset = chunk.read_i16(offset + 1).unwrap_or(0);
+    let target = (next_ip as isize + rel_offset as isize) as usize;
+
+    let target_is_merge = merge_blocks.contains_key(&target);
+    let fallthrough_is_merge = merge_blocks.contains_key(&next_ip);
+
+    // Get stack value for merge blocks (if any).
+    let stack_top = codegen
+        .peek()
+        .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
+
+    if let (Some(&target_block), Some(&fallthrough_block)) =
+        (offset_to_block.get(&target), offset_to_block.get(&next_ip))
+    {
+        let fallthrough_args: &[BlockArg] = if fallthrough_is_merge {
+            &[BlockArg::Value(stack_top)]
+        } else {
+            &[]
+        };
+        let target_args: &[BlockArg] = if target_is_merge {
+            &[BlockArg::Value(stack_top)]
+        } else {
+            &[]
+        };
+        // brif: non-zero → fallthrough (success), zero → target (failure).
+        codegen.builder.ins().brif(
+            result_i8,
+            fallthrough_block,
+            fallthrough_args,
+            target_block,
+            target_args,
+        );
+        codegen.mark_terminated();
+        Ok(())
+    } else if let Some(&target_block) = offset_to_block.get(&target) {
+        let cont_block = codegen.builder.create_block();
+        let target_args: &[BlockArg] = if target_is_merge {
+            &[BlockArg::Value(stack_top)]
+        } else {
+            &[]
+        };
+        codegen
+            .builder
+            .ins()
+            .brif(result_i8, cont_block, &[], target_block, target_args);
+        codegen.builder.switch_to_block(cont_block);
+        codegen.builder.seal_block(cont_block);
+        Ok(())
+    } else {
+        Err(JitError::CompilationError(format!(
+            "Unify4 target {} not found in block map",
+            target
+        )))
+    }
 }

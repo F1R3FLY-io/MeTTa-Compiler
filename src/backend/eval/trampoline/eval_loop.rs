@@ -1112,7 +1112,11 @@ fn clear_current_bindings_for_new_branch() {}
 
 /// Encode bindings as an S-expression: `(Bindings ($var val) ...)`.
 /// Used by collapse-bind to pair each result with its captured bindings.
-fn encode_bindings_as_sexpr(
+///
+/// Exposed `pub(crate)` so the bytecode VM's native `collapse-bind` (Phase C)
+/// can reuse the exact same encoding without structural drift from the
+/// trampoline tier.
+pub(crate) fn encode_bindings_as_sexpr(
     bindings: &crate::backend::models::GenericBindings<MettaValue>,
     factory: &crate::backend::models::gc_allocator::GcFactory,
 ) -> MettaValue {

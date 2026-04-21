@@ -161,7 +161,8 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::MatchArity
             | Opcode::MatchGuard
             | Opcode::Unify
-            | Opcode::UnifyBind => {}
+            | Opcode::UnifyBind
+            | Opcode::Unify4 => {}
 
             // Space operations
             Opcode::SpaceAdd
@@ -456,7 +457,8 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             | Opcode::MatchArity    // Phase B: match arity [expr] -> [bool]
             | Opcode::MatchGuard    // Phase B: match with guard condition
             | Opcode::Unify         // Phase B: unify [a, b] -> [bool]
-            | Opcode::UnifyBind => {} // Phase B: unify with binding [a, b] -> [bool]
+            | Opcode::UnifyBind     // Phase B: unify with binding [a, b] -> [bool]
+            | Opcode::Unify4 => {} // Phase B: 4-arg unify (native JIT path, conditional jump + bindings)
 
             // Phase D: Space operations (via runtime calls)
             Opcode::SpaceAdd        // Phase D: add atom to space [space, atom] -> [bool]
@@ -615,8 +617,13 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
             | Opcode::JumpIfTrue
             | Opcode::JumpIfUnit
             | Opcode::JumpIfError
-            | Opcode::JumpIfNotBool => {
-                // 2-byte signed offset, relative to next_ip
+            | Opcode::JumpIfNotBool
+            | Opcode::Unify4
+            | Opcode::UnifyDeep
+            | Opcode::UnifyDeepBind => {
+                // 2-byte signed offset, relative to next_ip.
+                // Unify4 / UnifyDeep / UnifyDeepBind behave as conditional jumps:
+                // fall through on success, jump to fail-offset on failure.
                 let rel_offset = chunk.read_i16(offset + 1).unwrap_or(0);
                 let target = (next_ip as isize + rel_offset as isize) as usize;
                 add_target(target, code.len(), &mut targets, &mut predecessor_count);
@@ -688,6 +695,9 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
                 | Opcode::JumpIfUnit
                 | Opcode::JumpIfError
                 | Opcode::JumpIfNotBool
+                | Opcode::Unify4
+                | Opcode::UnifyDeep
+                | Opcode::UnifyDeepBind
         );
         if has_fallthrough_to_next && next_ip < code.len() && targets.contains(&next_ip) {
             // This is a fallthrough edge

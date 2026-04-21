@@ -1310,6 +1310,7 @@ impl JitCompiler {
                     match_arity_func_id: self.pattern_matching.match_arity_func_id,
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
                 };
                 return handlers::compile_match(&mut pm_ctx, codegen, offset);
             }
@@ -1323,6 +1324,7 @@ impl JitCompiler {
                     match_arity_func_id: self.pattern_matching.match_arity_func_id,
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
                 };
                 return handlers::compile_match_bind(&mut pm_ctx, codegen, offset);
             }
@@ -1336,6 +1338,7 @@ impl JitCompiler {
                     match_arity_func_id: self.pattern_matching.match_arity_func_id,
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
                 };
                 return handlers::compile_match_head(&mut pm_ctx, codegen, chunk, offset);
             }
@@ -1349,6 +1352,7 @@ impl JitCompiler {
                     match_arity_func_id: self.pattern_matching.match_arity_func_id,
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
                 };
                 return handlers::compile_match_arity(&mut pm_ctx, codegen, chunk, offset);
             }
@@ -1362,6 +1366,7 @@ impl JitCompiler {
                     match_arity_func_id: self.pattern_matching.match_arity_func_id,
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
                 };
                 return handlers::compile_match_guard(&mut pm_ctx, codegen, chunk, offset);
             }
@@ -1375,6 +1380,7 @@ impl JitCompiler {
                     match_arity_func_id: self.pattern_matching.match_arity_func_id,
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
                 };
                 return handlers::compile_unify(&mut pm_ctx, codegen, offset);
             }
@@ -1388,8 +1394,32 @@ impl JitCompiler {
                     match_arity_func_id: self.pattern_matching.match_arity_func_id,
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
                 };
                 return handlers::compile_unify_bind(&mut pm_ctx, codegen, offset);
+            }
+
+            // Phase B: native 4-arg unify — conditional jump + binding install via
+            // `jit_runtime_unify4`. Uses compile_jump_if_false-like plumbing.
+            Opcode::Unify4 => {
+                let mut pm_ctx = handlers::PatternMatchingHandlerContext {
+                    module: &mut self.module,
+                    pattern_match_func_id: self.pattern_matching.pattern_match_func_id,
+                    pattern_match_bind_func_id: self.pattern_matching.pattern_match_bind_func_id,
+                    match_head_func_id: self.pattern_matching.match_head_func_id,
+                    match_arity_func_id: self.pattern_matching.match_arity_func_id,
+                    unify_func_id: self.pattern_matching.unify_func_id,
+                    unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
+                    unify4_func_id: self.pattern_matching.unify4_func_id,
+                };
+                return handlers::compile_unify4(
+                    &mut pm_ctx,
+                    codegen,
+                    chunk,
+                    offset,
+                    offset_to_block,
+                    merge_blocks,
+                );
             }
 
             // =================================================================
@@ -2437,10 +2467,11 @@ impl JitCompiler {
             | Opcode::UGetChild | Opcode::UBindVar | Opcode::UCheckLong
             | Opcode::UCheckValue | Opcode::UWildcard
             | Opcode::UnifyDeep | Opcode::UnifyDeepBind | Opcode::OccursCheck
-            | Opcode::Unify4 | Opcode::MatchExternal | Opcode::MatchExternalOr
+            | Opcode::MatchExternal | Opcode::MatchExternalOr
             | Opcode::CollapseBindBegin | Opcode::CollapseBindEnd => {
-                // Phase A-E native opcodes: JIT bail-out for now;
-                // Phases B and D will add JIT-native compile paths.
+                // Phase C-E native opcodes: JIT bail-out for now;
+                // Phase D (collapse-bind) and Phase E JIT (match external) add
+                // JIT-native compile paths. Unify4 moved to native JIT in Phase B.
                 return Err(JitError::NotCompilable(
                     format!("Opcode {:?} not yet JIT-compiled — falls back to bytecode VM", op),
                 ));

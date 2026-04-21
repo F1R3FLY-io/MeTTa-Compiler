@@ -718,6 +718,68 @@ pub unsafe extern "C" fn jit_runtime_unify_deep(
     }
 }
 
+/// Runtime function for Unify4 opcode: native 4-arg `(unify val1 pattern2 success failure)`.
+///
+/// Returns a plain 0/1 signal (not TAG_BOOL) so the JIT compile-side can emit
+/// a direct `brif` to the fail-offset block without extracting from NaN-boxing.
+///
+/// On success: bindings from M-M unification are installed in the current JIT
+/// binding frame, and the caller (JIT-generated code) falls through to the
+/// success body.
+///
+/// On failure: no bindings installed; caller jumps to the fail-offset block.
+///
+/// Matches `op_unify4` semantics (vm/mod.rs:3152) for the non-space val1 case;
+/// space-val1 (where val1 evaluates to a Space handle) is NOT handled here —
+/// the bidirectional_unify_generic returns None for spaces, which correctly
+/// signals failure and the emitted failure body takes over. Full space-val1
+/// semantics (match against space atoms with multiplicity) would require a
+/// choice-point path; use the VM tier for that case.
+///
+/// # Safety
+/// The context pointer must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_unify4(
+    ctx: *mut JitContext,
+    val1: u64,
+    pattern2: u64,
+    _ip: u64,
+) -> u64 {
+    let ctx_ref = match ctx.as_mut() {
+        Some(c) => c,
+        None => return 0, // failure
+    };
+
+    let val1_metta = JitValue::from_raw(val1).to_metta();
+    let pattern2_metta = JitValue::from_raw(pattern2).to_metta();
+
+    match crate::backend::eval::bindings::bidirectional_unify_generic(&val1_metta, &pattern2_metta) {
+        Some(result_bindings) => {
+            // Install bindings in current frame using the same approach as jit_runtime_unify_bind.
+            if ctx_ref.binding_frames_count > 0 && !ctx_ref.binding_frames.is_null() {
+                let constants = if !ctx_ref.constants.is_null() && ctx_ref.constants_len > 0 {
+                    std::slice::from_raw_parts(ctx_ref.constants, ctx_ref.constants_len)
+                } else {
+                    &[]
+                };
+
+                for (name, val) in result_bindings.iter() {
+                    if let Some(idx) = lookup_var_index_cached(ctx, name, constants) {
+                        let jit_val = metta_to_jit(&val);
+                        let store_result =
+                            jit_runtime_store_binding(ctx, idx as u64, jit_val.to_bits(), 0);
+                        if store_result != 0 {
+                            return 0; // binding failed
+                        }
+                    }
+                }
+            }
+            1 // success: fall through to success body
+        }
+        None => 0, // failure: jump to fail-offset
+    }
+}
+
 /// Runtime: check if a NaN-boxed value is an S-expression.
 ///
 /// # Returns

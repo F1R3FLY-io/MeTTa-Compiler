@@ -96,7 +96,8 @@ pub use bindings::{
 
 pub use pattern_matching::{
     compile_match, compile_match_arity, compile_match_bind, compile_match_guard,
-    compile_match_head, compile_unify, compile_unify_bind, PatternMatchingHandlerContext,
+    compile_match_head, compile_unify, compile_unify4, compile_unify_bind,
+    PatternMatchingHandlerContext,
 };
 
 pub use space::{

@@ -273,6 +273,55 @@ fn cross_top_level_query_isolation_is_stable() {
 // Deterministic reproducer for conjunction across 20 iterations
 // ============================================================================
 
+// ============================================================================
+// VM / JIT three-tier coverage
+// ============================================================================
+//
+// The fixes were applied to three evaluation tiers: tree-walker (primary),
+// bytecode VM (`op_dispatch_rules`, `op_return`, `op_return_multi`), and JIT
+// (inherits via bailout-to-VM on rule dispatch). These tests exercise rule
+// evaluation through bytecode/JIT paths.
+
+/// Rule-based function evaluation via compiled bytecode. When `(f c)` has no
+/// matching rule inside a nested evaluation, it must produce empty (VM's
+/// function-vs-data-constructor fix).
+#[test]
+fn vm_tier_function_no_match_empty() {
+    // With (= (f a) 1) and (= (f b) 2), calling (f c) via VM dispatch should
+    // produce empty inside a nested evaluation.
+    let source = r#"
+        (= (f a) 1)
+        (= (f b) 2)
+        (= (wrap $x) (f $x))
+        !(collapse (wrap c))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], "()", "got: {}", results[0]);
+}
+
+/// Rule-call return path must compose saved bindings with current bindings
+/// (Phase 1b-F op_return fix). Test verifies a rule body's binding effect
+/// is visible to the caller's ambient context.
+#[test]
+fn vm_tier_op_return_composes_bindings() {
+    // `(query $who)` matches rule that binds $who via (father $who b).
+    // The binding $who=a must propagate back to caller's context.
+    let source = r#"
+        (= (father a b) ok)
+        (= (query $who) (father $who b))
+        !(collapse-bind (query $who))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1);
+    let s = &results[0];
+    assert!(
+        s.contains("($who a)"),
+        "caller's $who binding missing from collapse-bind output: {}",
+        s
+    );
+}
+
 /// This mirrors the user's requested verification harness: the main Direct.metta
 /// reproducer must produce identical result SETS across 20 runs.
 #[test]

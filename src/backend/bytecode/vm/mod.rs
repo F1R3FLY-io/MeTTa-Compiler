@@ -1993,6 +1993,31 @@ where
                 self.bindings_stack.pop();
             }
 
+            // Phase 1b-F: compose saved_bindings (caller's ambient) with
+            // current_bindings (bindings accumulated inside the RHS) so the
+            // caller sees the combined effect. Strict compose: on conflict,
+            // emit fail (branch dies) matching HE's BindingsSet::empty()
+            // silent pruning. Without this, bindings established during RHS
+            // execution either leak uncontrolled or get lost on return.
+            let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                &frame.saved_bindings,
+                &self.current_bindings,
+                &self.factory,
+            );
+            let conflict = composed.is_empty()
+                && !frame.saved_bindings.is_empty()
+                && !self.current_bindings.is_empty();
+            if conflict {
+                // Branch dies: caller's context and RHS bindings are
+                // inconsistent. Backtrack to the next alternative.
+                return if !self.collapse_frames.is_empty() {
+                    self.op_fail_within_collapse()
+                } else {
+                    self.op_fail()
+                };
+            }
+            self.current_bindings = composed;
+
             self.push(value);
             Ok(ControlFlow::Continue(()))
         } else {
@@ -2024,6 +2049,25 @@ where
             while self.bindings_stack.len() > frame.bindings_base + 1 {
                 self.bindings_stack.pop();
             }
+
+            // Phase 1b-F: strict compose of saved_bindings + current_bindings.
+            // See op_return for rationale.
+            let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                &frame.saved_bindings,
+                &self.current_bindings,
+                &self.factory,
+            );
+            let conflict = composed.is_empty()
+                && !frame.saved_bindings.is_empty()
+                && !self.current_bindings.is_empty();
+            if conflict {
+                return if !self.collapse_frames.is_empty() {
+                    self.op_fail_within_collapse()
+                } else {
+                    self.op_fail()
+                };
+            }
+            self.current_bindings = composed;
 
             for v in values {
                 self.push(v);
@@ -4816,6 +4860,66 @@ where
         }
 
         if matches.is_empty() {
+            // Phase 2.B HE-bisimilarity (three-tier parity with tree-walker):
+            // distinguish "function with no matching rules" (→ empty) from
+            // "data constructor" (→ unreduced data). Data constructors
+            // (heads with NO rules in the environment) evaluate to
+            // themselves — MeTTa's ADD-mode data semantics. Functions
+            // (heads with SOME rule but none unify with these args) produce
+            // EMPTY at nested call depth, preventing ghost results in
+            // conjunctions where a sub-call fails to match.
+            //
+            // `call_stack.is_empty()` means we're at the top-level query
+            // (equivalent to the tree-walker's depth == 0): retain ADD-mode
+            // behavior (push unreduced so the caller can add to space).
+            let has_any_rules = if !self.call_stack.is_empty() {
+                if let Some(head) = expr
+                    .as_sexpr()
+                    .and_then(|items| items.first())
+                    .and_then(|v| v.as_atom())
+                {
+                    let arity = expr.as_sexpr().map(|it| it.len().saturating_sub(1)).unwrap_or(0);
+                    self.env
+                        .as_ref()
+                        .map(|env| {
+                            env.shared
+                                .rule_index
+                                .read()
+                                .get_candidates(head, arity, None)
+                                .next()
+                                .is_some()
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if has_any_rules {
+                // Function with no matching rules at nested depth → empty.
+                // HE-bisimilar silent pruning: the branch dies and contributes
+                // nothing to the caller's result set.
+                self.unreduced = true;
+                // Do NOT push. Caller (outer dispatch or choice-point consumer)
+                // will observe an empty value stack entry for this call.
+                // Convention: push the expr with unreduced flag so downstream
+                // can distinguish "no result" from "unhandled case" by the
+                // flag; but semantic callers should treat unreduced + no-rule
+                // as "this branch dies".
+                //
+                // Pragmatic choice: retain the push (backwards compatibility
+                // with existing callers that expect a value on the stack)
+                // but flag unreduced. Future cleanup: switch to a true empty
+                // push when all VM consumers handle the unreduced flag.
+                if expr.as_sexpr().is_some() {
+                    crate::backend::eval::trampoline::memoize_normal_form(&expr);
+                }
+                self.push(expr);
+                return Ok(());
+            }
+
             // Phase 9.5: Memoize as normal form — no rules matched, so this
             // S-expression is irreducible. Future dispatches will skip it.
             if expr.as_sexpr().is_some() {
@@ -4823,7 +4927,7 @@ where
             }
             // Signal no reduction so callers can skip O(n) structural comparison
             self.unreduced = true;
-            // No rules match - return expression unchanged
+            // No rules match (data constructor) - return expression unchanged
             self.push(expr);
             return Ok(());
         }

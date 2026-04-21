@@ -562,12 +562,16 @@ where
                     self.builder.emit(Opcode::MatchSelf);
                     return Ok(Some(()));
                 }
-                // Non-self space: push all args as constants, delegate via EvalMatch
-                for arg in args {
-                    let idx = self.builder.add_constant(arg.clone());
-                    self.builder.emit_u16(Opcode::PushConstant, idx);
-                }
-                self.builder.emit(Opcode::EvalMatch);
+                // Phase E: native path for external/named spaces.
+                // Stack: [space_ref, pattern, template] → [result(s)]
+                // compile(space_ref) evaluates the space expression; pattern + template
+                // are pushed as constants (preserving free vars for unification).
+                self.compile(&args[0])?;
+                let pattern_idx = self.builder.add_constant(args[1].clone());
+                self.builder.emit_u16(Opcode::PushConstant, pattern_idx);
+                let template_idx = self.builder.add_constant(args[2].clone());
+                self.builder.emit_u16(Opcode::PushConstant, template_idx);
+                self.builder.emit(Opcode::MatchExternal);
                 Ok(Some(()))
             }
             "match-or" => {
@@ -583,12 +587,62 @@ where
                     self.builder.emit(Opcode::MatchSelfOr);
                     return Ok(Some(()));
                 }
-                // Non-self space: delegate via EvalMatchOr
-                for arg in args {
-                    let idx = self.builder.add_constant(arg.clone());
-                    self.builder.emit_u16(Opcode::PushConstant, idx);
-                }
-                self.builder.emit(Opcode::EvalMatchOr);
+                // Phase E: native path for external/named spaces.
+                // Stack: [space_ref, pattern, template, default]
+                self.compile(&args[0])?;
+                let pattern_idx = self.builder.add_constant(args[1].clone());
+                self.builder.emit_u16(Opcode::PushConstant, pattern_idx);
+                let default_idx = self.builder.add_constant(args[2].clone());
+                self.builder.emit_u16(Opcode::PushConstant, default_idx);
+                let template_idx = self.builder.add_constant(args[3].clone());
+                self.builder.emit_u16(Opcode::PushConstant, template_idx);
+                self.builder.emit(Opcode::MatchExternalOr);
+                Ok(Some(()))
+            }
+            // Phase A: native 4-arg `(unify val1 pattern2 success failure)`.
+            // Emit layout:
+            //   compile(val1)                    ; stack: [val1]
+            //   compile_quoted(pattern2)         ; stack: [val1, pattern2]
+            //   Unify4 fail_off                  ; unify; on success install bindings
+            //   <success body>
+            //   Jump done_off
+            //   fail_label: <failure body>
+            //   done:
+            "unify" => {
+                self.check_arity("unify", args.len(), 4)?;
+                // 1. Compile val1 (may evaluate, yields value on stack).
+                self.compile(&args[0])?;
+                // 2. Push pattern2 as a quoted constant so free vars survive.
+                self.compile_quoted(&args[1])?;
+                // 3. Emit Unify4 with placeholder fail_offset (patched below).
+                let fail_label = self.builder.emit_jump(Opcode::Unify4);
+                // 4. Compile success body (executes with bindings installed).
+                self.compile(&args[2])?;
+                // 5. Jump over the failure body to done.
+                let done_label = self.builder.emit_jump(Opcode::Jump);
+                // 6. Failure label: patch Unify4's fail_offset here.
+                self.builder.patch_jump(fail_label);
+                // 7. Compile failure body.
+                self.compile(&args[3])?;
+                // 8. Patch the success→done jump.
+                self.builder.patch_jump(done_label);
+                Ok(Some(()))
+            }
+            // Phase C: native `(collapse-bind expr)`.
+            // Emit layout:
+            //   CollapseBindBegin tracked_vars_idx
+            //   compile(expr)
+            //   CollapseBindEnd
+            "collapse-bind" => {
+                self.check_arity("collapse-bind", args.len(), 1)?;
+                // Precompute tracked_vars from expr's free variables; emit as constant.
+                // For Phase A scaffold, emit an empty tracked_vars placeholder;
+                // Phase C will populate it via free_variables analysis.
+                let tracked_vars_placeholder = self.factory.sexpr(vec![]);
+                let tracked_idx = self.builder.add_constant(tracked_vars_placeholder);
+                self.builder.emit_u16(Opcode::CollapseBindBegin, tracked_idx);
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::CollapseBindEnd);
                 Ok(Some(()))
             }
 

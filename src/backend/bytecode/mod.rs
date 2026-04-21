@@ -461,12 +461,16 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "if-equal" => true,
                     // match/match-or with &self: native MatchSelf opcode calls
                     // env.match_space() directly. Non-&self stays in tree-walker.
-                    "match" => items.len() >= 4
-                        && items[1].as_atom() == Some("&self"),
-                    "match-or" => items.len() >= 5
-                        && items[1].as_atom() == Some("&self"),
-                    "unify" => false,
-                    "collapse-bind" => false,
+                    // match / match-or: &self uses MatchSelf/MatchSelfOr (already native);
+                    // non-&self uses MatchExternal / MatchExternalOr (Phase E).
+                    "match" => items.len() >= 4,
+                    "match-or" => items.len() >= 5,
+                    // Phase A: 4-arg `(unify val1 pattern2 success failure)` compiles
+                    // to Unify4. Non-space val1 only — space-val1 falls through to
+                    // tree-walker. Compiler gate: items.len() == 5.
+                    "unify" => items.len() == 5,
+                    // Phase C: `(collapse-bind expr)` compiles to CollapseBindBegin/End.
+                    "collapse-bind" => items.len() == 2,
                     "ground-with-bindings" => false,
                     "amb" => false,
                     "sealed" | "atom-subst" => false,

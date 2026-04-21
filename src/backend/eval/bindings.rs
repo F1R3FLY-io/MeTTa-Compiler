@@ -1423,6 +1423,28 @@ pub fn project_bindings_generic<V: MettaValueTrait + Clone>(
     result
 }
 
+/// Encode bindings as a `(Bindings ($var val) …)` S-expression.
+///
+/// Generic factory variant shared across trampoline, bytecode-VM (Phase C),
+/// and JIT (Phase D) tiers. The trampoline tier keeps a concrete-typed
+/// wrapper (`encode_bindings_as_sexpr` in `trampoline/eval_loop.rs`) but
+/// that wrapper now forwards to this function.
+pub fn encode_bindings_as_sexpr_generic<V, F>(
+    bindings: &GenericBindings<V>,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone,
+    F: crate::backend::models::MettaValueFactory<V>,
+{
+    let mut items: Vec<V> = Vec::with_capacity(bindings.len() + 1);
+    items.push(factory.atom("Bindings"));
+    for (name, value) in bindings.iter() {
+        items.push(factory.sexpr(vec![factory.atom(name), value.clone()]));
+    }
+    factory.sexpr(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

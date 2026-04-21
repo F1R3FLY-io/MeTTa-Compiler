@@ -419,6 +419,45 @@ pub struct GenericCollapseFrame<V: MettaValueTrait + Clone + Send + Sync + 'stat
 /// Collapse frame (concrete type alias).
 pub type CollapseFrame = GenericCollapseFrame<MettaValue>;
 
+/// Phase C: `collapse-bind` scope frame.
+///
+/// Superset of [`GenericCollapseFrame`] that preserves per-result bindings
+/// alongside values so the scope can emit `(value (Bindings ($var val) …))`
+/// pairs at its end. `tracked_vars` filters the sidecar-encoded bindings
+/// to just the user-visible set at the observation point (matching HE's
+/// `Bindings::resolve()` semantics).
+///
+/// `continuation_ip` is set *lazily* on the first reach of `CollapseBindEnd`
+/// (unlike `CollapseFrame` which sets it eagerly via `CollapseBegin`'s jump
+/// operand) because `CollapseBindBegin` carries only `tracked_vars_idx` in
+/// its immediate. On subsequent op_collapse_bind_end entries (after back-
+/// tracking re-runs the body), the value is already set and preserved.
+#[derive(Debug, Clone)]
+pub struct GenericCollapseBindFrame<V: MettaValueTrait + Clone + Send + Sync + 'static> {
+    /// Saved outer results vector (swapped out during collapse-bind body).
+    pub saved_results: Vec<V>,
+    /// Saved outer per-result bindings (parallel to `saved_results`).
+    pub saved_per_result_bindings: Vec<GenericBindings<V>>,
+    /// Choice point stack height at entry — backtracking barrier.
+    pub choice_point_base: usize,
+    /// Value stack height at entry (for cleanup on exhaustion).
+    pub value_stack_height: usize,
+    /// IP to resume after the `collapse-bind` scope ends (lazily set on
+    /// first `CollapseBindEnd` entry; 0 until then).
+    pub continuation_ip: usize,
+    /// Chunk to resume in after the scope ends (lazily set).
+    pub continuation_chunk: Option<Arc<GenericBytecodeChunk<V>>>,
+    /// Free-variable names to project bindings to (the sidecar whitelist).
+    /// An empty vector means "project to empty" (no bindings visible); a
+    /// `None` would mean "don't project" but we always project — the
+    /// compile-time `compile_collapse_bind` currently emits an empty
+    /// placeholder; Phase C completion computes it from expr free vars.
+    pub tracked_vars: Vec<&'static str>,
+}
+
+/// Collapse-bind frame (concrete type alias).
+pub type CollapseBindFrame = GenericCollapseBindFrame<MettaValue>;
+
 /// Call frame on the call stack (concrete type alias).
 pub type CallFrame = GenericCallFrame<MettaValue, BytecodeChunk>;
 

@@ -1113,19 +1113,15 @@ fn clear_current_bindings_for_new_branch() {}
 /// Encode bindings as an S-expression: `(Bindings ($var val) ...)`.
 /// Used by collapse-bind to pair each result with its captured bindings.
 ///
-/// Exposed `pub(crate)` so the bytecode VM's native `collapse-bind` (Phase C)
-/// can reuse the exact same encoding without structural drift from the
-/// trampoline tier.
+/// Trampoline-tier wrapper — forwards to the generic implementation in
+/// [`crate::backend::eval::bindings::encode_bindings_as_sexpr_generic`].
+/// The bytecode VM (Phase C) and JIT (Phase D) use the generic function
+/// directly, ensuring a single encoding rule across all three tiers.
 pub(crate) fn encode_bindings_as_sexpr(
     bindings: &crate::backend::models::GenericBindings<MettaValue>,
     factory: &crate::backend::models::gc_allocator::GcFactory,
 ) -> MettaValue {
-    let mut items: Vec<MettaValue> = Vec::with_capacity(bindings.len() + 1);
-    items.push(factory.atom("Bindings"));
-    for (name, value) in bindings.iter() {
-        items.push(factory.sexpr(vec![factory.atom(name), value.clone()]));
-    }
-    factory.sexpr(items)
+    crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(bindings, factory)
 }
 
 /// Decode bindings from an S-expression `(Bindings ($var val) ...)` back to

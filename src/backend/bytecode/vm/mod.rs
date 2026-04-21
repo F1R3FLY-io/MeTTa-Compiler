@@ -58,8 +58,8 @@ pub use types::{VmConfig, VmError, VmResult};
 // Generic types
 pub use types::{
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
-    GenericCollapseFrame, TrailEntry, VmBoundValue,
-    Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseFrame,
+    GenericCollapseBindFrame, GenericCollapseFrame, TrailEntry, VmBoundValue,
+    Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseBindFrame, CollapseFrame,
 };
 
 // ============================================================================
@@ -232,6 +232,17 @@ where
     /// Each `(collapse ...)` pushes a frame; backtracking cannot escape past the barrier.
     pub(crate) collapse_frames: Vec<GenericCollapseFrame<V>>,
 
+    /// Phase C: collapse-bind frames (Task #26). Each `(collapse-bind expr)`
+    /// pushes a frame that pairs each nondet result with its current_bindings
+    /// snapshot for the sidecar `(value (Bindings …))` encoding.
+    pub(crate) collapse_bind_frames: Vec<GenericCollapseBindFrame<V>>,
+
+    /// Phase C: per-result bindings, parallel to `self.results`. When a
+    /// `collapse-bind` scope is active, each push to `self.results` also
+    /// pushes the current_bindings snapshot here. Swapped in/out by
+    /// `op_collapse_bind_begin` / `op_collapse_bind_end`.
+    pub(crate) per_result_bindings: Vec<GenericBindings<V>>,
+
     /// Per-execution dispatch memo for nondeterministic call caching.
     /// When backtracking causes the same expression to be re-dispatched
     /// (Cartesian product scenario like `(op (nd1) (nd2))`), return cached
@@ -320,6 +331,8 @@ where
             unreduced: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
+            collapse_bind_frames: Vec::new(),
+            per_result_bindings: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
             trail: Vec::new(),
             trail_marks: Vec::new(),
@@ -353,6 +366,8 @@ where
             unreduced: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
+            collapse_bind_frames: Vec::new(),
+            per_result_bindings: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
             trail: Vec::new(),
             trail_marks: Vec::new(),
@@ -389,6 +404,8 @@ where
             unreduced: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
+            collapse_bind_frames: Vec::new(),
+            per_result_bindings: Vec::new(),
             dispatch_memo: std::collections::HashMap::new(),
             trail: Vec::new(),
             trail_marks: Vec::new(),
@@ -1468,7 +1485,7 @@ where
             Opcode::MatchExternal => self.op_match_external()?,
             Opcode::MatchExternalOr => self.op_match_external_or()?,
             Opcode::CollapseBindBegin => self.op_collapse_bind_begin()?,
-            Opcode::CollapseBindEnd => self.op_collapse_bind_end()?,
+            Opcode::CollapseBindEnd => return self.op_collapse_bind_end(),
             Opcode::OccursCheck => self.op_occurs_check()?,
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
@@ -2015,7 +2032,9 @@ where
             if conflict {
                 // Branch dies: caller's context and RHS bindings are
                 // inconsistent. Backtrack to the next alternative.
-                return if !self.collapse_frames.is_empty() {
+                return if !self.collapse_bind_frames.is_empty() {
+                    self.op_fail_within_collapse_bind()
+                } else if !self.collapse_frames.is_empty() {
                     self.op_fail_within_collapse()
                 } else {
                     self.op_fail()
@@ -2026,11 +2045,18 @@ where
             self.push(value);
             Ok(ControlFlow::Continue(()))
         } else {
-            // Return from top-level
+            // Return from top-level — record the result + its bindings snapshot
+            // (Phase C: sidecar encoding for collapse-bind).
             self.results.push(value);
+            if !self.collapse_bind_frames.is_empty() {
+                self.per_result_bindings.push(self.current_bindings.clone());
+            }
             // yield_on_top_return: exhaust all nondeterministic alternatives
             // within this single run() call — no VM exit/re-enter overhead.
             if self.yield_on_top_return && !self.choice_points.is_empty() {
+                if !self.collapse_bind_frames.is_empty() {
+                    return self.op_fail_within_collapse_bind();
+                }
                 if !self.collapse_frames.is_empty() {
                     return self.op_fail_within_collapse();
                 }
@@ -2066,7 +2092,9 @@ where
                 && !frame.saved_bindings.is_empty()
                 && !self.current_bindings.is_empty();
             if conflict {
-                return if !self.collapse_frames.is_empty() {
+                return if !self.collapse_bind_frames.is_empty() {
+                    self.op_fail_within_collapse_bind()
+                } else if !self.collapse_frames.is_empty() {
                     self.op_fail_within_collapse()
                 } else {
                     self.op_fail()
@@ -2079,6 +2107,13 @@ where
             }
             Ok(ControlFlow::Continue(()))
         } else {
+            // Phase C: record each result's bindings snapshot when inside a
+            // collapse-bind scope so the sidecar encoding pairs them later.
+            if !self.collapse_bind_frames.is_empty() {
+                for _ in 0..values.len() {
+                    self.per_result_bindings.push(self.current_bindings.clone());
+                }
+            }
             self.results.extend(values);
             Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
         }
@@ -3316,32 +3351,286 @@ where
 
     /// Phase C: native `collapse-bind` scope begin (Task #26).
     ///
-    /// Operand: u16 tracked_vars_const_idx (constant pool index of tracked_vars list).
+    /// Operand: u16 tracked_vars_const_idx (constant pool index of a
+    /// tracked_vars S-expression — `(Atom(var1) Atom(var2) …)`).
     ///
-    /// Pushes a `CollapseBindFrame` onto the VM so that subsequent `Fail` / `Yield`
-    /// opcodes collect per-result `(value, bindings_snapshot)` pairs for sidecar encoding
-    /// at `op_collapse_bind_end`.
+    /// Pushes a `GenericCollapseBindFrame<V>` onto the VM so that subsequent
+    /// `op_yield` / `op_return` opcodes that push to `self.results` *also*
+    /// push the current bindings snapshot into `self.per_result_bindings`.
+    /// `op_collapse_bind_end` then pairs values with bindings and encodes the
+    /// sidecar `(value (Bindings ($var val) …))` format.
     fn op_collapse_bind_begin(&mut self) -> VmResult<()> {
-        let _tracked_vars_idx = self.read_u16()?;
-        // Placeholder: VM native collapse-bind requires CollapseBindFrame infrastructure
-        // (per-result bindings accumulator, tracked_vars projection). For now, signal
-        // unreduced so eval_inner falls through to tree-walker's ProcessCollapseBind
-        // which handles the full semantics.
-        //
-        // Phase C completion requires:
-        // - GenericCollapseBindFrame<V> in vm/types.rs (superset of CollapseFrame).
-        // - collapse_bind_frames: Vec<...> on VM.
-        // - Yield → push (current_value, current_bindings_snapshot, projected) onto frame.
-        // - op_collapse_bind_end → encode pairs via encode_bindings_as_sexpr, push list.
-        self.unreduced = true;
+        let tracked_vars_idx = self.read_u16()? as usize;
+
+        // Load tracked_vars from constant pool. Accepts either:
+        //   - S-expression of atoms: `(Atom(x) Atom(y) …)` → `["x", "y"]`
+        //   - Unit (empty tracked_vars placeholder for the current scaffold).
+        let tracked_vars: Vec<&'static str> = self
+            .chunk
+            .get_constant(tracked_vars_idx as u16)
+            .and_then(|v| v.as_sexpr().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_atom())
+                    .map(|s| {
+                        // Leak-free: rely on `as_atom` returning an interned
+                        // `&'static str` (SharedMapping). If non-static, fall
+                        // back to an empty slice later.
+                        let ptr: &'static str = unsafe { std::mem::transmute::<&str, &'static str>(s) };
+                        ptr
+                    })
+                    .collect()
+            }))
+            .unwrap_or_default();
+
+        let frame: GenericCollapseBindFrame<V> = GenericCollapseBindFrame {
+            saved_results: std::mem::take(&mut self.results),
+            saved_per_result_bindings: std::mem::take(&mut self.per_result_bindings),
+            choice_point_base: self.choice_points.len(),
+            value_stack_height: self.value_stack.len(),
+            continuation_ip: 0,             // set lazily on first CollapseBindEnd
+            continuation_chunk: None,       // set with continuation_ip
+            tracked_vars,
+        };
+        self.collapse_bind_frames.push(frame);
         Ok(())
     }
 
     /// Phase C: native `collapse-bind` scope end.
-    fn op_collapse_bind_end(&mut self) -> VmResult<()> {
-        // Placeholder — see op_collapse_bind_begin above. Delegates via unreduced flag.
-        self.unreduced = true;
-        Ok(())
+    ///
+    /// Dual entry point — called either:
+    /// 1. Sequentially after the body produced one result; loops back into
+    ///    `op_fail_within_collapse_bind` if more choice points remain.
+    /// 2. After all alternatives exhaust (via `op_fail_within_collapse_bind`
+    ///    falling through) — this finalizes the scope by encoding each
+    ///    collected `(value, bindings)` pair and pushing the result list.
+    fn op_collapse_bind_end(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        // Lazy set continuation_ip on first entry — we now know our own
+        // position (self.ip is past the CollapseBindEnd opcode byte).
+        {
+            let frame = self.collapse_bind_frames.last_mut().ok_or_else(|| {
+                VmError::Runtime("CollapseBindEnd without matching CollapseBindBegin".to_string())
+            })?;
+            if frame.continuation_chunk.is_none() {
+                frame.continuation_ip = self.ip;
+                frame.continuation_chunk = Some(Arc::clone(&self.chunk));
+            }
+        }
+
+        let (value_stack_height, choice_point_base) = {
+            let frame = self.collapse_bind_frames.last().expect("checked above");
+            (frame.value_stack_height, frame.choice_point_base)
+        };
+
+        // Collect the current result (one iteration of the body), preserving
+        // its bindings snapshot in parallel.
+        if self.value_stack.len() > value_stack_height {
+            let value = self.pop()?;
+            if !value.is_unit() {
+                self.results.push(value);
+                self.per_result_bindings.push(self.current_bindings.clone());
+            }
+        }
+
+        // Continue backtracking through remaining alternatives within scope.
+        if self.choice_points.len() > choice_point_base {
+            return self.op_fail_within_collapse_bind();
+        }
+
+        // All exhausted — finalize scope.
+        let frame = self.collapse_bind_frames.pop().expect("checked above");
+        let values: Vec<V> = std::mem::take(&mut self.results);
+        let bindings_list: Vec<GenericBindings<V>> = std::mem::take(&mut self.per_result_bindings);
+
+        // Restore outer scope state.
+        self.results = frame.saved_results;
+        self.per_result_bindings = frame.saved_per_result_bindings;
+        self.value_stack.truncate(frame.value_stack_height);
+
+        // Build sidecar-encoded `(value (Bindings …))` pairs for each result.
+        let mut pairs: Vec<V> = Vec::with_capacity(values.len());
+        for (i, value) in values.into_iter().enumerate() {
+            if value.is_unit() {
+                continue;
+            }
+            let raw_bindings = bindings_list
+                .get(i)
+                .cloned()
+                .unwrap_or_default();
+
+            // Resolve aliases via apply_chain.
+            let mut resolved = raw_bindings;
+            crate::backend::eval::bindings::apply_chain_generic(
+                &mut resolved,
+                &self.factory,
+            );
+
+            // Project to tracked_vars (empty → drops all user bindings).
+            let projected = if frame.tracked_vars.is_empty() {
+                // Phase C scaffold: compile_collapse_bind emits empty
+                // tracked_vars. Keep ALL bindings for now (matching trampoline's
+                // None-tracked_vars_for_sidecar path). A follow-up will wire
+                // compile-time free-variable analysis so tracked_vars is the
+                // correct user-visible whitelist.
+                resolved
+            } else {
+                crate::backend::eval::bindings::project_bindings_generic(
+                    &resolved,
+                    &frame.tracked_vars,
+                )
+            };
+
+            // Filter `$__fr_*` (per-invocation freshening artifacts).
+            let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
+                let mut f = GenericBindings::new();
+                for (name, val) in projected.iter() {
+                    if !name.starts_with("$__fr_") {
+                        f.insert_or_replace(name, val.clone());
+                    }
+                }
+                f
+            } else {
+                projected
+            };
+
+            let bindings_sexpr =
+                crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
+                    &filtered,
+                    &self.factory,
+                );
+            pairs.push(self.make_sexpr(vec![value, bindings_sexpr]));
+        }
+
+        // Continue at the resolved continuation_ip, if set.
+        if let Some(cont_chunk) = frame.continuation_chunk.clone() {
+            self.chunk = cont_chunk;
+            self.ip = frame.continuation_ip;
+        }
+        // Push the result list onto the (now-restored outer) value stack.
+        self.push(self.make_sexpr(pairs));
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// Phase C: backtrack within a `collapse-bind` scope, respecting its
+    /// barrier. Mirrors `op_fail_within_collapse` but also handles the
+    /// nested-frames interaction — if exhaustion reaches the barrier, we
+    /// finalize via the lazy continuation_ip rather than re-entering end.
+    fn op_fail_within_collapse_bind(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        let collapse_base = self
+            .collapse_bind_frames
+            .last()
+            .map(|f| f.choice_point_base)
+            .unwrap_or(0);
+
+        while let Some(mut cp) = self.choice_points.pop() {
+            self.value_stack.truncate(cp.value_stack_height);
+            self.call_stack.truncate(cp.call_stack_height);
+            self.unwind_trail(cp.trail_height);
+            self.bindings_stack.truncate(cp.bindings_stack_height);
+            self.unreduced = cp.saved_unreduced;
+            self.current_bindings = cp.saved_current_bindings.clone();
+
+            if cp.alternatives.is_empty() {
+                if self.choice_points.len() < collapse_base {
+                    break;
+                }
+                continue;
+            }
+
+            let alt = cp.alternatives.remove(0);
+            self.ip = cp.ip;
+            self.chunk = Arc::clone(&cp.chunk);
+            if !cp.alternatives.is_empty() {
+                self.choice_points.push(cp);
+            }
+
+            match alt {
+                GenericAlternative::Value(v) => self.push(v),
+                GenericAlternative::Chunk(chunk) => {
+                    self.chunk = chunk;
+                    self.ip = 0;
+                }
+                GenericAlternative::Index(offset) => {
+                    self.ip = offset;
+                }
+                GenericAlternative::RuleMatch { chunk, bindings } => {
+                    self.call_stack.push(GenericCallFrame {
+                        return_ip: self.ip,
+                        return_chunk: Arc::clone(&self.chunk),
+                        base_ptr: self.value_stack.len(),
+                        bindings_base: self.bindings_stack.len().saturating_sub(1),
+                        yield_on_return: false,
+                        saved_bindings: self.current_bindings.clone(),
+                    });
+                    let depth = self.bindings_stack.len() as u32;
+                    let mut frame = GenericBindingFrame::new(depth);
+                    for (name, val) in bindings.iter() {
+                        frame.set(name.to_string(), val.clone());
+                    }
+                    self.bindings_stack.push(frame);
+                    self.chunk = chunk;
+                    self.ip = 0;
+                }
+                GenericAlternative::BoundValue { value, bindings } => {
+                    self.value_stack.push(value);
+                    self.current_bindings = bindings;
+                }
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        // All alternatives exhausted within scope — finalize via the
+        // lazy continuation_ip captured at first CollapseBindEnd.
+        let frame = self.collapse_bind_frames.pop().ok_or_else(|| {
+            VmError::Runtime("collapse-bind barrier lost during backtracking".to_string())
+        })?;
+        let values: Vec<V> = std::mem::take(&mut self.results);
+        let bindings_list: Vec<GenericBindings<V>> = std::mem::take(&mut self.per_result_bindings);
+        self.results = frame.saved_results;
+        self.per_result_bindings = frame.saved_per_result_bindings;
+        self.value_stack.truncate(frame.value_stack_height);
+
+        let mut pairs: Vec<V> = Vec::with_capacity(values.len());
+        for (i, value) in values.into_iter().enumerate() {
+            if value.is_unit() {
+                continue;
+            }
+            let raw_bindings = bindings_list.get(i).cloned().unwrap_or_default();
+            let mut resolved = raw_bindings;
+            crate::backend::eval::bindings::apply_chain_generic(&mut resolved, &self.factory);
+            let projected = if frame.tracked_vars.is_empty() {
+                resolved
+            } else {
+                crate::backend::eval::bindings::project_bindings_generic(
+                    &resolved,
+                    &frame.tracked_vars,
+                )
+            };
+            let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
+                let mut f = GenericBindings::new();
+                for (name, val) in projected.iter() {
+                    if !name.starts_with("$__fr_") {
+                        f.insert_or_replace(name, val.clone());
+                    }
+                }
+                f
+            } else {
+                projected
+            };
+            let bindings_sexpr =
+                crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
+                    &filtered,
+                    &self.factory,
+                );
+            pairs.push(self.make_sexpr(vec![value, bindings_sexpr]));
+        }
+
+        if let Some(cont_chunk) = frame.continuation_chunk {
+            self.chunk = cont_chunk;
+            self.ip = frame.continuation_ip;
+        }
+        self.push(self.make_sexpr(pairs));
+        Ok(ControlFlow::Continue(()))
     }
 
     fn op_match_self(&mut self) -> VmResult<()> {
@@ -3522,11 +3811,15 @@ where
             (frame.value_stack_height, frame.choice_point_base)
         };
 
-        // Collect the current value from the stack (one result from the body)
+        // Collect the current value from the stack (one result from the body).
+        // Phase C: snapshot bindings in parallel when inside collapse-bind.
         if self.value_stack.len() > value_stack_height {
             let value = self.pop()?;
             if !value.is_unit() {
                 self.results.push(value);
+                if !self.collapse_bind_frames.is_empty() {
+                    self.per_result_bindings.push(self.current_bindings.clone());
+                }
             }
         }
 
@@ -4515,8 +4808,16 @@ where
     fn op_yield(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         let value = self.pop()?;
         self.results.push(value);
-        // Continue to next alternative
-        self.op_fail()
+        // Phase C: record bindings snapshot inside a collapse-bind scope.
+        if !self.collapse_bind_frames.is_empty() {
+            self.per_result_bindings.push(self.current_bindings.clone());
+        }
+        // Continue to next alternative — respect collapse-bind barrier if active.
+        if !self.collapse_bind_frames.is_empty() {
+            self.op_fail_within_collapse_bind()
+        } else {
+            self.op_fail()
+        }
     }
 
     fn op_begin_nondet(&mut self) {

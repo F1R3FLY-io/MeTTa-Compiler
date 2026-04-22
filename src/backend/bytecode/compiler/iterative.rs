@@ -2542,12 +2542,10 @@ impl Compiler {
                 });
             }
             LetState::Cleanup => {
-                // End scope and clean up
-                let pop_count = self.context.end_scope();
-                for _ in 0..pop_count {
-                    self.builder.emit(Opcode::Swap);
-                    self.builder.emit(Opcode::Pop);
-                }
+                // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let
+                // in core.rs. Locals now live in self.locals (disjoint from operand
+                // stack), so StoreLocal/LoadLocal leave the operand stack clean.
+                let _pop_count = self.context.end_scope();
             }
         }
         Ok(())
@@ -2625,12 +2623,9 @@ impl Compiler {
                 });
             }
             LetStarState::Cleanup => {
-                // End scope and clean up
-                let pop_count = self.context.end_scope();
-                for _ in 0..pop_count {
-                    self.builder.emit(Opcode::Swap);
-                    self.builder.emit(Opcode::Pop);
-                }
+                // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let
+                // in core.rs.
+                let _pop_count = self.context.end_scope();
             }
         }
         Ok(())
@@ -2882,11 +2877,9 @@ impl Compiler {
                 });
             }
             ChainState::Cleanup => {
-                let pop_count = self.context.end_scope();
-                for _ in 0..pop_count {
-                    self.builder.emit(Opcode::Swap);
-                    self.builder.emit(Opcode::Pop);
-                }
+                // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let
+                // in core.rs.
+                let _pop_count = self.context.end_scope();
             }
         }
         Ok(())

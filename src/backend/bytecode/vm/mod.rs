@@ -144,8 +144,29 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
     F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
 {
-    /// Value stack for operands and results
+    /// Value stack for operands and results.
+    ///
+    /// Bug-Fix Phase 1 (2026-04): operands only — local variable slots
+    /// moved to the dedicated `locals` vector below so `StoreLocal` /
+    /// `LoadLocal` do not alias with operand positions. Previously, the
+    /// chunk's `local_count` slots were pre-allocated at the bottom of
+    /// `value_stack`, causing `compile_let`'s trailing `Swap; Pop`
+    /// cleanup to move the body result INTO the local slot instead of
+    /// above it. This made `value_stack.len()` at `CollapseEnd`/
+    /// `CollapseBindEnd` equal to the pre-body height, so the barrier
+    /// checks missed the body result entirely.
     pub(crate) value_stack: Vec<V>,
+
+    /// Local variable storage, indexed by slot number.
+    ///
+    /// Bug-Fix Phase 1 (2026-04): dedicated storage separate from
+    /// `value_stack`, matching the JIT tier's existing `CodegenContext::locals`
+    /// design. `StoreLocal` / `LoadLocal` / `StoreLocalWide` / `LoadLocalWide`
+    /// all read and write here; `value_stack` only holds operands. Pre-allocated
+    /// to `chunk.local_count()` Unit values at `run()` entry. Choice points
+    /// snapshot/restore `locals.len()` (or content) to ensure backtracking
+    /// honours scope boundaries.
+    pub(crate) locals: Vec<V>,
 
     /// Call stack for function frames
     pub(crate) call_stack: Vec<GenericCallFrame<V, GenericBytecodeChunk<V>>>,
@@ -314,6 +335,7 @@ where
     pub fn with_config_and_factory(chunk: Arc<GenericBytecodeChunk<V>>, config: VmConfig, factory: F) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
+            locals: Vec::new(),
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
             choice_points: Vec::new(),
@@ -349,6 +371,7 @@ where
     ) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
+            locals: Vec::new(),
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
             choice_points: Vec::new(),
@@ -387,6 +410,7 @@ where
     ) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
+            locals: Vec::new(),
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
             choice_points: Vec::new(),
@@ -779,11 +803,13 @@ where
     /// using trait methods for value construction and inspection. NO conversions
     /// between value types occur during execution.
     pub fn run(&mut self) -> VmResult<Vec<V>> {
-        // Pre-allocate local variable slots
+        // Bug-Fix Phase 1 (2026-04): Pre-allocate local-variable slots in the
+        // dedicated `locals` storage. Previously at the bottom of `value_stack`,
+        // which aliased with operand positions and broke collapse-barrier checks.
         let local_count = self.chunk.local_count() as usize;
-        if local_count > 0 && self.value_stack.len() < local_count {
+        if local_count > 0 && self.locals.len() < local_count {
             let nil = self.make_unit();
-            self.value_stack.resize(local_count, nil);
+            self.locals.resize(local_count, nil);
         }
 
         loop {
@@ -892,9 +918,14 @@ where
             Opcode::MakeQuote => self.op_make_quote()?,
 
             // === Variable Operations ===
+            // Bug-Fix Phase 1 (2026-04): Local variables live in `self.locals`,
+            // a dedicated storage vector disjoint from `value_stack`. This mirrors
+            // the JIT tier's `CodegenContext::locals` design and eliminates the
+            // operand/local aliasing that made `CollapseEnd`/`CollapseBindEnd`
+            // barrier checks miss body results for `(collapse (let ...))` forms.
             Opcode::LoadLocal => {
                 let index = self.read_u8()? as usize;
-                let value = self.value_stack.get(index)
+                let value = self.locals.get(index)
                     .ok_or(VmError::InvalidLocal(index as u16))?
                     .clone();
                 self.push(value);
@@ -902,14 +933,14 @@ where
             Opcode::StoreLocal => {
                 let index = self.read_u8()? as usize;
                 let value = self.pop()?;
-                if index >= self.value_stack.len() {
-                    self.value_stack.resize(index + 1, self.make_unit());
+                if index >= self.locals.len() {
+                    self.locals.resize(index + 1, self.make_unit());
                 }
-                self.value_stack[index] = value;
+                self.locals[index] = value;
             }
             Opcode::LoadLocalWide => {
                 let index = self.read_u16()? as usize;
-                let value = self.value_stack.get(index)
+                let value = self.locals.get(index)
                     .ok_or(VmError::InvalidLocal(index as u16))?
                     .clone();
                 self.push(value);
@@ -917,10 +948,10 @@ where
             Opcode::StoreLocalWide => {
                 let index = self.read_u16()? as usize;
                 let value = self.pop()?;
-                if index >= self.value_stack.len() {
-                    self.value_stack.resize(index + 1, self.make_unit());
+                if index >= self.locals.len() {
+                    self.locals.resize(index + 1, self.make_unit());
                 }
-                self.value_stack[index] = value;
+                self.locals[index] = value;
             }
             Opcode::LoadBinding => {
                 let index = self.read_u16()?;

@@ -1411,12 +1411,13 @@ where
         // Compile the body (in original tail position)
         self.compile(body)?;
 
-        // End scope - use Swap; Pop to preserve body result
-        let local_count = self.context.end_scope();
-        for _ in 0..local_count {
-            self.builder.emit(Opcode::Swap);
-            self.builder.emit(Opcode::Pop);
-        }
+        // Bug-Fix Phase 2b (2026-04): no cleanup emission needed. The VM
+        // now stores locals in a dedicated `self.locals` vector disjoint
+        // from the operand stack, so StoreLocal/LoadLocal leave the operand
+        // stack clean. Previously we emitted `Swap; Pop × local_count` to
+        // clear the pre-allocated-local-slot overlap, which had side-effect
+        // of moving the body result INTO the slot and zeroing stack growth.
+        let _local_count = self.context.end_scope();
 
         Ok(())
     }
@@ -1460,12 +1461,8 @@ where
         // Compile body
         self.compile(body)?;
 
-        // End scope - use Swap; Pop to preserve body result
-        let local_count = self.context.end_scope();
-        for _ in 0..local_count {
-            self.builder.emit(Opcode::Swap);
-            self.builder.emit(Opcode::Pop);
-        }
+        // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let.
+        let _local_count = self.context.end_scope();
 
         Ok(())
     }
@@ -1605,11 +1602,8 @@ where
                 }
                 self.in_tail_position = saved_tail;
                 self.compile(body)?;
-                let local_count = self.context.end_scope();
-                for _ in 0..local_count {
-                    self.builder.emit(Opcode::Swap);
-                    self.builder.emit(Opcode::Pop);
-                }
+                // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let.
+                let _local_count = self.context.end_scope();
             } else {
                 // Standard arm: Dup, PushConstant(pattern), MatchBind, JumpIfFalse
                 self.builder.emit(Opcode::Dup);
@@ -1628,11 +1622,8 @@ where
                 }
                 self.in_tail_position = saved_tail;
                 self.compile(body)?;
-                let local_count = self.context.end_scope();
-                for _ in 0..local_count {
-                    self.builder.emit(Opcode::Swap);
-                    self.builder.emit(Opcode::Pop);
-                }
+                // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let.
+                let _local_count = self.context.end_scope();
 
                 if !is_last_arm {
                     // Jump to end (skip remaining arms)
@@ -1797,12 +1788,8 @@ where
         // Compile body
         self.compile(body)?;
 
-        // End scope - use Swap; Pop to preserve body result
-        let local_count = self.context.end_scope();
-        for _ in 0..local_count {
-            self.builder.emit(Opcode::Swap);
-            self.builder.emit(Opcode::Pop);
-        }
+        // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let.
+        let _local_count = self.context.end_scope();
 
         Ok(())
     }

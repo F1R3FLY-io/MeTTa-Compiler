@@ -307,6 +307,12 @@ where
     /// dispatches) propagate up to the caller's ambient context. Mirrors
     /// HE's `Stack` frame-level binding retention.
     pub saved_bindings: GenericBindings<V>,
+    /// Bug-fix 2026-04-follow-up: caller's `self.locals_base` at call time.
+    /// On return, `self.locals.truncate(locals_base); self.locals_base = frame.locals_base`
+    /// restores the caller's local-slot namespace. Introduced after commit `897b3df`
+    /// split locals into `self.locals` — the parallel of how `base_ptr` isolates
+    /// the operand portion of `value_stack` across calls.
+    pub locals_base: usize,
 }
 
 /// Generic choice point for nondeterminism.
@@ -352,6 +358,17 @@ where
     /// pushed would leak into the alt-branch evaluation, violating
     /// HE's per-alt (Stack, Bindings) semantics.
     pub saved_current_bindings: GenericBindings<V>,
+    /// Bug-fix 2026-04-follow-up: saved `self.locals.len()` at CP push time.
+    /// On backtrack, `op_fail*` truncates `self.locals` to this height so
+    /// a CP that was pushed during callee execution and is being resumed
+    /// past the call frame correctly restores the caller's local scope.
+    pub locals_height: usize,
+    /// Bug-fix 2026-04-follow-up: saved `self.locals_base` at CP push time.
+    /// When a CP is resumed and its corresponding call frame has been popped
+    /// (via `call_stack.truncate(cp.call_stack_height)` in `op_fail`), we
+    /// cannot reach the caller's `locals_base` through the call stack —
+    /// so we stash it directly on the CP.
+    pub locals_base_at_cp: usize,
 }
 
 // ============================================================================

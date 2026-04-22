@@ -168,6 +168,19 @@ where
     /// honours scope boundaries.
     pub(crate) locals: Vec<V>,
 
+    /// Base index into `self.locals` for the currently executing chunk.
+    ///
+    /// Bug-fix 2026-04-follow-up: every `LoadLocal slot` reads
+    /// `self.locals[self.locals_base + slot]`; every `StoreLocal slot` writes
+    /// there (with resize-on-demand). On call: caller's `locals_base` is saved
+    /// into the call frame and `self.locals_base = self.locals.len()` bumps
+    /// forward so the callee's slots are allocated beyond the caller's.
+    /// On return: `self.locals.truncate(frame.locals_base);
+    /// self.locals_base = frame.locals_base` restores caller's scope exactly.
+    /// Mirrors the pre-Phase-1 `value_stack + base_ptr` discipline for the
+    /// now-separated locals vector.
+    pub(crate) locals_base: usize,
+
     /// Call stack for function frames
     pub(crate) call_stack: Vec<GenericCallFrame<V, GenericBytecodeChunk<V>>>,
 
@@ -336,6 +349,7 @@ where
         Self {
             value_stack: Vec::with_capacity(256),
             locals: Vec::new(),
+            locals_base: 0,
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
             choice_points: Vec::new(),
@@ -372,6 +386,7 @@ where
         Self {
             value_stack: Vec::with_capacity(256),
             locals: Vec::new(),
+            locals_base: 0,
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
             choice_points: Vec::new(),
@@ -411,6 +426,7 @@ where
         Self {
             value_stack: Vec::with_capacity(256),
             locals: Vec::new(),
+            locals_base: 0,
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
             choice_points: Vec::new(),
@@ -797,6 +813,23 @@ where
 
     // === Full Execution ===
 
+    /// Pre-allocate `self.locals` so the currently executing chunk's slot range
+    /// `[locals_base, locals_base + chunk.local_count())` is fully backed by
+    /// Unit. Called at `run()` entry and at every chunk-switch (call-push and
+    /// `op_fail`-style chunk restore).
+    ///
+    /// Bug-fix 2026-04-follow-up: this is the single source of truth for
+    /// "callee's slots are reserved past the caller's", replacing the previous
+    /// one-time resize at `run()` entry.
+    #[inline]
+    fn ensure_locals_for_current_chunk(&mut self) {
+        let need = self.locals_base + self.chunk.local_count() as usize;
+        if self.locals.len() < need {
+            let nil = self.make_unit();
+            self.locals.resize(need, nil);
+        }
+    }
+
     /// Run the VM to completion, returning all results.
     ///
     /// This is the complete generic implementation that handles all opcodes
@@ -806,11 +839,11 @@ where
         // Bug-Fix Phase 1 (2026-04): Pre-allocate local-variable slots in the
         // dedicated `locals` storage. Previously at the bottom of `value_stack`,
         // which aliased with operand positions and broke collapse-barrier checks.
-        let local_count = self.chunk.local_count() as usize;
-        if local_count > 0 && self.locals.len() < local_count {
-            let nil = self.make_unit();
-            self.locals.resize(local_count, nil);
-        }
+        //
+        // Bug-fix 2026-04-follow-up: pre-allocation is keyed off `locals_base` so
+        // that nested `run()` re-entries (if any) and the initial chunk both
+        // correctly reserve only the slots they need, at the right offset.
+        self.ensure_locals_for_current_chunk();
 
         loop {
             match self.step()? {
@@ -923,35 +956,44 @@ where
             // the JIT tier's `CodegenContext::locals` design and eliminates the
             // operand/local aliasing that made `CollapseEnd`/`CollapseBindEnd`
             // barrier checks miss body results for `(collapse (let ...))` forms.
+            //
+            // Bug-fix 2026-04-follow-up: slot indices are CHUNK-RELATIVE (each chunk's
+            // compiler assigns `next_local` starting at 0). `self.locals_base` is the
+            // absolute offset for the currently executing chunk; caller's locals sit
+            // at `[0, locals_base)` and are preserved across the call.
             Opcode::LoadLocal => {
-                let index = self.read_u8()? as usize;
-                let value = self.locals.get(index)
-                    .ok_or(VmError::InvalidLocal(index as u16))?
+                let slot = self.read_u8()? as usize;
+                let abs = self.locals_base + slot;
+                let value = self.locals.get(abs)
+                    .ok_or(VmError::InvalidLocal(slot as u16))?
                     .clone();
                 self.push(value);
             }
             Opcode::StoreLocal => {
-                let index = self.read_u8()? as usize;
+                let slot = self.read_u8()? as usize;
                 let value = self.pop()?;
-                if index >= self.locals.len() {
-                    self.locals.resize(index + 1, self.make_unit());
+                let abs = self.locals_base + slot;
+                if abs >= self.locals.len() {
+                    self.locals.resize(abs + 1, self.make_unit());
                 }
-                self.locals[index] = value;
+                self.locals[abs] = value;
             }
             Opcode::LoadLocalWide => {
-                let index = self.read_u16()? as usize;
-                let value = self.locals.get(index)
-                    .ok_or(VmError::InvalidLocal(index as u16))?
+                let slot = self.read_u16()? as usize;
+                let abs = self.locals_base + slot;
+                let value = self.locals.get(abs)
+                    .ok_or(VmError::InvalidLocal(slot as u16))?
                     .clone();
                 self.push(value);
             }
             Opcode::StoreLocalWide => {
-                let index = self.read_u16()? as usize;
+                let slot = self.read_u16()? as usize;
                 let value = self.pop()?;
-                if index >= self.locals.len() {
-                    self.locals.resize(index + 1, self.make_unit());
+                let abs = self.locals_base + slot;
+                if abs >= self.locals.len() {
+                    self.locals.resize(abs + 1, self.make_unit());
                 }
-                self.locals[index] = value;
+                self.locals[abs] = value;
             }
             Opcode::LoadBinding => {
                 let index = self.read_u16()?;
@@ -2040,6 +2082,9 @@ where
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
+            // Bug-fix 2026-04-follow-up: drop callee's locals, restore caller's base.
+            self.locals.truncate(frame.locals_base);
+            self.locals_base = frame.locals_base;
 
             // Pop binding frames down to caller's level
             while self.bindings_stack.len() > frame.bindings_base + 1 {
@@ -2106,6 +2151,9 @@ where
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
+            // Bug-fix 2026-04-follow-up: drop callee's locals, restore caller's base.
+            self.locals.truncate(frame.locals_base);
+            self.locals_base = frame.locals_base;
 
             // Pop binding frames down to caller's level
             while self.bindings_stack.len() > frame.bindings_base + 1 {
@@ -3311,6 +3359,8 @@ where
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
                 saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
             });
             self.push(first);
         }
@@ -3374,6 +3424,8 @@ where
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
                 saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
             });
             self.push(first);
         }
@@ -3559,6 +3611,9 @@ where
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
+            // Bug-fix 2026-04-follow-up: restore locals to pre-CP state.
+            self.locals.truncate(cp.locals_height);
+            self.locals_base = cp.locals_base_at_cp;
             self.current_bindings = cp.saved_current_bindings.clone();
 
             if cp.alternatives.is_empty() {
@@ -3585,6 +3640,8 @@ where
                     self.ip = offset;
                 }
                 GenericAlternative::RuleMatch { chunk, bindings } => {
+                    // Bug-fix 2026-04-follow-up: stash caller's locals_base.
+                    let caller_locals_base = self.locals_base;
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -3592,6 +3649,7 @@ where
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
                         saved_bindings: self.current_bindings.clone(),
+                        locals_base: caller_locals_base,
                     });
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
@@ -3601,6 +3659,8 @@ where
                     self.bindings_stack.push(frame);
                     self.chunk = chunk;
                     self.ip = 0;
+                    self.locals_base = self.locals.len();
+                    self.ensure_locals_for_current_chunk();
                 }
                 GenericAlternative::BoundValue { value, bindings } => {
                     self.value_stack.push(value);
@@ -3704,6 +3764,8 @@ where
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
                 saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
             });
             self.push(first);
         }
@@ -3748,6 +3810,8 @@ where
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
                 saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
             });
             self.push(first);
         }
@@ -3893,6 +3957,9 @@ where
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
+            // Bug-fix 2026-04-follow-up: restore locals to pre-CP state.
+            self.locals.truncate(cp.locals_height);
+            self.locals_base = cp.locals_base_at_cp;
             // Phase 1b-E3: restore VM's current_bindings to what it
             // was when this choice point was pushed. A BoundValue alt
             // (below) may OVERWRITE this with its per-alt bindings.
@@ -3930,7 +3997,9 @@ where
                     self.ip = offset;
                 }
                 GenericAlternative::RuleMatch { chunk, bindings } => {
-                    // Push call frame for compiled RHS (mirrors op_fail logic)
+                    // Push call frame for compiled RHS (mirrors op_fail logic).
+                    // Bug-fix 2026-04-follow-up: stash caller's locals_base.
+                    let caller_locals_base = self.locals_base;
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -3938,6 +4007,7 @@ where
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
                         saved_bindings: self.current_bindings.clone(),
+                        locals_base: caller_locals_base,
                     });
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
@@ -3947,6 +4017,8 @@ where
                     self.bindings_stack.push(frame);
                     self.chunk = chunk;
                     self.ip = 0;
+                    self.locals_base = self.locals.len();
+                    self.ensure_locals_for_current_chunk();
                 }
                 GenericAlternative::BoundValue { value, bindings } => {
                     // Phase 1b-A: backtrack to a (value, bindings) pair
@@ -4657,6 +4729,8 @@ where
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
                 saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
             };
             self.choice_points.push(cp);
         }
@@ -4686,6 +4760,9 @@ where
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
+            // Bug-fix 2026-04-follow-up: restore locals to pre-CP state.
+            self.locals.truncate(cp.locals_height);
+            self.locals_base = cp.locals_base_at_cp;
             // Phase 1b-E3: restore VM's current_bindings to what it
             // was when this choice point was pushed. The picked
             // alternative (below) may OVERWRITE this for BoundValue
@@ -4724,6 +4801,8 @@ where
                 GenericAlternative::RuleMatch { chunk, bindings } => {
                     // Push call frame for compiled RHS execution.
                     // The RHS returns normally and the calling chunk continues.
+                    // Bug-fix 2026-04-follow-up: stash caller's locals_base.
+                    let caller_locals_base = self.locals_base;
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -4731,6 +4810,7 @@ where
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
                         saved_bindings: self.current_bindings.clone(),
+                        locals_base: caller_locals_base,
                     });
                     // Push new binding frame (don't pollute existing frames)
                     let depth = self.bindings_stack.len() as u32;
@@ -4741,6 +4821,8 @@ where
                     self.bindings_stack.push(frame);
                     self.chunk = chunk;
                     self.ip = 0;
+                    self.locals_base = self.locals.len();
+                    self.ensure_locals_for_current_chunk();
                 }
                 GenericAlternative::BoundValue { value, bindings } => {
                     // Phase 1b-A: restore (value, bindings) pair together.
@@ -4901,6 +4983,8 @@ where
             saved_unreduced: self.unreduced,
             trail_height: self.trail.len(),
             saved_current_bindings: self.current_bindings.clone(),
+            locals_height: self.locals.len(),
+            locals_base_at_cp: self.locals_base,
         });
 
         // Push first alternative
@@ -5342,6 +5426,8 @@ where
                                 saved_unreduced: self.unreduced,
                                 trail_height: self.trail.len(),
                                 saved_current_bindings: self.current_bindings.clone(),
+                                locals_height: self.locals.len(),
+                                locals_base_at_cp: self.locals_base,
                             });
                         }
                         self.push(first);
@@ -5515,7 +5601,9 @@ where
             if let Some(compiled_arc) = result.compiled_rhs {
                 // Downcast from Arc<dyn Any + Send + Sync> to Arc<GenericBytecodeChunk<V>>
                 if let Ok(rhs_chunk) = compiled_arc.downcast::<GenericBytecodeChunk<V>>() {
-                    // Push call frame to save current execution state
+                    // Push call frame to save current execution state.
+                    // Bug-fix 2026-04-follow-up: stash caller's locals_base, bump ours.
+                    let caller_locals_base = self.locals_base;
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -5523,6 +5611,7 @@ where
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
                         saved_bindings: self.current_bindings.clone(),
+                        locals_base: caller_locals_base,
                     });
 
                     // Push new binding frame with match bindings.
@@ -5539,6 +5628,10 @@ where
                     // Return opcode will pop the call frame and restore caller state.
                     self.chunk = rhs_chunk;
                     self.ip = 0;
+                    // Callee's slots live past the caller's: bump locals_base
+                    // to the current end of locals, then ensure capacity for callee.
+                    self.locals_base = self.locals.len();
+                    self.ensure_locals_for_current_chunk();
                     return Ok(());
                 }
                 // Downcast failed — fall through to instantiated_rhs path
@@ -5646,6 +5739,8 @@ where
                     saved_unreduced: self.unreduced,
                     trail_height: self.trail.len(),
                     saved_current_bindings: self.current_bindings.clone(),
+                    locals_height: self.locals.len(),
+                    locals_base_at_cp: self.locals_base,
                 });
             }
 
@@ -5795,6 +5890,8 @@ where
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
                 saved_current_bindings: saved_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
             });
         }
         self.current_bindings = first_b;
@@ -6394,6 +6491,8 @@ where
                 saved_unreduced: self.unreduced,
                 trail_height: self.trail.len(),
                 saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
             });
             self.push(first);
         }

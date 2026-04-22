@@ -2472,6 +2472,8 @@ fn test_vm_alternative_index() {
         saved_unreduced: false,
         trail_height: vm.trail.len(),
         saved_current_bindings: vm.current_bindings.clone(),
+        locals_height: vm.locals.len(),
+        locals_base_at_cp: vm.locals_base,
     });
 
     let results = vm.run().expect("VM should succeed");

@@ -3823,6 +3823,15 @@ where
     /// case: pattern-matching dispatch.
     /// Stack: [scrutinee], constant pool: case branches -> [result]
     /// Delegates to trampoline via eval_sub_expr_vm.
+    /// Phase G: native `case` malformed-fallback. The well-formed-branches case
+    /// is handled by `CaseBarrierBegin` + `MatchBind` opcodes emitted by
+    /// `compile_case`. `EvalCase` is only reached for branches the compiler
+    /// couldn't recognize as pair-structured — handled natively via
+    /// `eval_switch`, which reuses the trampoline's pattern-match + template
+    /// instantiation logic without dispatching through `eval_sub_expr_vm`.
+    /// The instantiated template is pushed onto the stack and flagged as
+    /// `unreduced = true` so the surrounding eval loop drives further
+    /// reduction in the VM tier.
     fn op_eval_case(&mut self) -> VmResult<()> {
         let case_branches_idx = self.read_u16()?;
         let scrutinee = self.pop()?;
@@ -3830,7 +3839,54 @@ where
         let case_branches = self.chunk.get_constant(case_branches_idx).cloned()
             .ok_or(VmError::InvalidConstant(case_branches_idx))?;
 
-        // Reconstruct (case scrutinee branches...) and delegate to trampoline
+        // Only the concrete-typed MettaValue path has a shared `eval_switch`
+        // helper; other generic V types fall through to an unreduced push
+        // (preserves the pre-native behavior for non-default factories).
+        //
+        // Safety: `eval_switch` expects `&MettaValue` — we check at runtime via
+        // as_any. If V is not MettaValue, fall back to constructing the case
+        // expression and signalling unreduced (the eval_inner loop will
+        // dispatch correctly from the reconstructed form).
+        use crate::backend::eval::trampoline::engine::{eval_switch, SwitchResult};
+        use crate::backend::models::MettaValue as ConcreteMV;
+
+        // Attempt native path if V == MettaValue.
+        let scrutinee_concrete = (&scrutinee as &dyn std::any::Any).downcast_ref::<ConcreteMV>();
+        let branches_concrete = (&case_branches as &dyn std::any::Any).downcast_ref::<ConcreteMV>();
+        let factory_concrete =
+            (&self.factory as &dyn std::any::Any).downcast_ref::<crate::backend::models::GcFactory>();
+
+        if let (Some(atom), Some(cases), Some(factory)) =
+            (scrutinee_concrete, branches_concrete, factory_concrete)
+        {
+            match eval_switch(atom, cases, factory) {
+                SwitchResult::Match(instantiated, _bindings) => {
+                    // Cast the concrete MettaValue back to V (same type).
+                    let instantiated_v: &V = (&instantiated as &dyn std::any::Any)
+                        .downcast_ref::<V>()
+                        .expect("concrete MettaValue → V downcast must succeed when V == MettaValue");
+                    self.push(instantiated_v.clone());
+                    // Instantiated template may require further reduction;
+                    // eval_inner will drive it natively within the VM tier.
+                    self.unreduced = true;
+                    return Ok(());
+                }
+                SwitchResult::NoMatch => {
+                    self.push(self.factory.sexpr(vec![]));
+                    return Ok(());
+                }
+                SwitchResult::Error(err) => {
+                    let err_v: &V = (&err as &dyn std::any::Any)
+                        .downcast_ref::<V>()
+                        .expect("concrete MettaValue error → V downcast must succeed");
+                    self.push(err_v.clone());
+                    return Ok(());
+                }
+            }
+        }
+
+        // Non-MettaValue V: reconstruct the case expression and push with
+        // unreduced flag so the surrounding loop handles it generically.
         let mut items = vec![self.factory.atom("case"), scrutinee];
         if let Some(branch_items) = case_branches.as_sexpr() {
             items.extend(branch_items.iter().cloned());
@@ -3838,11 +3894,8 @@ where
             items.push(case_branches);
         }
         let sexpr = self.factory.sexpr(items);
-        let env = self.env.clone().ok_or_else(|| {
-            VmError::Runtime("case: no environment available".to_string())
-        })?;
-        let result = self.eval_sub_expr_vm(sexpr, env)?;
-        self.push(result);
+        self.push(sexpr);
+        self.unreduced = true;
         Ok(())
     }
 

@@ -11058,9 +11058,21 @@ fn process_continuation<C: EvalContext>(
                 // pattern-match bindings cause the branch to die (HE-bisimilar
                 // silent pruning). The previous `.compose()` was a silent
                 // union that masked conflicts and produced ghost outputs.
+                //
+                // PLN-fix 2026-04 (scope barrier): before composing with the
+                // value-expr's per-branch bindings, strip `$__fr_*` artifacts
+                // from `accumulated_bindings` — these are per-invocation
+                // freshened variables from prior iterations' rule matches.
+                // They have no HE analogue and leak across let*-pair
+                // boundaries as ground-ground ghosts. Keep user-level
+                // bindings; drop freshened ones. See
+                // `strip_freshened_bindings` in bindings.rs for rationale.
                 let (value, per_branch_bindings) = &result_values[0];
+                let accumulated_scoped = crate::backend::eval::bindings::strip_freshened_bindings(
+                    &*accumulated_bindings,
+                );
                 let composed_outer = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                    &*accumulated_bindings, per_branch_bindings, ctx.factory(),
+                    &accumulated_scoped, per_branch_bindings, ctx.factory(),
                 ) {
                     Some(b) => b,
                     None => {
@@ -11075,9 +11087,21 @@ fn process_continuation<C: EvalContext>(
                 accumulated_bindings = std::sync::Arc::new(composed_outer);
 
                 if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
-                    // Compose pattern-match bindings into accumulated
+                    // PLN-fix 2026-04 (pattern-keyed shadow + scope barrier):
+                    // before strict-composing pm into accumulated, apply both
+                    // strips via `prepare_letstar_accumulated`:
+                    //   (1) drop `$__fr_*` scope leaks from prior iterations;
+                    //   (2) drop keys that the current pattern is about to
+                    //       bind, so the new pair's pm wins (HE let* shadow
+                    //       semantics: `(let* (($x 1) ($x 2)) $x) → 2`).
+                    // Strict-compose still fires for any NON-shadow conflict
+                    // (e.g., rule-match inner bindings on variables outside
+                    // the current pattern), preserving ghost-branch pruning.
+                    let accumulated_prep = crate::backend::eval::bindings::prepare_letstar_accumulated(
+                        &*accumulated_bindings, &current_pattern, ctx.factory(),
+                    );
                     let composed_pm = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                        &*accumulated_bindings, &pm_bindings, ctx.factory(),
+                        &accumulated_prep, &pm_bindings, ctx.factory(),
                     ) {
                         Some(b) => b,
                         None => {
@@ -11116,12 +11140,24 @@ fn process_continuation<C: EvalContext>(
                             &next_value_expr, &accumulated_bindings, ctx.factory(),
                         );
 
-                        let ambient = accumulated_bindings.clone();
+                        // PLN-fix 2026-04 (scope barrier at iteration handoff):
+                        // strip `$__fr_*` scope leaks from accumulated_bindings
+                        // before the NEXT let*-pair inherits it. Without this,
+                        // per-invocation freshened vars from recursive rule
+                        // invocations within the prior pair's value-expr
+                        // evaluation would pollute the next pair's ambient
+                        // context and produce spurious ground-ground conflicts.
+                        let accumulated_scoped = std::sync::Arc::new(
+                            crate::backend::eval::bindings::strip_freshened_bindings(
+                                &*accumulated_bindings,
+                            ),
+                        );
+                        let ambient = accumulated_scoped.clone();
                         continuations.push(Continuation::ProcessLetStar {
                             current_pattern: next_pattern,
                             remaining_pairs,
                             body,
-                            accumulated_bindings,
+                            accumulated_bindings: accumulated_scoped,
                             env: result_env.clone(),
                             depth,
                             is_tail_call,
@@ -11182,17 +11218,35 @@ fn process_continuation<C: EvalContext>(
                 // the bound variable, not just its textual substitution.
                 // Phase 2.B Issue #1 fix: use strict compose in fallback
                 // fold so conflicting alternatives are silently dropped.
+                // PLN-fix 2026-04: mirror the fast-path scope barrier here.
+                // Strip `$__fr_*` from `accumulated_bindings` once up front
+                // (same across all alternatives). The per-branch per-alt
+                // compose then sees a clean accumulated without freshened
+                // scope leaks from prior recursion frames.
+                let accumulated_scoped = crate::backend::eval::bindings::strip_freshened_bindings(
+                    &*accumulated_bindings,
+                );
                 let mut bound_bodies: Vec<(MettaValue, crate::backend::eval::trampoline::types::SharedBindings)> = Vec::new();
                 for (value, per_branch) in result_values.iter() {
                     if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                         let with_branch = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                            &*accumulated_bindings, per_branch, ctx.factory(),
+                            &accumulated_scoped, per_branch, ctx.factory(),
                         ) {
                             Some(b) => b,
                             None => continue, // conflict → drop this alternative
                         };
+                        // PLN-fix 2026-04 (pattern-keyed shadow): drop keys
+                        // the pattern is about to bind so the pm wins. This
+                        // matches HE's `let*` shadow semantics for
+                        // user-level variable rebinding across pairs. Applied
+                        // on `with_branch` (not `accumulated_scoped`) because
+                        // we want it to affect the pm merge, not the
+                        // per-branch merge.
+                        let with_branch_shadow = crate::backend::eval::bindings::prepare_letstar_accumulated(
+                            &with_branch, &current_pattern, ctx.factory(),
+                        );
                         let composed = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                            &with_branch, &pm_bindings, ctx.factory(),
+                            &with_branch_shadow, &pm_bindings, ctx.factory(),
                         ) {
                             Some(b) => b,
                             None => continue,

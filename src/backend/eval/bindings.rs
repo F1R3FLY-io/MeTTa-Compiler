@@ -1423,6 +1423,93 @@ pub fn project_bindings_generic<V: MettaValueTrait + Clone>(
     result
 }
 
+/// Strip freshened-var bindings from a binding set.
+///
+/// Keys starting with `$__fr_` are per-invocation rule-match artifacts produced
+/// by [`freshen_variables_generic`](crate::backend::eval::freshening). They
+/// are valid within a single rule dispatch but MUST NOT cross user-level
+/// iteration boundaries (e.g., between `let*` pairs) — otherwise a recursive
+/// rule invocation at epoch N and a sibling invocation at epoch M can both
+/// end up with `$__fr_N_tail` alive in the outer scope when they represent
+/// independent recursion frames, producing spurious ground-ground conflicts
+/// at `compose_outer_inner_*_generic`.
+///
+/// Filtering at the `let*`-pair handoff restores the observational
+/// bisimilarity MeTTaTron targets with MeTTa HE, which achieves the same
+/// scope isolation naturally: HE doesn't freshen per-invocation — it gives
+/// each rule query a fresh `Bindings` object merged into the caller's
+/// context, so cross-frame variable-name collisions cannot occur. Our
+/// per-invocation freshening is a performance optimization; filtering at
+/// boundaries is the complementary scope barrier.
+///
+/// Returns a new `GenericBindings` containing only user-level keys (keys
+/// that do NOT start with `$__fr_`).
+///
+/// Chain resolution must be performed BEFORE calling this: if a user-level
+/// binding `$user_x → $__fr_M_alias` points at a freshened key that this
+/// filter is about to drop, the user-level binding becomes a dangling
+/// reference. Call [`apply_chain_generic`] first to materialize the values.
+pub fn strip_freshened_bindings<V: MettaValueTrait + Clone>(
+    bindings: &GenericBindings<V>,
+) -> GenericBindings<V> {
+    let mut result = GenericBindings::new();
+    for (name, val) in bindings.iter() {
+        if !name.starts_with("$__fr_") {
+            result.insert_or_replace(name, val.clone());
+        }
+    }
+    result
+}
+
+/// Prepare `accumulated_bindings` for composition with the current `let*`
+/// pair's pattern-match result, applying the two semantic rules required
+/// for HE-bisimilar shadow semantics:
+///
+/// 1. **Scope barrier**: strip `$__fr_*` keys (see
+///    [`strip_freshened_bindings`]). Prior iterations' freshened vars must
+///    not pollute the current iteration's compose.
+/// 2. **Pattern-keyed shadow**: strip any key that the current pair's
+///    `pattern` is about to bind. MeTTa's `let*` is sequential-shadow —
+///    `(let* (($x 1) ($x 2)) $x)` returns `2` in HE. Stripping the shadow
+///    keys from `accumulated` before strict-compose makes the new pair's
+///    binding "win" while preserving strict-prune semantics for any other
+///    genuine conflict (rule-match bindings on variables NOT in this
+///    pattern that contradict accumulated still fire the conflict trail).
+///
+/// The two strips are on disjoint key classes (`$__fr_*` vs user-level
+/// pattern vars), so they commute and are idempotent.
+///
+/// Callers should use this helper at every `let*`-pair boundary —
+/// specifically at `ProcessLetStar` fast-path and multi-result fallback
+/// fold sites in `eval_loop.rs`.
+pub fn prepare_letstar_accumulated<V, F>(
+    accumulated: &GenericBindings<V>,
+    pattern: &V,
+    factory: &F,
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone,
+    F: crate::backend::models::MettaValueFactory<V>,
+{
+    // Strip-1: freshened scope barrier.
+    let stage1 = strip_freshened_bindings(accumulated);
+    // Strip-2: pattern-keyed shadow. The current pair's pattern's variables
+    // are about to be bound by the pm — drop any prior accumulated binding
+    // for those keys so the pm wins unconditionally.
+    let pattern_vars: std::collections::HashSet<String> = collect_variables_generic(pattern);
+    let _ = factory; // factory kept for future use / symmetry with other helpers
+    if pattern_vars.is_empty() {
+        return stage1;
+    }
+    let mut stage2 = GenericBindings::new();
+    for (name, val) in stage1.iter() {
+        if !pattern_vars.contains(name) {
+            stage2.insert_or_replace(name, val.clone());
+        }
+    }
+    stage2
+}
+
 /// Encode bindings as a `(Bindings ($var val) …)` S-expression.
 ///
 /// Generic factory variant shared across trampoline, bytecode-VM (Phase C),

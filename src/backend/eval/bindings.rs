@@ -12,6 +12,8 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use smallvec::SmallVec;
+
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 /// Global counter for generating unique variable IDs in `sealed`
@@ -254,21 +256,23 @@ fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
     while let Some((pat, val)) = work_stack.pop() {
         // Check if pattern is an atom (handles variables, wildcards, and literal atoms)
         if let Some(p_name) = pat.as_atom() {
-            // Wildcard matches anything
-            if p_name == "_" {
+            // Wildcard matches anything (both `_` and `$_`)
+            if is_wildcard_atom(p_name) {
                 continue;
             }
 
             // Check if it's a variable (starts with $, &, or ')
             // EXCEPT: standalone "&" is a literal operator, not a variable
             // EXCEPT: space references like &self, &kb, &stack are NOT variables
+            // EXCEPT: $_ is the wildcard (handled above)
             let is_variable = (p_name.starts_with('$')
                 || p_name.starts_with('&')
                 || p_name.starts_with('\''))
                 && p_name != "&"
                 && p_name != "&self"
                 && p_name != "&kb"
-                && p_name != "&stack";
+                && p_name != "&stack"
+                && p_name != "$_";
 
             if is_variable {
                 // Check if variable is already bound
@@ -519,8 +523,12 @@ where
         BuildConjunction(usize),
     }
 
-    let mut work_stack: Vec<Work<V>> = Vec::with_capacity(32);
-    let mut result_stack: Vec<V> = Vec::with_capacity(32);
+    // Inline-storage stacks: most calls process small expressions and
+    // never spill to the heap. Bytehound profile of Smokes.metta showed
+    // 9.5M calls to this function each allocating two 32-cap Vecs (~7 GB
+    // cumulative) — pure allocator churn, not retention.
+    let mut work_stack: SmallVec<[Work<V>; 16]> = SmallVec::new();
+    let mut result_stack: SmallVec<[V; 16]> = SmallVec::new();
 
     work_stack.push(Work::Process(template));
 
@@ -669,13 +677,188 @@ where
             }
             Work::BuildSExpr(count) => {
                 let start = result_stack.len() - count;
-                let children: Vec<V> = result_stack.drain(start..).collect();
-                result_stack.push(factory.sexpr(children));
+                let result = factory.sexpr_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
             }
             Work::BuildConjunction(count) => {
                 let start = result_stack.len() - count;
-                let children: Vec<V> = result_stack.drain(start..).collect();
-                result_stack.push(factory.conjunction(children));
+                let result = factory.conjunction_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
+            }
+        }
+    }
+
+    result_stack.pop().expect("Result stack should not be empty")
+}
+
+/// Apply bindings to `template` while freshening template variables per-invocation.
+///
+/// Fuses three operations that `match_rules_native` used to perform as three
+/// separate tree walks:
+///   1. `freshen_variables_with_epoch(template)` — rename every `$x` → `$__fr_{epoch}_x`.
+///   2. `freshen_bindings_keys_with_epoch(bindings, rule_var_names)` — rename LHS keys.
+///   3. `apply_bindings_generic(rhs_freshened, bindings_for_apply)` — substitute.
+///
+/// The fused version performs ONE walk over `template`. For each `$var` encountered:
+/// - Look up `var` (original name) in `bindings`. If found, transitively process the
+///   bound value (WITHOUT rename — bound values come from caller scope and retain
+///   their original variable names per spec §04.3).
+/// - If not found in `bindings`, emit the **renamed** form `$__fr_{epoch}_{bare}` so
+///   that body-local variables (not present in bindings) still get per-invocation
+///   freshening, preserving scope isolation across recursive rule invocations.
+///
+/// This is spec §03.3 CachingMapper behavior at O(|rule_var_names| + |template|) cost,
+/// replacing the former O(3·|template|) three-walk.
+///
+/// Preserves Spanned wrappers identically to `apply_bindings_generic`.
+/// Handles self-referential bindings (`$a → $a`) and transitive chains via the
+/// same iterative work-stack pattern.
+pub fn apply_bindings_with_rename_generic<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    rename: &crate::backend::eval::freshening::CachingRename,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    // Peel Spanned: process inner, re-wrap with same span
+    if let Some(span) = template.span() {
+        let span = *span;
+        let stripped = template.strip_one_span();
+        let result = apply_bindings_with_rename_generic(&stripped, bindings, rename, factory);
+        if result.span().is_some() {
+            return result;
+        }
+        return factory.spanned(result, span);
+    }
+
+    // Two work-stack modes:
+    //   ProcessTemplate — still descending through the template; rename on miss.
+    //   ProcessOwned — descending through a bound VALUE (retains caller-scope
+    //                  variable names; no rename on miss).
+    enum Work<'a, V> {
+        ProcessTemplate(&'a V),
+        ProcessOwned(V),
+        BuildSExpr(usize),
+        BuildConjunction(usize),
+    }
+
+    // Inline-storage stacks (see apply_bindings_iterative_generic for rationale).
+    let mut work_stack: SmallVec<[Work<V>; 16]> = SmallVec::new();
+    let mut result_stack: SmallVec<[V; 16]> = SmallVec::new();
+
+    work_stack.push(Work::ProcessTemplate(template));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            Work::ProcessTemplate(val) => {
+                if val.is_spanned() {
+                    let result = apply_bindings_with_rename_generic(val, bindings, rename, factory);
+                    result_stack.push(result);
+                    continue;
+                }
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') && name != "$_" {
+                        if let Some(bound) = bindings.get(name) {
+                            // Self-referential guard
+                            if bound.as_atom() == Some(name) {
+                                // Emit the renamed form directly
+                                result_stack.push(factory.atom(rename.rename(name)));
+                                continue;
+                            }
+                            // Transitive: descend into bound value (owned mode — no rename)
+                            work_stack.push(Work::ProcessOwned(bound.clone()));
+                        } else {
+                            // Miss → emit renamed form (body-local or non-bound rule var)
+                            result_stack.push(factory.atom(rename.rename(name)));
+                        }
+                    } else {
+                        result_stack.push(val.clone());
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildSExpr(items.len()));
+                        for item in items.iter().rev() {
+                            work_stack.push(Work::ProcessTemplate(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildConjunction(goals.len()));
+                        for goal in goals.iter().rev() {
+                            work_stack.push(Work::ProcessTemplate(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val.clone());
+                }
+            }
+            Work::ProcessOwned(val) => {
+                if val.is_spanned() {
+                    let result = apply_bindings_with_rename_generic(&val, bindings, rename, factory);
+                    result_stack.push(result);
+                    continue;
+                }
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') && name != "$_" {
+                        if let Some(bound) = bindings.get(name) {
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound.clone());
+                                continue;
+                            }
+                            work_stack.push(Work::ProcessOwned(bound.clone()));
+                        } else {
+                            // Miss in owned mode → emit as-is (caller-scope name)
+                            result_stack.push(val);
+                        }
+                    } else {
+                        result_stack.push(val);
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = items.len();
+                        let owned_children: Vec<V> = items.iter().cloned().collect();
+                        work_stack.push(Work::BuildSExpr(len));
+                        for item in owned_children.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = goals.len();
+                        let owned_goals: Vec<V> = goals.iter().cloned().collect();
+                        work_stack.push(Work::BuildConjunction(len));
+                        for goal in owned_goals.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val);
+                }
+            }
+            Work::BuildSExpr(count) => {
+                let start = result_stack.len() - count;
+                let result = factory.sexpr_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
+            }
+            Work::BuildConjunction(count) => {
+                let start = result_stack.len() - count;
+                let result = factory.conjunction_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
             }
         }
     }
@@ -730,9 +913,28 @@ pub fn bidirectional_unify_generic<V: MettaValueTrait + Clone>(
     }
 }
 
+/// Check if `name` is a wildcard atom that matches anything without binding.
+///
+/// Both bare `_` and `$_` are wildcards in MeTTaTron: they match any value
+/// without recording a binding. Each occurrence is independent (no unification
+/// across occurrences of the same wildcard, unlike a normal variable).
+///
+/// This differs from HE, which treats `$_` as a regular variable named `_`
+/// with per-query CachingMapper uniqueness; our wildcard treatment gives the
+/// same practical effect (independent occurrences, no binding) with simpler
+/// semantics that match MeTTa code like mmverify's `(DVar ($x $y) $_ ...)`.
+///
+/// Named wildcard-like variables (`$_x`, `$_foo`) are NOT wildcards — they
+/// are regular variables with underscore-prefixed names.
+#[inline]
+pub fn is_wildcard_atom(name: &str) -> bool {
+    name == "_" || name == "$_"
+}
+
 /// Check if `name` refers to a MeTTa variable (starts with `$`, `&`, or `'`).
 ///
-/// Excludes standalone `&` (literal operator) and space references (`&self`, `&kb`, `&stack`).
+/// Excludes standalone `&` (literal operator), space references (`&self`,
+/// `&kb`, `&stack`), and the `$_` wildcard.
 #[inline]
 fn is_unification_variable(name: &str) -> bool {
     (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
@@ -740,6 +942,7 @@ fn is_unification_variable(name: &str) -> bool {
         && name != "&self"
         && name != "&kb"
         && name != "&stack"
+        && name != "$_"
 }
 
 /// Iterative occurs check: does variable `var_name` appear anywhere in `term`?
@@ -830,14 +1033,15 @@ fn bidirectional_unify_generic_impl<V: MettaValueTrait + Clone>(
             continue;
         }
 
-        // Step 3: Wildcards (match anything without binding)
+        // Step 3: Wildcards (match anything without binding). Both `_` and
+        // `$_` are wildcards — each occurrence is independent.
         if let Some(name) = lhs.as_atom() {
-            if name == "_" {
+            if is_wildcard_atom(name) {
                 continue;
             }
         }
         if let Some(name) = rhs.as_atom() {
-            if name == "_" {
+            if is_wildcard_atom(name) {
                 continue;
             }
         }
@@ -1123,7 +1327,7 @@ where
 /// unification when a rule variable met a template variable).
 #[inline]
 pub fn is_variable_value<V: MettaValueTrait>(val: &V) -> bool {
-    val.as_atom().map_or(false, |s| s.starts_with('$'))
+    val.as_atom().map_or(false, |s| s.starts_with('$') && s != "$_")
 }
 
 /// Unification-style composition of an outer binding set with an inner one.
@@ -1462,26 +1666,25 @@ pub fn strip_freshened_bindings<V: MettaValueTrait + Clone>(
 }
 
 /// Prepare `accumulated_bindings` for composition with the current `let*`
-/// pair's pattern-match result, applying the two semantic rules required
-/// for HE-bisimilar shadow semantics:
+/// pair's pattern-match result. Applies **pattern-keyed shadow** only:
+/// strip any key that the current pair's `pattern` is about to bind so the
+/// new pm binding "wins" while preserving strict-prune semantics for any
+/// genuine conflict (rule-match bindings on variables NOT in this pattern
+/// that contradict accumulated still fire the conflict trail).
 ///
-/// 1. **Scope barrier**: strip `$__fr_*` keys (see
-///    [`strip_freshened_bindings`]). Prior iterations' freshened vars must
-///    not pollute the current iteration's compose.
-/// 2. **Pattern-keyed shadow**: strip any key that the current pair's
-///    `pattern` is about to bind. MeTTa's `let*` is sequential-shadow —
-///    `(let* (($x 1) ($x 2)) $x)` returns `2` in HE. Stripping the shadow
-///    keys from `accumulated` before strict-compose makes the new pair's
-///    binding "win" while preserving strict-prune semantics for any other
-///    genuine conflict (rule-match bindings on variables NOT in this
-///    pattern that contradict accumulated still fire the conflict trail).
+/// MeTTa's `let*` is sequential-shadow: `(let* (($x 1) ($x 2)) $x)` returns
+/// `2` in HE. Stripping the pattern's shadow keys from `accumulated` before
+/// strict-compose achieves that while keeping ghost-branch pruning intact
+/// for non-shadow conflicts.
 ///
-/// The two strips are on disjoint key classes (`$__fr_*` vs user-level
-/// pattern vars), so they commute and are idempotent.
-///
-/// Callers should use this helper at every `let*`-pair boundary —
-/// specifically at `ProcessLetStar` fast-path and multi-result fallback
-/// fold sites in `eval_loop.rs`.
+/// **2026-04-23**: the earlier variant of this helper ALSO stripped
+/// `$__fr_*` (per-invocation freshened) keys as a "scope barrier" against
+/// stale iteration leaks. That was wrong — it dropped freshened bindings
+/// legitimately produced by the CURRENT rule invocation (e.g., PLN's
+/// `BestCandidate` let*-body referring to rule-match `$__fr_N_f`), causing
+/// downstream `if` conditions to see unbound freshened vars. The strip is
+/// removed; `strip_freshened_bindings` remains available for explicit use
+/// elsewhere if a real scope-barrier need emerges.
 pub fn prepare_letstar_accumulated<V, F>(
     accumulated: &GenericBindings<V>,
     pattern: &V,
@@ -1491,23 +1694,18 @@ where
     V: MettaValueTrait + Clone,
     F: crate::backend::models::MettaValueFactory<V>,
 {
-    // Strip-1: freshened scope barrier.
-    let stage1 = strip_freshened_bindings(accumulated);
-    // Strip-2: pattern-keyed shadow. The current pair's pattern's variables
-    // are about to be bound by the pm — drop any prior accumulated binding
-    // for those keys so the pm wins unconditionally.
     let pattern_vars: std::collections::HashSet<String> = collect_variables_generic(pattern);
     let _ = factory; // factory kept for future use / symmetry with other helpers
     if pattern_vars.is_empty() {
-        return stage1;
+        return accumulated.clone();
     }
-    let mut stage2 = GenericBindings::new();
-    for (name, val) in stage1.iter() {
+    let mut result = GenericBindings::new();
+    for (name, val) in accumulated.iter() {
         if !pattern_vars.contains(name) {
-            stage2.insert_or_replace(name, val.clone());
+            result.insert_or_replace(name, val.clone());
         }
     }
-    stage2
+    result
 }
 
 /// Encode bindings as a `(Bindings ($var val) …)` S-expression.

@@ -2068,31 +2068,12 @@ where
         // Increment rule/type epoch — invalidates cached TypeSignatureRegistry in JIT.
         increment_rule_epoch();
 
-        // Fix 3B: Alpha-rename rule variables to prevent name collisions with
-        // call-site variables. MeTTa HE treats rule LHS variables as pattern-local
-        // (distinct from call-site variables). Without renaming, `(= (f $a) (g $a))`
-        // matched against `(f $a)` creates a self-referential binding `$a → $a`.
-        //
-        // CRITICAL: LHS and RHS must use the SAME freshening epoch so that
-        // variable references in the RHS correspond to the bindings from the LHS.
-        let rule_sexpr_for_freshen = self.factory.sexpr(vec![
-            self.factory.atom("="),
-            lhs.clone(),
-            rhs.clone(),
-        ]);
-        let freshened_rule = crate::backend::eval::freshening::freshen_variables_generic(
-            &rule_sexpr_for_freshen, &self.factory,
-        );
-        // Extract freshened LHS and RHS from the freshened (= lhs rhs)
-        let (lhs, rhs) = if let Some(items) = freshened_rule.as_sexpr() {
-            if items.len() == 3 {
-                (items[1].clone(), items[2].clone())
-            } else {
-                (lhs, rhs)
-            }
-        } else {
-            (lhs, rhs)
-        };
+        // Rules are stored with ORIGINAL variable names. Per-match freshening
+        // (Phase 3.2-A, commit 748a15b) at all match sites in this file allocates
+        // a fresh epoch per query and renames RHS variables, mirroring MeTTa HE's
+        // `make_variables_unique` (called at retrieval, not insertion). Storing
+        // already-freshened rules combined with per-match re-freshening produced
+        // nested compound names like `$__fr_84___fr_83_x` — see Robot.metta OOM.
 
         // Get head symbol and arity for bloom filter (clone head string before moving lhs)
         let head_owned: Option<String> = lhs.get_head_symbol().map(|s| s.to_string());

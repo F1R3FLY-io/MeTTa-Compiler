@@ -21,6 +21,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use smallvec::SmallVec;
+
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 /// Global counter for freshening epochs. Each call to `freshen_variables_generic`
@@ -71,6 +73,55 @@ pub fn allocate_epoch() -> u64 {
     FRESHEN_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Per-invocation rename context. See spec §03.3 (CachingMapper pattern).
+///
+/// Applies `$x → $__fr_{epoch}_x` renaming on demand. Each distinct bare
+/// variable name is interned once per epoch via `intern_fresh_name`
+/// (`FRESH_NAME_CACHE` at line 97); repeated renames hit the cache.
+///
+/// Used by `apply_bindings_with_rename_generic` to fuse rule-match
+/// freshening with binding substitution into a single tree walk,
+/// replacing the former three-walk sequence:
+///   freshen_variables_with_epoch + freshen_bindings_keys_with_epoch
+///   + apply_bindings_generic
+///
+/// Wildcards `_` and `$_` are preserved unchanged per MeTTaTron's
+/// wildcard extension.
+#[derive(Copy, Clone, Debug)]
+pub struct CachingRename {
+    epoch: u64,
+}
+
+impl CachingRename {
+    #[inline]
+    pub fn new(epoch: u64) -> Self {
+        Self { epoch }
+    }
+
+    #[inline]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Rename `name` ($-prefixed, not wildcard) to its epoch-qualified
+    /// fresh form. Returns a `&'static str` via the thread-local intern
+    /// cache (amortized O(1) per unique `(epoch, bare_name)` pair).
+    ///
+    /// Already-freshened variables (`$__fr_*`) pass through unchanged
+    /// to prevent compound nesting (`$__fr_84___fr_83_x`). Variable
+    /// identity is preserved across rule invocations.
+    ///
+    /// Caller must ensure `name` is a $-prefixed variable and not `$_`.
+    #[inline]
+    pub fn rename(&self, name: &'static str) -> &'static str {
+        if name.starts_with("$__fr_") {
+            return name;
+        }
+        let bare = &name[1..]; // strip leading '$'; inherits 'static from name
+        intern_fresh_name(self.epoch, bare)
+    }
+}
+
 /// Freshen all variables in `value` under a caller-supplied `epoch`.
 ///
 /// Unlike `freshen_variables_generic` which mints a fresh epoch per
@@ -106,8 +157,34 @@ const FRESH_NAME_CACHE_CAP: usize = 1024;
 /// Look up or allocate an interned fresh name for `(epoch, bare_name)`.
 ///
 /// Returns a `&'static str` pointing into the global slab allocator.
+///
+/// **Defensive guard**: if `bare_name` is already a freshened form
+/// (starts with `__fr_`), the input is returned `$`-prefixed unchanged
+/// rather than compounded into `$__fr_{epoch}___fr_{old_epoch}_*`.
+/// This prevents the unbounded name growth observed when freshened
+/// values flow back into rule RHS templates (e.g., via runtime
+/// rule construction or substitution into recursive proof terms).
 #[inline]
 fn intern_fresh_name(epoch: u64, bare_name: &'static str) -> &'static str {
+    if bare_name.starts_with("__fr_") {
+        // Already freshened — return $-prefixed unchanged. Cache by
+        // (0, bare_name) to amortize the alloc_str call across
+        // repeated lookups of the same already-freshened variable.
+        return FRESH_NAME_CACHE.with(|cache| {
+            let mut c = cache.borrow_mut();
+            if let Some(&s) = c.get(&(0, bare_name)) {
+                return s;
+            }
+            if c.len() >= FRESH_NAME_CACHE_CAP {
+                c.clear();
+            }
+            let formatted = format!("${}", bare_name);
+            let interned: &'static str =
+                crate::backend::models::global_allocator().alloc_str(&formatted);
+            c.insert((0, bare_name), interned);
+            interned
+        });
+    }
     FRESH_NAME_CACHE.with(|cache| {
         let mut c = cache.borrow_mut();
         if let Some(&s) = c.get(&(epoch, bare_name)) {
@@ -208,8 +285,8 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
-    let mut work_stack: Vec<FreshenWork<V>> = Vec::with_capacity(32);
-    let mut result_stack: Vec<V> = Vec::with_capacity(32);
+    let mut work_stack: SmallVec<[FreshenWork<V>; 16]> = SmallVec::new();
+    let mut result_stack: SmallVec<[V; 16]> = SmallVec::new();
 
     work_stack.push(FreshenWork::Process(value));
 
@@ -217,8 +294,10 @@ where
         match work {
             FreshenWork::Process(val) => {
                 if let Some(name) = val.as_atom() {
+                    // `$_` is a wildcard, not a variable — pass through
+                    // unchanged. See `bindings::is_wildcard_atom`.
                     if name.starts_with('$')
-                        && name != "_"
+                        && name != "$_"
                         && only.iter().any(|n| *n == name)
                     {
                         let bare = &name[1..];
@@ -251,13 +330,15 @@ where
             }
             FreshenWork::BuildSExpr(count) => {
                 let start = result_stack.len() - count;
-                let children: Vec<V> = result_stack.drain(start..).collect();
-                result_stack.push(factory.sexpr(children));
+                let result = factory.sexpr_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
             }
             FreshenWork::BuildConjunction(count) => {
                 let start = result_stack.len() - count;
-                let children: Vec<V> = result_stack.drain(start..).collect();
-                result_stack.push(factory.conjunction(children));
+                let result = factory.conjunction_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
             }
         }
     }
@@ -273,8 +354,8 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
-    let mut work_stack: Vec<FreshenWork<V>> = Vec::with_capacity(32);
-    let mut result_stack: Vec<V> = Vec::with_capacity(32);
+    let mut work_stack: SmallVec<[FreshenWork<V>; 16]> = SmallVec::new();
+    let mut result_stack: SmallVec<[V; 16]> = SmallVec::new();
 
     work_stack.push(FreshenWork::Process(value));
 
@@ -282,13 +363,30 @@ where
         match work {
             FreshenWork::Process(val) => {
                 if let Some(name) = val.as_atom() {
-                    if name.starts_with('$') && name != "_" {
-                        // Rename $varname → $__fr_{epoch}_{varname_without_dollar}
-                        let bare_name = &name[1..]; // strip leading '$'
-                        result_stack.push(factory.atom(&format!("$__fr_{}_{}", epoch, bare_name)));
+                    // `$_` is a wildcard, not a variable — each occurrence
+                    // matches independently and never binds. Passing it
+                    // through unchanged keeps the wildcard semantics intact
+                    // across rule-load freshening and per-invocation
+                    // freshening. See `bindings::is_wildcard_atom`.
+                    if name.starts_with('$') && name != "$_" {
+                        // Skip already-freshened variables to prevent nested
+                        // compounding (`$__fr_84___fr_83_x`). When a value
+                        // containing freshened variables flows back into a
+                        // rule's RHS template (via runtime construction or
+                        // binding substitution), this guard keeps the
+                        // freshened name stable across subsequent matches.
+                        // Variable identity is preserved — distinct freshened
+                        // variables retain distinct epoch tags.
+                        if name.starts_with("$__fr_") {
+                            result_stack.push(val.clone());
+                        } else {
+                            // Rename $varname → $__fr_{epoch}_{varname_without_dollar}
+                            let bare_name = &name[1..]; // strip leading '$'
+                            result_stack.push(factory.atom(&format!("$__fr_{}_{}", epoch, bare_name)));
+                        }
                     } else {
                         // Non-variable atom: pass through unchanged
-                        // (includes &self, &kb, &stack, _, literals, etc.)
+                        // (includes &self, &kb, &stack, _, $_, literals, etc.)
                         result_stack.push(val.clone());
                     }
                 } else if let Some(items) = val.as_sexpr() {
@@ -316,13 +414,15 @@ where
             }
             FreshenWork::BuildSExpr(count) => {
                 let start = result_stack.len() - count;
-                let children: Vec<V> = result_stack.drain(start..).collect();
-                result_stack.push(factory.sexpr(children));
+                let result = factory.sexpr_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
             }
             FreshenWork::BuildConjunction(count) => {
                 let start = result_stack.len() - count;
-                let children: Vec<V> = result_stack.drain(start..).collect();
-                result_stack.push(factory.conjunction(children));
+                let result = factory.conjunction_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
             }
         }
     }

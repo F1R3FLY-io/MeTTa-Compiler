@@ -10,12 +10,15 @@
 //! `StaticEvalContext` is the production context using the global slab allocator
 //! via `GcFactory` for zero-conversion evaluation.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{
-    MettaValue, GcFactory, global_factory,
+    alloc_count_snapshot, drop_eval_guard_for_safepoint, global_factory,
+    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc,
+    MettaValue, GcFactory,
 };
+use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 
 /// Evaluation context for the trampoline engine.
 ///
@@ -198,26 +201,76 @@ impl EvalContext for StaticEvalContext {
 // Parallel Branch Context - Trace-Aware Context for Worker Threads
 // ============================================================================
 
+/// Per-worker safepoint allocation threshold.
+///
+/// Default mirrors `SessionContext`'s `SAFEPOINT_ALLOC_THRESHOLD` (500K).
+/// Tunable via `METTATRON_PARALLEL_SAFEPOINT_ALLOCS` for benchmark/regression
+/// debugging. The threshold compares against the global slab `alloc_count`
+/// so all participants (workers + parent) converge on the same crossing
+/// — when one drops its guard for safepoint, the others are likely to do
+/// the same within the 10ms condvar window.
+const PARALLEL_SAFEPOINT_ALLOC_DEFAULT: u64 = 500_000;
+
+/// Per-worker safepoint threshold, resolved once on first access.
+fn parallel_safepoint_threshold() -> u64 {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<u64> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("METTATRON_PARALLEL_SAFEPOINT_ALLOCS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(PARALLEL_SAFEPOINT_ALLOC_DEFAULT)
+    })
+}
+
+/// Whether parallel-branch GC cooperation is enabled.
+///
+/// Set `METTATRON_PARALLEL_GC_COOP=0` to fall back to the trait-default
+/// no-op `should_safepoint`/`perform_safepoint` (pre-fix behavior). This
+/// is a runtime escape hatch for regression debugging — the default is
+/// cooperation enabled (matches the post-fix design).
+pub(super) fn parallel_gc_coop_enabled() -> bool {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("METTATRON_PARALLEL_GC_COOP")
+            .map(|s| s != "0" && !s.eq_ignore_ascii_case("false"))
+            .unwrap_or(true)
+    })
+}
+
 /// Evaluation context for parallel branch worker threads.
 ///
-/// Wraps `StaticEvalContext` and overrides `trace_collector()` to use the
-/// global `WORK_POOL_TRACE_COLLECTOR`, making parallel branch evaluation
-/// visible in trace files.
+/// Each worker thread gets its own `ParallelBranchContext` instance with
+/// its own per-worker `last_safepoint_allocs` counter. The context drives
+/// GC safepoints independently of the parent's `SessionContext`:
 ///
-/// Without this, worker threads using bare `StaticEvalContext` return
-/// `trace_collector() -> None`, causing all parallel branch evaluation
-/// events to be silently dropped. This makes parallel execution invisible
-/// to the trace analyzer (e.g., `parallel`, `fanout`, `critical-path`
-/// subcommands see only the main thread).
+/// - `should_safepoint` — returns `true` when the global slab alloc count
+///   has grown by `parallel_safepoint_threshold()` since this worker's
+///   last safepoint. Caps the per-worker `nursery_ptrs` Vec size and lets
+///   workers participate in old-gen mark-sweep coordination.
+/// - `perform_safepoint` — registers trampoline roots, drops the worker's
+///   `EvalGuard` (decrements `ACTIVE_EVALUATORS`), waits briefly for
+///   quiescence, then re-acquires. Combined with the parent thread's
+///   cooperative drop in `parallel_branch_eval`'s wait loop, all
+///   evaluators converge to `ACTIVE_EVALUATORS == 0` so quiescent GC
+///   can fire and reclaim slab slots.
 ///
-/// # Trace Collector Lifetime
+/// Without these overrides, `ParallelBranchContext` inherited the
+/// trait defaults (`false` / no-op), starving the slab GC for the entire
+/// duration of any parallel-branch evaluation. Bytehound on Robot.metta
+/// showed this materializing as 33.5M-entry per-worker `nursery_ptrs`
+/// Vecs (~268 MB each) live at OOM time.
 ///
-/// The `Arc<TraceCollector>` is upgraded from the global `Weak` at context
-/// creation time. If the collector has been dropped (session ended), the
-/// `Arc` will be `None` and `trace_collector()` degrades to the default
-/// (no tracing), which is correct.
+/// Trace collector behavior is unchanged: an upgraded `Arc<TraceCollector>`
+/// from the global `WORK_POOL_TRACE_COLLECTOR` keeps parallel branch
+/// evaluation visible in trace files.
 pub struct ParallelBranchContext {
     factory: GcFactory,
+    /// Alloc count at this worker's last safepoint check.
+    /// `Cell` for interior mutability — `should_safepoint` takes `&self`.
+    last_safepoint_allocs: Cell<u64>,
     /// Upgraded `Arc<TraceCollector>` from `WORK_POOL_TRACE_COLLECTOR`.
     /// Held as `Arc` to keep the collector alive for the context's lifetime.
     #[cfg(feature = "eval-trace")]
@@ -225,15 +278,19 @@ pub struct ParallelBranchContext {
 }
 
 impl ParallelBranchContext {
-    /// Create a parallel branch context with trace collection support.
+    /// Create a parallel branch context with trace collection + per-worker
+    /// safepoint state.
     ///
-    /// Attempts to upgrade the global `WORK_POOL_TRACE_COLLECTOR` weak ref.
-    /// If tracing is active, the context will emit trace events for all
-    /// evaluation within the parallel branch.
+    /// Each worker calls `get()` from inside its spawned closure (one
+    /// instance per worker), so each gets its own `last_safepoint_allocs`
+    /// Cell. The Cell is initialized to the current global alloc count so
+    /// the first safepoint check fires only after another threshold of
+    /// allocations.
     #[inline]
     pub fn get() -> Self {
         Self {
             factory: global_factory(),
+            last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
             #[cfg(feature = "eval-trace")]
             trace_collector_arc: crate::backend::models::work_pool::get_work_pool_trace_collector(),
         }
@@ -244,6 +301,57 @@ impl EvalContext for ParallelBranchContext {
     #[inline]
     fn factory(&self) -> &GcFactory {
         &self.factory
+    }
+
+    /// Check whether this worker should safepoint, based on the global
+    /// alloc-count delta since this worker's last safepoint.
+    ///
+    /// Mirrors `SessionContext::should_safepoint` but uses a per-worker
+    /// Cell so each thread tracks its own crossings independently. Workers
+    /// allocating from the same global slab will see correlated
+    /// `alloc_count_snapshot()` values, so when one worker hits the
+    /// threshold and decides to safepoint, the others are likely to hit
+    /// it within the same 10ms condvar window — this is what enables
+    /// `ACTIVE_EVALUATORS` to converge to 0.
+    #[inline]
+    fn should_safepoint(&self) -> bool {
+        if !parallel_gc_coop_enabled() {
+            return false;
+        }
+        let current = alloc_count_snapshot();
+        let last = self.last_safepoint_allocs.get();
+        if current.wrapping_sub(last) >= parallel_safepoint_threshold() {
+            self.last_safepoint_allocs.set(current);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Perform a GC safepoint on this worker.
+    ///
+    /// Identical structure to `SessionContext::perform_safepoint`:
+    /// 1. Register roots from the trampoline state (caller passes them in).
+    /// 2. Drop this worker's `EvalGuard` so `ACTIVE_EVALUATORS` decrements.
+    /// 3. Arm `request_gc` in case the cron hasn't already.
+    /// 4. Wait briefly (10ms) for quiescence; if other guards are still
+    ///    held, the wait times out and we move on (we'll try again next
+    ///    safepoint).
+    /// 5. Re-acquire the guard, blocking briefly if `GC_IN_PROGRESS` is
+    ///    still set from a concurrent cycle.
+    /// 6. The `_root_handle` drops here, unregistering temporary roots.
+    fn perform_safepoint(&self, roots: Vec<MettaValue>) {
+        if !parallel_gc_coop_enabled() {
+            return;
+        }
+        // Clear pointer-keyed caches before GC may free slots — see
+        // `clear_aba_sensitive_caches` for the ABA hazard rationale.
+        super::eval_loop::clear_aba_sensitive_caches();
+        let _root_handle = register_temporary_roots(roots);
+        drop_eval_guard_for_safepoint();
+        request_gc();
+        safepoint_wait_for_quiescence();
+        reacquire_eval_guard_after_safepoint();
     }
 
     #[cfg(feature = "eval-trace")]

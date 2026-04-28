@@ -34,6 +34,32 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 type SharedEnvArc = std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>;
 
+/// Clear all caches whose keys are slab pointers, before a GC sweep can run.
+///
+/// Without this, the slab GC may free a slot whose pointer is still cached
+/// in one of these tables; if the slot is later reused by a new allocation
+/// (ABA), cache lookups would alias the new value as the old one — silent
+/// memory-safety violation in pointer-keyed data structures.
+///
+/// Called from every safepoint path that may trigger `maybe_quiescent_gc()`:
+/// the trampoline's old-gen safepoint block, `ParallelBranchContext`'s
+/// `perform_safepoint`, and the parent's cooperative drop in
+/// `parallel_branch_eval`'s wait loop.
+pub(crate) fn clear_aba_sensitive_caches() {
+    // Thread-local MORK serialization caches.
+    crate::backend::environment::rule_management::clear_mork_bytes_cache();
+    crate::backend::mork_convert::clear_ground_fragment_cache();
+
+    // Value hash cache — pointer-keyed.
+    crate::backend::models::metta_value::clear_value_hash_cache();
+
+    // Hash-consing table — entries reference slab pointers.
+    crate::backend::models::gc_allocator::clear_hash_cons_table();
+
+    // Normal-form bloom filter — keyed by inner_ptr.
+    invalidate_normal_form_memo();
+}
+
 static DROP_SENDER: OnceLock<std::sync::mpsc::Sender<Vec<SharedEnvArc>>> = OnceLock::new();
 
 fn get_drop_sender() -> &'static std::sync::mpsc::Sender<Vec<SharedEnvArc>> {
@@ -1386,6 +1412,9 @@ fn parallel_branch_eval(
     // between:
     // 1. A short condvar wait (1ms) — instant wakeup if workers finish
     // 2. Stealing tasks from the pool queue — keeps the main thread productive
+    // 3. Cooperative GC drop — periodically drops the parent's outer
+    //    EvalGuard with parent-side roots registered so workers can
+    //    converge to ACTIVE_EVALUATORS == 0 and quiescent GC fires.
     //
     // This eliminates the idle gap where the main thread sits blocked while
     // workers evaluate branches. The main thread effectively becomes a
@@ -1397,6 +1426,14 @@ fn parallel_branch_eval(
         let mut stall_count = 0u32;
         let mut overflow_requested = false;
         let queue = pool.queue();
+
+        // Per-call alloc-count tracker for the parent's cooperative drop.
+        // Mirrors `ParallelBranchContext::should_safepoint` so the parent
+        // crosses its threshold around the same time as the workers — when
+        // they all drop simultaneously, `ACTIVE_EVALUATORS` reaches 0.
+        let parent_last_safepoint_allocs = std::cell::Cell::new(
+            crate::backend::models::alloc_count_snapshot(),
+        );
 
         let (lock, cvar) = &*done_pair;
         let mut done = lock.lock().expect("done mutex poisoned");
@@ -1428,6 +1465,62 @@ fn parallel_branch_eval(
                     }
                 } else {
                     break; // Queue empty, nothing to steal
+                }
+            }
+
+            // Cooperative GC drop: periodically check if the global
+            // alloc-count has crossed the threshold since this parent's
+            // last cooperative drop. If so, register parent-side roots
+            // (frame_chain, branches Vec, partial results), drop the
+            // parent's EvalGuard so quiescence is reachable, wait briefly,
+            // then re-acquire. Without this, the parent's outer guard
+            // pins ACTIVE_EVALUATORS ≥ 1 even when all 33 workers
+            // simultaneously safepoint — quiescence is unreachable and
+            // GC never runs.
+            if super::context::parallel_gc_coop_enabled()
+                && remaining.load(Ordering::Acquire) > 0
+            {
+                let current_allocs = crate::backend::models::alloc_count_snapshot();
+                let last = parent_last_safepoint_allocs.get();
+                if current_allocs.wrapping_sub(last) >= 500_000 {
+                    parent_last_safepoint_allocs.set(current_allocs);
+                    drop(done);
+
+                    // Collect parent-side roots:
+                    //   - frame_chain (caller-frame values held in Rust locals)
+                    //   - branches Vec (input branch expressions)
+                    //   - partial results from completed workers (BoundValue
+                    //     pairs, including their bindings' values)
+                    let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+                    crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
+                    parent_roots.extend(branches.iter().cloned());
+                    {
+                        let g = results.lock().expect("results mutex poisoned");
+                        for slot in g.iter().flatten() {
+                            for (val, bindings) in slot.iter() {
+                                parent_roots.push(val.clone());
+                                for (_, v) in bindings.iter() {
+                                    parent_roots.push(v.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Clear pointer-keyed caches before GC may free slots —
+                    // see `clear_aba_sensitive_caches` for the ABA hazard.
+                    clear_aba_sensitive_caches();
+
+                    let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
+                    crate::backend::models::drop_eval_guard_for_safepoint();
+                    crate::backend::models::request_gc();
+                    crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
+                    crate::backend::models::reacquire_eval_guard_after_safepoint();
+                    // _root_handle drops here, unregistering parent roots.
+
+                    done = lock.lock().expect("done mutex poisoned");
+                    if *done {
+                        break;
+                    }
                 }
             }
 
@@ -1615,12 +1708,18 @@ fn parallel_collapse_eval(
         guard[0] = Some(item0_results.into_iter().collect());
     }
 
-    // Wait for all spawned tasks to complete, with work-stealing
+    // Wait for all spawned tasks to complete, with work-stealing.
+    // See `parallel_branch_eval`'s wait loop for the cooperative-GC-drop
+    // rationale; this is the analogous protocol for collapse items.
     {
         let mut prev_remaining = remaining.load(Ordering::Acquire);
         let mut stall_count = 0u32;
         let mut overflow_requested = false;
         let queue = pool.queue();
+
+        let parent_last_safepoint_allocs = std::cell::Cell::new(
+            crate::backend::models::alloc_count_snapshot(),
+        );
 
         let (lock, cvar) = &*done_pair;
         let mut done = lock.lock().expect("done mutex poisoned");
@@ -1647,6 +1746,51 @@ fn parallel_collapse_eval(
                     }
                 } else {
                     break;
+                }
+            }
+
+            // Cooperative GC drop — see parallel_branch_eval for rationale.
+            if super::context::parallel_gc_coop_enabled()
+                && remaining.load(Ordering::Acquire) > 0
+            {
+                let current_allocs = crate::backend::models::alloc_count_snapshot();
+                let last = parent_last_safepoint_allocs.get();
+                if current_allocs.wrapping_sub(last) >= 500_000 {
+                    parent_last_safepoint_allocs.set(current_allocs);
+                    drop(done);
+
+                    let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+                    crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
+                    for (val, bindings) in items.iter() {
+                        parent_roots.push(val.clone());
+                        for (_, v) in bindings.iter() {
+                            parent_roots.push(v.clone());
+                        }
+                    }
+                    {
+                        let g = results.lock().expect("results mutex poisoned");
+                        for slot in g.iter().flatten() {
+                            for (val, bindings) in slot.iter() {
+                                parent_roots.push(val.clone());
+                                for (_, v) in bindings.iter() {
+                                    parent_roots.push(v.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    clear_aba_sensitive_caches();
+
+                    let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
+                    crate::backend::models::drop_eval_guard_for_safepoint();
+                    crate::backend::models::request_gc();
+                    crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
+                    crate::backend::models::reacquire_eval_guard_after_safepoint();
+
+                    done = lock.lock().expect("done mutex poisoned");
+                    if *done {
+                        break;
+                    }
                 }
             }
 
@@ -2036,23 +2180,9 @@ fn eval_trampoline_inner<C: EvalContext>(
             // do not coordinate the slab GC's mark-sweep cycle.
             if ctx.should_safepoint() {
 
-            // Clear thread-local MORK serialization caches before GC runs.
-            // After GC, slab slots may be reused (ABA), so cached pointer keys
-            // would alias different values. Clear BEFORE perform_safepoint.
-            crate::backend::environment::rule_management::clear_mork_bytes_cache();
-            crate::backend::mork_convert::clear_ground_fragment_cache();
-
-            // Clear value hash cache — pointer-keyed, same ABA concern.
-            crate::backend::models::metta_value::clear_value_hash_cache();
-
-            // Clear hash-consing table — entries reference slab pointers, same ABA concern.
-            crate::backend::models::gc_allocator::clear_hash_cons_table();
-
-            // Clear normal-form bloom filter before GC runs.
-            // After GC, slab slots may be reused (ABA), so stale bloom entries
-            // keyed by inner_ptr would falsely report new values at the same
-            // address as "normal form" — skipping evaluation incorrectly.
-            invalidate_normal_form_memo();
+            // Clear all caches whose keys are slab pointers — see comment on
+            // `clear_aba_sensitive_caches()` for the ABA hazard rationale.
+            clear_aba_sensitive_caches();
 
             #[cfg(feature = "eval-trace")]
             let _root_count = root_set.len() as u32;

@@ -93,7 +93,7 @@ use super::dispatch_hints::{
     enter_fork_scope, next_branch_scope, leave_fork_scope,
 };
 use super::engine::{try_deterministic_chain, try_match_rules_with_bindings};
-use super::dispatch_hints::is_reducible_head;
+use super::dispatch_hints::{is_reducible_head, is_embedded_kernel_op};
 
 // =============================================================================
 // WPDS Context Hashing (Layer 3)
@@ -1950,8 +1950,20 @@ fn eval_trampoline_inner<C: EvalContext>(
             deferred_shared_drops.pop();
         }
 
-        // Periodic GC safepoint check (every 4096 trampoline iterations)
-        if gc_counter & 0xFFF == 0 && ctx.should_safepoint() {
+        // Periodic GC safepoint check (every 4096 trampoline iterations).
+        //
+        // The 4096-iter cadence drives THREE distinct activities:
+        //
+        //   1. Root collection — needed for both nursery and old-gen GC.
+        //   2. Nursery collection — thread-local, no quiescence needed.
+        //      MUST run regardless of `ctx.should_safepoint()`, otherwise
+        //      `ParallelBranchContext` workers (which inherit the trait's
+        //      no-op `should_safepoint() -> false`) would never sweep their
+        //      nurseries — bytehound on Smokes showed a 67 MB single
+        //      `record_alloc` grow in this exact failure mode.
+        //   3. Old-gen safepoint — requires `ctx.should_safepoint()` true
+        //      because it drops the EvalGuard and waits for global quiescence.
+        if gc_counter & 0xFFF == 0 {
             // SECK Phase 0.5: Algebraic root set collection.
             // Uses reusable RootSet buffer (allocated once before the loop)
             // instead of a fresh Vec on every safepoint.
@@ -1993,19 +2005,36 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Phase 2.2: Incremental nursery collection (thread-local, no quiescence needed).
             // Runs BEFORE cache clearing and old-gen safepoint. Uses the algebraic
             // root set to determine which nursery values are live.
+            //
+            // Build a sorted, deduped live-pointer slice (not a HashSet). The root
+            // set is bounded by depth × continuation chain (~hundreds, not millions),
+            // so sort_unstable + binary_search inside the collector beats HashSet
+            // on cache locality and zero-hash cost. SmallVec keeps the slice on
+            // the stack for the common case (≤256 roots).
+            //
+            // Runs regardless of `ctx.should_safepoint()` — see top-of-block
+            // comment. Without this, parallel-branch workers grow their
+            // per-thread nurseries unboundedly.
             {
                 crate::backend::eval::cesk::with_nursery_collector(|collector| {
                     if collector.should_collect() {
-                        // Build live pointer set from root set
                         let concrete_roots = root_set.as_mut_vec();
-                        let live_ptrs: std::collections::HashSet<usize> = concrete_roots
+                        let mut live_ptrs: smallvec::SmallVec<[usize; 256]> = concrete_roots
                             .iter()
                             .map(|v| v.inner_ptr() as usize)
                             .collect();
+                        live_ptrs.sort_unstable();
+                        live_ptrs.dedup();
                         collector.collect(&live_ptrs);
                     }
                 });
             }
+
+            // Old-gen safepoint dance: requires global quiescence.
+            // Skipped for contexts whose `should_safepoint()` returns false
+            // (StaticEvalContext, ParallelBranchContext) — those evaluators
+            // do not coordinate the slab GC's mark-sweep cycle.
+            if ctx.should_safepoint() {
 
             // Clear thread-local MORK serialization caches before GC runs.
             // After GC, slab slots may be reused (ABA), so cached pointer keys
@@ -2070,7 +2099,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     );
                 }
             }
-        }
+            } // end: if ctx.should_safepoint()
+        } // end: if gc_counter & 0xFFF == 0
 
         // I-18: Cooperative yield check. When the reduction budget is exhausted,
         // yield if we are on a worker thread (not the main thread), not inside
@@ -3100,26 +3130,69 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start chain
+                    //
+                    // Spec §06.6.3 E-CHAIN-SUBST-DONE: chain dispatches expr by
+                    // ONE kernel step — if expr's head is in §06.3.4's kernel-op
+                    // whitelist (eval/chain/unify/cons-atom/decons-atom/function/
+                    // collapse-bind/superpose-bind/metta/call-native/
+                    // context-space), evaluate it. Otherwise expr is data and
+                    // binds as-is to $var.
+                    //
+                    // HE bisimilarity: HE's `chain_to_stack → atom_to_stack`
+                    // (interpreter.rs:657-673, 640-655) implements the same
+                    // gate. The "auto-eval" users observe at the REPL is from
+                    // `wrap_atom_by_metta_interpreter` (runner/mod.rs:1214) —
+                    // the runner wraps the user atom in `(metta atom %Undefined% space)`
+                    // before chain even sees it. Chain itself does NOT auto-eval.
+                    //
+                    // Without this gate, chain unboundedly cascades user-rule
+                    // recursion (PLN Toothbrush consumed 21GB RAM in 19 min).
                     GenericEvalStep::StartChain { expr, var, body, env: step_env, depth } => {
                         let env: SharedEnv = Arc::new(step_env);
-                        continuations.push(Continuation::ProcessChainExpr {
-                            var,
-                            body,
-                            outer_bindings: None,
-                            env: env.clone(),
-                            depth,
-                            outer_carrying: carrying_bindings.clone(),
-                        });
 
-                        work_stack.push(WorkItem::Eval {
-                            value: expr,
-                            env,
-                            depth: depth + 1,
-                            is_tail_call: false,
-                            expected_type: None,
-                            demand: None,
-                            carrying_bindings: carrying_bindings.clone(),
-                        });
+                        let head_is_kernel = expr
+                            .as_sexpr()
+                            .and_then(|items| items.first())
+                            .and_then(|h| h.as_atom())
+                            .map(is_embedded_kernel_op)
+                            .unwrap_or(false);
+
+                        if head_is_kernel {
+                            // Kernel op: dispatch one kernel step via Eval.
+                            continuations.push(Continuation::ProcessChainExpr {
+                                var,
+                                body,
+                                outer_bindings: None,
+                                env: env.clone(),
+                                depth,
+                                outer_carrying: carrying_bindings.clone(),
+                            });
+
+                            work_stack.push(WorkItem::Eval {
+                                value: expr,
+                                env,
+                                depth: depth + 1,
+                                is_tail_call: false,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
+                            });
+                        } else {
+                            // Data: substitute $var → expr in body, evaluate body.
+                            let var_name = var.as_atom().unwrap_or("");
+                            let instantiated = substitute_variable_generic(
+                                &body, var_name, &expr, ctx.factory(),
+                            );
+                            work_stack.push(WorkItem::Eval {
+                                value: instantiated,
+                                env,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
+                            });
+                        }
                     }
 
                     // Start function
@@ -3899,13 +3972,23 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // variables sees only the ambient carrying — deferred
                 // bindings would stay invisible until apply_bindings
                 // materializes the template at leaf nodes.
+                //
+                // Spec §04.4.3 A-VE-CLASS-MERGE-INCOMPAT: if outer+inner
+                // conflict on a ground-ground binding, the branch dies.
+                // Use strict compose; on None, skip this plan item.
                 let carrying_bindings: crate::backend::eval::trampoline::types::SharedBindings =
                     if carrying_bindings.is_empty() {
                         std::sync::Arc::new((*bindings).clone())
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                        match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                             &*carrying_bindings, &*bindings, ctx.factory(),
-                        ))
+                        ) {
+                            Some(b) => std::sync::Arc::new(b),
+                            None => {
+                                // Branch dies (§04.4.3); drop this plan item.
+                                continue;
+                            }
+                        }
                     };
 
                 // Phase 2.4: Environment trimming — remove bindings not referenced
@@ -4316,30 +4399,58 @@ fn eval_trampoline_inner<C: EvalContext>(
                     //
                     // For `(chain expr $var body)` with pending bindings B:
                     // 1. Materialize only `expr` with B (needed for evaluation)
-                    // 2. Keep `body` RAW + store B as outer_bindings on ProcessChainExpr
-                    // 3. When expr resolves, compose {$var → result} into B and evaluate
-                    //    body via EvalWithBindings{body, B ∪ {$var → result}}.
+                    // 2. Apply the same kernel-op gate as `StartChain` (spec §06.6.3
+                    //    E-CHAIN-SUBST-DONE — only kernel ops auto-evaluate; data binds
+                    //    as-is). See StartChain comment block above for HE bisimilarity
+                    //    and the runaway-recursion problem the gate prevents.
                     if resolved_head_atom == Some("chain") && items.len() == 4 {
                         let expr = apply_bindings(&items[1], &bindings, ctx.factory());
 
-                        continuations.push(Continuation::ProcessChainExpr {
-                            var: items[2].clone(),  // $var — doesn't need materialization
-                            body: items[3].clone(), // RAW body — not materialized
-                            outer_bindings: Some(bindings),
-                            env: env.clone(),
-                            depth,
-                            outer_carrying: carrying_bindings.clone(),
-                        });
+                        let head_is_kernel = expr
+                            .as_sexpr()
+                            .and_then(|exp_items| exp_items.first())
+                            .and_then(|h| h.as_atom())
+                            .map(is_embedded_kernel_op)
+                            .unwrap_or(false);
 
-                        work_stack.push(WorkItem::Eval {
-                            value: expr,
-                            env,
-                            depth: depth + 1,
-                            is_tail_call: false,
-                            expected_type: None,
-                            demand: None,
-                            carrying_bindings: carrying_bindings.clone(),
-                        });
+                        if head_is_kernel {
+                            continuations.push(Continuation::ProcessChainExpr {
+                                var: items[2].clone(),  // $var — doesn't need materialization
+                                body: items[3].clone(), // RAW body — not materialized
+                                outer_bindings: Some(bindings),
+                                env: env.clone(),
+                                depth,
+                                outer_carrying: carrying_bindings.clone(),
+                            });
+
+                            work_stack.push(WorkItem::Eval {
+                                value: expr,
+                                env,
+                                depth: depth + 1,
+                                is_tail_call: false,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
+                            });
+                        } else {
+                            // Data: substitute $var → expr into body (raw),
+                            // re-materialize body with the SAME outer bindings B,
+                            // then evaluate.
+                            let var_name = items[2].as_atom().unwrap_or("");
+                            let instantiated = substitute_variable_generic(
+                                &items[3], var_name, &expr, ctx.factory(),
+                            );
+                            let materialized = apply_bindings(&instantiated, &bindings, ctx.factory());
+                            work_stack.push(WorkItem::Eval {
+                                value: materialized,
+                                env,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: carrying_bindings.clone(),
+                            });
+                        }
                         continue;
                     }
 
@@ -7167,6 +7278,29 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     // Non-boolean (including Unit) → return unreduced (if cond then else)
+                    //
+                    // Spec §11.2.1's "non-Bool → NotReducible" rule is satisfied
+                    // here as a *residual* normal form: the unreduced
+                    // `(if cond then else)` expression matches no equation in
+                    // MeTTaTron's space, so any caller that pattern-matches on
+                    // it gets the NotReducible-equivalent "no further reduction"
+                    // signal. HE bisimilarity: HE arrives at the same observable
+                    // outcome via equation-lookup miss → frame-finished with the
+                    // residual; MeTTaTron's `Continuation::ProcessIfCondition`
+                    // emits the residual directly.
+                    //
+                    // Replacing this with a synthetic `NotReducible` atom (an
+                    // attempted Phase 3 spec-strictness fix on 2026-04-26)
+                    // caused PLN inference rules (collapse-bind / superpose-bind
+                    // accumulators in lib_pln.metta's recursive Truth_*,
+                    // PLN.Derive, LimitSize, and BestCandidate paths) to fan
+                    // out cardinality at every collapse boundary because each
+                    // NotReducible alternative was treated as a valid result
+                    // rather than a stuck residual — Robot.metta peak RSS
+                    // jumped from ~219 MB to >900 MB / OOM at 1 GB cap. The
+                    // residual-expression form preserves the historical
+                    // bounded-memory inference shape.
+                    //
                     // Phase C: Materialize branches if outer_bindings present
                     // (needed for the unreduced (if cond then else) output).
                     let (mat_then, mat_else) = if let Some(ref ob) = outer_bindings {
@@ -9365,6 +9499,22 @@ fn process_continuation<C: EvalContext>(
             // used `let _ = merged.merge(&child_b)` which silently masked
             // conflicts, producing ghost pairs whose bindings didn't
             // reflect any consistent evaluation.
+            //
+            // SPEC NOTE on Empty filtering (§06.11.2). MeTTaTron's collapse-bind
+            // is a TWO-STAGE pipeline:
+            //   (a) raw-collect at `ProcessCollapseBind` (~line 9265-9282) —
+            //       gathers alternatives from the kernel evaluation; does NOT
+            //       filter individual Empty raws (they pass through to (b)).
+            //   (b) per-raw re-eval-merge (THIS handler) — for each raw,
+            //       re-evaluate with carrying bindings and merge results.
+            //       Empty filter at the next line is the spec-correct
+            //       §06.11.2 "do nothing — discard this alternative" rule,
+            //       applied at the only stage where individual Empties are
+            //       observable in MeTTaTron's design. HE achieves the same
+            //       end-state via its single-stage accumulation
+            //       (`collapse_bind_ret` at interpreter.rs:767-778).
+            // Removing this filter would let Empty leak into the collapsed
+            // tuple — that would be the actual spec violation.
             let carrying = (*current_raw_bindings).clone();
             evaluated.extend(
                 eval_results.into_iter()
@@ -11059,20 +11209,15 @@ fn process_continuation<C: EvalContext>(
                 // silent pruning). The previous `.compose()` was a silent
                 // union that masked conflicts and produced ghost outputs.
                 //
-                // PLN-fix 2026-04 (scope barrier): before composing with the
-                // value-expr's per-branch bindings, strip `$__fr_*` artifacts
-                // from `accumulated_bindings` — these are per-invocation
-                // freshened variables from prior iterations' rule matches.
-                // They have no HE analogue and leak across let*-pair
-                // boundaries as ground-ground ghosts. Keep user-level
-                // bindings; drop freshened ones. See
-                // `strip_freshened_bindings` in bindings.rs for rationale.
+                // 2026-04-23: the earlier "scope barrier" strip of `$__fr_*`
+                // from `accumulated_bindings` was removed — it dropped
+                // freshened vars from the CURRENT rule invocation (legitimate
+                // let*-pair bindings produced by e.g. PLN's `BestCandidate`
+                // recursive body), causing downstream `if` conditions to see
+                // unbound freshened vars and return unreduced forms.
                 let (value, per_branch_bindings) = &result_values[0];
-                let accumulated_scoped = crate::backend::eval::bindings::strip_freshened_bindings(
-                    &*accumulated_bindings,
-                );
                 let composed_outer = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                    &accumulated_scoped, per_branch_bindings, ctx.factory(),
+                    &*accumulated_bindings, per_branch_bindings, ctx.factory(),
                 ) {
                     Some(b) => b,
                     None => {
@@ -11140,24 +11285,19 @@ fn process_continuation<C: EvalContext>(
                             &next_value_expr, &accumulated_bindings, ctx.factory(),
                         );
 
-                        // PLN-fix 2026-04 (scope barrier at iteration handoff):
-                        // strip `$__fr_*` scope leaks from accumulated_bindings
-                        // before the NEXT let*-pair inherits it. Without this,
-                        // per-invocation freshened vars from recursive rule
-                        // invocations within the prior pair's value-expr
-                        // evaluation would pollute the next pair's ambient
-                        // context and produce spurious ground-ground conflicts.
-                        let accumulated_scoped = std::sync::Arc::new(
-                            crate::backend::eval::bindings::strip_freshened_bindings(
-                                &*accumulated_bindings,
-                            ),
-                        );
-                        let ambient = accumulated_scoped.clone();
+                        // 2026-04-23: the earlier "scope barrier at iteration
+                        // handoff" strip of `$__fr_*` was removed — it dropped
+                        // freshened bindings legitimately produced by the
+                        // CURRENT rule invocation's recursion body, breaking
+                        // PLN's `BestCandidate` and similar recursive rules
+                        // whose let* body references caller-scope freshened
+                        // names via the accumulated context.
+                        let ambient = accumulated_bindings.clone();
                         continuations.push(Continuation::ProcessLetStar {
                             current_pattern: next_pattern,
                             remaining_pairs,
                             body,
-                            accumulated_bindings: accumulated_scoped,
+                            accumulated_bindings,
                             env: result_env.clone(),
                             depth,
                             is_tail_call,
@@ -11218,30 +11358,26 @@ fn process_continuation<C: EvalContext>(
                 // the bound variable, not just its textual substitution.
                 // Phase 2.B Issue #1 fix: use strict compose in fallback
                 // fold so conflicting alternatives are silently dropped.
-                // PLN-fix 2026-04: mirror the fast-path scope barrier here.
-                // Strip `$__fr_*` from `accumulated_bindings` once up front
-                // (same across all alternatives). The per-branch per-alt
-                // compose then sees a clean accumulated without freshened
-                // scope leaks from prior recursion frames.
-                let accumulated_scoped = crate::backend::eval::bindings::strip_freshened_bindings(
-                    &*accumulated_bindings,
-                );
+                // 2026-04-23: the "scope barrier" strip of `$__fr_*` was
+                // removed here as well — see matching change in the fast path.
+                // Pattern-keyed shadow is still applied via
+                // `prepare_letstar_accumulated` below so user-level var
+                // rebinding across let* pairs follows HE semantics.
                 let mut bound_bodies: Vec<(MettaValue, crate::backend::eval::trampoline::types::SharedBindings)> = Vec::new();
                 for (value, per_branch) in result_values.iter() {
                     if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
                         let with_branch = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                            &accumulated_scoped, per_branch, ctx.factory(),
+                            &*accumulated_bindings, per_branch, ctx.factory(),
                         ) {
                             Some(b) => b,
                             None => continue, // conflict → drop this alternative
                         };
-                        // PLN-fix 2026-04 (pattern-keyed shadow): drop keys
-                        // the pattern is about to bind so the pm wins. This
-                        // matches HE's `let*` shadow semantics for
-                        // user-level variable rebinding across pairs. Applied
-                        // on `with_branch` (not `accumulated_scoped`) because
-                        // we want it to affect the pm merge, not the
-                        // per-branch merge.
+                        // Pattern-keyed shadow: drop keys the pattern is about
+                        // to bind so the pm wins. Matches HE's `let*` shadow
+                        // semantics for user-level variable rebinding across
+                        // pairs. Applied on `with_branch` (not on the source
+                        // accumulated) because we want it to affect the pm
+                        // merge, not the per-branch merge.
                         let with_branch_shadow = crate::backend::eval::bindings::prepare_letstar_accumulated(
                             &with_branch, &current_pattern, ctx.factory(),
                         );

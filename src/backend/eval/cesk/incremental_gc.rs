@@ -35,9 +35,6 @@
 //! which uses the `RootSet` to determine which nursery values are live.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
-
-use crate::backend::models::MettaValueTrait;
 
 // ============================================================================
 // GC Generation Tracking
@@ -47,7 +44,12 @@ use crate::backend::models::MettaValueTrait;
 #[derive(Debug, Clone)]
 pub struct NurseryConfig {
     /// Size threshold (in bytes) at which nursery collection is triggered.
-    /// Default: 256 KB (matches page size of slab allocator).
+    /// Default: 64 KB. Lowered from 256 KB so the nursery never grows large
+    /// enough to require Vec resize/realloc; combined with the bumped initial
+    /// capacity in `NurseryCollector::with_config`, no internal Vec ever
+    /// allocates after the collector is constructed. Sweeps fire 4× more
+    /// often, but each sweep is now in-place compaction over a much smaller
+    /// buffer with cache-friendly forward iteration.
     pub threshold_bytes: usize,
 
     /// Number of nursery survivals before promotion to old generation.
@@ -72,7 +74,7 @@ pub struct NurseryConfig {
 impl Default for NurseryConfig {
     fn default() -> Self {
         Self {
-            threshold_bytes: 256 * 1024,
+            threshold_bytes: 64 * 1024,
             promotion_threshold: 2,
             max_objects_per_step: 1024,
             deterministic: false,
@@ -318,6 +320,12 @@ pub struct NurseryCollector {
     /// Remembered set: pointers from old-gen values that reference nursery values.
     /// Drained during collection to serve as additional roots.
     remembered_set: Vec<usize>,
+
+    /// Reusable scratch buffer for the sorted live-pointer mark set,
+    /// kept across sweeps to avoid per-sweep allocation. Caller passes
+    /// the live-roots slice; we extend with the remembered set, sort,
+    /// and dedup — all into this same buffer.
+    scratch_marks: Vec<usize>,
 }
 
 /// Result of a nursery collection.
@@ -338,13 +346,23 @@ impl NurseryCollector {
     }
 
     /// Create a new nursery collector with custom configuration.
+    ///
+    /// Initial Vec capacities are sized so that, combined with the default
+    /// 64 KB sweep threshold, no internal Vec ever needs to grow during
+    /// steady-state operation. Bytehound profiles showed `record_alloc`
+    /// triggering `Vec::push → grow_amortized` for ~190 MB of resize
+    /// traffic per Smokes run; pre-allocating 64 K slots eliminates that
+    /// path entirely. Cost: 512 KB (`64K * 8 B`) per worker for the
+    /// pointer Vec + 64 KB for the survival-count Vec, ≈ 19 MB committed
+    /// across 33 parallel workers.
     pub fn with_config(config: NurseryConfig) -> Self {
         Self {
             state: NurseryState::with_config(config),
             write_barrier: WriteBarrier::new(),
-            nursery_ptrs: Vec::with_capacity(1024),
-            survival_counts: Vec::with_capacity(1024),
-            remembered_set: Vec::with_capacity(64),
+            nursery_ptrs: Vec::with_capacity(64 * 1024),
+            survival_counts: Vec::with_capacity(64 * 1024),
+            remembered_set: Vec::with_capacity(256),
+            scratch_marks: Vec::with_capacity(2048),
         }
     }
 
@@ -374,11 +392,35 @@ impl NurseryCollector {
 
     /// Perform nursery collection using the algebraic root set.
     ///
-    /// Scans only nursery-resident slots against the mark set derived from
-    /// `live_ptrs` (the root set's inner pointers) + remembered set.
+    /// Scans only nursery-resident slots against the mark set built from
+    /// `live_ptrs_sorted` (the root set's inner pointers, **caller must
+    /// pre-sort and dedup**) plus the remembered set.
+    ///
+    /// ## Algorithm
+    ///
+    /// 1. Build the sorted-deduped mark set into a reusable scratch buffer.
+    /// 2. Iterate `nursery_ptrs` with a forward read/write index pair: for
+    ///    each pointer, binary-search the marks; on hit, increment survival
+    ///    and overwrite at the write index (or skip on promotion); on miss,
+    ///    drop. Then `truncate` to the write index.
+    ///
+    /// This avoids allocating a new `Vec` for the surviving set on every
+    /// sweep (the prior implementation was the dominant remaining allocator
+    /// per bytehound after the apply_bindings churn fix). The scratch mark
+    /// buffer is reused across sweeps via `clear`/`extend_from_slice`.
+    ///
+    /// ## Correctness
+    ///
+    /// - `write <= read` at all times (`write` only advances when keeping a
+    ///   live, non-promoted entry, which is exactly when we copy from the
+    ///   read position), so the single-buffer forward pass is alias-free.
+    /// - Promotion semantics are unchanged: `survival >= promotion_threshold`
+    ///   removes the entry from the nursery (old-gen takes over).
+    /// - Remembered-set pointers are merged into `scratch_marks` before sort,
+    ///   matching the prior `mark_set.insert` behaviour.
     ///
     /// Returns collection statistics.
-    pub fn collect(&mut self, live_ptrs: &HashSet<usize>) -> NurseryCollectResult {
+    pub fn collect(&mut self, live_ptrs_sorted: &[usize]) -> NurseryCollectResult {
         if self.nursery_ptrs.is_empty() {
             self.state.record_collection(0, 0);
             return NurseryCollectResult {
@@ -388,45 +430,45 @@ impl NurseryCollector {
             };
         }
 
-        // Build extended mark set: roots + remembered set
-        let mut mark_set = live_ptrs.clone();
-        for &ptr in &self.remembered_set {
-            mark_set.insert(ptr);
-        }
+        // Build extended mark set into the reusable scratch buffer:
+        // roots + remembered set, then sort+dedup for binary search.
+        self.scratch_marks.clear();
+        self.scratch_marks.extend_from_slice(live_ptrs_sorted);
+        self.scratch_marks.extend_from_slice(&self.remembered_set);
+        self.scratch_marks.sort_unstable();
+        self.scratch_marks.dedup();
+        let marks: &[usize] = &self.scratch_marks;
 
-        let mut new_nursery_ptrs = Vec::with_capacity(self.nursery_ptrs.len());
-        let mut new_survival_counts = Vec::with_capacity(self.nursery_ptrs.len());
+        let mut write = 0usize;
         let mut freed_count = 0usize;
         let mut promoted_count = 0usize;
         let mut live_count = 0usize;
+        let promo = self.state.config.promotion_threshold;
 
-        for (i, &ptr) in self.nursery_ptrs.iter().enumerate() {
-            if mark_set.contains(&ptr) {
-                // Value is live
-                let survival = self.survival_counts[i] + 1;
-                if survival >= self.state.config.promotion_threshold {
+        for read in 0..self.nursery_ptrs.len() {
+            let ptr = self.nursery_ptrs[read];
+            if marks.binary_search(&ptr).is_ok() {
+                let survival = self.survival_counts[read].saturating_add(1);
+                if survival >= promo {
                     // Promote to old generation — stop tracking in nursery.
                     // The value remains in the slab; old-gen GC manages it.
                     promoted_count += 1;
                 } else {
-                    // Keep in nursery with incremented survival count
-                    new_nursery_ptrs.push(ptr);
-                    new_survival_counts.push(survival);
+                    // Keep in nursery with incremented survival count.
+                    // In-place: overwrite the read position at the write index.
+                    self.nursery_ptrs[write] = ptr;
+                    self.survival_counts[write] = survival;
+                    write += 1;
                 }
                 live_count += 1;
             } else {
-                // Value is dead — eligible for freeing.
-                // NOTE: Actual slot freeing is delegated to the main GC.
-                // The nursery collector marks them as reclaimable; the next
-                // mark-sweep will not find them as roots and will free them.
-                // This avoids the nursery collector needing direct access to
-                // the SlabAllocator's free-list (which would require unsafe).
+                // Value is dead — slot freeing is delegated to the main GC.
+                // (See historical note on the prior implementation.)
                 freed_count += 1;
             }
         }
-
-        self.nursery_ptrs = new_nursery_ptrs;
-        self.survival_counts = new_survival_counts;
+        self.nursery_ptrs.truncate(write);
+        self.survival_counts.truncate(write);
         self.remembered_set.clear();
 
         self.state.record_collection(freed_count, promoted_count);
@@ -481,7 +523,7 @@ impl NurseryCollector {
     /// When deterministic collection is active, the epoch-based cache
     /// invalidation system (`check_gc_epoch()`) is bypassed because the
     /// state space is kept garbage-free between rule matches.
-    pub fn collect_deterministic(&mut self, live_ptrs: &HashSet<usize>) -> Option<NurseryCollectResult> {
+    pub fn collect_deterministic(&mut self, live_ptrs_sorted: &[usize]) -> Option<NurseryCollectResult> {
         if !self.state.config.deterministic {
             return None;
         }
@@ -492,7 +534,7 @@ impl NurseryCollector {
             return None;
         }
 
-        Some(self.collect(live_ptrs))
+        Some(self.collect(live_ptrs_sorted))
     }
 }
 
@@ -635,7 +677,7 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = NurseryConfig::default();
-        assert_eq!(config.threshold_bytes, 256 * 1024);
+        assert_eq!(config.threshold_bytes, 64 * 1024);
         assert_eq!(config.promotion_threshold, 2);
         assert_eq!(config.max_objects_per_step, 1024);
         assert!(!config.deterministic);
@@ -677,6 +719,15 @@ mod tests {
         assert_eq!(collector.nursery_size(), 2);
     }
 
+    /// Helper: build a sorted+deduped slice of `usize` pointers for tests.
+    /// Mirrors what `eval_loop::with_nursery_collector` does at the call site.
+    fn sorted_live(ptrs: &[usize]) -> Vec<usize> {
+        let mut v: Vec<usize> = ptrs.iter().copied().collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
     #[test]
     fn test_collector_collect_empty() {
         let config = NurseryConfig {
@@ -685,8 +736,7 @@ mod tests {
         };
         let mut collector = NurseryCollector::with_config(config);
 
-        let live_ptrs = HashSet::new();
-        let result = collector.collect(&live_ptrs);
+        let result = collector.collect(&[]);
         assert_eq!(result.live_count, 0);
         assert_eq!(result.freed_count, 0);
         assert_eq!(result.promoted_count, 0);
@@ -704,9 +754,7 @@ mod tests {
         collector.record_alloc(0x1000, 10);
         collector.record_alloc(0x2000, 10);
 
-        let mut live_ptrs = HashSet::new();
-        live_ptrs.insert(0x1000);
-        live_ptrs.insert(0x2000);
+        let live_ptrs = sorted_live(&[0x1000, 0x2000]);
 
         let result = collector.collect(&live_ptrs);
         assert_eq!(result.live_count, 2);
@@ -729,8 +777,7 @@ mod tests {
         collector.record_alloc(0x3000, 10);
 
         // Only 0x1000 is live
-        let mut live_ptrs = HashSet::new();
-        live_ptrs.insert(0x1000);
+        let live_ptrs = sorted_live(&[0x1000]);
 
         let result = collector.collect(&live_ptrs);
         assert_eq!(result.live_count, 1);
@@ -750,8 +797,7 @@ mod tests {
 
         collector.record_alloc(0x1000, 10);
 
-        let mut live_ptrs = HashSet::new();
-        live_ptrs.insert(0x1000);
+        let live_ptrs = sorted_live(&[0x1000]);
 
         // First collection: survival_count → 1
         let r1 = collector.collect(&live_ptrs);
@@ -779,8 +825,7 @@ mod tests {
         collector.record_remembered(0x1000); // Old-gen ref to nursery value
 
         // 0x1000 is not in the direct root set, but IS in remembered set
-        let live_ptrs = HashSet::new();
-        let result = collector.collect(&live_ptrs);
+        let result = collector.collect(&[]);
         assert_eq!(result.live_count, 1); // Kept alive by remembered set
         assert_eq!(result.freed_count, 0);
     }

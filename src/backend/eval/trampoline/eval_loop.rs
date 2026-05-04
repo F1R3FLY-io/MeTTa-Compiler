@@ -5386,7 +5386,31 @@ fn process_continuation<C: EvalContext>(
                     //     ),
                     //     None => composed,
                     // };
-                    (v, composed)
+
+                    // Fix 4 (mmverify hang plan, defense-in-depth): drop
+                    // body-local freshened bindings (`$__fr_<epoch>_*`) that
+                    // are no longer transitively reachable from the result
+                    // value. These are dead weight that accumulates linearly
+                    // with recursion depth. Caller-side / user variables are
+                    // preserved regardless of liveness since they may be
+                    // referenced by future composition steps. Caps memory
+                    // growth even if a partial-bind case slips Fix 1's guard
+                    // in `engine.rs::enumerate_rules_via_unification`.
+                    let live_vars = crate::backend::eval::bindings::transitive_live_vars_generic(
+                        &v, &composed,
+                    );
+                    let trimmed_composed = {
+                        let mut acc = crate::backend::models::GenericBindings::new();
+                        for (s, n, val) in composed.iter_full() {
+                            let is_freshened = n.starts_with("$__fr_");
+                            let dead = is_freshened && !live_vars.contains(n);
+                            if !dead {
+                                acc.insert_scoped(s, n, val.clone());
+                            }
+                        }
+                        acc
+                    };
+                    (v, trimmed_composed)
                 }).collect()
             };
             results.extend(composed);
@@ -8948,7 +8972,23 @@ fn process_continuation<C: EvalContext>(
                 let (val1, val1_bindings) = pattern1_results.into_iter().next().unwrap();
 
                 if let Some(handle) = val1.as_space() {
-                    // Space unification - match pattern2 against space atoms
+                    // Space unification - match pattern2 against space atoms.
+                    //
+                    // Fix 2 (mmverify hang resolution): pre-substitute pattern2
+                    // with val1_bindings so caller-side variables (e.g. $level
+                    // from an outer let* parameter) are concretized BEFORE
+                    // unification against kb atoms. Without this, the kb-match
+                    // path runs `bidirectional_unify(&raw_pattern, &kb_atom)`
+                    // and may produce caller-side var → kb-side value bindings
+                    // that don't reflect the caller's intended scoping. Mirrors
+                    // the non-Space path (line ~9176) which already substitutes
+                    // outer carrying via `EvalWithBindings`.
+                    let pattern2 = if pattern2.has_variables_fast() && !val1_bindings.is_empty() {
+                        apply_bindings(&pattern2, &val1_bindings, ctx.factory())
+                    } else {
+                        pattern2
+                    };
+
                     // Check if this is a simple boolean check using generic trait methods
                     // (NO heap conversion needed for this check)
                     let is_boolean_check = is_boolean_check_pattern(&success_body, &failure_body);

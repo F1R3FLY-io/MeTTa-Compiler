@@ -24,6 +24,11 @@ pub struct BindingFuncIds {
     pub push_binding_frame_func_id: FuncId,
     /// Pop binding frame
     pub pop_binding_frame_func_id: FuncId,
+    /// Push variable's bound value, fall through to atom literal on miss.
+    /// JIT analog of `op_push_variable` (`vm/mod.rs:1833-1855`). Used by
+    /// the `Opcode::PushVariable` JIT handler to bring JIT-promoted rule
+    /// chunks into bisimilarity with bytecode VM substitution semantics.
+    pub push_variable_with_fallback_func_id: FuncId,
 }
 
 /// Trait for binding initialization - zero-cost static dispatch
@@ -60,6 +65,10 @@ impl<T> BindingsInit for T {
         builder.symbol(
             "jit_runtime_pop_binding_frame",
             runtime::jit_runtime_pop_binding_frame as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_push_variable_with_fallback",
+            runtime::jit_runtime_push_variable_with_fallback as *const u8,
         );
     }
 
@@ -152,6 +161,27 @@ impl<T> BindingsInit for T {
                 ))
             })?;
 
+        // push_variable_with_fallback: fn(ctx, name_idx) -> value
+        // Searches binding frames; on hit returns bound value, on miss
+        // returns the constant pool entry at name_idx (atom literal).
+        let mut pvf_sig = module.make_signature();
+        pvf_sig.params.push(AbiParam::new(types::I64)); // ctx
+        pvf_sig.params.push(AbiParam::new(types::I64)); // name_idx
+        pvf_sig.returns.push(AbiParam::new(types::I64)); // value
+
+        let push_variable_with_fallback_func_id = module
+            .declare_function(
+                "jit_runtime_push_variable_with_fallback",
+                Linkage::Import,
+                &pvf_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_push_variable_with_fallback: {}",
+                    e
+                ))
+            })?;
+
         Ok(BindingFuncIds {
             load_binding_func_id,
             store_binding_func_id,
@@ -159,6 +189,7 @@ impl<T> BindingsInit for T {
             clear_bindings_func_id,
             push_binding_frame_func_id,
             pop_binding_frame_func_id,
+            push_variable_with_fallback_func_id,
         })
     }
 }

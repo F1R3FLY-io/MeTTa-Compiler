@@ -70,6 +70,69 @@ pub unsafe extern "C" fn jit_runtime_load_binding(
     TAG_UNIT
 }
 
+/// Push a variable's bound value, falling through to the atom literal on miss.
+///
+/// This is the JIT-side analog of `op_push_variable` (`vm/mod.rs:1833-1855`).
+/// It searches binding frames from innermost to outermost; on hit returns
+/// the bound value; on MISS returns the atom literal at the constant pool
+/// index (NOT a bailout). This non-bailout fall-through is what
+/// distinguishes `PushVariable` from `LoadBinding` semantically — and what
+/// the previous JIT mapping at `jit/handlers/values.rs:112`
+/// (`PushAtom | PushString | PushVariable` all sharing `load_const_func_id`)
+/// got wrong: that mapping skipped frame consultation entirely, so a
+/// JIT-promoted rule chunk would push the atom literal even when a
+/// binding for it existed.
+///
+/// Cross-tier bisimilarity: trampoline's `apply_bindings_with_rename_scoped`
+/// substitutes variable atoms with their bound values OR leaves them as
+/// atoms when unbound; the bytecode VM's `op_push_variable` does the same
+/// at runtime; this function brings the JIT into the same envelope.
+///
+/// # Arguments
+/// * `ctx` - JIT context pointer
+/// * `name_idx` - Index of the variable name in the constant pool
+///
+/// # Returns
+/// The bound value (NaN-boxed) on hit, or the atom literal (NaN-boxed) on miss.
+///
+/// # Safety
+/// The context pointer must be valid; `name_idx` must index a valid constant.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_push_variable_with_fallback(
+    ctx: *mut JitContext,
+    name_idx: u64,
+) -> u64 {
+    let ctx_ref = match ctx.as_mut() {
+        Some(c) => c,
+        None => return TAG_UNIT,
+    };
+
+    let name_idx_u32 = name_idx as u32;
+
+    // Search binding frames from innermost to outermost.
+    // Convention: `name_idx` is the constant pool index, matching the
+    // store/load convention used by `Opcode::StoreBinding` /
+    // `jit_runtime_store_binding` / `jit_runtime_load_binding`.
+    if ctx_ref.binding_frames_count > 0 && !ctx_ref.binding_frames.is_null() {
+        for frame_idx in (0..ctx_ref.binding_frames_count).rev() {
+            let frame = &*ctx_ref.binding_frames.add(frame_idx);
+            if frame.entries_count > 0 && !frame.entries.is_null() {
+                for entry_idx in 0..frame.entries_count {
+                    let entry = &*frame.entries.add(entry_idx);
+                    if entry.name_idx == name_idx_u32 {
+                        return entry.value.to_bits();
+                    }
+                }
+            }
+        }
+    }
+
+    // Miss → fall through to the atom literal at constants[name_idx].
+    // Use the same load path as `jit_runtime_load_constant` so NaN-boxing
+    // / heap layout are consistent.
+    super::stack_ops::jit_runtime_load_constant(ctx as *const JitContext, name_idx)
+}
+
 /// Store a binding in the current (innermost) binding frame.
 ///
 /// Creates or updates a binding in the current scope.

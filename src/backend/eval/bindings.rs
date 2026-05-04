@@ -19,6 +19,76 @@ use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueInner
 /// Global counter for generating unique variable IDs in `sealed`
 static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Walk `val` checking for any atom whose name starts with `prefix`.
+///
+/// Used by the partial-unification guard in
+/// `enumerate_rules_via_unification`: when `bidirectional_unify` returns a
+/// binding `(query_var → value)` whose value still contains a freshened
+/// rule-side variable (`$__fr_<epoch>_*`), the rule match is "partial" —
+/// the rule body's body-local fresh vars cannot be fully resolved on the
+/// caller side, and dispatching the rule will produce an instantiated_rhs
+/// with free `$__fr_<epoch>_*` atoms that will retrigger non-deterministic
+/// rule lookup at the next recursion step. Detecting this lets the caller
+/// skip the rule and avoid unbounded recursion (the canonical mmverify
+/// `(append $unbound (Cons "x" Nil))` case).
+pub fn value_contains_var_with_prefix<V: MettaValueTrait + Clone>(
+    val: &V,
+    prefix: &str,
+) -> bool {
+    let mut work_stack: Vec<V> = Vec::with_capacity(8);
+    work_stack.push(val.clone());
+    while let Some(cur) = work_stack.pop() {
+        if let Some(name) = cur.as_atom() {
+            if name.starts_with(prefix) {
+                return true;
+            }
+        } else if let Some(items) = cur.as_sexpr() {
+            for item in items.iter() {
+                work_stack.push(item.clone());
+            }
+        } else if let Some(goals) = cur.as_conjunction() {
+            for goal in goals.iter() {
+                work_stack.push(goal.clone());
+            }
+        } else if let Some((_, details)) = cur.as_error() {
+            work_stack.push(details.clone());
+        }
+    }
+    false
+}
+
+/// Compute the set of variable names transitively reachable from `value`
+/// through the given `bindings`.
+///
+/// A variable is "live" if it appears free in `value` OR is the free var of
+/// some other live variable's resolved value. Used by ProcessRuleMatches'
+/// COMPOSE_MATCH live-vars trimming (Fix 4 of the mmverify hang plan):
+/// after composing child bindings into the current branch's bindings,
+/// freshened body-local rule variables (`$__fr_<epoch>_*`) that have no
+/// live referent can be dropped, capping memory growth across deep
+/// recursion. Caller-side and user variables stay regardless of liveness
+/// since they may be referenced by future composition steps.
+pub fn transitive_live_vars_generic<V: MettaValueTrait + Clone>(
+    value: &V,
+    bindings: &GenericBindings<V>,
+) -> HashSet<String> {
+    let mut live: HashSet<String> = collect_variables_generic(value);
+    let mut frontier: Vec<String> = live.iter().cloned().collect();
+    while let Some(name) = frontier.pop() {
+        for (key, val) in bindings.iter() {
+            if key == name.as_str() {
+                let nested = collect_variables_generic(val);
+                for var in nested {
+                    if live.insert(var.clone()) {
+                        frontier.push(var);
+                    }
+                }
+            }
+        }
+    }
+    live
+}
+
 /// Collect all variable names from an expression (generic version)
 ///
 /// Variables are atoms starting with '$'.
@@ -2933,6 +3003,171 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result.get_scoped(ROOT_SCOPE, "$a"), Some(&factory.long(1)));
         assert_eq!(result.get_scoped(s1, "$b"), Some(&factory.long(2)));
+    }
+
+    // =========================================================================
+    // mmverify hang fix tests (Plan agent's plan, Phase 3.5).
+    // =========================================================================
+
+    #[test]
+    fn value_contains_var_with_prefix_finds_atom() {
+        let factory = GcFactory::default();
+        let v = factory.atom("$__fr_42_tail");
+        assert!(value_contains_var_with_prefix(&v, "$__fr_42_"));
+        assert!(!value_contains_var_with_prefix(&v, "$__fr_43_"));
+    }
+
+    #[test]
+    fn value_contains_var_with_prefix_walks_sexpr() {
+        // (Cons $__fr_42_head $__fr_42_tail)
+        let factory = GcFactory::default();
+        let v = factory.sexpr(vec![
+            factory.atom("Cons"),
+            factory.atom("$__fr_42_head"),
+            factory.atom("$__fr_42_tail"),
+        ]);
+        assert!(value_contains_var_with_prefix(&v, "$__fr_42_"));
+        assert!(!value_contains_var_with_prefix(&v, "$__fr_99_"));
+    }
+
+    #[test]
+    fn value_contains_var_with_prefix_misses_unrelated() {
+        // Concrete value with no freshened vars.
+        let factory = GcFactory::default();
+        let v = factory.sexpr(vec![
+            factory.atom("Cons"),
+            factory.atom("a"),
+            factory.atom("Nil"),
+        ]);
+        assert!(!value_contains_var_with_prefix(&v, "$__fr_"));
+        assert!(!value_contains_var_with_prefix(&v, "$x"));
+    }
+
+    #[test]
+    fn value_contains_var_with_prefix_walks_nested() {
+        // ((foo $__fr_7_inner) bar)
+        let factory = GcFactory::default();
+        let v = factory.sexpr(vec![
+            factory.sexpr(vec![
+                factory.atom("foo"),
+                factory.atom("$__fr_7_inner"),
+            ]),
+            factory.atom("bar"),
+        ]);
+        assert!(value_contains_var_with_prefix(&v, "$__fr_7_"));
+    }
+
+    /// Verifies the canonical mmverify-hang shape: the partial-unification guard
+    /// in `enumerate_rules_via_unification` rejects rule matches where a query-side
+    /// variable binds to a value containing the rule's freshened LHS variables.
+    #[test]
+    fn partial_binding_shape_detected() {
+        let factory = GcFactory::default();
+        // Simulate the unify result for `(append $unbound (Cons "x" Nil))` against
+        // rule LHS `(append (Cons $__fr_E_head $__fr_E_tail) $__fr_E_list)`.
+        let prefix = "$__fr_42_";
+        // $unbound (caller-side, not freshened) → (Cons $__fr_42_head $__fr_42_tail)
+        let partial_value = factory.sexpr(vec![
+            factory.atom("Cons"),
+            factory.atom("$__fr_42_head"),
+            factory.atom("$__fr_42_tail"),
+        ]);
+        // $__fr_42_list (rule-side) → (Cons "x" Nil) — concrete; ignored by guard.
+        let concrete_value = factory.sexpr(vec![
+            factory.atom("Cons"),
+            factory.atom("x"),
+            factory.atom("Nil"),
+        ]);
+
+        // The guard's logic: a binding is "partial" iff name is NOT freshened
+        // AND value contains a freshened var with the same epoch.
+        let is_partial_caller_to_rule_value =
+            !"$unbound".starts_with(prefix)
+                && value_contains_var_with_prefix(&partial_value, prefix);
+        assert!(is_partial_caller_to_rule_value, "must detect partial bind");
+
+        let is_partial_rule_side =
+            !"$__fr_42_list".starts_with(prefix)  // false — IS freshened
+                && value_contains_var_with_prefix(&concrete_value, prefix);
+        assert!(!is_partial_rule_side, "rule-side keys with concrete values are fine");
+
+        let is_partial_caller_to_concrete =
+            !"$unbound".starts_with(prefix)
+                && value_contains_var_with_prefix(&concrete_value, prefix);
+        assert!(!is_partial_caller_to_concrete, "caller key + concrete value is fine");
+    }
+
+    #[test]
+    fn transitive_live_vars_includes_value_vars() {
+        // (foo $a $b) with empty bindings — live = {$a, $b}.
+        let factory = GcFactory::default();
+        let value = factory.sexpr(vec![
+            factory.atom("foo"),
+            factory.atom("$a"),
+            factory.atom("$b"),
+        ]);
+        let bindings: GenericBindings<MettaValue> = GenericBindings::new();
+
+        let live = transitive_live_vars_generic(&value, &bindings);
+        assert!(live.contains("$a"));
+        assert!(live.contains("$b"));
+        assert!(!live.contains("$c"));
+    }
+
+    #[test]
+    fn transitive_live_vars_chains_through_bindings() {
+        // value: (foo $a)
+        // bindings: $a → (Cons $b Nil), $b → (bar $c)
+        // Live: {$a, $b, $c}
+        let factory = GcFactory::default();
+        let value = factory.sexpr(vec![factory.atom("foo"), factory.atom("$a")]);
+        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        bindings.insert_scoped(
+            ROOT_SCOPE,
+            "$a",
+            factory.sexpr(vec![
+                factory.atom("Cons"),
+                factory.atom("$b"),
+                factory.atom("Nil"),
+            ]),
+        );
+        bindings.insert_scoped(
+            ROOT_SCOPE,
+            "$b",
+            factory.sexpr(vec![factory.atom("bar"), factory.atom("$c")]),
+        );
+
+        let live = transitive_live_vars_generic(&value, &bindings);
+        assert!(live.contains("$a"));
+        assert!(live.contains("$b"));
+        assert!(live.contains("$c"));
+    }
+
+    #[test]
+    fn transitive_live_vars_excludes_unreachable_freshened_var() {
+        // value: (foo $a)
+        // bindings: $a → 7 (concrete), $__fr_99_dead → (Cons $other Nil)
+        // Live: {$a} only — the freshened binding is unreachable from value.
+        // The Fix 4 trim filter would drop $__fr_99_dead because it's freshened
+        // AND not in live; $a stays because it's in live.
+        let factory = GcFactory::default();
+        let value = factory.sexpr(vec![factory.atom("foo"), factory.atom("$a")]);
+        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        bindings.insert_scoped(ROOT_SCOPE, "$a", factory.long(7));
+        bindings.insert_scoped(
+            ROOT_SCOPE,
+            "$__fr_99_dead",
+            factory.sexpr(vec![
+                factory.atom("Cons"),
+                factory.atom("$other"),
+                factory.atom("Nil"),
+            ]),
+        );
+
+        let live = transitive_live_vars_generic(&value, &bindings);
+        assert!(live.contains("$a"));
+        assert!(!live.contains("$__fr_99_dead"));
+        assert!(!live.contains("$other"));
     }
 }
 

@@ -742,6 +742,9 @@ impl JitCompiler {
                     load_const_func_id: self.load_const_func_id,
                     push_empty_func_id: self.sexpr.push_empty_func_id,
                     push_uri_func_id: self.push_uri_func_id,
+                    push_variable_with_fallback_func_id: self
+                        .bindings
+                        .push_variable_with_fallback_func_id,
                 };
                 return handlers::compile_runtime_value_op(&mut ctx, codegen, chunk, op, offset);
             }

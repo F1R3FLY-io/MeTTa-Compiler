@@ -1697,12 +1697,25 @@ where
         }
     }
 
-    /// Compile a quoted expression (no evaluation)
+    /// Compile a quoted expression: structural literal where `$`-prefixed
+    /// atoms RESOLVE through the active binding chain (locals → upvalues →
+    /// runtime binding frame) but S-expr heads are NOT dispatched as
+    /// function calls.
+    ///
+    /// This brings the bytecode VM into bisimilarity with the trampoline's
+    /// `apply_bindings_with_rename_scoped` semantics: by the time a quoted
+    /// form reaches `SpaceAdd` / `SpaceRemove` / `MatchBind` / `Unify4` /
+    /// `DefineRule`, all outer-scope variables have been substituted into
+    /// the structural data, while inner pattern variables (unbound under
+    /// the current frame) fall through `op_push_variable` to atom literals.
+    ///
+    /// Functionally equivalent to (and delegates to) `compile_as_literal_sexpr`
+    /// — both names are kept for caller-side intent expression: this method
+    /// names the "quoted form" semantic context (`add-atom`, `remove-atom`,
+    /// `=`, `quote`, `case` patterns, 4-arg `unify` pattern2), while
+    /// `compile_as_literal_sexpr` names the structural-walk mechanism.
     fn compile_quoted(&mut self, expr: &V) -> CompileResult<()> {
-        // Push the value as-is without evaluation
-        let idx = self.builder.add_constant(expr.clone());
-        self.builder.emit_u16(Opcode::PushConstant, idx);
-        Ok(())
+        self.compile_as_literal_sexpr(expr)
     }
 
     /// Compile superpose (nondeterminism)

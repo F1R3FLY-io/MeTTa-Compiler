@@ -645,6 +645,40 @@ pub fn enumerate_rules_via_unification(
         if let Some(bindings) = bidirectional_unify_generic(&lhs_freshened, query) {
             let dispatch_scope = allocate_scope_id();
             let prefix = format!("$__fr_{}_", epoch);
+
+            // Partial-unification guard.
+            //
+            // If `bidirectional_unify` produced a binding `(query_var → value)`
+            // whose value still references a freshened rule-side variable
+            // (`$__fr_{epoch}_*`), the rule match is "partial": the rule LHS
+            // could not bottom out against concrete query structure. Applying
+            // the rule body would produce an instantiated_rhs with body-local
+            // fresh vars left free, which would re-trigger non-deterministic
+            // rule lookup at the next recursion step and never terminate.
+            //
+            // Concretely: `(append $unbound (Cons "x" Nil))` against rule LHS
+            // `(append (Cons $head $tail) $list)` produces
+            // `{$unbound → (Cons $__fr_E_head $__fr_E_tail), $list → (Cons "x" Nil)}`.
+            // The body `(Cons $head (append $tail $list))` references
+            // `$__fr_E_tail`, which is unbound after substitution — re-running
+            // the recursive append rule with this unbound tail diverges.
+            //
+            // Skipping such rules restricts free-variable unification matches
+            // to those where the rule LHS structure can be FULLY unified
+            // against concrete query parts (i.e., the rule terminates in one
+            // step). This matches HE / spec semantics for non-ground queries
+            // against recursive functions: the Nil base case must apply, the
+            // recursive case is only viable when the query's first-arg is a
+            // concrete `(Cons head tail)` cell.
+            use crate::backend::eval::bindings::value_contains_var_with_prefix;
+            let has_partial_binding = bindings.iter_full().any(|(_, name, val)| {
+                !name.starts_with(&prefix)
+                    && value_contains_var_with_prefix(val, &prefix)
+            });
+            if has_partial_binding {
+                continue;
+            }
+
             let mut scoped_bindings = crate::backend::models::GenericBindings::new();
             for (s, name, val) in bindings.iter_full() {
                 let target = if name.starts_with(&prefix) {

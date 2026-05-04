@@ -20,6 +20,12 @@ pub struct ValueHandlerContext<'m> {
     pub load_const_func_id: FuncId,
     pub push_empty_func_id: FuncId,
     pub push_uri_func_id: FuncId,
+    /// Routes `Opcode::PushVariable` to a runtime fn that consults binding
+    /// frames first, falling through to the constant-pool atom literal on
+    /// miss — JIT analog of bytecode VM's `op_push_variable`. Bisimilarity
+    /// with trampoline `apply_bindings_with_rename_scoped` is preserved
+    /// (Plan agent's Phase 3 of cross-tier substitution fix).
+    pub push_variable_with_fallback_func_id: FuncId,
 }
 
 /// Compile simple value creation opcodes (no runtime calls needed)
@@ -109,13 +115,38 @@ pub fn compile_runtime_value_op<'a, 'b>(
             codegen.push(result)?;
         }
 
-        Opcode::PushAtom | Opcode::PushString | Opcode::PushVariable => {
-            // Load atom/string/variable from constant pool via runtime call
+        Opcode::PushAtom | Opcode::PushString => {
+            // Load atom/string from constant pool via runtime call.
+            // (PushVariable was historically lumped here — incorrect; see
+            // separate arm below for the bisimilarity-preserving routing.)
             let idx = chunk.read_u16(offset + 1).unwrap_or(0) as i64;
 
             let func_ref = ctx
                 .module
                 .declare_func_in_func(ctx.load_const_func_id, codegen.builder.func);
+
+            let ctx_ptr = codegen.ctx_ptr();
+            let idx_val = codegen.builder.ins().iconst(types::I64, idx);
+            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
+        }
+
+        Opcode::PushVariable => {
+            // Phase 3 of cross-tier substitution fix: route PushVariable
+            // through `jit_runtime_push_variable_with_fallback` so the
+            // JIT consults the active binding frame first and falls
+            // through to the atom literal on miss — matching bytecode
+            // VM's `op_push_variable` (vm/mod.rs:1833-1855) and the
+            // trampoline's `apply_bindings_with_rename_scoped`. Without
+            // this, JIT-promoted rule chunks would push the atom literal
+            // even when a binding for the variable existed.
+            let idx = chunk.read_u16(offset + 1).unwrap_or(0) as i64;
+
+            let func_ref = ctx.module.declare_func_in_func(
+                ctx.push_variable_with_fallback_func_id,
+                codegen.builder.func,
+            );
 
             let ctx_ptr = codegen.ctx_ptr();
             let idx_val = codegen.builder.ins().iconst(types::I64, idx);

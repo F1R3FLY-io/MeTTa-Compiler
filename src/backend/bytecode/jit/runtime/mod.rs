@@ -167,8 +167,9 @@ pub use call_support::{
 pub use bindings::{
     jit_runtime_clear_bindings, jit_runtime_fork_bindings, jit_runtime_free_saved_bindings,
     jit_runtime_has_binding, jit_runtime_load_binding, jit_runtime_pop_binding_frame,
-    jit_runtime_push_binding_frame, jit_runtime_restore_bindings, jit_runtime_saved_bindings_size,
-    jit_runtime_store_binding, JitSavedBindings,
+    jit_runtime_push_binding_frame, jit_runtime_push_variable_with_fallback,
+    jit_runtime_restore_bindings, jit_runtime_saved_bindings_size, jit_runtime_store_binding,
+    JitSavedBindings,
 };
 
 // Core helpers (NaN-boxing and conversion)

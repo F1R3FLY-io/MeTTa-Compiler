@@ -289,7 +289,11 @@ impl<V: MettaValueTrait + Clone> BindingArena<V> {
 
         match frame_entries.len() {
             0 => GenericBindings::Empty,
-            1 => GenericBindings::Single((frame_entries[0].name, frame_entries[0].value.clone())),
+            1 => GenericBindings::Single((
+                crate::backend::models::generic_bindings::ROOT_SCOPE,
+                frame_entries[0].name,
+                frame_entries[0].value.clone(),
+            )),
             _ => {
                 let mut bindings = GenericBindings::new();
                 for entry in frame_entries {

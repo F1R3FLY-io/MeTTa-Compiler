@@ -1562,8 +1562,31 @@ impl fmt::Display for MettaValue {
             MettaValueInner::Atom(s) => write!(f, "{}", s),
             MettaValueInner::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
             MettaValueInner::Long(n) => write!(f, "{}", n),
-            MettaValueInner::Float(v) => write!(f, "{}", v),
-            MettaValueInner::String(s) => write!(f, "\"{}\"", s),
+            // Spec §02: canonical float form preserves `.0` for whole-number
+            // floats (e.g., `1500.0`, not `1500`) so parser round-trip yields
+            // Float, not Long.
+            MettaValueInner::Float(v) => {
+                if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e16 {
+                    write!(f, "{}.0", *v as i64)
+                } else {
+                    write!(f, "{}", v)
+                }
+            }
+            // Spec §01.2: strings canonical-escape `\n`, `\t`, `\r`, `\\`, `\"`.
+            MettaValueInner::String(s) => {
+                write!(f, "\"")?;
+                for c in s.chars() {
+                    match c {
+                        '\\' => write!(f, "\\\\")?,
+                        '"' => write!(f, "\\\"")?,
+                        '\n' => write!(f, "\\n")?,
+                        '\t' => write!(f, "\\t")?,
+                        '\r' => write!(f, "\\r")?,
+                        _ => write!(f, "{}", c)?,
+                    }
+                }
+                write!(f, "\"")
+            }
             MettaValueInner::SExpr(items) => {
                 write!(f, "(")?;
                 for (i, item) in items.iter().enumerate() {

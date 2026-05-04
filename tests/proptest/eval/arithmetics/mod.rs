@@ -30,25 +30,27 @@ struct BoolExpr {
 }
 
 impl BoolExpr {
-    fn eval_branch(&self) -> Option<i64> {
-        let lhs = self.lhs.eval_checked()?;
-        let rhs = self.rhs.eval_checked()?;
+    fn eval_branch(&self) -> i64 {
+        let lhs = self.lhs.eval_wrapping();
+        let rhs = self.rhs.eval_wrapping();
 
         if self.op.eval(lhs, rhs) {
-            self.then_branch.eval_checked()
+            self.then_branch.eval_wrapping()
         } else {
-            self.else_branch.eval_checked()
+            self.else_branch.eval_wrapping()
         }
     }
 }
 
 impl ArithExpr {
-    fn eval_checked(&self) -> Option<i64> {
+    /// Oracle evaluation under MeTTa spec §13.2 silent two's-complement wrap.
+    /// No fallible path: every i64 expression has a defined wrap result.
+    fn eval_wrapping(&self) -> i64 {
         match self {
-            ArithExpr::Lit(value) => Some(*value),
+            ArithExpr::Lit(value) => *value,
             ArithExpr::BinOp(op, lhs_expr, rhs_expr) => {
-                let lhs = lhs_expr.eval_checked()?;
-                let rhs = rhs_expr.eval_checked()?;
+                let lhs = lhs_expr.eval_wrapping();
+                let rhs = rhs_expr.eval_wrapping();
                 op.eval(lhs, rhs)
             }
             ArithExpr::If(bool_expr) => bool_expr.eval_branch(),
@@ -129,13 +131,16 @@ fn invalid_atom_symbol() -> impl Strategy<Value = String> {
 
 // Will generate programs like: ! ((+ (if (not (== (- 0 919) 260)) 777 (- 0 421)) (- 0 413)))
 fn valid_arithmetics_with_conditions() -> impl Strategy<Value = TestProgram> {
-    any::<ArithExpr>().prop_filter_map("expression overflows i64 oracle arithmetic", |expr| {
-        let evaluated = expr.eval_checked()?;
+    any::<ArithExpr>().prop_map(|expr| {
+        // Oracle uses wrapping i64 per spec §13.2. No filter — every input
+        // is a valid wrapping expression. Programs that overflow now produce
+        // the spec-mandated wrap result instead of being skipped.
+        let evaluated = expr.eval_wrapping();
         let evaluated = MettaValue::SExpr(vec![MettaValue::Long(evaluated)]);
 
         let source = format!("!({})", expr);
 
-        Some(TestProgram { source, evaluated })
+        TestProgram { source, evaluated }
     })
 }
 
@@ -370,24 +375,26 @@ fn test_comparison_type_error_returns_unreduced() {
     }
 }
 
-/// Verify that genuine errors (division by zero, overflow) still produce Error values.
+/// Verify that genuine errors (integer division-by-zero, integer modulo-by-zero)
+/// still produce Error values. Note: integer overflow no longer errors per spec §13.2
+/// — it wraps silently. Float / 0.0 and float % 0.0 produce IEEE NaN/±Inf, not Error.
 #[test]
 fn test_genuine_errors_still_error() {
-    // Division by zero
+    // Integer division by zero
     let compiled = compile("!(/ 1 0)").expect("compile");
     let result = run_state(MettaState::from_env(new_env()), &compiled).expect("eval");
     let outputs: Vec<MettaValue> = result.output().to_vec();
     assert_eq!(outputs.len(), 1);
     assert!(outputs[0].as_error().is_some(),
-        "Division by zero should produce Error, got {:?}", outputs[0]);
+        "Integer division by zero should produce Error, got {:?}", outputs[0]);
 
-    // Modulo by zero
+    // Integer modulo by zero
     let compiled = compile("!(% 1 0)").expect("compile");
     let result = run_state(MettaState::from_env(new_env()), &compiled).expect("eval");
     let outputs: Vec<MettaValue> = result.output().to_vec();
     assert_eq!(outputs.len(), 1);
     assert!(outputs[0].as_error().is_some(),
-        "Modulo by zero should produce Error, got {:?}", outputs[0]);
+        "Integer modulo by zero should produce Error, got {:?}", outputs[0]);
 }
 
 /// Verify that equality/inequality with mixed types still returns False/True (not unreduced).

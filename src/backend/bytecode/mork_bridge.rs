@@ -236,9 +236,14 @@ impl MorkBridge {
         // Pass a no-op closure instead of apply_bindings_generic because we only use
         // rhs_template + bindings — the instantiated_rhs field is discarded. This avoids
         // a redundant recursive S-expression traversal + allocation per matching rule.
+        // Phase 5: mork_bridge has no caller-side outer bindings — pass empty.
+        // Captured caller variables are out of scope here (this path discards
+        // the instantiated_rhs anyway).
+        let empty_outer = GenericBindings::<MettaValue>::new();
         let results = env.match_rules_native(
             expr,
             |v: &MettaValue, _: &GenericBindings<MettaValue>, _: &GcFactory| v.clone(),
+            &empty_outer,
         );
 
         results

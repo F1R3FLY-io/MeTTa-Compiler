@@ -1106,11 +1106,13 @@ fn test_vm_space_remove_opcode() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    // SpaceRemove returns Bool(true) if atom was found
+    // SpaceRemove returns Unit per HE / spec §9.2 (the boolean removed-flag
+    // is discarded; HE's RemoveAtomOp::execute returns unit_result()).
+    // Plan A Phase 2 fix.
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Bool(true));
+    assert_eq!(results[0], MettaValue::Unit());
 
-    // Verify the atom was removed
+    // Verify the atom was removed (post-condition still proves the side effect).
     let atoms = space.collapse();
     assert_eq!(atoms.len(), 1);
     assert_eq!(atoms[0], MettaValue::Long(2));
@@ -4155,11 +4157,12 @@ fn test_vm_decons_atom_non_sexpr() {
     assert!(matches!(result, Err(VmError::TypeError { .. })));
 }
 
-// --- Arithmetic Edge Cases ---
+// --- Arithmetic Edge Cases (MeTTa spec §13.2 + §C.7g: silent wrap) ---
 
 #[test]
-fn test_vm_mod_overflow() {
-    // i64::MIN % -1 causes overflow
+fn test_vm_mod_wrap_min_neg_one() {
+    // (% i64::MIN -1) → 0 per spec §13.2 silent two's-complement wrap
+    // (formerly raised ArithmeticOverflow; now wraps cleanly).
     let mut builder = ChunkBuilder::new("test");
     let min_val = builder.add_constant(MettaValue::Long(i64::MIN));
     let neg_one = builder.add_constant(MettaValue::Long(-1));
@@ -4170,10 +4173,166 @@ fn test_vm_mod_overflow() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
+    let results = vm.run().expect("(% i64::MIN -1) should wrap to 0, not error");
+    assert_eq!(results, vec![MettaValue::Long(0)]);
+}
 
-    // Should error with ArithmeticOverflow
-    assert!(matches!(result, Err(VmError::ArithmeticOverflow)));
+#[test]
+fn test_vm_add_wrap_max_plus_one() {
+    let mut builder = ChunkBuilder::new("test");
+    let max_val = builder.add_constant(MettaValue::Long(i64::MAX));
+    let one = builder.add_constant(MettaValue::Long(1));
+    builder.emit_u16(Opcode::PushConstant, max_val);
+    builder.emit_u16(Opcode::PushConstant, one);
+    builder.emit(Opcode::Add);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(+ i64::MAX 1) should wrap to i64::MIN");
+    assert_eq!(results, vec![MettaValue::Long(i64::MIN)]);
+}
+
+#[test]
+fn test_vm_sub_wrap_min_minus_one() {
+    let mut builder = ChunkBuilder::new("test");
+    let min_val = builder.add_constant(MettaValue::Long(i64::MIN));
+    let one = builder.add_constant(MettaValue::Long(1));
+    builder.emit_u16(Opcode::PushConstant, min_val);
+    builder.emit_u16(Opcode::PushConstant, one);
+    builder.emit(Opcode::Sub);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(- i64::MIN 1) should wrap to i64::MAX");
+    assert_eq!(results, vec![MettaValue::Long(i64::MAX)]);
+}
+
+#[test]
+fn test_vm_mul_wrap_min_times_neg_one() {
+    let mut builder = ChunkBuilder::new("test");
+    let min_val = builder.add_constant(MettaValue::Long(i64::MIN));
+    let neg_one = builder.add_constant(MettaValue::Long(-1));
+    builder.emit_u16(Opcode::PushConstant, min_val);
+    builder.emit_u16(Opcode::PushConstant, neg_one);
+    builder.emit(Opcode::Mul);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(* i64::MIN -1) should wrap to i64::MIN");
+    assert_eq!(results, vec![MettaValue::Long(i64::MIN)]);
+}
+
+#[test]
+fn test_vm_neg_wrap_min() {
+    let mut builder = ChunkBuilder::new("test");
+    let min_val = builder.add_constant(MettaValue::Long(i64::MIN));
+    builder.emit_u16(Opcode::PushConstant, min_val);
+    builder.emit(Opcode::Neg);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(neg i64::MIN) should wrap to i64::MIN, not error");
+    assert_eq!(results, vec![MettaValue::Long(i64::MIN)]);
+}
+
+#[test]
+fn test_vm_abs_wrap_min() {
+    // Spec is silent on abs(i64::MIN); we choose wrapping_abs for tier-consistency.
+    // abs(i64::MIN) = i64::MIN (the bit pattern; mathematically would overflow).
+    let mut builder = ChunkBuilder::new("test");
+    let min_val = builder.add_constant(MettaValue::Long(i64::MIN));
+    builder.emit_u16(Opcode::PushConstant, min_val);
+    builder.emit(Opcode::Abs);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(abs i64::MIN) should wrap, not error");
+    assert_eq!(results, vec![MettaValue::Long(i64::MIN)]);
+}
+
+#[test]
+fn test_vm_div_wrap_min_neg_one() {
+    let mut builder = ChunkBuilder::new("test");
+    let min_val = builder.add_constant(MettaValue::Long(i64::MIN));
+    let neg_one = builder.add_constant(MettaValue::Long(-1));
+    builder.emit_u16(Opcode::PushConstant, min_val);
+    builder.emit_u16(Opcode::PushConstant, neg_one);
+    builder.emit(Opcode::Div);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(/ i64::MIN -1) should wrap to i64::MIN, not error");
+    assert_eq!(results, vec![MettaValue::Long(i64::MIN)]);
+}
+
+#[test]
+fn test_vm_floor_div_wrap_min_neg_one() {
+    let mut builder = ChunkBuilder::new("test");
+    let min_val = builder.add_constant(MettaValue::Long(i64::MIN));
+    let neg_one = builder.add_constant(MettaValue::Long(-1));
+    builder.emit_u16(Opcode::PushConstant, min_val);
+    builder.emit_u16(Opcode::PushConstant, neg_one);
+    builder.emit(Opcode::FloorDiv);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(floor-div i64::MIN -1) should wrap, not error");
+    assert_eq!(results, vec![MettaValue::Long(i64::MIN)]);
+}
+
+#[test]
+fn test_vm_pow_wrap_overflow() {
+    // (pow 2 63) overflows i64 — spec §13.2 wraps.
+    // 2.wrapping_pow(63) → i64::MIN (1 << 63 in two's complement)
+    let mut builder = ChunkBuilder::new("test");
+    let two = builder.add_constant(MettaValue::Long(2));
+    let sixty_three = builder.add_constant(MettaValue::Long(63));
+    builder.emit_u16(Opcode::PushConstant, two);
+    builder.emit_u16(Opcode::PushConstant, sixty_three);
+    builder.emit(Opcode::Pow);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run().expect("(pow 2 63) should wrap, not error");
+    assert_eq!(results, vec![MettaValue::Long(i64::MIN)]);
+}
+
+#[test]
+fn test_vm_div_by_zero_still_errors() {
+    let mut builder = ChunkBuilder::new("test");
+    let five = builder.add_constant(MettaValue::Long(5));
+    let zero = builder.add_constant(MettaValue::Long(0));
+    builder.emit_u16(Opcode::PushConstant, five);
+    builder.emit_u16(Opcode::PushConstant, zero);
+    builder.emit(Opcode::Div);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    assert!(matches!(vm.run(), Err(VmError::DivisionByZero)));
+}
+
+#[test]
+fn test_vm_mod_by_zero_still_errors() {
+    let mut builder = ChunkBuilder::new("test");
+    let five = builder.add_constant(MettaValue::Long(5));
+    let zero = builder.add_constant(MettaValue::Long(0));
+    builder.emit_u16(Opcode::PushConstant, five);
+    builder.emit_u16(Opcode::PushConstant, zero);
+    builder.emit(Opcode::Mod);
+    builder.emit(Opcode::Return);
+
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+    assert!(matches!(vm.run(), Err(VmError::DivisionByZero)));
 }
 
 #[test]
@@ -7248,6 +7407,8 @@ fn test_vm_mod_float_float() {
 /// Float(10.5) % Float(0.0) should produce a DivisionByZero error.
 #[test]
 fn test_vm_mod_float_by_zero() {
+    // Per spec §13.2: only integer % 0 → DivisionByZero. Float % 0.0 follows
+    // IEEE 754 (NaN), matching HE. Plan B / C / D wrap fix.
     let mut builder = ChunkBuilder::new("test");
     let idx_a = builder.add_constant(MettaValue::Float(10.5));
     let idx_b = builder.add_constant(MettaValue::Float(0.0));
@@ -7258,8 +7419,10 @@ fn test_vm_mod_float_by_zero() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-    assert!(matches!(result, Err(VmError::DivisionByZero)));
+    let results = vm.run().expect("Float % 0.0 should produce NaN, not error");
+    assert_eq!(results.len(), 1);
+    let v = results[0].as_float().expect("expected Float result");
+    assert!(v.is_nan(), "expected NaN, got {v}");
 }
 
 /// StructEq should NOT perform numeric promotion: Long(2) and Float(2.0) are

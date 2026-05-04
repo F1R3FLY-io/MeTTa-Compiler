@@ -130,7 +130,7 @@ where
     // Check for special forms - these are handled directly
     if let Some(op) = items.first().and_then(|v| v.as_atom()) {
         // Trace: SpecialForm dispatch
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             if let Some(tc) = ctx.trace_collector() {
                 let is_special = matches!(op,
@@ -1504,15 +1504,24 @@ where
                     bindings_sexpr,
                     ctx.factory(),
                 );
+                // Spec §06.6.3: chain dispatches one kernel step on its expr
+                // arg. Now that ground-with-bindings is in the kernel-op
+                // whitelist (dispatch_hints.rs is_embedded_kernel_op), chain
+                // invokes this handler and binds the substituted template AS
+                // DATA to $var — no further reduction unless the result's own
+                // head is itself a kernel op. Quote wrappers here would push
+                // a (quote ...) atom into $var, breaking PLN's
+                //     (chain (ground-with-bindings $term $binds) $grounded
+                //       (... (eval $grounded) ... (freeze-tuple $grounded ...)))
+                // pattern where $grounded must be the substituted template
+                // itself, not a quoted wrapper.
                 if bindings.is_empty() {
-                    // Return quoted to prevent chain/let from further reducing
-                    // the surface form. freeze-tuple unwraps quotes.
-                    return GenericEvalStep::Done((smallvec![ctx.factory().quote(template)], env));
+                    return GenericEvalStep::Done((smallvec![template], env));
                 }
                 let grounded = crate::backend::eval::trampoline::engine::apply_bindings(
                     &template, &bindings, ctx.factory(),
                 );
-                return GenericEvalStep::Done((smallvec![ctx.factory().quote(grounded)], env));
+                return GenericEvalStep::Done((smallvec![grounded], env));
             }
 
             // sort-tuple - defers iteration to trampoline.
@@ -2299,7 +2308,7 @@ where
             // Type system was consulted. Use only its result.
             if !typed_indices.is_empty() {
                 // Trace: ApplicativePreEval (type-driven)
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         let operator = items.first().and_then(|v| v.as_atom()).unwrap_or("?").to_string();
@@ -2331,7 +2340,7 @@ where
             let bloom_indices = find_grounded_arg_indices_generic(&items, &env);
             if !bloom_indices.is_empty() {
                 // Trace: ApplicativePreEval (bloom-filter)
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         let operator = items.first().and_then(|v| v.as_atom()).unwrap_or("?").to_string();
@@ -2376,7 +2385,7 @@ where
 
     if !all_matches.is_empty() {
         // Trace: RuleMatchSet
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             if let Some(tc) = ctx.trace_collector() {
                 let match_count = all_matches.len() as u32;
@@ -2437,7 +2446,7 @@ where
             ctx.factory(),
         );
         if !unified_matches.is_empty() {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     let match_count = unified_matches.len() as u32;

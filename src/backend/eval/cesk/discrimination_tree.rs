@@ -290,7 +290,7 @@ impl DiscriminationTree {
         }
 
         if let Some(name) = value.as_atom() {
-            if name == "_" {
+            if name == "_" || name == "$_" {
                 keys.push(DiscKey::Var); // Wildcard = variable
             } else {
                 keys.push(DiscKey::Atom(name));
@@ -342,7 +342,7 @@ impl DiscriminationTree {
             }
 
             if let Some(name) = head_unwrapped.as_atom() {
-                if name == "_" {
+                if name == "_" || name == "$_" {
                     keys.push(DiscKey::Var);
                 } else {
                     // Fuse head + arity into SExprStart
@@ -448,7 +448,7 @@ impl DiscriminationTree {
             }
 
             if let Some(name) = head_unwrapped.as_atom() {
-                if name == "_" {
+                if name == "_" || name == "$_" {
                     keys.push(DiscKey::Var);
                 } else {
                     keys.push(DiscKey::SExprStart(name, items.len() as u16));

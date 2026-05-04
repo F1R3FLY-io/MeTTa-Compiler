@@ -418,7 +418,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         let (rhs, bindings) = matches.pop().expect("matches has exactly 1 element");
 
         // Trace: RuleApplication (single match — no fork)
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             if let Some(tc) = ctx.trace_collector() {
                 let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
@@ -485,13 +485,13 @@ fn dispatch_rule_matches<C: EvalContext>(
                 current_branch_bindings,
                 outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
                 tracked_vars_hint,
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 branch_span_id: 0,
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 branch_start_ns: 0,
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 branch_index: 0,
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 total_branches: 1,
             });
         }
@@ -748,7 +748,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         let metta_env = (*env).clone();
 
         // Trace: NondeterministicFork (parallel)
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             if let Some(tc) = ctx.trace_collector() {
                 tc.emit_converted(
@@ -781,7 +781,14 @@ fn dispatch_rule_matches<C: EvalContext>(
         let ctx_hash = hash_continuation_context(continuations);
         CONTINUATION_CONTEXT_HASH.with(|h| h.set(ctx_hash));
 
-        let results = parallel_branch_eval(branches, metta_env, actual_budget_acquired, current_depth);
+        // Demand propagation: rule-match dispatch always runs all branches
+        // by default (the trampoline's caller decides demand). The `demand`
+        // parameter on dispatch_rule_matches threads the caller's demand
+        // through; default is `Demand::All`.
+        let dispatch_demand = demand.unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
+        let results = parallel_branch_eval(
+            branches, metta_env, actual_budget_acquired, current_depth, dispatch_demand,
+        );
 
         // Phase 2 Part A: results now carry per-branch bindings. Compose each
         // with outer_carrying if present; otherwise use branch bindings as-is.
@@ -815,7 +822,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         capture_bindings_if_active(&bindings);
 
         // Trace: NondeterministicFork + BranchStart for first branch
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         let _branch_span_id = {
             if let Some(tc) = ctx.trace_collector() {
                 if _total_branches > 1 {
@@ -877,20 +884,20 @@ fn dispatch_rule_matches<C: EvalContext>(
             current_branch_bindings,
             outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
             tracked_vars_hint,
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             branch_span_id: _branch_span_id,
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             branch_start_ns: {
                 ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
             },
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             branch_index: 0,
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             total_branches: _total_branches,
         });
 
         // Trace: RuleApplication (first match)
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             if let Some(tc) = ctx.trace_collector() {
                 let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
@@ -986,6 +993,23 @@ fn dispatch_rule_matches<C: EvalContext>(
 thread_local! {
     static PARALLEL_BRANCH_DEPTH: Cell<u32> = const { Cell::new(0) };
 
+    /// Current evaluation demand level on this thread.
+    ///
+    /// Set when the trampoline pops a `WorkItem::Eval { demand: Some(d), .. }`,
+    /// reset when that work item completes. Read by parallel-dispatch sites
+    /// (`dispatch_rule_matches` for rule fanout, StartAmb for superpose) to
+    /// decide whether to spawn a `CancelToken` that lets the first satisfying
+    /// branch terminate its siblings.
+    ///
+    /// When a cardinality-multiplying form is entered (collapse, collapse-bind,
+    /// superpose-bind, case), the demand is shadowed to `Demand::All` for the
+    /// duration of that subtree. The shadow is restored when the form's
+    /// continuation resumes.
+    ///
+    /// `None` = inherit-from-default (= `Demand::All`). `Some(d)` = bounded.
+    static CURRENT_DEMAND: Cell<Option<crate::backend::eval::cesk::coroutine::Demand>> =
+        const { Cell::new(None) };
+
     /// WPDS continuation context hash for the current parallel dispatch point.
     /// Set by `dispatch_rule_matches` before calling `parallel_branch_eval`,
     /// read by `parallel_branch_eval` to compute context-aware effective priority.
@@ -1059,11 +1083,11 @@ thread_local! {
     /// Monotonic counter for per-Resume-boundary `flow_id`s used by
     /// eval-trace binding-flow instrumentation. Enter/Emit/Dropped/
     /// ExitNoResume events for the same boundary share a flow_id.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     static FLOW_ID_COUNTER: Cell<u64> = const { Cell::new(0) };
 }
 
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 fn next_flow_id() -> u64 {
     FLOW_ID_COUNTER.with(|c| {
         let id = c.get();
@@ -1247,6 +1271,7 @@ fn parallel_branch_eval(
     env: crate::backend::environment::core::MettaEnvironment,
     budget_acquired: u32,
     caller_depth: u32,
+    demand: crate::backend::eval::cesk::coroutine::Demand,
 ) -> Vec<crate::backend::eval::trampoline::types::BoundValue> {
     use std::sync::{Arc, Condvar, Mutex};
 
@@ -1258,7 +1283,7 @@ fn parallel_branch_eval(
     debug_assert!(num_branches >= 2, "parallel_branch_eval requires at least 2 branches");
 
     // Trace: ParallelDispatch enter
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         crate::backend::trace::with_trace_collector_ref(|tc| {
             let branch_tvs: Vec<trace_format::TraceValue> = branches.iter()
@@ -1289,6 +1314,15 @@ fn parallel_branch_eval(
     let remaining = Arc::new(AtomicU32::new((num_branches - 1) as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
 
+    // Cooperative-cancellation token. For `Demand::All`, this token never
+    // flips (`record_non_empty_branch` is a no-op early return), so the
+    // cancellation path is uniform across demand levels — no special-casing.
+    // For bounded demand (e.g. `Exactly(1)` from an outer `if` condition),
+    // the first non-empty branch flips `satisfied`; sibling workers observe
+    // it at their next safepoint via `ParallelBranchContext::should_safepoint`
+    // and bail by raising `BranchCancelled`.
+    let cancel_token = Arc::new(crate::backend::eval::cesk::coroutine::CancelToken::new(demand));
+
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
@@ -1301,6 +1335,7 @@ fn parallel_branch_eval(
         let results = Arc::clone(&results);
         let remaining = Arc::clone(&remaining);
         let done_pair = Arc::clone(&done_pair);
+        let cancel_token = Arc::clone(&cancel_token);
 
         // WFST classification: classify the branch expression for
         // automata-based scheduling priority and weight tracking.
@@ -1341,14 +1376,59 @@ fn parallel_branch_eval(
 
             // Track this parallel eval as active (prevents GC during evaluation)
             let _guard = EvalGuard::enter();
-            let ctx = ParallelBranchContext::get();
-            let (eval_results, _new_env) =
-                eval_trampoline(branch_expr, env, &ctx);
 
-            // Store result with bindings (Phase 2 Part A fix).
-            {
-                let mut guard = results.lock().expect("results mutex poisoned");
-                guard[slot] = Some(eval_results.into_iter().collect());
+            // catch_unwind boundary: cooperative cancellation arrives via
+            // `panic::resume_unwind(Box::new(BranchCancelled))` from
+            // `ParallelBranchContext::perform_safepoint` when a sibling
+            // worker satisfies the demand. We catch the marker here, leave
+            // `results[slot] = None`, decrement `remaining`, and exit
+            // cleanly. Other panic payloads bubble up to the work pool.
+            let cancel_outer = Arc::clone(&cancel_token);
+            let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let ctx = ParallelBranchContext::with_cancel(Arc::clone(&cancel_outer));
+                eval_trampoline(branch_expr, env, &ctx)
+            }));
+
+            match unwind_result {
+                Ok((eval_results, _new_env)) => {
+                    // Eligibility predicate: a branch satisfies demand only
+                    // if it produced at least one non-empty result. Empty
+                    // results don't count under PLN's "if-not-empty"
+                    // pattern (`(if (not (== ... ())) ...)`). Calling
+                    // `record_non_empty_branch` is a no-op for `Demand::All`.
+                    let any_non_empty = eval_results.iter().any(|bv| !bv.0.is_empty());
+                    if any_non_empty {
+                        cancel_token.record_non_empty_branch();
+                    }
+                    let mut guard = results.lock().expect("results mutex poisoned");
+                    guard[slot] = Some(eval_results.into_iter().collect());
+                }
+                Err(payload) => {
+                    // BranchCancelled marker → set slot to None and exit.
+                    // Any other panic is re-raised so the work pool reports
+                    // it (matches existing failure mode).
+                    if payload
+                        .downcast_ref::<crate::backend::eval::cesk::coroutine::BranchCancelled>()
+                        .is_none()
+                    {
+                        // Fold the result into a None slot before resuming
+                        // — sibling workers wait on `remaining`, so we
+                        // still need to decrement before unwinding.
+                        let mut guard = results.lock().expect("results mutex poisoned");
+                        guard[slot] = None;
+                        drop(guard);
+                        if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                            let (lock, cvar) = &*done_pair;
+                            let mut done = lock.lock().expect("done mutex poisoned");
+                            *done = true;
+                            cvar.notify_one();
+                        }
+                        std::panic::resume_unwind(payload);
+                    }
+                    // Cancellation: leave slot None.
+                    let mut guard = results.lock().expect("results mutex poisoned");
+                    guard[slot] = None;
+                }
             }
 
             // Decrement barrier; if last task, notify waiter
@@ -1371,23 +1451,45 @@ fn parallel_branch_eval(
 
     // Evaluate branch 0 locally (avoids pool overhead for 1 task).
     // Increment depth so any recursive MatchRules in this branch goes sequential.
-    let branch0_results = {
+    // Wrap in catch_unwind so the local branch can also bail on cancellation.
+    let branch0_outcome: Option<smallvec::SmallVec<[crate::backend::eval::trampoline::types::BoundValue; 2]>> = {
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
-        let ctx = ParallelBranchContext::get();
-        let (eval_results, _new_env) =
-            eval_trampoline(branches[0].clone(), env.clone(), &ctx);
+        let cancel_b0 = Arc::clone(&cancel_token);
+        let env_b0 = env.clone();
+        let branch0_expr = branches[0].clone();
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let ctx = ParallelBranchContext::with_cancel(Arc::clone(&cancel_b0));
+            eval_trampoline(branch0_expr, env_b0, &ctx)
+        }));
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
-        eval_results
+        match unwind {
+            Ok((eval_results, _new_env)) => {
+                let any_non_empty = eval_results.iter().any(|bv| !bv.0.is_empty());
+                if any_non_empty {
+                    cancel_token.record_non_empty_branch();
+                }
+                Some(eval_results)
+            }
+            Err(payload) => {
+                if payload
+                    .downcast_ref::<crate::backend::eval::cesk::coroutine::BranchCancelled>()
+                    .is_none()
+                {
+                    std::panic::resume_unwind(payload);
+                }
+                None
+            }
+        }
     };
 
     // Store branch 0 results (Phase 2 Part A: preserve bindings).
     {
         let mut guard = results.lock().expect("results mutex poisoned");
-        guard[0] = Some(branch0_results.into_iter().collect());
+        guard[0] = branch0_outcome.map(|r| r.into_iter().collect());
     }
 
     // Trace: ParallelDispatch branch0-done
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         crate::backend::trace::with_trace_collector_ref(|tc| {
             tc.emit_converted(
@@ -1435,15 +1537,33 @@ fn parallel_branch_eval(
             crate::backend::models::alloc_count_snapshot(),
         );
 
+        // Edit 5 hoist: stable input-branches snapshot (immutable for whole
+        // wait), reused by the coop-drop and the stolen-task safepoint
+        // (Edit 1) to avoid re-cloning the input branches on every safepoint.
+        let stable_branches: Vec<MettaValue> = branches.iter().cloned().collect();
+
         let (lock, cvar) = &*done_pair;
         let mut done = lock.lock().expect("done mutex poisoned");
         while !*done {
+            // Cancellation observation: if a branch satisfied the demand,
+            // exit early. Sibling workers in flight will observe the same
+            // flag at their next safepoint and bail (`BranchCancelled`).
+            // We don't try to drain the priority queue here — pending
+            // tasks check the same flag at their first safepoint and
+            // short-circuit cheaply.
+            if cancel_token.is_satisfied() {
+                break;
+            }
+
             // Short condvar wait: check for completion frequently
             let result = cvar
                 .wait_timeout(done, std::time::Duration::from_millis(1))
                 .expect("done condvar wait failed");
             done = result.0;
             if *done {
+                break;
+            }
+            if cancel_token.is_satisfied() {
                 break;
             }
 
@@ -1454,10 +1574,56 @@ fn parallel_branch_eval(
                 if remaining.load(Ordering::Acquire) == 0 {
                     break; // All branches done, stop stealing
                 }
+                if cancel_token.is_satisfied() {
+                    break; // Demand satisfied, no more work to steal
+                }
                 if let Some(task) = queue.try_pop() {
                     // Drop the condvar lock before executing the stolen task
                     drop(done);
-                    task.execute();
+                    // Edit 1 — yield parent's outer EvalGuard around the
+                    // stolen task's execution if GC is requesting cooperation.
+                    //
+                    // Without this, the parent's outer eval()'s EvalGuard
+                    // (`mod.rs:180`) is pinned for the duration of
+                    // `task.execute()`. Inside that closure a worker's own
+                    // EvalGuard adds +1; safepoints inside the closure drop
+                    // only the topmost guard, so `ACTIVE_EVALUATORS` is
+                    // floored at 1 (parent's outer guard) for the entire
+                    // stolen-task window. Workers can never reach
+                    // quiescence and `maybe_quiescent_gc` cannot fire.
+                    //
+                    // Gate on `is_gc_requested()` so this is a no-op when
+                    // GC isn't pressing — keeps Smokes (no GC pressure)
+                    // on the existing fast path.
+                    let gc_pending_steal =
+                        crate::backend::models::gc_allocator::is_gc_requested();
+                    if gc_pending_steal {
+                        let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+                        crate::backend::eval::frame_chain::collect_frame_chain_roots(
+                            &mut parent_roots,
+                        );
+                        parent_roots.extend(stable_branches.iter().cloned());
+                        {
+                            let g = results.lock().expect("results mutex poisoned");
+                            for slot in g.iter().flatten() {
+                                for (val, bindings) in slot.iter() {
+                                    parent_roots.push(val.clone());
+                                    for (_, v) in bindings.iter() {
+                                        parent_roots.push(v.clone());
+                                    }
+                                }
+                            }
+                        }
+                        clear_aba_sensitive_caches();
+                        let _root_handle =
+                            crate::backend::models::register_temporary_roots(parent_roots);
+                        crate::backend::models::drop_eval_guard_for_safepoint();
+                        task.execute();
+                        crate::backend::models::reacquire_eval_guard_after_safepoint();
+                        // _root_handle drops here, unregistering the roots.
+                    } else {
+                        task.execute();
+                    }
                     // Re-acquire the condvar lock
                     done = lock.lock().expect("done mutex poisoned");
                     if *done {
@@ -1480,20 +1646,33 @@ fn parallel_branch_eval(
             if super::context::parallel_gc_coop_enabled()
                 && remaining.load(Ordering::Acquire) > 0
             {
+                // Drop our EvalGuard when EITHER:
+                //   1. GC has explicitly requested cooperation
+                //      (`is_gc_requested()`), regardless of our local
+                //      alloc-delta. This generalizes coop to workloads where
+                //      `committed_bytes` grows past `gc_threshold` driven by
+                //      worker allocations while the parent's own alloc-delta
+                //      stays below 500k (small-but-often allocations) —
+                //      otherwise GC starves indefinitely with all workers
+                //      already parked on quiescence.
+                //   2. Our local alloc-delta crossed 500k since last drop
+                //      (mirrors per-worker `should_safepoint` cadence).
                 let current_allocs = crate::backend::models::alloc_count_snapshot();
                 let last = parent_last_safepoint_allocs.get();
-                if current_allocs.wrapping_sub(last) >= 500_000 {
+                let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
+                let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
+                if gc_pending || delta_crossed {
                     parent_last_safepoint_allocs.set(current_allocs);
                     drop(done);
 
                     // Collect parent-side roots:
                     //   - frame_chain (caller-frame values held in Rust locals)
-                    //   - branches Vec (input branch expressions)
+                    //   - stable_branches (input branch expressions, hoisted)
                     //   - partial results from completed workers (BoundValue
                     //     pairs, including their bindings' values)
                     let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
                     crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
-                    parent_roots.extend(branches.iter().cloned());
+                    parent_roots.extend(stable_branches.iter().cloned());
                     {
                         let g = results.lock().expect("results mutex poisoned");
                         for slot in g.iter().flatten() {
@@ -1721,6 +1900,12 @@ fn parallel_collapse_eval(
             crate::backend::models::alloc_count_snapshot(),
         );
 
+        // Edit 5 hoist: stable input-items snapshot (immutable for whole
+        // wait), reused by the coop-drop and the stolen-task safepoint
+        // (Edit 1).
+        let stable_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
+            items.clone();
+
         let (lock, cvar) = &*done_pair;
         let mut done = lock.lock().expect("done mutex poisoned");
         while !*done {
@@ -1739,7 +1924,42 @@ fn parallel_collapse_eval(
                 }
                 if let Some(task) = queue.try_pop() {
                     drop(done);
-                    task.execute();
+                    // Edit 1 — yield parent's outer EvalGuard around
+                    // stolen-task execution if GC is requesting cooperation.
+                    // See parallel_branch_eval for the full rationale.
+                    let gc_pending_steal =
+                        crate::backend::models::gc_allocator::is_gc_requested();
+                    if gc_pending_steal {
+                        let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+                        crate::backend::eval::frame_chain::collect_frame_chain_roots(
+                            &mut parent_roots,
+                        );
+                        for (val, bindings) in stable_items.iter() {
+                            parent_roots.push(val.clone());
+                            for (_, v) in bindings.iter() {
+                                parent_roots.push(v.clone());
+                            }
+                        }
+                        {
+                            let g = results.lock().expect("results mutex poisoned");
+                            for slot in g.iter().flatten() {
+                                for (val, bindings) in slot.iter() {
+                                    parent_roots.push(val.clone());
+                                    for (_, v) in bindings.iter() {
+                                        parent_roots.push(v.clone());
+                                    }
+                                }
+                            }
+                        }
+                        clear_aba_sensitive_caches();
+                        let _root_handle =
+                            crate::backend::models::register_temporary_roots(parent_roots);
+                        crate::backend::models::drop_eval_guard_for_safepoint();
+                        task.execute();
+                        crate::backend::models::reacquire_eval_guard_after_safepoint();
+                    } else {
+                        task.execute();
+                    }
                     done = lock.lock().expect("done mutex poisoned");
                     if *done {
                         break;
@@ -1750,18 +1970,23 @@ fn parallel_collapse_eval(
             }
 
             // Cooperative GC drop — see parallel_branch_eval for rationale.
+            // Drops EvalGuard when EITHER the GC has explicitly requested
+            // cooperation OR our local alloc-delta crossed 500k (mirrors the
+            // worker-side `should_safepoint` pressure-driven path).
             if super::context::parallel_gc_coop_enabled()
                 && remaining.load(Ordering::Acquire) > 0
             {
                 let current_allocs = crate::backend::models::alloc_count_snapshot();
                 let last = parent_last_safepoint_allocs.get();
-                if current_allocs.wrapping_sub(last) >= 500_000 {
+                let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
+                let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
+                if gc_pending || delta_crossed {
                     parent_last_safepoint_allocs.set(current_allocs);
                     drop(done);
 
                     let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
                     crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
-                    for (val, bindings) in items.iter() {
+                    for (val, bindings) in stable_items.iter() {
                         parent_roots.push(val.clone());
                         for (_, v) in bindings.iter() {
                             parent_roots.push(v.clone());
@@ -1938,7 +2163,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
     // Trace: EvalStart with span correlation + start timestamp.
     // These variables carry the start timestamp and span ID to the EvalEnd site.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let (_eval_start_ns, _eval_span_id) = {
         if let Some(tc) = ctx.trace_collector() {
             let span_id = tc.next_span_id();
@@ -1963,7 +2188,7 @@ fn eval_trampoline_inner<C: EvalContext>(
     // Set thread-local trace collector so that type inference (infer_types_generic,
     // types_match_generic) and rule management (add_rule) can emit trace events
     // without requiring an EvalContext parameter.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         if let Some(tc) = ctx.trace_collector() {
             // The trace collector is behind a shared reference with a 'static-like
@@ -2047,11 +2272,20 @@ fn eval_trampoline_inner<C: EvalContext>(
     >> = Vec::new();
 
     // Main trampoline loop
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut _trampoline_iter: u64 = 0;
     while let Some(work) = work_stack.pop() {
+        // ── G1 trampoline-tick balance check (every 65536 iterations).
+        // ──   Catches threads that hold a leaked `pages.read()` guard
+        // ──   while iterating in the trampoline. The 65k tick interval
+        // ──   keeps overhead negligible (one cmp every 65k iterations
+        // ──   ≈ < 0.001% per-iteration cost) while still catching a
+        // ──   leak within ~10ms of the leak point on a typical
+        // ──   machine. The `current_thread_has_imbalance()` early-out
+        // ──   skips the emission entirely on threads with no held
+        // ──   guards.
         // Trace: TrampolineStep (gated by METTA_TRACE_TRAMPOLINE=1)
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             _trampoline_iter += 1;
             if crate::backend::trace::rule_match::should_trace_trampoline() {
@@ -2184,9 +2418,9 @@ fn eval_trampoline_inner<C: EvalContext>(
             // `clear_aba_sensitive_caches()` for the ABA hazard rationale.
             clear_aba_sensitive_caches();
 
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             let _root_count = root_set.len() as u32;
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             let _safepoint_start = {
                 ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
             };
@@ -2208,7 +2442,7 @@ fn eval_trampoline_inner<C: EvalContext>(
             }
 
             // Trace: GcSafepoint with measured pause duration
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     let end_ns = tc.elapsed_ns();
@@ -2272,6 +2506,19 @@ fn eval_trampoline_inner<C: EvalContext>(
             } => {
                 trace!(target: "mettatron::backend::eval::eval_trampoline", ?value, depth, "eval work item");
 
+                // Publish the current eval's demand on the thread-local so
+                // downstream parallel-dispatch sites (StartAmb / superpose,
+                // dispatch_rule_matches) can read it. Sticky semantics:
+                // `Some(d)` overrides; `None` inherits the previously-set
+                // demand. Shape-preserving forms (`not`, `==`, `if`'s arg-
+                // pushes) push children with `demand: None` so they
+                // implicitly inherit. Cardinality-multiplying forms
+                // (`StartCollapse`, `StartCollapseBind`, etc.) push children
+                // with `demand: Some(Demand::All)` to explicitly shadow.
+                if demand.is_some() {
+                    CURRENT_DEMAND.with(|d| d.set(demand));
+                }
+
                 // Phase 9.5: Normal-form memoization check.
                 // If this S-expression has been previously evaluated and reached
                 // fixpoint (evaluated to itself), skip evaluation entirely.
@@ -2298,7 +2545,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Step 1: Cycle detection via active evaluation set.
                     // True cycle = expression is on its own call stack.
                     if crate::backend::eval::cesk::is_actively_evaluating(tabling_hash) {
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
                                 tc.emit_converted(
@@ -2327,7 +2574,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     });
                     match lookup {
                         crate::backend::eval::cesk::TableLookup::Complete(cached) => {
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
                                     tc.emit_converted(
@@ -2360,7 +2607,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             continue;
                         }
                         crate::backend::eval::cesk::TableLookup::Absent => {
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
                                     tc.emit_converted(
@@ -2488,7 +2735,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         // hash != 0 guard short-circuits before any trait dispatch / DashMap lookup for cold code.
                         if compilation_hash != 0 {
                         if let Some((results, new_env)) = ctx.try_compiled_dispatch(&value, &env, compilation_hash) {
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
                                     let output_tvs: Vec<trace_format::TraceValue> = results.iter()
@@ -2533,6 +2780,34 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                 // Save input pointer for fixpoint detection (Phase 9.5)
                 let input_ptr = if is_sexpr { value.inner_ptr() } else { std::ptr::null() };
+
+                // Phase 6 (Bug 1, trace-driven): substitute caller-side
+                // bindings into `value` BEFORE eval_step_generic runs.
+                //
+                // Without this, free variables in `value` (e.g., `$a, $b` from
+                // a cartesian-product combo) are NOT visible to rule body
+                // materialization during step_sexpr → try_match_all_rules →
+                // match_rules_native → apply_bindings_with_rename_scoped:
+                // the body-local rename branch then freshens these caller-
+                // side vars to `$__fr_<epoch>_*`, registering wildcard-LHS
+                // rules via add-atom and triggering Truth_ModusPonens cascade
+                // (4M+ self-recursing rule applications, observed via
+                // trace-analyzer redundancy on /tmp/oom.trace).
+                //
+                // Substitution upfront makes the caller-side variables
+                // concrete in `value`. The downstream rule body sees `$C`
+                // bound to e.g. `(uncle b c)` instead of `(uncle $a $b)`,
+                // so the registered rule has the correct concrete LHS.
+                //
+                // Trace evidence: trace-analyzer dump /tmp/oom.trace event
+                // #56 showed `(uncle $__fr_4_a $__fr_4_b)` instead of the
+                // expected `(uncle a b)` after the `=>` rule body fired.
+                let cb_subst = &*carrying_bindings;
+                let value = if cb_subst.is_empty() || !value.has_variables_fast() {
+                    value
+                } else {
+                    crate::backend::eval::trampoline::apply_bindings(&value, cb_subst, ctx.factory())
+                };
 
                 // Perform one step of evaluation using generic step function
                 let step_result = eval_step_generic(value, (*env).clone(), depth, ctx);
@@ -2612,7 +2887,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         // Use static dispatch - monomorphized for each value type
                         // Clone op_name to avoid borrow conflict with mutable state
                         let op_name = state.op_name.clone();
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         let _grounded_start_ns = {
                             ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
                         };
@@ -2625,7 +2900,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         .map(|(v, _)| v)
                                         .collect();
                                     // Trace: GroundedOp success with duration
-                                    #[cfg(feature = "eval-trace")]
+                                    #[cfg(feature = "trace")]
                                     {
                                         if let Some(tc) = ctx.trace_collector() {
                                             let end_ns = tc.elapsed_ns();
@@ -2690,7 +2965,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 }
                                 GroundedWork::Error(e) => {
                                     // Trace: GroundedOpError
-                                    #[cfg(feature = "eval-trace")]
+                                    #[cfg(feature = "trace")]
                                     {
                                         if let Some(tc) = ctx.trace_collector() {
                                             let (error_kind, message) = match &e {
@@ -2813,7 +3088,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         if let Some(ref expected) = expected_type {
                             let before_count = matches.len();
 
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             let mut pruned_types: Vec<Option<trace_format::TraceValue>> = Vec::new();
 
                             matches.retain(|(_rhs, _bindings, rhs_type)| {
@@ -2821,7 +3096,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     Some(rt) => types_match_generic(rt, expected),
                                     None => true, // Unknown type — don't prune (conservative)
                                 };
-                                #[cfg(feature = "eval-trace")]
+                                #[cfg(feature = "trace")]
                                 if !keep {
                                     pruned_types.push(
                                         rhs_type.as_ref().map(crate::backend::trace::trace_value_generic)
@@ -2831,7 +3106,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             });
 
                             // Emit BranchPrune trace event when pruning occurred
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if before_count != matches.len() {
                                     if let Some(tc) = ctx.trace_collector() {
@@ -3585,7 +3860,7 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             if par_budget > 0 {
                                 // Trace: NondeterministicFork (parallel amb)
-                                #[cfg(feature = "eval-trace")]
+                                #[cfg(feature = "trace")]
                                 {
                                     if let Some(tc) = ctx.trace_collector() {
                                         tc.emit_converted(
@@ -3602,8 +3877,25 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 }
 
                                 let metta_env = (*env).clone();
+                                // StartAmb (superpose) propagates the outer
+                                // demand: if the caller (e.g. `(if (not (==
+                                // <superpose-result> ())) ...)`) only needs
+                                // a single non-empty witness, the first
+                                // satisfying alternative cancels its siblings
+                                // via the CancelToken. When wrapped in
+                                // `collapse`/`collapse-bind`, those handlers
+                                // shadow CURRENT_DEMAND back to `All` before
+                                // dispatching the body, so this read sees
+                                // `All` in those contexts (no false pruning).
+                                let amb_demand = CURRENT_DEMAND
+                                    .with(|d| d.get())
+                                    .unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
                                 let results = parallel_branch_eval(
-                                    alternatives, metta_env, par_budget, current_depth,
+                                    alternatives,
+                                    metta_env,
+                                    par_budget,
+                                    current_depth,
+                                    amb_demand,
                                 );
 
                                 // Phase 2 Part A: results are BoundValue; extend directly.
@@ -4295,7 +4587,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         || bindings.iter().any(|(_, val)| super::engine::binding_value_needs_eval(val))
                     {
                         let materialized = apply_bindings(&template, &bindings, ctx.factory());
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
                                 tc.emit_converted(
@@ -4716,7 +5008,7 @@ fn eval_trampoline_inner<C: EvalContext>(
     }
 
     // Trace: EvalEnd with matching span_id and measured duration
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         if let Some(tc) = ctx.trace_collector() {
             let result_count = final_result.as_ref().map_or(0, |r| r.0.len()) as u32;
@@ -4737,7 +5029,7 @@ fn eval_trampoline_inner<C: EvalContext>(
     }
 
     // Clear thread-local trace collector before returning.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         crate::backend::trace::thread_local_sink::clear_thread_trace_collector();
     }
@@ -4771,7 +5063,7 @@ fn process_continuation<C: EvalContext>(
     //     emit ContinuationExitNoResume.
     // Record-time volume mitigation: skip entirely when inputs are empty
     // (no binding info to flow). All richer filtering is analyzer-side.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let trace_ctx: Option<(
         String,
         u64,
@@ -5047,16 +5339,16 @@ fn process_continuation<C: EvalContext>(
             mut current_branch_bindings,
             outer_carrying,
             tracked_vars_hint,
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             branch_span_id,
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             branch_start_ns,
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             branch_index,
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             total_branches,
         } => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             let result_count = result.0.len() as u32;
 
             let result_env = result.1;
@@ -5100,7 +5392,7 @@ fn process_continuation<C: EvalContext>(
             results.extend(composed);
 
             // Trace: BranchEnd for the branch that just completed
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     let end_ns = tc.elapsed_ns();
@@ -5166,7 +5458,7 @@ fn process_continuation<C: EvalContext>(
                 let bindings = std::sync::Arc::new(raw_bindings);
 
                 // Trace: BranchStart for the next branch
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 let (_next_span_id, _next_start_ns, _next_branch_index) = {
                     if let Some(tc) = ctx.trace_collector() {
                         let next_idx = branch_index + 1;
@@ -5227,18 +5519,18 @@ fn process_continuation<C: EvalContext>(
                     current_branch_bindings,
                     outer_carrying,
                     tracked_vars_hint,
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     branch_span_id: _next_span_id,
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     branch_start_ns: _next_start_ns,
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     branch_index: _next_branch_index,
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     total_branches,
                 });
 
                 // Trace: RuleApplication (tree-walker, subsequent match)
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
@@ -5892,8 +6184,23 @@ fn process_continuation<C: EvalContext>(
             if let Some((combo, combo_bindings)) = combinations.next() {
                 let generic_sexpr = ctx.factory().sexpr(combo.to_vec());
 
+                // Phase 5 (Bug 1): compose outer_carrying with combo_bindings
+                // and thread as caller-side outer_carrying so captured caller
+                // variables in rule body templates resolve through them
+                // instead of being freshened to wildcard names.
+                let combo_outer = if outer_carrying.is_empty() {
+                    combo_bindings.clone()
+                } else if combo_bindings.is_empty() {
+                    (*outer_carrying).clone()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*outer_carrying, &combo_bindings, ctx.factory(),
+                    )
+                };
                 let all_matches_with_types =
-                    try_match_all_rules(&generic_sexpr, &result_env, *ctx.factory());
+                    crate::backend::eval::trampoline::engine::try_match_all_rules_with_outer(
+                        &generic_sexpr, &result_env, *ctx.factory(), &combo_outer,
+                    );
 
                 if all_matches_with_types.is_empty() {
                     // Phase 2.B HE-bisimilarity: function with no matching
@@ -5985,7 +6292,7 @@ fn process_continuation<C: EvalContext>(
                     // First resumption: result_values are values to pattern match
 
                     // Trace: value-result phase
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     {
                         if let Some(tc) = ctx.trace_collector() {
                             tc.emit_converted(
@@ -6141,8 +6448,15 @@ fn process_continuation<C: EvalContext>(
 
                     if par_budget > 0 {
                         let metta_env = (*result_env).clone();
+                        // ProcessLet's parallel body dispatch is a fan-out: every
+                        // matched-pattern body must produce its result for the
+                        // outer let to collect. `Demand::All` is correct here.
                         let par_results = parallel_branch_eval(
-                            instantiated_bodies, metta_env, par_budget, current_depth,
+                            instantiated_bodies,
+                            metta_env,
+                            par_budget,
+                            current_depth,
+                            crate::backend::eval::cesk::coroutine::Demand::All,
                         );
 
                         // Phase 2 Part A: results are BoundValue; extend directly.
@@ -6226,7 +6540,7 @@ fn process_continuation<C: EvalContext>(
                                         None => continue, // scrutinee/pattern conflict → drop
                                     };
                                     // Trace: pattern-match phase (subsequent resumption)
-                                    #[cfg(feature = "eval-trace")]
+                                    #[cfg(feature = "trace")]
                                     {
                                         if let Some(tc) = ctx.trace_collector() {
                                             tc.emit_converted(
@@ -6301,7 +6615,7 @@ fn process_continuation<C: EvalContext>(
                                     return;
                                 }
                                 // Trace: pattern-no-match phase (subsequent resumption)
-                                #[cfg(feature = "eval-trace")]
+                                #[cfg(feature = "trace")]
                                 {
                                     if let Some(tc) = ctx.trace_collector() {
                                         tc.emit_converted(
@@ -6488,9 +6802,14 @@ fn process_continuation<C: EvalContext>(
 
                         if !changed {
                             // Fixpoint: pre-evaluation didn't change any argument.
-                            let all_matches_with_types = try_match_all_rules(
-                                &sexpr, &result_env, *ctx.factory()
-                            );
+                            // Phase 5 (Bug 1): thread combo_carrying as caller-side
+                            // outer_carrying so that captured caller variables in
+                            // rule body templates resolve through it instead of
+                            // being freshened to wildcard names.
+                            let all_matches_with_types =
+                                crate::backend::eval::trampoline::engine::try_match_all_rules_with_outer(
+                                    &sexpr, &result_env, *ctx.factory(), &combo_carrying,
+                                );
 
                             if !all_matches_with_types.is_empty() {
                                 let matches_deque: Vec<_> =
@@ -7303,7 +7622,7 @@ fn process_continuation<C: EvalContext>(
                     };
 
                 // Trace: condition-result phase
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         tc.emit_converted(
@@ -7334,7 +7653,7 @@ fn process_continuation<C: EvalContext>(
                 if let Some(is_true) = first.as_bool() {
                     let branch = if is_true {
                         // Trace: then-branch phase
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
                                 tc.emit_converted(
@@ -7353,7 +7672,7 @@ fn process_continuation<C: EvalContext>(
                         then_branch
                     } else {
                         // Trace: else-branch phase
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
                                 tc.emit_converted(
@@ -7442,7 +7761,7 @@ fn process_continuation<C: EvalContext>(
                         (then_branch, else_branch)
                     };
                     // Trace: non-boolean phase
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     {
                         if let Some(tc) = ctx.trace_collector() {
                             tc.emit_converted(
@@ -7495,7 +7814,7 @@ fn process_continuation<C: EvalContext>(
             let (atom_results, atom_env) = result;
 
             // Trace: scrutinee-result phase
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     tc.emit_converted(
@@ -7901,7 +8220,7 @@ fn process_continuation<C: EvalContext>(
                     match eval_switch(&switch_atom, &cases, ctx.factory()) {
                         SwitchResult::Match(template, _bindings) => {
                             // Trace: case-match phase
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
                                     tc.emit_converted(
@@ -7987,7 +8306,7 @@ fn process_continuation<C: EvalContext>(
                         }
                         SwitchResult::NoMatch => {
                             // Trace: case-no-match phase
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
                                     tc.emit_converted(
@@ -8146,7 +8465,7 @@ fn process_continuation<C: EvalContext>(
             let (expr_results, result_env) = result;
 
             // Trace: expr-result or expr-empty phase
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     let phase = if expr_results.is_empty() { "expr-empty" } else { "expr-result" };
@@ -9394,7 +9713,7 @@ fn process_continuation<C: EvalContext>(
                 );
 
                 // Trace: collapse-result phase
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         tc.emit_converted(
@@ -9541,7 +9860,7 @@ fn process_continuation<C: EvalContext>(
                 }).collect();
                 let result_list = ctx.factory().sexpr(pairs);
 
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         tc.emit_converted(
@@ -9743,7 +10062,7 @@ fn process_continuation<C: EvalContext>(
                 };
 
                 // Trace: collapse-result phase
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         tc.emit_converted(
@@ -9983,7 +10302,7 @@ fn process_continuation<C: EvalContext>(
                         };
 
                         // Trace: space-result phase (&self / module space)
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
                                 tc.emit_converted(
@@ -10053,7 +10372,7 @@ fn process_continuation<C: EvalContext>(
                             handle.match_pattern_generic(&pattern, &template, ctx.factory());
 
                         // Trace: space-result phase (owned space)
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
                                 tc.emit_converted(
@@ -10788,7 +11107,7 @@ fn process_continuation<C: EvalContext>(
             };
 
             // Trace: reduced / irreducible phase
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     let phase = if is_irreducible { "irreducible" } else { "reduced" };
@@ -10845,7 +11164,7 @@ fn process_continuation<C: EvalContext>(
 
             if space_results.is_empty() {
                 // Trace: default-branch phase (space empty)
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         tc.emit_converted(
@@ -10885,7 +11204,7 @@ fn process_continuation<C: EvalContext>(
 
                         if generic_results.is_empty() {
                             // Trace: default-branch phase (&self no match)
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
                                     tc.emit_converted(
@@ -10955,7 +11274,7 @@ fn process_continuation<C: EvalContext>(
 
                         if instantiated_templates.is_empty() {
                             // Trace: default-branch phase (owned space no match)
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
                                     tc.emit_converted(
@@ -11612,7 +11931,7 @@ fn process_continuation<C: EvalContext>(
                 });
             }
 
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     tc.emit_converted(
@@ -11772,7 +12091,7 @@ fn process_continuation<C: EvalContext>(
     //   - Anything else    → emit ContinuationExitNoResume with exit_kind.
     //   - Nothing pushed   → terminal arm (e.g., Done). Emit
     //     ContinuationExitNoResume with exit_kind="done".
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     if let Some((cont_kind, flow_id, cont_depth, inputs, before_len)) = trace_ctx {
         if let Some(tc) = ctx.trace_collector() {
             let pushed = if work_stack.len() > before_len {

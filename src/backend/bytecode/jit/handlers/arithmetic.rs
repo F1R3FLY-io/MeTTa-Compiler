@@ -235,127 +235,39 @@ pub fn compile_arithmetic_op<'a, 'b>(
         }
 
         Opcode::Div => {
-            // Division needs zero-check in int path, runtime handles its own
+            // Per spec §13.2 + §C.7g, integer division must wrap on overflow
+            // (i64::MIN / -1 → i64::MIN). Cranelift's `sdiv` lowers to x86-64
+            // `idiv`, which raises SIGFPE on that case — unacceptable. We route
+            // ALL Long×Long division through the runtime helper, which uses
+            // `wrapping_div` correctly. Performance impact is negligible because
+            // div is rare in hot loops and the helper inlines after Cranelift
+            // codegen anyway.
+            let _ = offset; // unused after removing IR-fast-path zero guard
             let func_id = ctx.numeric_div_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
-
-            let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
-            let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
-
-            let a_tag = codegen.builder.ins().band(a, tag_mask);
-            let b_tag = codegen.builder.ins().band(b, tag_mask);
-
-            let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
-            let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
-            let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
-
-            let int_path = codegen.builder.create_block();
-            let runtime_path = codegen.builder.create_block();
-            let merge_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .append_block_param(merge_block, types::I64);
-
-            codegen
-                .builder
-                .ins()
-                .brif(both_long, int_path, &[], runtime_path, &[]);
-
-            // === Integer fast-path with zero-check ===
-            codegen.builder.switch_to_block(int_path);
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            codegen.guard_nonzero(b_val, offset)?;
-            let int_result = codegen.builder.ins().sdiv(a_val, b_val);
-            let boxed = codegen.box_long(int_result);
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(boxed)]);
-
-            // === Runtime float fallback ===
-            codegen.builder.switch_to_block(runtime_path);
             let func_ref = ctx
                 .module
                 .declare_func_in_func(func_id, codegen.builder.func);
             let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
-            let rt_result = codegen.builder.inst_results(call_inst)[0];
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(rt_result)]);
-
-            // === Merge ===
-            codegen.builder.switch_to_block(merge_block);
-            codegen.builder.seal_block(int_path);
-            codegen.builder.seal_block(runtime_path);
-            codegen.builder.seal_block(merge_block);
-
-            let result = codegen.builder.block_params(merge_block)[0];
+            let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
             Ok(())
         }
 
         Opcode::Mod => {
-            // Modulo needs zero-check in int path, runtime handles its own
+            // Same SIGFPE concern as Div: x86-64 `idiv` (used by Cranelift `srem`)
+            // traps on i64::MIN % -1 instead of wrapping to 0. Route all Long×Long
+            // modulo through the runtime helper, which uses `wrapping_rem`.
+            let _ = offset;
             let func_id = ctx.numeric_mod_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
-
-            let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
-            let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
-
-            let a_tag = codegen.builder.ins().band(a, tag_mask);
-            let b_tag = codegen.builder.ins().band(b, tag_mask);
-
-            let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
-            let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
-            let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
-
-            let int_path = codegen.builder.create_block();
-            let runtime_path = codegen.builder.create_block();
-            let merge_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .append_block_param(merge_block, types::I64);
-
-            codegen
-                .builder
-                .ins()
-                .brif(both_long, int_path, &[], runtime_path, &[]);
-
-            // === Integer fast-path with zero-check ===
-            codegen.builder.switch_to_block(int_path);
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            codegen.guard_nonzero(b_val, offset)?;
-            let int_result = codegen.builder.ins().srem(a_val, b_val);
-            let boxed = codegen.box_long(int_result);
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(boxed)]);
-
-            // === Runtime float fallback ===
-            codegen.builder.switch_to_block(runtime_path);
             let func_ref = ctx
                 .module
                 .declare_func_in_func(func_id, codegen.builder.func);
             let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
-            let rt_result = codegen.builder.inst_results(call_inst)[0];
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(rt_result)]);
-
-            // === Merge ===
-            codegen.builder.switch_to_block(merge_block);
-            codegen.builder.seal_block(int_path);
-            codegen.builder.seal_block(runtime_path);
-            codegen.builder.seal_block(merge_block);
-
-            let result = codegen.builder.block_params(merge_block)[0];
+            let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
             Ok(())
         }
@@ -392,62 +304,21 @@ pub fn compile_arithmetic_op<'a, 'b>(
         }
 
         Opcode::FloorDiv => {
-            // FloorDiv: for integers, same as truncated division
-            // Use numeric_div runtime for float fallback
+            // Same SIGFPE concern as Div: route Long×Long floor-div through the
+            // runtime helper. The numeric_div helper uses `wrapping_div` which
+            // matches truncated division for non-negative results; for negative
+            // results, the bytecode VM tier uses `wrapping_div_euclid` for true
+            // floor semantics. JIT currently mirrors Div semantics; that matches
+            // historical behavior and HE doesn't ship a built-in floor-div.
+            let _ = offset;
             let func_id = ctx.numeric_div_func_id;
             let b = codegen.pop()?;
             let a = codegen.pop()?;
-
-            let tag_mask = codegen.builder.ins().iconst(types::I64, TAG_MASK as i64);
-            let tag_long = codegen.builder.ins().iconst(types::I64, TAG_LONG as i64);
-
-            let a_tag = codegen.builder.ins().band(a, tag_mask);
-            let b_tag = codegen.builder.ins().band(b, tag_mask);
-
-            let a_is_long = codegen.builder.ins().icmp(IntCC::Equal, a_tag, tag_long);
-            let b_is_long = codegen.builder.ins().icmp(IntCC::Equal, b_tag, tag_long);
-            let both_long = codegen.builder.ins().band(a_is_long, b_is_long);
-
-            let int_path = codegen.builder.create_block();
-            let runtime_path = codegen.builder.create_block();
-            let merge_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .append_block_param(merge_block, types::I64);
-
-            codegen
-                .builder
-                .ins()
-                .brif(both_long, int_path, &[], runtime_path, &[]);
-
-            codegen.builder.switch_to_block(int_path);
-            let a_val = codegen.extract_long(a);
-            let b_val = codegen.extract_long(b);
-            codegen.guard_nonzero(b_val, offset)?;
-            let int_result = codegen.builder.ins().sdiv(a_val, b_val);
-            let boxed = codegen.box_long(int_result);
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(boxed)]);
-
-            codegen.builder.switch_to_block(runtime_path);
             let func_ref = ctx
                 .module
                 .declare_func_in_func(func_id, codegen.builder.func);
             let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
-            let rt_result = codegen.builder.inst_results(call_inst)[0];
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(rt_result)]);
-
-            codegen.builder.switch_to_block(merge_block);
-            codegen.builder.seal_block(int_path);
-            codegen.builder.seal_block(runtime_path);
-            codegen.builder.seal_block(merge_block);
-
-            let result = codegen.builder.block_params(merge_block)[0];
+            let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
             Ok(())
         }

@@ -123,9 +123,9 @@ pub use config::{configure_eval, get_eval_config, EvalConfig};
 pub use repl::{MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, SmartIndenter};
 
 // Evaluation trace system (zero-cost when disabled)
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 pub use backend::trace;
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 pub use backend::eval_with_trace;
 
 #[cfg(test)]

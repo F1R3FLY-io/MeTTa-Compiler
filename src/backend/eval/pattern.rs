@@ -65,8 +65,8 @@ pub(crate) fn pattern_match_impl(
     while let Some((pat, val)) = work_stack.pop() {
         // Process each pattern-value pair
         let matches = match (pat.view(), val.view()) {
-            // Wildcard matches anything
-            (ValueView::Atom(p), _) if p == "_" => true,
+            // Wildcard matches anything (both `_` and `$_`)
+            (ValueView::Atom(p), _) if p == "_" || p == "$_" => true,
 
             // FAST PATH: First variable binding (empty bindings)
             // Optimization: Skip lookup when bindings are empty - directly insert
@@ -74,6 +74,7 @@ pub(crate) fn pattern_match_impl(
             (ValueView::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
                     && p != "&"
+                    && p != "$_"
                     && bindings.is_empty()
                     && work_stack.is_empty() =>
             {
@@ -83,9 +84,11 @@ pub(crate) fn pattern_match_impl(
 
             // GENERAL PATH: Variable with potential existing bindings
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+            // EXCEPT: $_ is the wildcard (handled above)
             (ValueView::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
-                    && p != "&" =>
+                    && p != "&"
+                    && p != "$_" =>
             {
                 // Check if variable is already bound (linear search for SmartBindings)
                 if let Some((_, existing)) = bindings.iter().find(|(name, _)| *name == p) {

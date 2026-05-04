@@ -55,6 +55,114 @@ impl Default for Demand {
 }
 
 // ============================================================================
+// CancelToken — cooperative cancellation for parallel-dispatch boundaries
+// ============================================================================
+
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+/// Marker payload thrown via `panic::resume_unwind` when a parallel-branch
+/// worker observes that its demand has been satisfied by a sibling. Caught
+/// at the worker closure boundary in `priority_scheduler::execute`; the
+/// catch arm uses the marker to release the slot cleanly without surfacing
+/// a panic.
+#[derive(Debug, Clone, Copy)]
+pub struct BranchCancelled;
+
+/// Shared cancellation state for one `parallel_branch_eval` /
+/// `parallel_collapse_eval` invocation. All workers spawned for the call
+/// hold an `Arc<CancelToken>`. When any branch produces a result that
+/// satisfies the demand, the token's `satisfied` flag flips; siblings
+/// observe the flip cooperatively at the next safepoint and bail.
+///
+/// For `Demand::All`, `record_branch_result` is a no-op and `is_satisfied`
+/// returns `false` forever — the token is allocated but cancellation never
+/// fires. This keeps the codepath uniform without special-casing.
+pub struct CancelToken {
+    /// True once `non_empty_branches` has reached the demand threshold.
+    satisfied: AtomicBool,
+    /// Count of branches that produced at least one non-empty result.
+    /// Empty branches don't count — they don't satisfy "if-not-empty"
+    /// patterns like `(if (not (== ... ())) ...)`.
+    non_empty_branches: AtomicU32,
+    /// The demand level that determines when `satisfied` flips.
+    demand: Demand,
+}
+
+impl CancelToken {
+    #[inline]
+    pub fn new(demand: Demand) -> Self {
+        Self {
+            satisfied: AtomicBool::new(false),
+            non_empty_branches: AtomicU32::new(0),
+            demand,
+        }
+    }
+
+    /// Record that a branch produced `branch_result_count` results, of
+    /// which any may have been non-empty (caller decides eligibility before
+    /// calling). Increments the non-empty counter; if the demand threshold
+    /// is reached, atomically flips `satisfied` from false→true.
+    ///
+    /// Returns `true` iff this call performed the false→true transition.
+    /// Subsequent calls return `false`. Useful for trace emission.
+    #[inline]
+    pub fn record_non_empty_branch(&self) -> bool {
+        // Demand::All never satisfies — short-circuit cheap path.
+        if matches!(self.demand, Demand::All) {
+            return false;
+        }
+        let prev = self.non_empty_branches.fetch_add(1, Ordering::AcqRel);
+        let new_count = prev as usize + 1;
+        if self.demand.is_satisfied(new_count) {
+            // single-shot transition via compare_exchange
+            self.satisfied
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Cooperative observation point. Workers call this at safepoints; the
+    /// parent wait loop calls it on every tick. Acquire ordering pairs with
+    /// the Release in the `compare_exchange` flip in `record_non_empty_branch`.
+    #[inline]
+    pub fn is_satisfied(&self) -> bool {
+        self.satisfied.load(Ordering::Acquire)
+    }
+
+    /// Manually flip the satisfied bit. Used by callers that want to
+    /// short-circuit dispatch for reasons unrelated to result counts
+    /// (e.g., outer cancellation propagation in nested parallelism).
+    #[inline]
+    pub fn cancel(&self) {
+        self.satisfied.store(true, Ordering::Release);
+    }
+
+    /// The demand level this token enforces.
+    #[inline]
+    pub fn demand(&self) -> Demand {
+        self.demand
+    }
+
+    /// Count of non-empty branches observed so far. Used for trace events.
+    #[inline]
+    pub fn non_empty_count(&self) -> u32 {
+        self.non_empty_branches.load(Ordering::Acquire)
+    }
+}
+
+impl std::fmt::Debug for CancelToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancelToken")
+            .field("satisfied", &self.is_satisfied())
+            .field("non_empty_count", &self.non_empty_count())
+            .field("demand", &self.demand)
+            .finish()
+    }
+}
+
+// ============================================================================
 // Branch Coroutine
 // ============================================================================
 

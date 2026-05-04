@@ -58,75 +58,75 @@ where
     F: MettaValueFactory<V> + Clone,
 {
     // Track the source code path for tracing (only allocated when eval-trace is enabled)
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut _trace_source: &str = "";
 
     let result = match expr.inner_raw() {
         MettaValueInner::Bool(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-bool"; }
             vec![factory.atom("Bool")]
         }
         MettaValueInner::Long(_) | MettaValueInner::Float(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-number"; }
             vec![factory.atom("Number")]
         }
         MettaValueInner::String(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-string"; }
             vec![factory.atom("String")]
         }
         MettaValueInner::Unit => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-unit"; }
             vec![factory.atom("Expression")]
         }
         MettaValueInner::Type(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-type"; }
             vec![factory.atom("Type")]
         }
         MettaValueInner::Error(..) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-error"; }
             vec![factory.atom("Error")]
         }
         MettaValueInner::Space(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-space"; }
             vec![factory.atom("Space")]
         }
         MettaValueInner::State(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-state"; }
             vec![factory.atom("State")]
         }
         MettaValueInner::Memo(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-memo"; }
             vec![factory.atom("Memo")]
         }
         MettaValueInner::Empty => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "literal-empty"; }
             vec![factory.atom("Empty")]
         }
         MettaValueInner::Atom(name) => {
             // Check if it's a variable (starts with $, &, or ')
             if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 { _trace_source = "variable"; }
                 vec![factory.type_value(factory.atom(name))]
             } else {
                 // Look up ALL types in environment (nondeterministic)
                 let types = env.get_types_generic(name);
                 if types.is_empty() {
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     { _trace_source = "fallback-undefined"; }
                     vec![factory.atom("%Undefined%")]
                 } else {
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     { _trace_source = "env-atom-types"; }
                     types
                 }
@@ -135,7 +135,7 @@ where
         MettaValueInner::SExpr(_) => {
             let items = expr.as_sexpr().expect("matched SExpr");
             if items.is_empty() {
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 { _trace_source = "sexpr-empty"; }
                 vec![factory.atom("Expression")]
             } else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
@@ -143,7 +143,7 @@ where
                 if let Some((types, source)) =
                     infer_types_control_flow(op, items, factory, env, seen)
                 {
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     { _trace_source = source; }
                     let _ = source;
                     types
@@ -187,11 +187,11 @@ where
                             if !all_match {
                                 // Phase E: Arg types don't match builtin signature — return empty
                                 // (HE parity: get-type (+ 5 "4") returns empty, not Number)
-                                #[cfg(feature = "eval-trace")]
+                                #[cfg(feature = "trace")]
                                 { _trace_source = "builtin-arg-mismatch"; }
                                 vec![]
                             } else {
-                                #[cfg(feature = "eval-trace")]
+                                #[cfg(feature = "trace")]
                                 { _trace_source = "builtin-signature"; }
                                 let resolved = if !bindings.is_empty() {
                                     let ret_val = type_expr_to_generic(ret_type, factory);
@@ -202,26 +202,26 @@ where
                                 vec![resolved]
                             }
                         } else {
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             { _trace_source = "builtin-signature"; }
                             vec![type_expr_to_generic(ret_type, factory)]
                         }
                     } else {
                         // Builtin signature exists but no return type — fall through
                         let (types, source) = infer_types_sexpr_body(op, items, factory, env);
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         { _trace_source = source; }
                         let _ = source;
                         types
                     }
                 } else if op == "->" {
                     // Special case for arrow type constructor
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     { _trace_source = "arrow-constructor"; }
                     vec![factory.atom("Type")]
                 } else {
                     let (types, source) = infer_types_sexpr_body(op, items, factory, env);
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     { _trace_source = source; }
                     let _ = source;
                     types
@@ -229,14 +229,14 @@ where
             } else {
                 // Phase 10.6: Non-atom head (e.g., ((Inheritance $B $A) (Truth_inversion $TV)))
                 // These are data tuples — type is Expression
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 { _trace_source = "non-atom-head-expression"; }
                 vec![factory.atom("Expression")]
             }
         }
         MettaValueInner::Conjunction(_) => {
             let goals = expr.as_conjunction().expect("matched Conjunction");
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "conjunction"; }
             if goals.is_empty() {
                 vec![factory.atom("Expression")]
@@ -247,12 +247,12 @@ where
             }
         }
         MettaValueInner::Quoted(_) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "quoted"; }
             vec![factory.atom("Expression")]
         }
         MettaValueInner::Spanned(..) => {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             { _trace_source = "spanned-strip"; }
             let stripped = expr.strip_one_span();
             infer_types_generic_inner(&stripped, factory, env, seen)
@@ -260,7 +260,7 @@ where
     };
 
     // Emit TypeInference trace event
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
             let trace_expr = crate::backend::trace::trace_value_generic(expr);
@@ -946,7 +946,7 @@ pub fn types_match_generic<V: MettaValueTrait + 'static>(actual: &V, expected: &
     let (result, _reason) = types_match_generic_inner(actual, expected);
 
     // Emit TypeMatch trace event
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
             tc.emit_converted(
@@ -1327,22 +1327,27 @@ where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
 {
-    // Try integer arithmetic first
+    // Try integer arithmetic first.
+    //
+    // Per spec §13.2 + §C.7g, integer overflow on +/-/*/wrap silently rather than
+    // producing an Error. For consistency with the runtime in
+    // `src/backend/grounded/arithmetic.rs`, this folder also wraps. Division and
+    // modulo by zero return None (no fold; runtime then raises DivisionByZero).
     if let (Some(x), Some(y)) = (a.as_long(), b.as_long()) {
         return match op {
-            "+" => x.checked_add(y).map(|r| factory.long(r)),
-            "-" => x.checked_sub(y).map(|r| factory.long(r)),
-            "*" => x.checked_mul(y).map(|r| factory.long(r)),
+            "+" => Some(factory.long(x.wrapping_add(y))),
+            "-" => Some(factory.long(x.wrapping_sub(y))),
+            "*" => Some(factory.long(x.wrapping_mul(y))),
             "/" => {
                 if y != 0 {
-                    Some(factory.long(x / y))
+                    Some(factory.long(x.wrapping_div(y)))
                 } else {
                     None
                 }
             }
             "%" => {
                 if y != 0 {
-                    Some(factory.long(x % y))
+                    Some(factory.long(x.wrapping_rem(y)))
                 } else {
                     None
                 }
@@ -1351,7 +1356,9 @@ where
         };
     }
 
-    // Try float arithmetic (promote integers to float if mixed)
+    // Try float arithmetic (promote integers to float if mixed). Float / 0.0 and
+    // % 0.0 produce IEEE NaN/±Inf at runtime; the folder leaves them unfolded so
+    // the runtime path is uniformly responsible for IEEE behavior.
     let af = a.as_float().or_else(|| a.as_long().map(|l| l as f64))?;
     let bf = b.as_float().or_else(|| b.as_long().map(|l| l as f64))?;
     match op {

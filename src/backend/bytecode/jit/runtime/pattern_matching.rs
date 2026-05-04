@@ -277,8 +277,8 @@ unsafe fn try_pattern_match_bind_fast_path(
         if !pattern_ptr.is_null() {
             let pattern_str = &*pattern_ptr;
 
-            // Wildcard matches without binding
-            if pattern_str == "_" {
+            // Wildcard matches without binding (both `_` and `$_`)
+            if pattern_str == "_" || pattern_str == "$_" {
                 return Some(true);
             }
 
@@ -593,10 +593,10 @@ pub unsafe extern "C" fn jit_runtime_unify_bind(
 /// Pattern match implementation (without binding)
 pub(crate) fn pattern_matches_impl(pattern: &MettaValue, value: &MettaValue) -> bool {
     match (pattern.view(), value.view()) {
+        // Wildcard matches anything (check BEFORE variable — both `_` and `$_`).
+        (ValueView::Atom(s), _) if s == "_" || s == "$_" => true,
         // Variable matches anything (Atom starting with $)
         (ValueView::Atom(s), _) if s.starts_with('$') => true,
-        // Wildcard matches anything
-        (ValueView::Atom(s), _) if s == "_" => true,
         // Exact match for atoms
         (ValueView::Atom(a), ValueView::Atom(b)) => a == b,
         // Exact match for literals
@@ -623,13 +623,13 @@ fn pattern_match_bind_impl(
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
     match (pattern.view(), value.view()) {
+        // Wildcard matches without binding (check BEFORE variable arm — both `_` and `$_`).
+        (ValueView::Atom(s), _) if s == "_" || s == "$_" => true,
         // Variable binds to value (Atom starting with $)
         (ValueView::Atom(name), _) if name.starts_with('$') => {
             bindings.push((name.to_string(), value.clone()));
             true
         }
-        // Wildcard matches without binding
-        (ValueView::Atom(s), _) if s == "_" => true,
         // Exact match for atoms
         (ValueView::Atom(a), ValueView::Atom(b)) => a == b,
         // Exact match for literals

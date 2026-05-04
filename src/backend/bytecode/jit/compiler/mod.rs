@@ -613,9 +613,8 @@ impl JitCompiler {
                     div_by_zero: self
                         .module
                         .declare_func_in_func(self.errors.div_by_zero_func_id, builder.func),
-                    overflow: self
-                        .module
-                        .declare_func_in_func(self.errors.overflow_func_id, builder.func),
+                    // overflow handler removed: integer arithmetic now wraps per
+                    // spec §13.2 instead of raising an Error atom (Plan D).
                 }
             };
 

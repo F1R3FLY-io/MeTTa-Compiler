@@ -37,7 +37,8 @@ use std::collections::{HashMap, HashSet};
 use crate::backend::models::{GenericBindings, MettaValueTrait};
 
 /// Check if an atom name is a variable (starts with `$`, `&`, or `'`),
-/// excluding space references (`&self`, `&kb`, `&stack`) and the literal `&` operator.
+/// excluding space references (`&self`, `&kb`, `&stack`), the literal `&`
+/// operator, and the `$_` wildcard.
 #[inline]
 fn is_variable_name(name: &str) -> bool {
     (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
@@ -45,6 +46,7 @@ fn is_variable_name(name: &str) -> bool {
         && name != "&self"
         && name != "&kb"
         && name != "&stack"
+        && name != "$_"
 }
 
 /// Attempt to bind a variable to a value in the bindings map.
@@ -164,8 +166,8 @@ where
         match (pat_atom, sto_atom) {
             (Some(p_name), Some(s_name)) => {
                 // Both atoms
-                let p_is_wild = p_name == "_";
-                let s_is_wild = s_name == "_";
+                let p_is_wild = p_name == "_" || p_name == "$_";
+                let s_is_wild = s_name == "_" || s_name == "$_";
                 if p_is_wild || s_is_wild {
                     continue; // Wildcard on either side matches anything
                 }
@@ -203,7 +205,7 @@ where
             }
             (Some(p_name), None) => {
                 // Pattern is atom, stored is compound/ground
-                if p_name == "_" {
+                if p_name == "_" || p_name == "$_" {
                     continue;
                 }
                 if is_variable_name(p_name) {
@@ -221,7 +223,7 @@ where
             }
             (None, Some(s_name)) => {
                 // Pattern is compound/ground, stored is atom
-                if s_name == "_" {
+                if s_name == "_" || s_name == "$_" {
                     continue;
                 }
                 if is_variable_name(s_name) {

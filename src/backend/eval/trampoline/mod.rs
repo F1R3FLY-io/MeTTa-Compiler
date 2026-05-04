@@ -46,7 +46,7 @@ pub use arena_engine::{
     is_arena_mode_available, new_env,
 };
 
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 pub use arena_engine::eval_trampoline_with_trace;
 
 // Re-export evaluation context types
@@ -64,7 +64,7 @@ pub use types::{
 // Re-export engine functions
 pub use engine::{
     apply_bindings, pattern_match,
-    try_match_all_rules, try_deterministic_chain,
+    try_match_all_rules, try_match_all_rules_with_outer, try_deterministic_chain,
 };
 
 // Internal: eval_loop::eval_trampoline(value, env, &ctx) is used by

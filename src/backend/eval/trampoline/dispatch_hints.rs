@@ -747,6 +747,42 @@ pub fn clear_operator_cache() {
 // without speculation. Combined with the existing NORMAL_FORM_BLOOM filter
 // (Phase 9.5), this short-circuits the trampoline for cold and hot paths.
 
+/// True iff `head` names an embedded kernel instruction per MeTTa spec §06.3.4.
+///
+/// The 12 kernel instructions (plus aliases): `eval`, `evalc`, `chain`, `unify`,
+/// `cons-atom`, `decons-atom`, `function`, `return`, `collapse-bind`,
+/// `superpose-bind`, `metta`, `call-native`, `context-space`.
+///
+/// **Use case**: chain/let*/etc. must dispatch only ONE kernel step on their
+/// expression arg (§06.6.3 E-CHAIN-SUBST-DONE). If the expr's head is a kernel
+/// op, that step runs (evaluating eval/chain/unify nests). If the head is
+/// anything else — a grounded op like `+`, a user-defined rule head, or a
+/// literal — the expr is treated as DATA and bound as-is without reduction.
+/// This prevents combinatorial explosion in recursive inference chains.
+///
+/// MeTTaTron also treats `evalc` as a synonym of `eval` in the kernel; both
+/// route through the eval handler at `eval_loop.rs:3063`.
+#[inline(always)]
+pub(crate) fn is_embedded_kernel_op(head: &str) -> bool {
+    matches!(head,
+        // Spec §06.3.6 embedded kernel ops
+        "eval" | "evalc" | "chain" | "unify"
+        | "cons-atom" | "decons-atom"
+        | "function" | "return"
+        | "collapse-bind" | "superpose-bind"
+        | "metta" | "call-native" | "context-space"
+        // MeTTaTron-specific kernel-level ops: pure transforms, idempotent,
+        // bound to terminate. Treated as kernel ops for spec §06.6.3 purposes
+        // so chain dispatches one kernel step rather than binding the
+        // unreduced expression as data. Without this, PLN's
+        //     (chain (ground-with-bindings $term $binds) $grounded body)
+        // never invokes the handler — `$grounded` binds to the literal
+        // S-expression and downstream `(eval $grounded)` / `freeze-tuple`
+        // operations see unreduced data instead of the substituted template.
+        | "ground-with-bindings" | "freeze-tuple"
+    )
+}
+
 /// Union of all head symbols that are reducible in `eval_sexpr_step_generic`
 /// (special forms) and `has_grounded_op` (arithmetic/comparison ops).
 ///

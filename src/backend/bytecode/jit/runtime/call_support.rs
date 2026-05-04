@@ -57,14 +57,16 @@ unsafe fn try_grounded_fast_path(head: &str, args_ptr: *const u64, arity: usize)
                 "*" => Some(JitValue::from_long(a.wrapping_mul(b))),
                 "/" => {
                     if b != 0 {
-                        Some(JitValue::from_long(a / b))
+                        // wrapping_div avoids SIGFPE on i64::MIN / -1 per spec §13.2
+                        Some(JitValue::from_long(a.wrapping_div(b)))
                     } else {
                         None // Division by zero - fall back to regular path
                     }
                 }
                 "%" => {
                     if b != 0 {
-                        Some(JitValue::from_long(a % b))
+                        // wrapping_rem avoids SIGFPE on i64::MIN % -1; wraps to 0
+                        Some(JitValue::from_long(a.wrapping_rem(b)))
                     } else {
                         None // Modulo by zero - fall back to regular path
                     }
@@ -171,6 +173,9 @@ use crate::backend::eval::trampoline::EvalContext;
         fn factory(&self) -> &GcFactory {
             &self.factory
         }
+
+        // should_safepoint / perform_safepoint inherit the trait defaults
+        // (honor `is_gc_requested()`, run the canonical quiescent protocol).
     }
 
     let ctx = JitEvalContext {

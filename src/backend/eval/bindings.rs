@@ -458,6 +458,30 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
+    // Legacy entry point: bare-name lookup (any scope match). Phase P0 guarantees
+    // every binding lives at ROOT_SCOPE so this matches the pre-scoping semantics.
+    apply_bindings_scoped_generic(template, bindings, &[], factory)
+}
+
+/// Substitute bindings into `template`, preferring lookups at the supplied
+/// scopes in order before falling back to bare-name (any-scope) lookup.
+///
+/// `scope_chain` is typically `&[dispatch_scope, ROOT_SCOPE]` when walking
+/// a rule's RHS template: rule-LHS-bound atoms hit `dispatch_scope` first;
+/// caller-level atoms (embedded into the RHS via bidirectional unify) miss
+/// at `dispatch_scope` and fall back to `ROOT_SCOPE`. An empty `scope_chain`
+/// uses the legacy any-scope `get(name)` accessor — semantics-preserving for
+/// callers that haven't migrated to scoped lookup yet.
+pub fn apply_bindings_scoped_generic<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
     // Fast path: if no bindings, return as-is
     if bindings.is_empty() {
         return template.clone();
@@ -467,7 +491,7 @@ where
     if let Some(span) = template.span() {
         let span = *span; // Copy
         let stripped = template.strip_one_span();
-        let result = apply_bindings_generic(&stripped, bindings, factory);
+        let result = apply_bindings_scoped_generic(&stripped, bindings, scope_chain, factory);
         // Skip wrapping if result already carries a span
         if result.span().is_some() {
             return result;
@@ -475,7 +499,7 @@ where
         return factory.spanned(result, span);
     }
 
-    apply_bindings_iterative_generic(template, bindings, factory)
+    apply_bindings_iterative_generic(template, bindings, scope_chain, factory)
 }
 
 /// Iterative implementation of apply_bindings.
@@ -507,20 +531,42 @@ where
 fn apply_bindings_iterative_generic<V, F>(
     template: &V,
     bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
     factory: &F,
 ) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
+    // Helper: scope-aware lookup. When `scope_chain` is empty (legacy callers),
+    // use bare-name any-scope lookup — preserves Phase P0/P1 semantics for
+    // callers that haven't migrated to scoped lookup.
+    //
+    // When `scope_chain` is non-empty, lookup is STRICT to the chain: an
+    // out-of-chain binding (e.g. from a sibling dispatch composed into the
+    // map at a different scope) is invisible to this template walk. This is
+    // the §4.7a / `apply_bindings_to_atom_and_retain` invariant: a rule's
+    // RHS resolves only against its own dispatch scope plus the caller's
+    // scope chain, never against arbitrary same-name entries that happen
+    // to live at unrelated scopes.
+    let lookup = |bindings: &GenericBindings<V>, name: &str| -> Option<V> {
+        if scope_chain.is_empty() {
+            bindings.get(name).cloned()
+        } else {
+            bindings.get_chain(scope_chain, name).cloned()
+        }
+    };
     enum Work<'a, V> {
         /// Process a borrowed value from the original template.
         Process(&'a V),
         /// Process an owned value popped from the bindings map. Owned because
         /// the bound value's lifetime is tied to `bindings`, not `template`.
         ProcessOwned(V),
-        BuildSExpr(usize),
-        BuildConjunction(usize),
+        /// `original` enables identity-equality lazy-allocation: if every
+        /// child after substitution is pointer-equal to the original child,
+        /// reuse `original` verbatim instead of allocating a new sexpr.
+        BuildSExpr { count: usize, original: V },
+        BuildConjunction { count: usize, original: V },
     }
 
     // Inline-storage stacks: most calls process small expressions and
@@ -535,19 +581,30 @@ where
     while let Some(work) = work_stack.pop() {
         match work {
             Work::Process(val) => {
+                // Structural sharing: subtrees with no variables cannot
+                // substitute (no `$var` to look up), so the original
+                // pointer is the substituted result. Reusing it avoids
+                // rebuilding the spine of the template tree at every
+                // call. Bytehound profile of Smokes.metta showed 9.5M
+                // calls to this function — most of the per-call work
+                // was rebuilding ground subtrees that never changed.
+                if !val.has_variables_fast() {
+                    result_stack.push(val.clone());
+                    continue;
+                }
                 // Handle Spanned children by peeling span, processing, re-wrapping.
                 // This calls apply_bindings_generic which peels one Spanned layer,
                 // then calls apply_bindings_iterative_generic on the stripped value.
                 // Safe because MettaValue has at most one Spanned layer.
                 if val.is_spanned() {
-                    let result = apply_bindings_generic(val, bindings, factory);
+                    let result = apply_bindings_scoped_generic(val, bindings, scope_chain, factory);
                     result_stack.push(result);
                     continue;
                 }
 
                 if let Some(name) = val.as_atom() {
                     if name.starts_with('$') {
-                        if let Some(bound) = bindings.get(name) {
+                        if let Some(bound) = lookup(bindings, name) {
                             // Guard: self-referential binding ($a → $a) — emit
                             // directly to prevent infinite transitive loop.
                             if bound.as_atom() == Some(name) {
@@ -564,7 +621,7 @@ where
                             // in the template has no matching key in
                             // the supplied bindings. Throttled globally
                             // so runaway traces don't explode.
-                            #[cfg(feature = "eval-trace")]
+                            #[cfg(feature = "trace")]
                             {
                                 use std::sync::atomic::{AtomicU32, Ordering as AOrd};
                                 static LOOKUP_FAIL_EMITTED: AtomicU32 = AtomicU32::new(0);
@@ -602,7 +659,7 @@ where
                     if items.is_empty() {
                         result_stack.push(val.clone());
                     } else {
-                        work_stack.push(Work::BuildSExpr(items.len()));
+                        work_stack.push(Work::BuildSExpr { count: items.len(), original: val.clone() });
                         for item in items.iter().rev() {
                             work_stack.push(Work::Process(item));
                         }
@@ -611,7 +668,7 @@ where
                     if goals.is_empty() {
                         result_stack.push(val.clone());
                     } else {
-                        work_stack.push(Work::BuildConjunction(goals.len()));
+                        work_stack.push(Work::BuildConjunction { count: goals.len(), original: val.clone() });
                         for goal in goals.iter().rev() {
                             work_stack.push(Work::Process(goal));
                         }
@@ -621,18 +678,23 @@ where
                 }
             }
             Work::ProcessOwned(val) => {
+                // Structural sharing: same rationale as in `Process`.
+                if !val.has_variables_fast() {
+                    result_stack.push(val);
+                    continue;
+                }
                 // Same logic as `Process` but operating on an owned value
                 // (the value was popped from the bindings map, so its
                 // lifetime is no longer tied to the input template).
                 if val.is_spanned() {
-                    let result = apply_bindings_generic(&val, bindings, factory);
+                    let result = apply_bindings_scoped_generic(&val, bindings, scope_chain, factory);
                     result_stack.push(result);
                     continue;
                 }
 
                 if let Some(name) = val.as_atom() {
                     if name.starts_with('$') {
-                        if let Some(bound) = bindings.get(name) {
+                        if let Some(bound) = lookup(bindings, name) {
                             // Guard: self-referential binding ($a → $a) — emit
                             // directly to prevent infinite transitive loop.
                             if bound.as_atom() == Some(name) {
@@ -655,7 +717,7 @@ where
                         // pushing because `val` is consumed when this branch ends.
                         let len = items.len();
                         let owned_children: Vec<V> = items.iter().cloned().collect();
-                        work_stack.push(Work::BuildSExpr(len));
+                        work_stack.push(Work::BuildSExpr { count: len, original: val });
                         for item in owned_children.into_iter().rev() {
                             work_stack.push(Work::ProcessOwned(item));
                         }
@@ -666,7 +728,7 @@ where
                     } else {
                         let len = goals.len();
                         let owned_goals: Vec<V> = goals.iter().cloned().collect();
-                        work_stack.push(Work::BuildConjunction(len));
+                        work_stack.push(Work::BuildConjunction { count: len, original: val });
                         for goal in owned_goals.into_iter().rev() {
                             work_stack.push(Work::ProcessOwned(goal));
                         }
@@ -675,17 +737,36 @@ where
                     result_stack.push(val);
                 }
             }
-            Work::BuildSExpr(count) => {
+            Work::BuildSExpr { count, original } => {
                 let start = result_stack.len() - count;
-                let result = factory.sexpr_from_slice(&result_stack[start..]);
-                result_stack.truncate(start);
-                result_stack.push(result);
+                // Identity-equality lazy-allocation: if every new child is
+                // pointer-equal to the corresponding original child, reuse
+                // `original` verbatim instead of allocating a new sexpr.
+                let items = original.as_sexpr().expect("BuildSExpr original must be sexpr");
+                let changed = (0..count)
+                    .any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let result = factory.sexpr_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(result);
+                }
             }
-            Work::BuildConjunction(count) => {
+            Work::BuildConjunction { count, original } => {
                 let start = result_stack.len() - count;
-                let result = factory.conjunction_from_slice(&result_stack[start..]);
-                result_stack.truncate(start);
-                result_stack.push(result);
+                let goals = original.as_conjunction().expect("BuildConjunction original must be conjunction");
+                let changed = (0..count)
+                    .any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let result = factory.conjunction_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(result);
+                }
             }
         }
     }
@@ -736,15 +817,30 @@ where
         return factory.spanned(result, span);
     }
 
+    // Function-entry structural-sharing guard: a template with no variables
+    // cannot rename or substitute, so we return the original verbatim.
+    // This avoids the SmallVec setup and a pop+match round-trip for the
+    // common ground-template case (every call to this function pays this
+    // check; the inner-loop check at line ~821 handles deeper subtrees).
+    if !template.has_variables_fast() {
+        return template.clone();
+    }
+
     // Two work-stack modes:
     //   ProcessTemplate — still descending through the template; rename on miss.
     //   ProcessOwned — descending through a bound VALUE (retains caller-scope
     //                  variable names; no rename on miss).
+    //
+    // BuildSExpr/BuildConjunction carry the `original` value so that when every
+    // produced child is identity-equal to the original child, we reuse `original`
+    // verbatim instead of allocating a fresh slab slot. Mirrors
+    // `apply_bindings_iterative_generic`'s identity-equality lazy-allocation
+    // and `apply_bindings_inner`'s `identity_eq` check at engine.rs:212.
     enum Work<'a, V> {
         ProcessTemplate(&'a V),
         ProcessOwned(V),
-        BuildSExpr(usize),
-        BuildConjunction(usize),
+        BuildSExpr { count: usize, original: V },
+        BuildConjunction { count: usize, original: V },
     }
 
     // Inline-storage stacks (see apply_bindings_iterative_generic for rationale).
@@ -756,6 +852,15 @@ where
     while let Some(work) = work_stack.pop() {
         match work {
             Work::ProcessTemplate(val) => {
+                // Structural sharing: subtrees with no variables cannot
+                // substitute (no var to look up in bindings) or rename
+                // (no `$` atom to rewrite), so the original pointer can
+                // be reused. This collapses the per-match cost from
+                // O(RHS tree size) to O(variable occurrences).
+                if !val.has_variables_fast() {
+                    result_stack.push(val.clone());
+                    continue;
+                }
                 if val.is_spanned() {
                     let result = apply_bindings_with_rename_generic(val, bindings, rename, factory);
                     result_stack.push(result);
@@ -766,15 +871,15 @@ where
                         if let Some(bound) = bindings.get(name) {
                             // Self-referential guard
                             if bound.as_atom() == Some(name) {
-                                // Emit the renamed form directly
-                                result_stack.push(factory.atom(rename.rename(name)));
+                                // Emit the renamed form directly (cached per dispatch)
+                                result_stack.push(rename.fresh_atom(name, factory));
                                 continue;
                             }
                             // Transitive: descend into bound value (owned mode — no rename)
                             work_stack.push(Work::ProcessOwned(bound.clone()));
                         } else {
                             // Miss → emit renamed form (body-local or non-bound rule var)
-                            result_stack.push(factory.atom(rename.rename(name)));
+                            result_stack.push(rename.fresh_atom(name, factory));
                         }
                     } else {
                         result_stack.push(val.clone());
@@ -783,7 +888,7 @@ where
                     if items.is_empty() {
                         result_stack.push(val.clone());
                     } else {
-                        work_stack.push(Work::BuildSExpr(items.len()));
+                        work_stack.push(Work::BuildSExpr { count: items.len(), original: val.clone() });
                         for item in items.iter().rev() {
                             work_stack.push(Work::ProcessTemplate(item));
                         }
@@ -792,7 +897,7 @@ where
                     if goals.is_empty() {
                         result_stack.push(val.clone());
                     } else {
-                        work_stack.push(Work::BuildConjunction(goals.len()));
+                        work_stack.push(Work::BuildConjunction { count: goals.len(), original: val.clone() });
                         for goal in goals.iter().rev() {
                             work_stack.push(Work::ProcessTemplate(goal));
                         }
@@ -802,6 +907,13 @@ where
                 }
             }
             Work::ProcessOwned(val) => {
+                // Structural sharing in owned mode: no rename happens at
+                // all here (miss → emit as-is), so a no-variable subtree
+                // is identical to itself.
+                if !val.has_variables_fast() {
+                    result_stack.push(val);
+                    continue;
+                }
                 if val.is_spanned() {
                     let result = apply_bindings_with_rename_generic(&val, bindings, rename, factory);
                     result_stack.push(result);
@@ -828,7 +940,7 @@ where
                     } else {
                         let len = items.len();
                         let owned_children: Vec<V> = items.iter().cloned().collect();
-                        work_stack.push(Work::BuildSExpr(len));
+                        work_stack.push(Work::BuildSExpr { count: len, original: val });
                         for item in owned_children.into_iter().rev() {
                             work_stack.push(Work::ProcessOwned(item));
                         }
@@ -839,7 +951,7 @@ where
                     } else {
                         let len = goals.len();
                         let owned_goals: Vec<V> = goals.iter().cloned().collect();
-                        work_stack.push(Work::BuildConjunction(len));
+                        work_stack.push(Work::BuildConjunction { count: len, original: val });
                         for goal in owned_goals.into_iter().rev() {
                             work_stack.push(Work::ProcessOwned(goal));
                         }
@@ -848,14 +960,33 @@ where
                     result_stack.push(val);
                 }
             }
-            Work::BuildSExpr(count) => {
+            Work::BuildSExpr { count, original } => {
                 let start = result_stack.len() - count;
+                // Identity-equality lazy-allocation: if every produced child
+                // is pointer-equal to the corresponding original child,
+                // reuse `original` instead of allocating a new sexpr.
+                let items = original.as_sexpr().expect("BuildSExpr original must be sexpr");
+                let changed = (0..count)
+                    .any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                    continue;
+                }
                 let result = factory.sexpr_from_slice(&result_stack[start..]);
                 result_stack.truncate(start);
                 result_stack.push(result);
             }
-            Work::BuildConjunction(count) => {
+            Work::BuildConjunction { count, original } => {
                 let start = result_stack.len() - count;
+                let goals = original.as_conjunction().expect("BuildConjunction original must be conjunction");
+                let changed = (0..count)
+                    .any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                    continue;
+                }
                 let result = factory.conjunction_from_slice(&result_stack[start..]);
                 result_stack.truncate(start);
                 result_stack.push(result);
@@ -1357,6 +1488,36 @@ pub fn is_variable_value<V: MettaValueTrait>(val: &V) -> bool {
 ///
 /// After composition, call `apply_chain_generic` to transitively resolve
 /// any newly-introduced chain entries.
+/// Locate the scope at which an alias target name `x_name` already has a
+/// binding in either `outer` or `inner`. Returns `ROOT_SCOPE` if neither has
+/// one (caller-side default — a fresh user-typed query variable).
+///
+/// Used by `compose_outer_inner_generic`'s alias-resolution arm. Without
+/// this lookup, an alias entry like `(dispatch_scope, $rule_var) → $caller`
+/// would emit `(dispatch_scope, $caller) → val` — putting the caller-side
+/// variable's binding under a rule-internal scope where downstream
+/// `apply_bindings` chain `[ROOT_SCOPE, ...]` can't find it. With the
+/// lookup, the alias correctly emits `(ROOT_SCOPE, $caller) → val`.
+#[inline]
+fn find_alias_target_scope<V: MettaValueTrait + Clone>(
+    outer: &GenericBindings<V>,
+    inner: &GenericBindings<V>,
+    x_name: &str,
+) -> crate::backend::models::generic_bindings::ScopeId {
+    use crate::backend::models::generic_bindings::ROOT_SCOPE;
+    outer
+        .iter_full()
+        .find(|(_, n, _)| *n == x_name)
+        .map(|(s, _, _)| s)
+        .or_else(|| {
+            inner
+                .iter_full()
+                .find(|(_, n, _)| *n == x_name)
+                .map(|(s, _, _)| s)
+        })
+        .unwrap_or(ROOT_SCOPE)
+}
+
 pub fn compose_outer_inner_generic<V, F>(
     outer: &GenericBindings<V>,
     inner: &GenericBindings<V>,
@@ -1374,41 +1535,60 @@ where
     }
     let _ = factory;
     let mut result = GenericBindings::new();
-    // First pass: for keys in both, unify their values.
-    for (name, outer_val) in outer.iter() {
-        if let Some(inner_val) = inner.get(name) {
-            // Both bind `name`. Unify.
+    // Phase 2 (Bug 2): track inner entries consumed by cross-scope
+    // unification so the second pass doesn't re-emit them at their
+    // original (scope, name). Pre-allocate to inner.len() — bounded
+    // upper limit on the number of consumable entries.
+    let mut consumed_inner: smallvec::SmallVec<
+        [(crate::backend::models::generic_bindings::ScopeId, &'static str); 8],
+    > = smallvec::SmallVec::with_capacity(inner.len());
+    // First pass: for full ScopedKeys (scope, name) present in both maps,
+    // unify their values. Same-name entries at *different* scopes were
+    // previously independent — but rule-side aliases like
+    // `(dispatch_scope, $rule_var) → $caller_var` co-existing with a
+    // caller-side `(ROOT_SCOPE, $caller_var) → val` left the alias
+    // unresolved, breaking subsequent template instantiation.  The
+    // cross-scope probe below merges these conservatively.
+    for (scope, name, outer_val) in outer.iter_full() {
+        if let Some(inner_val) = inner.get_scoped(scope, name) {
+            // Both bind `(scope, name)`. Unify.
             if outer_val == inner_val {
-                result.insert_or_replace(name, outer_val.clone());
+                result.insert_or_replace_scoped(scope, name, outer_val.clone());
             } else if is_variable_value(outer_val) {
-                // outer: name → $X, inner: name → inner_val. So $X aliases
-                // to inner_val. Record both.
+                // outer: (scope, name) → $X, inner: (scope, name) → inner_val.
+                // The alias target $X may live at a *different* scope than
+                // the binding being composed: e.g. a rule-side binding
+                // `(dispatch_scope, $rule_var) → $caller_var` aliases to the
+                // caller-side `$caller_var` at ROOT_SCOPE. The compose must
+                // emit `(target_scope, $X) → inner_val`, where target_scope
+                // is whichever scope already holds an entry for `$X` in
+                // either side, falling back to ROOT_SCOPE (caller default).
                 if let Some(x_name) = outer_val.as_atom() {
-                    // MettaValueTrait::as_atom returns `&'static str` (atoms
-                    // are interned in the global atom pool).
-                    if let Some(existing) = result.get(x_name) {
+                    let target_scope = find_alias_target_scope(outer, inner, x_name);
+                    if let Some(existing) = result.get_scoped(target_scope, x_name) {
                         if existing != inner_val {
                             // Conflict on the alias — inconsistent branch,
                             // drop to empty.
                             return GenericBindings::new();
                         }
                     } else {
-                        result.insert_or_replace(x_name, inner_val.clone());
+                        result.insert_or_replace_scoped(target_scope, x_name, inner_val.clone());
                     }
                 }
-                result.insert_or_replace(name, inner_val.clone());
+                result.insert_or_replace_scoped(scope, name, inner_val.clone());
             } else if is_variable_value(inner_val) {
-                // Symmetric: inner: name → $Y, outer: name → outer_val.
+                // Symmetric: inner: (scope, name) → $Y, outer: (scope, name) → outer_val.
                 if let Some(y_name) = inner_val.as_atom() {
-                    if let Some(existing) = result.get(y_name) {
+                    let target_scope = find_alias_target_scope(outer, inner, y_name);
+                    if let Some(existing) = result.get_scoped(target_scope, y_name) {
                         if existing != outer_val {
                             return GenericBindings::new();
                         }
                     } else {
-                        result.insert_or_replace(y_name, outer_val.clone());
+                        result.insert_or_replace_scoped(target_scope, y_name, outer_val.clone());
                     }
                 }
-                result.insert_or_replace(name, outer_val.clone());
+                result.insert_or_replace_scoped(scope, name, outer_val.clone());
             } else {
                 // Phase 2B (revised): distinguish two sub-cases:
                 //
@@ -1434,16 +1614,16 @@ where
                 match (outer_has_vars, inner_has_vars) {
                     (true, false) => {
                         // Inner is more resolved — prefer inner.
-                        result.insert_or_replace(name, inner_val.clone());
+                        result.insert_or_replace_scoped(scope, name, inner_val.clone());
                     }
                     (false, true) => {
                         // Outer is more resolved — prefer outer.
-                        result.insert_or_replace(name, outer_val.clone());
+                        result.insert_or_replace_scoped(scope, name, outer_val.clone());
                     }
                     (false, false) => {
                         // Both ground and unequal — genuinely
                         // inconsistent branch. HE-faithful: return empty.
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             crate::backend::trace::with_trace_collector_ref(|tc| {
                                 tc.emit_converted(
@@ -1477,7 +1657,7 @@ where
                         // Both still have free variables — unresolvable
                         // without more information. Conservatively treat
                         // as inconsistent.
-                        #[cfg(feature = "eval-trace")]
+                        #[cfg(feature = "trace")]
                         {
                             crate::backend::trace::with_trace_collector_ref(|tc| {
                                 tc.emit_converted(
@@ -1508,14 +1688,97 @@ where
                 }
             }
         } else {
-            // Only outer has it.
-            result.insert_or_replace(name, outer_val.clone());
+            // Phase 2 (Bug 2): exact (scope, name) miss; probe across scopes
+            // for the SAME name in inner. If found, treat conservatively:
+            //   - One side is a variable atom (alias case): route through
+            //     the alias arm via find_alias_target_scope (preserves
+            //     bisimilarity with HE's coherent-theta requirement).
+            //   - Both ground and equal: emit at min-priority scope
+            //     (ROOT_SCOPE wins; else outer_scope).
+            //   - Both ground and unequal: SIBLING-BRANCH INDEPENDENCE,
+            //     not conflict — emit outer at outer_scope, leave inner
+            //     for the second pass to emit at its original scope.
+            //     (Sibling branches at different dispatch_scopes have
+            //     independent bindings; merging unequal grounds across
+            //     scopes would break `within_query_cache_isolation_contract`.)
+            //   - One or both have free variables: independent (sibling).
+            let mut cross_match: Option<(crate::backend::models::generic_bindings::ScopeId, &V)> = None;
+            for (s, n, v) in inner.iter_full() {
+                if n == name && s != scope {
+                    cross_match = Some((s, v));
+                    break;
+                }
+            }
+            match cross_match {
+                Some((inner_scope, inner_val)) => {
+                    let outer_is_var = is_variable_value(outer_val);
+                    let inner_is_var = is_variable_value(inner_val);
+                    if outer_is_var || inner_is_var {
+                        // Alias arm: route same as same-scope alias case.
+                        if outer_is_var {
+                            if let Some(x_name) = outer_val.as_atom() {
+                                let target_scope = find_alias_target_scope(outer, inner, x_name);
+                                match result.get_scoped(target_scope, x_name) {
+                                    Some(existing) if existing != inner_val => {
+                                        return GenericBindings::new();
+                                    }
+                                    Some(_) => {}
+                                    None => {
+                                        result.insert_or_replace_scoped(target_scope, x_name, inner_val.clone());
+                                    }
+                                }
+                            }
+                            result.insert_or_replace_scoped(scope, name, inner_val.clone());
+                        } else {
+                            // inner_is_var
+                            if let Some(y_name) = inner_val.as_atom() {
+                                let target_scope = find_alias_target_scope(outer, inner, y_name);
+                                match result.get_scoped(target_scope, y_name) {
+                                    Some(existing) if existing != outer_val => {
+                                        return GenericBindings::new();
+                                    }
+                                    Some(_) => {}
+                                    None => {
+                                        result.insert_or_replace_scoped(target_scope, y_name, outer_val.clone());
+                                    }
+                                }
+                            }
+                            result.insert_or_replace_scoped(scope, name, outer_val.clone());
+                        }
+                        consumed_inner.push((inner_scope, name));
+                    } else if outer_val == inner_val {
+                        // Both ground and equal: emit single entry at
+                        // ROOT_SCOPE if either is ROOT_SCOPE, else outer_scope.
+                        let target_scope = if scope == crate::backend::models::generic_bindings::ROOT_SCOPE
+                            || inner_scope == crate::backend::models::generic_bindings::ROOT_SCOPE
+                        {
+                            crate::backend::models::generic_bindings::ROOT_SCOPE
+                        } else {
+                            scope
+                        };
+                        result.insert_or_replace_scoped(target_scope, name, outer_val.clone());
+                        consumed_inner.push((inner_scope, name));
+                    } else {
+                        // Sibling-branch independence: emit outer here;
+                        // second pass emits inner at its scope.
+                        result.insert_or_replace_scoped(scope, name, outer_val.clone());
+                    }
+                }
+                None => {
+                    // Genuinely outer-only — emit at (scope, name).
+                    result.insert_or_replace_scoped(scope, name, outer_val.clone());
+                }
+            }
         }
     }
-    // Second pass: add inner-only keys.
-    for (name, inner_val) in inner.iter() {
-        if result.get(name).is_none() {
-            result.insert_or_replace(name, inner_val.clone());
+    // Second pass: add inner-only (scope, name) entries, skipping any
+    // consumed by cross-scope unification in the first pass.
+    for (scope, name, inner_val) in inner.iter_full() {
+        if consumed_inner.iter().any(|(s, n)| *s == scope && *n == name) {
+            continue;
+        }
+        if result.get_scoped(scope, name).is_none() {
+            result.insert_or_replace_scoped(scope, name, inner_val.clone());
         }
     }
     result
@@ -1581,18 +1844,31 @@ where
         return;
     }
     const MAX_PASSES: usize = 16;
-    let snapshot_keys: Vec<&'static str> = bindings.iter().map(|(k, _)| k).collect();
+    // P2 follow-up: snapshot full (scope, name) keys — same name at
+    // different scopes are independent bindings, so collapsing them via
+    // bare-name `iter()` would corrupt rule-side / caller-side entries
+    // that happen to share `$who`. Each entry's value is chain-resolved
+    // STRICTLY at its own scope (with ROOT_SCOPE fallback) so a rule-side
+    // binding's value chains to other rule-side / caller-side bindings,
+    // not to unrelated same-name entries at other dispatch scopes.
+    let snapshot_keys: Vec<(crate::backend::models::generic_bindings::ScopeId, &'static str)> =
+        bindings.iter_full().map(|(s, n, _)| (s, n)).collect();
     let mut pass = 0;
     loop {
         let mut changed = false;
-        for &name in &snapshot_keys {
-            let val = match bindings.get(name) {
+        for &(scope, name) in &snapshot_keys {
+            let val = match bindings.get_scoped(scope, name) {
                 Some(v) => v.clone(),
                 None => continue,
             };
-            let resolved = apply_bindings_generic(&val, bindings, factory);
+            let resolved = apply_bindings_scoped_generic(
+                &val,
+                bindings,
+                &[scope, crate::backend::models::generic_bindings::ROOT_SCOPE],
+                factory,
+            );
             if !val.identity_eq(&resolved) && val != resolved {
-                bindings.insert_or_replace(name, resolved);
+                bindings.insert_or_replace_scoped(scope, name, resolved);
                 changed = true;
             }
         }
@@ -1663,6 +1939,339 @@ pub fn strip_freshened_bindings<V: MettaValueTrait + Clone>(
         }
     }
     result
+}
+
+/// Re-tag entries whose name appears in `rule_var_names` from `from_scope`
+/// to `to_scope`. Caller-side keys (names absent from `rule_var_names`) pass
+/// through verbatim.
+///
+/// **Rules are stored with original variable names** (see comment at
+/// `rule_management.rs:2071-2076`); per-match freshening produces atoms
+/// like `$__fr_{epoch}_*` only inside the substituted RHS, never as
+/// matcher binding keys. The matchers (StructuralMatcher, EnhancedMatcher)
+/// emit bindings keyed on the rule's *original* LHS variable names — the
+/// same names that populate `entry.var_names`. Caller-side keys
+/// (introduced by `bidirectional_unify_generic` fallback at
+/// `EnhancedMatcher::try_match_with_bindings:398-407`) are NOT in
+/// `entry.var_names` and stay at their original scope.
+///
+/// `apply_bindings_scoped_generic` then walks the rule's RHS template
+/// with chain `[dispatch_scope, ROOT_SCOPE]`: rule-LHS atoms hit
+/// `dispatch_scope`; caller-level atoms embedded into the RHS by
+/// bidirectional unify miss at `dispatch_scope` and fall back to
+/// `ROOT_SCOPE`.
+///
+/// Mirrors `freshening::freshen_bindings_keys_with_epoch` semantically but
+/// uses scope tags instead of name rewrites — preserving HE bisimilarity
+/// per `metta-specification` §19.2 and §6.3.1.
+pub fn retag_rule_keys_at_scope<V: MettaValueTrait + Clone>(
+    bindings: GenericBindings<V>,
+    rule_var_names: &[&'static str],
+    from_scope: crate::backend::models::generic_bindings::ScopeId,
+    to_scope: crate::backend::models::generic_bindings::ScopeId,
+) -> GenericBindings<V> {
+    if from_scope == to_scope || bindings.is_empty() || rule_var_names.is_empty() {
+        return bindings;
+    }
+    let mut result = GenericBindings::new();
+    for (scope, name, val) in bindings.iter_full() {
+        let target_scope = if scope == from_scope && rule_var_names.contains(&name) {
+            to_scope
+        } else {
+            scope
+        };
+        result.insert_scoped(target_scope, name, val.clone());
+    }
+    result
+}
+
+/// Substitute scope-tagged bindings into `template` AND rename body-local
+/// `$x` atoms (those not in any of the provided scopes) using `body_local_epoch`.
+///
+/// This is the hybrid replacement for `apply_bindings_with_rename_generic`:
+/// LHS-bound atoms are looked up via the scope chain (typically
+/// `[dispatch_scope, ROOT_SCOPE]`), while *unbound* `$`-prefixed atoms
+/// (body-local vars introduced by `let*` patterns inside the RHS, e.g.
+/// `$head` and `$tail` in `BestCandidate`'s `let* (($head ...) ($tail ...))`)
+/// are renamed to `$__fr_{body_local_epoch}_x` so recursive invocations
+/// don't collide on the same bare name at `ROOT_SCOPE` once the `let*`
+/// pattern binds them.
+///
+/// Set `body_local_epoch == 0` to disable renaming (un-bound atoms pass
+/// through verbatim — for callers that explicitly want bare-name vars,
+/// e.g. tests or post-P3 callers).
+///
+/// Preserves the structural-sharing identity-equality optimization from
+/// `apply_bindings_iterative_generic` for ground subtrees.
+pub fn apply_bindings_with_rename_scoped<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
+    body_local_epoch: u64,
+    outer_carrying: &GenericBindings<V>,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    use crate::backend::eval::freshening::CachingRename;
+
+    // Fast path: nothing to substitute, nothing to rename, nothing to fall back to.
+    if bindings.is_empty() && outer_carrying.is_empty() && body_local_epoch == 0 {
+        return template.clone();
+    }
+
+    // Peel Spanned: process inner, re-wrap with same span
+    if let Some(span) = template.span() {
+        let span = *span;
+        let stripped = template.strip_one_span();
+        let result = apply_bindings_with_rename_scoped(
+            &stripped,
+            bindings,
+            scope_chain,
+            body_local_epoch,
+            outer_carrying,
+            factory,
+        );
+        if result.span().is_some() {
+            return result;
+        }
+        return factory.spanned(result, span);
+    }
+
+    let rename = if body_local_epoch != 0 {
+        Some(CachingRename::new(body_local_epoch))
+    } else {
+        None
+    };
+
+    apply_bindings_with_rename_scoped_iterative(
+        template,
+        bindings,
+        scope_chain,
+        rename.as_ref(),
+        outer_carrying,
+        factory,
+    )
+}
+
+fn apply_bindings_with_rename_scoped_iterative<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
+    rename: Option<&crate::backend::eval::freshening::CachingRename>,
+    outer_carrying: &GenericBindings<V>,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    use crate::backend::models::generic_bindings::ROOT_SCOPE;
+
+    enum Work<'a, V> {
+        ProcessTemplate(&'a V),
+        ProcessOwned(V),
+        BuildSExpr { count: usize, original: V },
+        BuildConjunction { count: usize, original: V },
+    }
+
+    // Lookup probes rule-side first (scope-aware), then falls back to
+    // caller-side ROOT_SCOPE. Caller-side fallback resolves caller variables
+    // that appear inside a captured value (e.g. `$C`'s value `(uncle $a $b)`
+    // where `$a, $b` are caller-side vars). Without it, the body-local rename
+    // freshens these to `$__fr_E_a/b`, producing a wildcard-LHS rule when
+    // materialized via `add-atom` — see Phase 1, Bug 1 of the scope-tag
+    // plumbing fix plan.
+    let lookup = |bindings: &GenericBindings<V>, name: &str| -> Option<V> {
+        let primary = if scope_chain.is_empty() {
+            bindings.get(name).cloned()
+        } else {
+            bindings.get_chain(scope_chain, name).cloned()
+        };
+        match primary {
+            Some(v) => Some(v),
+            None => outer_carrying.get_scoped(ROOT_SCOPE, name).cloned(),
+        }
+    };
+
+    let mut work_stack: SmallVec<[Work<V>; 16]> = SmallVec::new();
+    let mut result_stack: SmallVec<[V; 16]> = SmallVec::new();
+
+    work_stack.push(Work::ProcessTemplate(template));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            Work::ProcessTemplate(val) => {
+                if !val.has_variables_fast() {
+                    result_stack.push(val.clone());
+                    continue;
+                }
+                if val.is_spanned() {
+                    let result = apply_bindings_with_rename_scoped(
+                        val,
+                        bindings,
+                        scope_chain,
+                        rename.map_or(0, |r| r.epoch()),
+                        outer_carrying,
+                        factory,
+                    );
+                    result_stack.push(result);
+                    continue;
+                }
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') && name != "$_" {
+                        if let Some(bound) = lookup(bindings, name) {
+                            // Self-referential guard
+                            if bound.as_atom() == Some(name) {
+                                if let Some(r) = rename {
+                                    result_stack.push(r.fresh_atom(name, factory));
+                                } else {
+                                    result_stack.push(bound);
+                                }
+                                continue;
+                            }
+                            // Transitive: descend into bound value (owned mode — no rename)
+                            work_stack.push(Work::ProcessOwned(bound));
+                        } else if let Some(r) = rename {
+                            // Body-local var (not bound, not in scope chain) →
+                            // rename per dispatch to avoid recursive collision.
+                            result_stack.push(r.fresh_atom(name, factory));
+                        } else {
+                            result_stack.push(val.clone());
+                        }
+                    } else {
+                        result_stack.push(val.clone());
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildSExpr {
+                            count: items.len(),
+                            original: val.clone(),
+                        });
+                        for item in items.iter().rev() {
+                            work_stack.push(Work::ProcessTemplate(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildConjunction {
+                            count: goals.len(),
+                            original: val.clone(),
+                        });
+                        for goal in goals.iter().rev() {
+                            work_stack.push(Work::ProcessTemplate(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val.clone());
+                }
+            }
+            Work::ProcessOwned(val) => {
+                if !val.has_variables_fast() {
+                    result_stack.push(val);
+                    continue;
+                }
+                if val.is_spanned() {
+                    let result = apply_bindings_with_rename_scoped(
+                        &val,
+                        bindings,
+                        scope_chain,
+                        rename.map_or(0, |r| r.epoch()),
+                        outer_carrying,
+                        factory,
+                    );
+                    result_stack.push(result);
+                    continue;
+                }
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') && name != "$_" {
+                        if let Some(bound) = lookup(bindings, name) {
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound);
+                                continue;
+                            }
+                            work_stack.push(Work::ProcessOwned(bound));
+                        } else {
+                            // Owned mode: a bound value's free var passes
+                            // through verbatim — no rename here (the value
+                            // came from caller scope).
+                            result_stack.push(val);
+                        }
+                    } else {
+                        result_stack.push(val);
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = items.len();
+                        let owned_children: Vec<V> = items.iter().cloned().collect();
+                        work_stack.push(Work::BuildSExpr {
+                            count: len,
+                            original: val,
+                        });
+                        for item in owned_children.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = goals.len();
+                        let owned_goals: Vec<V> = goals.iter().cloned().collect();
+                        work_stack.push(Work::BuildConjunction {
+                            count: len,
+                            original: val,
+                        });
+                        for goal in owned_goals.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val);
+                }
+            }
+            Work::BuildSExpr { count, original } => {
+                let start = result_stack.len() - count;
+                let items = original
+                    .as_sexpr()
+                    .expect("BuildSExpr original must be sexpr");
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                    continue;
+                }
+                let result = factory.sexpr_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
+            }
+            Work::BuildConjunction { count, original } => {
+                let start = result_stack.len() - count;
+                let goals = original
+                    .as_conjunction()
+                    .expect("BuildConjunction original must be conjunction");
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                    continue;
+                }
+                let result = factory.conjunction_from_slice(&result_stack[start..]);
+                result_stack.truncate(start);
+                result_stack.push(result);
+            }
+        }
+    }
+
+    result_stack.pop().expect("Result stack should not be empty")
 }
 
 /// Prepare `accumulated_bindings` for composition with the current `let*`
@@ -2199,6 +2808,131 @@ mod tests {
 
         let result = deref_value_owned(&MettaValue::var("x"), &bindings);
         assert_eq!(result.as_long(), Some(42));
+    }
+
+    // =========================================================================
+    // Scoped-bindings compose tests (Phase P1)
+    //
+    // These verify scope-aware compose semantics in isolation, independent
+    // of any caller currently producing non-ROOT_SCOPE bindings. Once
+    // Phase P2 starts producing non-root-scope bindings, the existing
+    // ghost-branch / let* / let-scope regressions exercise the same logic
+    // at the integration level — but having unit tests here lets us land
+    // P1 with confidence before P2 changes the wire format.
+    // =========================================================================
+
+    use crate::backend::models::generic_bindings::{allocate_scope_id, ROOT_SCOPE};
+
+    #[test]
+    fn scoped_compose_same_name_different_scopes_independent() {
+        // outer at ROOT_SCOPE, inner at a fresh dispatch scope: same bare
+        // name but different (scope, name) keys → both survive.
+        let factory = GcFactory::default();
+        let dispatch_scope = allocate_scope_id();
+        let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
+        outer.insert_scoped(ROOT_SCOPE, "$x", factory.long(1));
+        let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
+        inner.insert_scoped(dispatch_scope, "$x", factory.long(2));
+
+        let result = compose_outer_inner_generic(&outer, &inner, &factory);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get_scoped(ROOT_SCOPE, "$x"), Some(&factory.long(1)));
+        assert_eq!(
+            result.get_scoped(dispatch_scope, "$x"),
+            Some(&factory.long(2))
+        );
+    }
+
+    #[test]
+    fn scoped_compose_same_name_same_scope_idempotent() {
+        // Both maps bind `(ROOT_SCOPE, $x) → 1`. Compose retains exactly
+        // one entry, no conflict.
+        let factory = GcFactory::default();
+        let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
+        outer.insert_scoped(ROOT_SCOPE, "$x", factory.long(1));
+        let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
+        inner.insert_scoped(ROOT_SCOPE, "$x", factory.long(1));
+
+        let result = compose_outer_inner_strict_generic(&outer, &inner, &factory)
+            .expect("idempotent compose must succeed");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get_scoped(ROOT_SCOPE, "$x"), Some(&factory.long(1)));
+    }
+
+    #[test]
+    fn scoped_compose_same_name_same_scope_ground_conflict_drops() {
+        // outer says (ROOT_SCOPE, $x) → 1, inner says (ROOT_SCOPE, $x) → 2.
+        // Both ground, both at the SAME scope ⇒ genuine conflict ⇒ strict
+        // returns None. This must keep working post-P2 for caller-level
+        // (`$user_var`) ground-ground conflicts.
+        let factory = GcFactory::default();
+        let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
+        outer.insert_scoped(ROOT_SCOPE, "$x", factory.long(1));
+        let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
+        inner.insert_scoped(ROOT_SCOPE, "$x", factory.long(2));
+
+        assert!(
+            compose_outer_inner_strict_generic(&outer, &inner, &factory).is_none(),
+            "ground-ground same-scope conflict must drop the branch"
+        );
+    }
+
+    #[test]
+    fn scoped_compose_alias_within_scope_resolves() {
+        // outer: (ROOT_SCOPE, $a) → atom("$X")  (alias)
+        // inner: (ROOT_SCOPE, $a) → 7
+        // Result must include (ROOT_SCOPE, $X) → 7 because the alias
+        // target lives at the same scope as the binding (§3.3).
+        let factory = GcFactory::default();
+        let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
+        outer.insert_scoped(ROOT_SCOPE, "$a", factory.atom("$X"));
+        let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
+        inner.insert_scoped(ROOT_SCOPE, "$a", factory.long(7));
+
+        let result = compose_outer_inner_generic(&outer, &inner, &factory);
+
+        assert_eq!(result.get_scoped(ROOT_SCOPE, "$X"), Some(&factory.long(7)));
+    }
+
+    #[test]
+    fn scoped_compose_cross_scope_aliases_do_not_collide() {
+        // outer: (ROOT_SCOPE, $a) → atom("$X"), with $X bound to 5 at root.
+        // inner produced by a rule dispatch at scope_d binds (scope_d, $X) → 99.
+        // The two $X bindings have different ScopedKeys, so both survive.
+        // Without scope tags the inner $X binding would shadow the outer.
+        let factory = GcFactory::default();
+        let scope_d = allocate_scope_id();
+        let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
+        outer.insert_scoped(ROOT_SCOPE, "$a", factory.atom("$X"));
+        outer.insert_scoped(ROOT_SCOPE, "$X", factory.long(5));
+        let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
+        inner.insert_scoped(scope_d, "$X", factory.long(99));
+
+        let result = compose_outer_inner_generic(&outer, &inner, &factory);
+
+        assert_eq!(result.get_scoped(ROOT_SCOPE, "$X"), Some(&factory.long(5)));
+        assert_eq!(result.get_scoped(scope_d, "$X"), Some(&factory.long(99)));
+    }
+
+    #[test]
+    fn scoped_compose_only_outer_only_inner_passthrough() {
+        // outer: (ROOT_SCOPE, $a) → 1, no inner entry for $a.
+        // inner: (s1, $b) → 2, no outer entry for $b.
+        // Both pass through verbatim.
+        let factory = GcFactory::default();
+        let s1 = allocate_scope_id();
+        let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
+        outer.insert_scoped(ROOT_SCOPE, "$a", factory.long(1));
+        let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
+        inner.insert_scoped(s1, "$b", factory.long(2));
+
+        let result = compose_outer_inner_generic(&outer, &inner, &factory);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get_scoped(ROOT_SCOPE, "$a"), Some(&factory.long(1)));
+        assert_eq!(result.get_scoped(s1, "$b"), Some(&factory.long(2)));
     }
 }
 

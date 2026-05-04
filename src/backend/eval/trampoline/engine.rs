@@ -289,15 +289,20 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
 ///
 /// `MettaValue` is `Copy` (8-byte tagged pointer), so cloning is free.
 pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
-    // Helper to check if a name is a variable
-    // IMPORTANT: standalone "&" is a literal operator (used in match), not a variable
+    // Helper to check if a name is a variable.
+    // IMPORTANT: standalone "&" is a literal operator (used in match), not a variable.
+    // `$_` is the wildcard, not a variable.
     fn is_variable(name: &str) -> bool {
-        (name.starts_with('$') || name.starts_with('&') || name.starts_with('\'')) && name != "&"
+        (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
+            && name != "&"
+            && name != "$_"
     }
 
-    // Helper to check if a name is a wildcard
+    // Helper to check if a name is a wildcard.
+    // Both `_` and `$_` are wildcards — each occurrence matches anything
+    // without producing a binding.
     fn is_wildcard(name: &str) -> bool {
-        name == "_"
+        name == "_" || name == "$_"
     }
 
     // Handle pattern atom
@@ -497,6 +502,25 @@ pub fn try_match_all_rules(
     env: &Environment,
     _factory: GcFactory,
 ) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
+    // Default entry — no caller-side outer bindings available. Forwards
+    // to the with_outer variant with empty outer_carrying.
+    let empty_outer = Bindings::new();
+    try_match_all_rules_with_outer(expr, env, _factory, &empty_outer)
+}
+
+/// Phase 5 (Bug 1): Variant of `try_match_all_rules` that threads the
+/// caller's ambient bindings into `match_rules_native`. The `outer_carrying`
+/// is consulted by `apply_bindings_with_rename_scoped` to resolve caller-
+/// side variables that appear inside captured rule body values (e.g.
+/// `$C`'s value `(uncle $a $b)` substituted into the `=>` rule body),
+/// preventing those variables from being freshened to `$__fr_*` and
+/// producing wildcard-LHS rules on `add-atom`.
+pub fn try_match_all_rules_with_outer(
+    expr: &MettaValue,
+    env: &Environment,
+    _factory: GcFactory,
+    outer_carrying: &Bindings,
+) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
     let expr_arity = expr.get_arity();
 
     // Phase E: For single-candidate all-structural operators, skip hash computation
@@ -515,7 +539,7 @@ pub fn try_match_all_rules(
                 // pass be a no-op — preserving the per-match freshened
                 // names (essential for branch isolation) without double-
                 // substituting against original-keyed bindings.
-                let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v);
+                let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v, outer_carrying);
                 return results
                     .into_iter()
                     .map(|r| (r.instantiated_rhs, Bindings::new(), r.rhs_type))
@@ -524,25 +548,30 @@ pub fn try_match_all_rules(
         }
     }
 
-    // Standard path: compute hash and use match_result_cache
+    // Standard path: compute hash and use match_result_cache. Skip the
+    // cache when outer_carrying is non-empty — cached results were
+    // computed without caller-side resolution, so they may contain
+    // freshened variables that the threaded path would have resolved.
     let expr_hash = expr.hash_value();
 
-    if let Some(cached) = match_result_get(expr_hash, expr_arity) {
-        return cached;
+    if outer_carrying.is_empty() {
+        if let Some(cached) = match_result_get(expr_hash, expr_arity) {
+            return cached;
+        }
     }
 
     // Use native byte-level matching via RuleIndex + extract_data.
     // match_rules_native also populates the operator cache for Phase E.
-    // Phase 3.2-A: emit `(instantiated_rhs, empty_bindings)` — same
-    // rationale as the fast-path above.
-    let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v);
+    let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v, outer_carrying);
     let result_vec: Vec<(MettaValue, Bindings, Option<MettaValue>)> = results
         .into_iter()
         .map(|r| (r.instantiated_rhs, Bindings::new(), r.rhs_type))
         .collect();
 
-    // Store in match result cache
-    if !result_vec.is_empty() {
+    // Store in match result cache only when outer_carrying was empty —
+    // otherwise the result is conditional on the caller's bindings and
+    // cannot be reused for queries with different (or empty) outer.
+    if outer_carrying.is_empty() && !result_vec.is_empty() {
         match_result_put(expr_hash, expr_arity, &result_vec);
     }
 
@@ -598,27 +627,54 @@ pub fn enumerate_rules_via_unification(
         if !is_rule_live(entry.global_rule_index) {
             continue;
         }
-        // Phase 3.2-A per-invocation freshening: rules are stored with
-        // Fix-3B per-load-freshened names (`$__fr_{N}_*`). Before
-        // unifying we allocate a PER-MATCH epoch and rename the LHS
-        // (and later the RHS) under that epoch, so the rule's vars are
-        // guaranteed disjoint from BOTH (a) caller's query variables
-        // and (b) any sibling nondet branch's match of the same rule.
-        // HE parity: `CachingMapper` per query at
-        // `/home/dylon/Workspace/f1r3fly.io/hyperon-experimental/hyperon-space/src/index/trie.rs:262`.
+        // P2 simultaneous flip with bidirectional unify.
+        //
+        // bidirectional_unify is name-equality based and would conflict if
+        // rule and query share a variable name, so we still freshen the
+        // LHS *internally* (the freshened LHS is consumed by unify, not
+        // propagated). The freshening prefix `$__fr_{epoch}_` is stable
+        // per epoch, so we can identify rule-side keys on the resulting
+        // bindings by prefix-match and retag them to `dispatch_scope`.
+        // Query-side keys (no prefix) stay at ROOT_SCOPE.
         use crate::backend::eval::freshening::{
             allocate_epoch, freshen_variables_with_epoch,
         };
+        use crate::backend::models::generic_bindings::{allocate_scope_id, ROOT_SCOPE};
         let epoch = allocate_epoch();
         let lhs_freshened = freshen_variables_with_epoch(&entry.lhs, epoch, factory);
         if let Some(bindings) = bidirectional_unify_generic(&lhs_freshened, query) {
-            let rhs_freshened = if entry.rhs_has_variables {
-                freshen_variables_with_epoch(&entry.rhs, epoch, factory)
+            let dispatch_scope = allocate_scope_id();
+            let prefix = format!("$__fr_{}_", epoch);
+            let mut scoped_bindings = crate::backend::models::GenericBindings::new();
+            for (s, name, val) in bindings.iter_full() {
+                let target = if name.starts_with(&prefix) {
+                    dispatch_scope
+                } else {
+                    s
+                };
+                scoped_bindings.insert_scoped(target, name, val.clone());
+            }
+
+            let instantiated = if entry.rhs_has_variables {
+                let rhs_freshened =
+                    freshen_variables_with_epoch(&entry.rhs, epoch, factory);
+                // Phase 1: outer_carrying empty here — `enumerate_rules_via_unification`
+                // takes no outer-bindings parameter. Caller-side variable
+                // resolution flows in via `scoped_bindings` (ROOT_SCOPE
+                // entries from bidirectional_unify), which the lookup arm
+                // already consults.
+                crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
+                    &rhs_freshened,
+                    &scoped_bindings,
+                    &[dispatch_scope, ROOT_SCOPE],
+                    dispatch_scope,
+                    &crate::backend::models::GenericBindings::new(),
+                    factory,
+                )
             } else {
                 entry.rhs.clone()
             };
-            let instantiated = apply_bindings(&rhs_freshened, &bindings, factory);
-            out.push((instantiated, bindings, entry.rhs_type.clone()));
+            out.push((instantiated, scoped_bindings, entry.rhs_type.clone()));
         }
     }
 
@@ -660,13 +716,13 @@ fn resolve_match_bindings_through(
 ) {
     match match_bindings {
         GenericBindings::Empty => {}
-        GenericBindings::Single((_, ref mut val)) => {
+        GenericBindings::Single((_, _, ref mut val)) => {
             if val.has_variables_fast() {
                 *val = apply_bindings(val, outer_bindings, factory);
             }
         }
         GenericBindings::Small(ref mut vec) => {
-            for (_, val) in vec.iter_mut() {
+            for (_, _, val) in vec.iter_mut() {
                 if val.has_variables_fast() {
                     *val = apply_bindings(val, outer_bindings, factory);
                 }
@@ -746,7 +802,7 @@ pub fn try_match_rules_with_bindings(
     // When admitted, every (call_site, candidate) pair emits a
     // `RuleMatchAttempt` event so the analyzer can answer "why did rule R
     // not match at this call site?".
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let trace_match_attempts =
         crate::backend::trace::rule_match::should_trace_match(resolved_head);
 
@@ -764,7 +820,7 @@ pub fn try_match_rules_with_bindings(
         // Cheap when the filter is disabled (single atomic load + None
         // check above). When enabled, the event captures the call site,
         // rule LHS, and outcome (Success or generic failure).
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         if trace_match_attempts {
             let outcome = if let Some(ref b) = match_result {
                 trace_format::RuleMatchOutcome::Success {
@@ -810,12 +866,102 @@ pub fn try_match_rules_with_bindings(
                 resolve_match_bindings_through(&mut match_bindings, outer_bindings, factory);
             }
 
+            // Per-invocation scope-tagged binding substitution.
+            //
+            // Each dispatch allocates a fresh `dispatch_scope` so recursive
+            // invocations of the same rule use disjoint binding namespaces
+            // (mirrors HE's `CachingMapper` per-query freshening, but at the
+            // bindings layer instead of allocating new RHS atoms). We:
+            //   1. Retag the matcher's `match_bindings` from `ROOT_SCOPE` to
+            //      the new `dispatch_scope`. Caller-side bindings (e.g. query
+            //      vars `$who`) remain at `ROOT_SCOPE` if any; the matcher
+            //      typically only emits rule-LHS bindings at this point.
+            //   2. Walk `entry.rhs` (the env-resident original template — no
+            //      slab allocation for variable atoms) with the chain
+            //      `[dispatch_scope, ROOT_SCOPE]`. Rule-LHS-bound atoms hit
+            //      `dispatch_scope`; caller-level atoms embedded via
+            //      bidirectional unify miss `dispatch_scope` and fall back
+            //      to `ROOT_SCOPE`.
+            //   3. Emit `(substituted_rhs, empty)`. Empty matches the prior
+            //      Edit A invariant: substitution is baked into the RHS, so
+            //      downstream `compose_outer_inner_strict_generic` cannot
+            //      produce a same-key conflict between distinct invocations.
+            //
+            // Net effect vs. Edit A: identical observed result, zero atom
+            // allocations per match (substituted values are copies of bound
+            // pointers, not freshly-renamed atoms). This is the change that
+            // restores GC quiescence for Robot.metta — no transient atoms
+            // per rule dispatch means no stack-only roots churning the
+            // allocator past the cron's `gc_threshold`.
+            // P2 simultaneous flip: scope-tagged bindings + body-local
+            // rename. The matcher emits bindings keyed on `entry.var_names`
+            // (rule-side, original LHS names); we retag those into a fresh
+            // `dispatch_scope`. Caller-side keys (introduced by the
+            // bidirectional-unify fallback in EnhancedMatcher slot equality
+            // checks at `enhanced_matcher.rs:398-407`) stay at `ROOT_SCOPE`.
+            // `apply_bindings_with_rename_scoped` walks `entry.rhs` with
+            // chain `[dispatch_scope, ROOT_SCOPE]`: rule-LHS atoms hit
+            // `dispatch_scope`; body-local atoms (let*-pattern intros)
+            // are renamed using `dispatch_scope` as the epoch.
+            //
+            // Empty `out_bindings` matches the prior Edit-A invariant:
+            // substitution is baked into the RHS, downstream compose sees
+            // empty inner — no same-key conflict between distinct invocations.
+            // Option D: HE-style stored-side rename then scope tag.
+            use crate::backend::eval::freshening::{
+                allocate_epoch, freshen_bindings_keys_with_epoch,
+                freshen_variables_with_epoch, intern_fresh_name,
+            };
+            use crate::backend::models::generic_bindings::{
+                allocate_scope_id, ROOT_SCOPE,
+            };
+            let body_local_epoch = allocate_epoch();
+            let dispatch_scope = allocate_scope_id();
+            let match_bindings = freshen_bindings_keys_with_epoch(
+                match_bindings,
+                body_local_epoch,
+                &entry.var_names,
+            );
+            let renamed_var_names: Vec<&'static str> = entry
+                .var_names
+                .iter()
+                .map(|n| intern_fresh_name(body_local_epoch, &n[1..]))
+                .collect();
+            let scoped_bindings = crate::backend::eval::bindings::retag_rule_keys_at_scope(
+                match_bindings,
+                &renamed_var_names,
+                ROOT_SCOPE,
+                dispatch_scope,
+            );
+            let (out_rhs, out_bindings) = if entry.rhs_has_variables {
+                let rhs_freshened = freshen_variables_with_epoch(
+                    &entry.rhs,
+                    body_local_epoch,
+                    factory,
+                );
+                // Phase 1 (Bug 1): caller-side variables in captured values
+                // (e.g. `$C`'s value `(uncle $a $b)`) must resolve through
+                // outer_bindings BEFORE the body-local rename freshens them
+                // and produces a wildcard-LHS rule on add-atom.
+                let instantiated_rhs = crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
+                    &rhs_freshened,
+                    &scoped_bindings,
+                    &[dispatch_scope, ROOT_SCOPE],
+                    dispatch_scope,
+                    outer_bindings,
+                    factory,
+                );
+                (instantiated_rhs, Bindings::new())
+            } else {
+                (entry.rhs, scoped_bindings)
+            };
+
             let multiplicity = entry.multiplicity.max(1);
             if multiplicity == 1 {
-                matches.push((entry.rhs, match_bindings));
+                matches.push((out_rhs, out_bindings));
             } else {
                 for _ in 0..multiplicity {
-                    matches.push((entry.rhs, match_bindings.clone()));
+                    matches.push((out_rhs.clone(), out_bindings.clone()));
                 }
             }
         }

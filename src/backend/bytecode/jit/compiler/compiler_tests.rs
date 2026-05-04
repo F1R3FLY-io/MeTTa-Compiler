@@ -5793,9 +5793,15 @@ fn test_jit_space_add_returns_result() {
     // With nil space, we expect unit (success) or error
     let result = JitValue::from_raw(result_bits as u64);
     // Just verify we got a valid JIT value back (no crash)
+    let is_error_value = if result.is_heap() {
+        let mv = unsafe { result.to_metta() };
+        matches!(mv.view(), crate::backend::models::ValueView::Error(_, _))
+    } else {
+        false
+    };
     assert!(
-        result.is_bool() || result.is_unit() || result.is_unit() || result.is_error(),
-        "SpaceAdd should return bool, unit, nil, or error"
+        result.is_unit() || result.is_error() || is_error_value,
+        "SpaceAdd should return Unit on success or Error on type mismatch (Plan A): got {result:?}"
     );
 }
 
@@ -5829,9 +5835,15 @@ fn test_jit_space_remove_returns_result() {
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     let result = JitValue::from_raw(result_bits as u64);
+    let is_error_value = if result.is_heap() {
+        let mv = unsafe { result.to_metta() };
+        matches!(mv.view(), crate::backend::models::ValueView::Error(_, _))
+    } else {
+        false
+    };
     assert!(
-        result.is_bool() || result.is_unit() || result.is_unit() || result.is_error(),
-        "SpaceRemove should return bool, unit, nil, or error"
+        result.is_unit() || result.is_error() || is_error_value,
+        "SpaceRemove should return Unit on success or Error on type mismatch (Plan A): got {result:?}"
     );
 }
 

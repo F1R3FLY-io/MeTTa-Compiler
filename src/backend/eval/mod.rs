@@ -222,7 +222,7 @@ pub fn eval(
 /// also fall back to the trace-enabled tree-walker on bailout.
 ///
 /// Only available when the `eval-trace` feature is enabled.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 pub fn eval_with_trace(
     value: MettaValue,
     env: MettaEnvironment,
@@ -260,7 +260,7 @@ pub fn eval_with_trace(
 /// opcode handlers and JIT runtime helpers can emit trace events via
 /// `with_thread_trace_collector()`. Emits `TierDispatch` events at each tier
 /// selection point for tier-transition visibility.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 fn eval_inner_with_trace(
     value: MettaValue,
     env: MettaEnvironment,
@@ -285,7 +285,13 @@ fn eval_inner_with_trace(
     // Set thread-local trace collector for bytecode/JIT instrumentation.
     set_thread_trace_collector(collector);
 
-    if can_compile(&value) {
+    // Gate: if any sub-expression's head is an overridable grounded op with
+    // a user rule currently installed, bypass bytecode/JIT tiers and route
+    // to the trampoline so user rules take precedence (HE-bisimilar behavior
+    // for names HE defines in stdlib.metta as overridable rules).
+    let has_overridden_grounded = expression_has_overridden_grounded_op(&value, &env);
+
+    if can_compile(&value) && !has_overridden_grounded {
         // JIT Stage 2
         if compilation_state.jit2_status() == TierStatusKind::Ready {
             if let Some(code) = compilation_state.jit2_code() {
@@ -384,7 +390,7 @@ fn eval_inner_with_trace(
     // pass unevaluated). The trampoline honors declared meta-types via
     // `find_typed_arg_indices_generic`.
     let has_meta_typed = expression_has_declared_meta_typed_params(&value, &env);
-    if can_compile_with_env(&value) && !has_meta_typed {
+    if can_compile_with_env(&value) && !has_meta_typed && !has_overridden_grounded {
         collector.emit_converted(
             trace_format::TraceTier::BytecodeVM, 0,
             crate::backend::trace::trace_value_generic(&value),
@@ -468,8 +474,13 @@ fn eval_inner(
     // This triggers background bytecode and JIT compilation at thresholds
     let compilation_state = global_tiered_cache().record_execution(&value);
 
+    // Gate: if any sub-expression's head is an overridable grounded op with
+    // a user rule currently installed, bypass bytecode/JIT tiers and route
+    // to the trampoline so user rules take precedence.
+    let has_overridden_grounded = expression_has_overridden_grounded_op(&value, &env);
+
     // Check if this expression can be compiled to bytecode (pure expressions)
-    if can_compile(&value) {
+    if can_compile(&value) && !has_overridden_grounded {
         // Check for JIT execution first (highest tier)
         // JIT Stage 2 (very hot code, 500+ executions)
         if compilation_state.jit2_status() == TierStatusKind::Ready {
@@ -530,6 +541,7 @@ fn eval_inner(
 
     // Check pre-compiled built-in registry — zero compilation overhead for
     // common operations like (+, -, *, /, car-atom, etc.)
+    if !has_overridden_grounded {
     if let Some(items) = value.as_sexpr() {
         if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
             let arity = (items.len() - 1) as u8;
@@ -565,6 +577,7 @@ fn eval_inner(
             }
         }
     }
+    }
 
     // Try environment-aware bytecode for expressions that need rule dispatch.
     // Cache compiled chunks in TieredCache to avoid recompilation on every call.
@@ -594,7 +607,7 @@ fn eval_inner(
     // unevaluated). The trampoline honors per-arg meta-type declarations
     // via `find_typed_arg_indices_generic`.
     let has_meta_typed = expression_has_declared_meta_typed_params(&value, &env);
-    if compilable_with_env && !has_cut_rules && !has_meta_typed {
+    if compilable_with_env && !has_cut_rules && !has_meta_typed && !has_overridden_grounded {
         // Reuse compilation_state from the record_execution at line 371 —
         // same expression hash, avoids redundant DashMap lookup + hash computation.
         let compilation_state_env = &compilation_state;
@@ -730,6 +743,62 @@ fn expression_has_declared_meta_typed_params_recursive(
         }
         return items.iter().any(|item|
             expression_has_declared_meta_typed_params_recursive(item, env)
+        );
+    }
+    false
+}
+
+/// Gate: skip the bytecode/JIT tiers when any sub-expression's head is an
+/// overridable grounded op that has a user rule currently installed. The
+/// bytecode compiler emits direct grounded opcodes (e.g. `StructuralHead` for
+/// `car-atom`, dedicated handlers for `map-atom`/`filter-atom`/`foldl-atom`)
+/// that bypass user-rule dispatch; the tree-walker trampoline honors the
+/// override via the dispatch arm at `sexpr.rs:1393-1412`. To keep MeTTaTron
+/// bisimilar with HE (where stdlib.metta defines these names as overridable
+/// rules), we route such expressions through the trampoline so user rules
+/// take precedence.
+///
+/// Fast exit: if no override bit is set on the env's `DispatchOverrides`,
+/// return `false` in O(1) without walking the expression tree.
+fn expression_has_overridden_grounded_op(
+    value: &MettaValue,
+    env: &MettaEnvironment,
+) -> bool {
+    let overrides = env.dispatch_overrides();
+    if !overrides.any_overridden() {
+        return false;
+    }
+    expression_has_overridden_grounded_op_recursive(value, overrides)
+}
+
+#[inline]
+fn expression_has_overridden_grounded_op_recursive(
+    value: &MettaValue,
+    overrides: &crate::backend::environment::dispatch_overrides::DispatchOverrides,
+) -> bool {
+    use crate::backend::environment::dispatch_overrides::overridable_op_id;
+
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            // Data-treating heads: their args are patterns/data, not evaluated
+            // calls. A `car-atom` appearing inside `(= ...)`, `(quote ...)`,
+            // `(add-atom &s ...)`, or `(remove-atom &s ...)` is a syntactic
+            // occurrence — the bytecode/VM routes such forms through
+            // non-grounded opcodes (DefineRule, SpaceAdd, SpaceRemove, etc.)
+            // that never materialize the grounded `car-atom` call path, so
+            // the override bit shouldn't gate them.
+            match head {
+                "=" | "quote" | "add-atom" | "remove-atom" => return false,
+                _ => {}
+            }
+            if let Some(id) = overridable_op_id(head) {
+                if overrides.is_overridden(id) {
+                    return true;
+                }
+            }
+        }
+        return items.iter().any(|item|
+            expression_has_overridden_grounded_op_recursive(item, overrides)
         );
     }
     false

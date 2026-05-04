@@ -1262,6 +1262,6 @@ mod tests {
 
     #[test]
     fn format_version_constant() {
-        assert_eq!(TRACE_FORMAT_VERSION, 2);
+        assert_eq!(TRACE_FORMAT_VERSION, 5);
     }
 }

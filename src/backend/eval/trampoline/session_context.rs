@@ -18,7 +18,7 @@
 //! allocations through the global slab factory.
 
 use std::cell::Cell;
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 use std::sync::Arc;
 
 use crate::backend::models::{
@@ -71,7 +71,7 @@ pub struct SessionContext<'s> {
 
     /// Optional trace collector for evaluation tracing.
     /// Present only when `--trace FILE` was specified and the `eval-trace` feature is enabled.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     trace_collector: Option<Arc<crate::backend::trace::TraceCollector>>,
 }
 
@@ -96,7 +96,7 @@ impl<'s> SessionContext<'s> {
             state,
             factory: global_factory(),
             last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             trace_collector: None,
         }
     }
@@ -106,7 +106,7 @@ impl<'s> SessionContext<'s> {
     /// When a trace collector is attached, evaluation events will be emitted
     /// to the collector's output file. This is called when `--trace FILE` is
     /// specified on the command line.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     #[inline]
     pub fn with_trace_collector(mut self, collector: Arc<crate::backend::trace::TraceCollector>) -> Self {
         self.trace_collector = Some(collector);
@@ -160,15 +160,31 @@ impl<'s> EvalContext for SessionContext<'s> {
         // dedicated background thread. No polling or backpressure needed here.
     }
 
-    /// Check if a GC safepoint should be taken based on allocation count.
+    /// Check if a GC safepoint should be taken based on allocation count
+    /// or pending GC request.
     ///
-    /// Returns `true` when the global alloc count has grown by
-    /// `SAFEPOINT_ALLOC_THRESHOLD` since the last safepoint. Uses alloc
-    /// count instead of committed bytes because free-list reuse doesn't
-    /// grow committed bytes — after initial page allocation, committed
-    /// bytes plateau even as new objects are allocated from the free list.
+    /// Returns `true` when EITHER:
+    /// 1. The global alloc count has grown by `SAFEPOINT_ALLOC_THRESHOLD`
+    ///    since the last safepoint (alloc-pressure path). Uses alloc count
+    ///    instead of committed bytes because free-list reuse doesn't grow
+    ///    committed bytes — after initial page allocation, committed bytes
+    ///    plateau even as new objects are allocated from the free list.
+    /// 2. The GC has explicitly requested cooperation via `is_gc_requested()`
+    ///    (pressure-driven path). This generalizes the safepoint mechanism
+    ///    to hot paths that allocate small-but-often: such workloads can
+    ///    inflate `committed_bytes` past `gc_threshold` while individual
+    ///    workers stay below `SAFEPOINT_ALLOC_THRESHOLD` per-iteration,
+    ///    starving GC indefinitely. Honoring `is_gc_requested()` ensures
+    ///    cooperation regardless of per-thread allocation cadence.
     #[inline]
     fn should_safepoint(&self) -> bool {
+        // Pressure-driven path: GC has explicitly asked for cooperation.
+        // A single Acquire load; negligible cost when no GC is pending.
+        if crate::backend::models::gc_allocator::is_gc_requested() {
+            self.last_safepoint_allocs.set(alloc_count_snapshot());
+            return true;
+        }
+        // Alloc-delta path.
         let current = alloc_count_snapshot();
         let last = self.last_safepoint_allocs.get();
         if current.wrapping_sub(last) >= SAFEPOINT_ALLOC_THRESHOLD {
@@ -222,7 +238,7 @@ impl<'s> EvalContext for SessionContext<'s> {
         // 5. _root_handle drops here → unregisters temporary roots
     }
 
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     #[inline]
     fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
         self.trace_collector.as_deref()

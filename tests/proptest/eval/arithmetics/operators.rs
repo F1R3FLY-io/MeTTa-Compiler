@@ -10,11 +10,16 @@ pub(super) enum ArithOp {
 }
 
 impl ArithOp {
-    pub(super) fn eval(self, lhs: i64, rhs: i64) -> Option<i64> {
+    /// Oracle for the proptest harness: matches MeTTa spec §13.2 + §C.7g
+    /// silent two's-complement wrap semantics. Mirrors
+    /// `src/backend/grounded/arithmetic.rs` (trampoline tier),
+    /// `src/backend/bytecode/vm/mod.rs` (bytecode VM tier), and
+    /// `src/backend/bytecode/jit/runtime/arithmetic.rs` (JIT tier).
+    pub(super) fn eval(self, lhs: i64, rhs: i64) -> i64 {
         match self {
-            ArithOp::Add => lhs.checked_add(rhs),
-            ArithOp::Subtract => lhs.checked_sub(rhs),
-            ArithOp::Multiply => lhs.checked_mul(rhs),
+            ArithOp::Add => lhs.wrapping_add(rhs),
+            ArithOp::Subtract => lhs.wrapping_sub(rhs),
+            ArithOp::Multiply => lhs.wrapping_mul(rhs),
         }
     }
 }

@@ -26,21 +26,34 @@ use crate::backend::models::{MettaValue, ValueView};
 // Phase D: Space Operations
 // =============================================================================
 
-/// Add an atom to a space
+/// Add an atom to a space.
 ///
 /// Stack: [space, atom] -> [Unit]
 ///
+/// Mirrors the trampoline reference in `eval/trampoline/eval_loop.rs` and the
+/// bytecode VM `op_space_add`. Three resolution paths (Plan A Phase 4):
+///   1. `Space(handle)` → if module-space or `&self`, route through env's
+///      PathMap (`env.add_to_space`) so rule definitions populate RuleIndex;
+///      otherwise write to the SpaceHandle directly.
+///   2. `Atom("&self")` (un-evaluated form) → same env path.
+///   3. `Atom(name)` → resolve token; recurse on the resolved Space.
+///   4. Otherwise → return a MeTTa Error value (caller can branch on `is-error`).
+///
+/// After mutation, calls `increment_mutation_epoch()` so EVAL_MEMO and
+/// MATCH_RESULT_CACHE are invalidated — without this, subsequent matches
+/// would return stale data (Plan A Bug 4).
+///
 /// # Arguments
-/// * `ctx` - JIT context
-/// * `space` - NaN-boxed space handle (TAG_PTR pointing to MettaValue::Space)
-/// * `atom` - NaN-boxed atom to add
+/// * `ctx` - JIT context (must carry a valid `env_ptr` for module/`&self` writes)
+/// * `space` - NaN-boxed space handle, atom token, or other (Type error)
+/// * `atom` - NaN-boxed atom to add (already kept unevaluated by compile path)
 /// * `_ip` - Instruction pointer (for debugging)
 ///
 /// # Returns
-/// NaN-boxed Unit value
+/// NaN-boxed Unit on success, NaN-boxed Error on type mismatch.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_add(
-    _ctx: *mut JitContext,
+    ctx: *mut JitContext,
     space: u64,
     atom: u64,
     _ip: u64,
@@ -51,36 +64,64 @@ pub unsafe extern "C" fn jit_runtime_space_add(
     let space_metta = space_val.to_metta();
     let atom_metta = atom_val.to_metta();
 
-    match space_metta.view() {
-        ValueView::Space(handle) => {
-            handle.add_atom(atom_metta);
-            JitValue::unit().to_bits()
+    // Path 1: evaluated Space handle
+    if let ValueView::Space(handle) = space_metta.view() {
+        if handle.is_module_space() || handle.name == "self" {
+            if let Some(ctx_ref) = ctx.as_ref() {
+                if !ctx_ref.env_ptr.is_null() {
+                    let env = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                    env.add_to_space(&atom_metta);
+                    crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                    return JitValue::unit().to_bits();
+                }
+            }
+            return super::helpers::make_jit_error("add-atom: no environment for &self/module space");
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
-            // Type error - not a space
-            JitValue::unit().to_bits()
+        handle.add_atom(atom_metta);
+        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+        return JitValue::unit().to_bits();
+    }
+
+    // Path 2 + 3: un-evaluated atom-named space
+    if let ValueView::Atom(name) = space_metta.view() {
+        if let Some(ctx_ref) = ctx.as_ref() {
+            if !ctx_ref.env_ptr.is_null() {
+                let env_mut = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                if name == "&self" {
+                    env_mut.add_to_space(&atom_metta);
+                    crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                    return JitValue::unit().to_bits();
+                }
+                let factory = crate::backend::models::GcFactory::default();
+                if let Some(resolved) = env_mut.lookup_token_generic(name, &factory) {
+                    if let Some(handle) = resolved.as_space() {
+                        if handle.is_module_space() || handle.name == "self" {
+                            env_mut.add_to_space(&atom_metta);
+                        } else {
+                            handle.add_atom(atom_metta);
+                        }
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        return JitValue::unit().to_bits();
+                    }
+                }
+            }
         }
     }
+
+    // Path 4: type error
+    super::helpers::make_jit_error("add-atom: expected Space, got non-Space value")
 }
 
-/// Remove an atom from a space
+/// Remove an atom from a space.
 ///
-/// Stack: [space, atom] -> [Bool]
+/// Stack: [space, atom] -> [Unit]
 ///
-/// # Arguments
-/// * `ctx` - JIT context
-/// * `space` - NaN-boxed space handle
-/// * `atom` - NaN-boxed atom to remove
-/// * `_ip` - Instruction pointer
-///
-/// # Returns
-/// NaN-boxed Bool - true if atom was found and removed, false otherwise
+/// Returns Unit per HE / spec §9.2 (the boolean removed-flag is discarded).
+/// Mirrors `op_space_remove` in the bytecode VM with the same three-path
+/// resolution and `increment_mutation_epoch()` call (Plan A Phase 4 + Bug 4).
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_remove(
-    _ctx: *mut JitContext,
+    ctx: *mut JitContext,
     space: u64,
     atom: u64,
     _ip: u64,
@@ -91,19 +132,49 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
     let space_metta = space_val.to_metta();
     let atom_metta = atom_val.to_metta();
 
-    match space_metta.view() {
-        ValueView::Space(handle) => {
-            let removed = handle.remove_atom(&atom_metta);
-            JitValue::from_bool(removed).to_bits()
+    if let ValueView::Space(handle) = space_metta.view() {
+        if handle.is_module_space() || handle.name == "self" {
+            if let Some(ctx_ref) = ctx.as_ref() {
+                if !ctx_ref.env_ptr.is_null() {
+                    let env = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                    env.remove_from_space(&atom_metta);
+                    crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                    return JitValue::unit().to_bits();
+                }
+            }
+            return super::helpers::make_jit_error("remove-atom: no environment for &self/module space");
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
-            // Type error - not a space
-            JitValue::from_bool(false).to_bits()
+        let _ = handle.remove_atom(&atom_metta);
+        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+        return JitValue::unit().to_bits();
+    }
+
+    if let ValueView::Atom(name) = space_metta.view() {
+        if let Some(ctx_ref) = ctx.as_ref() {
+            if !ctx_ref.env_ptr.is_null() {
+                let env_mut = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                if name == "&self" {
+                    env_mut.remove_from_space(&atom_metta);
+                    crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                    return JitValue::unit().to_bits();
+                }
+                let factory = crate::backend::models::GcFactory::default();
+                if let Some(resolved) = env_mut.lookup_token_generic(name, &factory) {
+                    if let Some(handle) = resolved.as_space() {
+                        if handle.is_module_space() || handle.name == "self" {
+                            env_mut.remove_from_space(&atom_metta);
+                        } else {
+                            let _ = handle.remove_atom(&atom_metta);
+                        }
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        return JitValue::unit().to_bits();
+                    }
+                }
+            }
         }
     }
+
+    super::helpers::make_jit_error("remove-atom: expected Space, got non-Space value")
 }
 
 /// Get all atoms from a space
@@ -523,14 +594,14 @@ fn pattern_matches_with_bindings_impl(
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
     match (pattern.view(), value.view()) {
+        // Wildcard - always matches (check BEFORE variable arm — both `_` and `$_`).
+        (ValueView::Atom(s), _) if s == "_" || s == "$_" => true,
+
         // Variable pattern (atom starting with $) - always matches and binds
         (ValueView::Atom(var), _) if var.starts_with('$') => {
             bindings.push((var.to_string(), value.clone()));
             true
         }
-
-        // Wildcard - always matches
-        (ValueView::Atom(s), _) if s == "_" => true,
 
         // Same type matching
         (ValueView::Atom(p), ValueView::Atom(v)) => p == v,

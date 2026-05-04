@@ -190,6 +190,9 @@ unsafe fn jit_maybe_pre_eval_structural(
         fn factory(&self) -> &GcFactory {
             &self.factory
         }
+
+        // should_safepoint / perform_safepoint inherit the trait defaults
+        // (honor `is_gc_requested()`, run the canonical quiescent protocol).
     }
     let ctx = JitEvalContext {
         factory: global_factory(),

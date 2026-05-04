@@ -37,7 +37,7 @@ fn print_usage() {
     --tier-stats            Print tiered compilation stats to stderr on exit
     --pool-stats            Print thread pool statistics to stderr on exit");
     eprintln!("    --startup-timing        Print per-phase startup timing to stderr");
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     eprintln!("    --trace <FILE>          Write binary evaluation trace to FILE");
     eprintln!();
     eprintln!("ARGUMENTS:");
@@ -68,7 +68,7 @@ struct Options {
     #[cfg(feature = "track-stats")]
     pool_stats: bool,
     startup_timing: bool,
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     trace_output: Option<String>,
 }
 
@@ -88,7 +88,7 @@ fn parse_args() -> Result<Options, String> {
     #[cfg(feature = "track-stats")]
     let mut pool_stats = false;
     let mut startup_timing = false;
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut trace_output: Option<String> = None;
     let mut i = 1;
 
@@ -139,7 +139,7 @@ fn parse_args() -> Result<Options, String> {
             "--startup-timing" => {
                 startup_timing = true;
             }
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             "--trace" => {
                 i += 1;
                 if i >= args.len() {
@@ -174,7 +174,7 @@ fn parse_args() -> Result<Options, String> {
         #[cfg(feature = "track-stats")]
         pool_stats,
         startup_timing,
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         trace_output,
     })
 }
@@ -344,8 +344,8 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         .map_err(|e| e.to_string())?;
     timings.mark("compile");
 
-    // Create trace collector if --trace was specified (eval-trace feature only).
-    #[cfg(feature = "eval-trace")]
+    // Create trace collector if --trace was specified (trace feature only).
+    #[cfg(feature = "trace")]
     let trace_collector = {
         match &options.trace_output {
             Some(trace_path) => {
@@ -378,7 +378,7 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         let gc_hold = GcHoldGuard::enter();
 
         // Use trace-aware eval when a trace collector is active.
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         let (results, new_env) = {
             if let Some(ref collector) = trace_collector {
                 mettatron::eval_with_trace(expr, env, &state, collector)
@@ -386,7 +386,7 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
                 eval(expr, env, &state)
             }
         };
-        #[cfg(not(feature = "eval-trace"))]
+        #[cfg(not(feature = "trace"))]
         let (results, new_env) = eval(expr, env, &state);
 
         env = new_env;
@@ -515,7 +515,7 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
     }
 
     // Finalize trace collector — flush remaining events and write footer.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         if let Some(collector) = trace_collector {
             match collector.finalize() {

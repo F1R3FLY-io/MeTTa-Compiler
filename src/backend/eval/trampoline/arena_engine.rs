@@ -17,7 +17,7 @@
 
 use crate::backend::models::{MettaState, MettaValue, GcFactory, global_factory};
 
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 use std::sync::Arc;
 
 use super::context::MettaEnvironment;
@@ -39,7 +39,7 @@ pub fn eval_trampoline(
 }
 
 /// Zero-conversion arena evaluation with optional trace collector.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 #[inline]
 pub fn eval_trampoline_with_trace(
     value: MettaValue,

@@ -3815,38 +3815,117 @@ pub fn safepoint_wait_for_quiescence() {
         }
     }
 
-    // If GC is still requested (quiescence not yet reached because other
-    // evaluators are active), park on condvar with timeout
-    if GC_REQUESTED.load(Ordering::Acquire)
-        && ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0
-    {
-        let mut lock = QUIESCENT_MUTEX.lock();
-        // Wait up to 10ms for other evaluators to reach safepoints.
-        // QUIESCENT_CONDVAR is notified by EvalGuard::drop() and
-        // drop_eval_guard_for_safepoint() when transitioning to 0.
-        let _result = QUIESCENT_CONDVAR.wait_for(&mut lock, Duration::from_millis(10));
-        drop(lock);
-
-        // Early exit: if GC_REQUESTED was cleared while we waited,
-        // another thread handled it — no need to retry.
-        if !GC_REQUESTED.load(Ordering::Acquire) {
-            return;
+    // Convergence loop: as long as GC is still requested and quiescence
+    // is not yet reached, keep this evaluator parked at "guard dropped".
+    //
+    // ## Why a loop, not a single wait
+    //
+    // With nested parallel branches, multiple workers each hold one
+    // `EvalGuard`. Their `should_safepoint` cadences drift across tens of
+    // ms (4096 trampoline iters between checks). A staggered drop
+    // sequence (N→N-1→…→1→0) only fires `QUIESCENT_CONDVAR.notify_all`
+    // on the FINAL 1→0 transition; earlier arrivals must therefore stay
+    // parked through several drops, not just the first hint of progress.
+    // A single bounded wait followed by re-acquire causes earlier
+    // arrivals to leave their drop position before the slowest one
+    // drops, so `ACTIVE_EVALUATORS == 0` is never observed and
+    // `maybe_quiescent_gc` never CAS-wins the request.
+    //
+    // ## Loop exit conditions
+    //
+    //   - `maybe_quiescent_gc` fires (we won or someone else won; either
+    //     way `GC_CYCLE_IN_FLIGHT` becomes set), or
+    //   - `GC_REQUESTED` was cleared by another thread, or
+    //   - the convergence budget (250 ms) is exhausted (deadlock guard).
+    //
+    // The 250 ms cap is long enough for typical worker stagger (~tens
+    // of ms per gc_counter cycle) but small enough that throughput
+    // doesn't collapse if quiescence is genuinely unreachable in the
+    // current parallel-dispatch shape.
+    // Edit 3 (convergence-tightening): when ACTIVE_EVALUATORS is monotonically
+    // decreasing across the wait but hasn't yet reached 0 by the 250 ms
+    // deadline, extend by another 250 ms cycle, up to 4 cycles total
+    // (≤ 1 s wall clock). Without this extension, deep PLN inference
+    // workloads thrash: worker A times out at 250 ms, reacquires (+1),
+    // then worker B finally arrives at safepoint and sees ACTIVE = 1
+    // (worker A) + (parent outer) ≥ 2; B parks 250 ms, times out,
+    // reacquires; A may already be back at another should_safepoint.
+    // The extension keeps a safepoint-arriving worker parked while
+    // progress is still being made, breaking the rotation.
+    //
+    // The min-observed counter is local to this function frame (no new
+    // shared state). On stagnation (no observed decrease for the full
+    // 250 ms cycle), we exit and let the trampoline retry next cycle.
+    const MAX_EXTENSION_CYCLES: u32 = 4;
+    let initial_active = ACTIVE_EVALUATORS.load(Ordering::Acquire);
+    let mut min_observed_active: u32 = initial_active;
+    let mut cycle: u32 = 0;
+    'convergence: loop {
+        let convergence_deadline =
+            std::time::Instant::now() + Duration::from_millis(250);
+        while GC_REQUESTED.load(Ordering::Acquire)
+            && !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
+            && ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0
+        {
+            if std::time::Instant::now() >= convergence_deadline {
+                break;
+            }
+            let mut lock = QUIESCENT_MUTEX.lock();
+            if !GC_REQUESTED.load(Ordering::Acquire)
+                || GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
+                || ACTIVE_EVALUATORS.load(Ordering::Acquire) == 0
+            {
+                drop(lock);
+                maybe_quiescent_gc();
+                break 'convergence;
+            }
+            let _result = QUIESCENT_CONDVAR.wait_for(&mut lock, Duration::from_millis(50));
+            drop(lock);
+            maybe_process_gc_response_fast();
+            maybe_quiescent_gc();
+            // Track convergence progress for the extension decision.
+            let now_active = ACTIVE_EVALUATORS.load(Ordering::Acquire);
+            if now_active < min_observed_active {
+                min_observed_active = now_active;
+            }
         }
 
-        // Retry after wakeup (either quiescent or timeout)
-        maybe_process_gc_response_fast();
-        maybe_quiescent_gc();
+        // Convergence-deadline expired (we're at the 250 ms boundary of
+        // this cycle). Decide whether to extend.
+        cycle += 1;
+        if cycle >= MAX_EXTENSION_CYCLES {
+            break 'convergence;
+        }
+        // Already exited the inner loop because GC was triggered or
+        // request cleared? Don't extend.
+        if !GC_REQUESTED.load(Ordering::Acquire)
+            || GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
+            || ACTIVE_EVALUATORS.load(Ordering::Acquire) == 0
+        {
+            break 'convergence;
+        }
+        // Did we make progress within this cycle (min_observed_active
+        // strictly less than where we started this cycle)?
+        let cycle_start_active = ACTIVE_EVALUATORS.load(Ordering::Acquire);
+        if min_observed_active < cycle_start_active {
+            // Progress observed — extend another cycle.
+            min_observed_active = cycle_start_active;
+            continue 'convergence;
+        }
+        // Stagnation — exit, let next safepoint retry.
+        break 'convergence;
+    }
 
-        // Wait for the new GC response via condvar parking
-        if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-            if !maybe_process_gc_response() {
-                let mut lock = GC_CYCLE_MUTEX.lock();
-                if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-                    let _result = GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(10));
-                }
-                drop(lock);
-                maybe_process_gc_response();
+    // If a GC cycle is now in flight (we won the CAS or someone else did),
+    // wait for the response.
+    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+        if !maybe_process_gc_response() {
+            let mut lock = GC_CYCLE_MUTEX.lock();
+            if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+                let _result = GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(100));
             }
+            drop(lock);
+            maybe_process_gc_response();
         }
     }
 }

@@ -75,15 +75,8 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AddOp {
                         // Use trait methods instead of pattern matching on inner
                         match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
                             (Some(x), _, Some(y), _) => {
-                                // Long + Long
-                                match x.checked_add(y) {
-                                    Some(sum) => results.push((factory.long(sum), None)),
-                                    None => {
-                                        return GroundedWork::Error(ExecError::Runtime(
-                                            format!("Integer overflow: {} + {}", x, y),
-                                        ))
-                                    }
-                                }
+                                // Long + Long: silent two's-complement wrap per spec §13.2
+                                results.push((factory.long(x.wrapping_add(y)), None));
                             }
                             (_, Some(x), _, Some(y)) => {
                                 // Float + Float
@@ -161,14 +154,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SubOp {
                 let mut results = Vec::with_capacity(a_results.len());
                 for a in a_results {
                     match (a.as_long(), a.as_float()) {
-                        (Some(x), _) => match x.checked_neg() {
-                            Some(neg) => results.push((factory.long(neg), None)),
-                            None => {
-                                return GroundedWork::Error(ExecError::Runtime(
-                                    format!("Integer overflow: -({})", x),
-                                ))
-                            }
-                        },
+                        // Unary minus: silent two's-complement wrap per spec §13.2
+                        // (- i64::MIN) → i64::MIN
+                        (Some(x), _) => results.push((factory.long(x.wrapping_neg()), None)),
                         (_, Some(x)) => results.push((factory.float(-x), None)),
                         _ => {
                             // MeTTa HE: Empty sentinel → skip (branch annihilation)
@@ -204,14 +192,8 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SubOp {
                     for b in b_results {
                         match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
                             (Some(x), _, Some(y), _) => {
-                                match x.checked_sub(y) {
-                                    Some(diff) => results.push((factory.long(diff), None)),
-                                    None => {
-                                        return GroundedWork::Error(ExecError::Runtime(
-                                            format!("Integer overflow: {} - {}", x, y),
-                                        ))
-                                    }
-                                }
+                                // Long - Long: silent two's-complement wrap per spec §13.2
+                                results.push((factory.long(x.wrapping_sub(y)), None));
                             }
                             (_, Some(x), _, Some(y)) => {
                                 results.push((factory.float(x - y), None));
@@ -290,14 +272,8 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for MulOp {
                     for b in b_results {
                         match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
                             (Some(x), _, Some(y), _) => {
-                                match x.checked_mul(y) {
-                                    Some(prod) => results.push((factory.long(prod), None)),
-                                    None => {
-                                        return GroundedWork::Error(ExecError::Runtime(
-                                            format!("Integer overflow: {} * {}", x, y),
-                                        ))
-                                    }
-                                }
+                                // Long * Long: silent two's-complement wrap per spec §13.2
+                                results.push((factory.long(x.wrapping_mul(y)), None));
                             }
                             (_, Some(x), _, Some(y)) => {
                                 results.push((factory.float(x * y), None));
@@ -376,35 +352,27 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for DivOp {
                     for b in b_results {
                         match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
                             (Some(x), _, Some(y), _) => {
+                                // Long / Long: integer divide-by-zero is a hard error
+                                // (spec §13.2 line 86); i64::MIN / -1 wraps to i64::MIN
+                                // (spec §13.2 wrap clause + §C.7g).
                                 if y == 0 {
                                     return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
                                     ));
                                 }
-                                results.push((factory.long(x / y), None));
+                                results.push((factory.long(x.wrapping_div(y)), None));
                             }
                             (_, Some(x), _, Some(y)) => {
-                                if y == 0.0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Division by zero".to_string(),
-                                    ));
-                                }
+                                // Float / Float: IEEE 754 — ±Inf / NaN per spec §13.2 line 86
                                 results.push((factory.float(x / y), None));
                             }
                             (Some(x), _, _, Some(y)) => {
-                                if y == 0.0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Division by zero".to_string(),
-                                    ));
-                                }
+                                // Long / Float (promote): IEEE 754
                                 results.push((factory.float(x as f64 / y), None));
                             }
                             (_, Some(x), Some(y), _) => {
-                                if y == 0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Division by zero".to_string(),
-                                    ));
-                                }
+                                // Float / Long: integer divisor 0 still produces ±Inf/NaN
+                                // via IEEE division on the f64 dividend
                                 results.push((factory.float(x / y as f64), None));
                             }
                             _ => {
@@ -475,46 +443,26 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ModOp {
                     for b in b_results {
                         match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
                             (Some(x), _, Some(y), _) => {
-                                // Long % Long
+                                // Long % Long: integer mod-by-zero is a hard error
+                                // (spec §13.2 line 105); i64::MIN % -1 wraps to 0.
                                 if y == 0 {
                                     return GroundedWork::Error(ExecError::Arithmetic(
                                         "Modulo by zero".to_string(),
                                     ));
                                 }
-                                match x.checked_rem(y) {
-                                    Some(r) => results.push((factory.long(r), None)),
-                                    None => {
-                                        return GroundedWork::Error(ExecError::Arithmetic(
-                                            "Modulo overflow".to_string(),
-                                        ))
-                                    }
-                                }
+                                results.push((factory.long(x.wrapping_rem(y)), None));
                             }
                             (_, Some(x), _, Some(y)) => {
-                                // Float % Float
-                                if y == 0.0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Modulo by zero".to_string(),
-                                    ));
-                                }
+                                // Float % Float: IEEE — % 0.0 → NaN (HE parity)
                                 results.push((factory.float(x % y), None));
                             }
                             (Some(x), _, _, Some(y)) => {
-                                // Long % Float
-                                if y == 0.0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Modulo by zero".to_string(),
-                                    ));
-                                }
+                                // Long % Float (promote): IEEE — % 0.0 → NaN
                                 results.push((factory.float(x as f64 % y), None));
                             }
                             (_, Some(x), Some(y), _) => {
-                                // Float % Long
-                                if y == 0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Modulo by zero".to_string(),
-                                    ));
-                                }
+                                // Float % Long: integer divisor 0 produces NaN via
+                                // f64 % 0.0 promotion
                                 results.push((factory.float(x % y as f64), None));
                             }
                             _ => {
@@ -1235,6 +1183,8 @@ mod tests {
 
     #[test]
     fn test_mod_float_by_zero() {
+        // Per MeTTa spec §13.2 (modulo): only integer % 0 → DivisionByZero;
+        // Float % 0.0 follows IEEE 754 (NaN), matching HE.
         let factory = GcFactory::default();
         let mut state = GroundedState::new(
             "%".to_string(),
@@ -1252,10 +1202,125 @@ mod tests {
         state.step = 2;
 
         let work = op.execute_step(&mut state, &factory);
-        assert!(
-            matches!(work, GroundedWork::Error(ExecError::Arithmetic(_))),
-            "Float modulo by zero should produce an Arithmetic error"
-        );
+        match work {
+            GroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                let v = results[0].0.as_float().expect("expected Float result");
+                assert!(v.is_nan(), "Float % 0.0 should be NaN per IEEE 754, got {v}");
+            }
+            _ => panic!("Expected Done with NaN, not Error"),
+        }
+    }
+
+    // --- Wrap-on-overflow tests (MeTTa spec §13.2 + §C.7g) ---
+    // Conformance reference: metta-specification/conformance/T06-stdlib/106-integer-overflow-wraps.metta
+
+    fn run_binary(op_name: &str, a: MettaValue, b: MettaValue, op: impl GroundedOperationTCO<MettaValue>) -> Vec<MettaValue> {
+        let factory = GcFactory::default();
+        let mut state = GroundedState::new(op_name.to_string(), vec![a.clone(), b.clone()]);
+
+        op.execute_step(&mut state, &factory);
+        state.set_arg(0, vec![a]);
+        state.step = 1;
+
+        op.execute_step(&mut state, &factory);
+        state.set_arg(1, vec![b]);
+        state.step = 2;
+
+        match op.execute_step(&mut state, &factory) {
+            GroundedWork::Done(r) => r.into_iter().map(|(v, _)| v).collect(),
+            other => panic!("Expected Done, got {other:?}"),
+        }
+    }
+
+    fn run_unary(op_name: &str, a: MettaValue, op: impl GroundedOperationTCO<MettaValue>) -> Vec<MettaValue> {
+        let factory = GcFactory::default();
+        let mut state = GroundedState::new(op_name.to_string(), vec![a.clone()]);
+
+        op.execute_step(&mut state, &factory);
+        state.set_arg(0, vec![a]);
+        state.step = 10;
+
+        match op.execute_step(&mut state, &factory) {
+            GroundedWork::Done(r) => r.into_iter().map(|(v, _)| v).collect(),
+            other => panic!("Expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_add_op_long_overflow_wraps() {
+        let r = run_binary("+", MettaValue::Long(i64::MAX), MettaValue::Long(1), AddOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_long(), Some(i64::MIN), "(+ i64::MAX 1) → i64::MIN");
+    }
+
+    #[test]
+    fn test_add_op_long_underflow_wraps() {
+        let r = run_binary("+", MettaValue::Long(i64::MIN), MettaValue::Long(-1), AddOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_long(), Some(i64::MAX));
+    }
+
+    #[test]
+    fn test_sub_op_long_underflow_wraps() {
+        let r = run_binary("-", MettaValue::Long(i64::MIN), MettaValue::Long(1), SubOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_long(), Some(i64::MAX), "(- i64::MIN 1) → i64::MAX");
+    }
+
+    #[test]
+    fn test_sub_op_unary_min_wraps() {
+        // (- i64::MIN) → i64::MIN (wraps; mathematically would overflow)
+        let r = run_unary("-", MettaValue::Long(i64::MIN), SubOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_long(), Some(i64::MIN));
+    }
+
+    #[test]
+    fn test_mul_op_long_overflow_wraps() {
+        // Conformance value: (i64::MAX/2 + 1) * 2 = 4611686018427387904 * 2 = i64::MIN
+        let r = run_binary("*", MettaValue::Long(4611686018427387904), MettaValue::Long(2), MulOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_long(), Some(i64::MIN));
+    }
+
+    #[test]
+    fn test_div_op_long_min_div_neg_one_wraps() {
+        let r = run_binary("/", MettaValue::Long(i64::MIN), MettaValue::Long(-1), DivOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_long(), Some(i64::MIN), "(/ i64::MIN -1) → i64::MIN");
+    }
+
+    #[test]
+    fn test_mod_op_long_min_mod_neg_one_zero() {
+        let r = run_binary("%", MettaValue::Long(i64::MIN), MettaValue::Long(-1), ModOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_long(), Some(0), "(% i64::MIN -1) → 0");
+    }
+
+    #[test]
+    fn test_div_op_float_by_zero_returns_inf() {
+        let r = run_binary("/", MettaValue::Float(1.0), MettaValue::Float(0.0), DivOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_float(), Some(f64::INFINITY));
+
+        let r = run_binary("/", MettaValue::Float(-1.0), MettaValue::Float(0.0), DivOp);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].as_float(), Some(f64::NEG_INFINITY));
+
+        let r = run_binary("/", MettaValue::Float(0.0), MettaValue::Float(0.0), DivOp);
+        assert_eq!(r.len(), 1);
+        let v = r[0].as_float().expect("Float");
+        assert!(v.is_nan(), "(/ 0.0 0.0) → NaN, got {v}");
+    }
+
+    #[test]
+    fn test_mod_op_long_promoted_to_float_div_zero_nan() {
+        // (% 5 0.0) → NaN (Long promotes to f64; f64 % 0.0 = NaN)
+        let r = run_binary("%", MettaValue::Long(5), MettaValue::Float(0.0), ModOp);
+        assert_eq!(r.len(), 1);
+        let v = r[0].as_float().expect("Float");
+        assert!(v.is_nan(), "(% 5 0.0) → NaN, got {v}");
     }
 
     // --- Min operation tests ---

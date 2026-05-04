@@ -131,6 +131,16 @@ impl DispatchOverrides {
         (bits >> (id as u8)) & 1 != 0
     }
 
+    /// Returns `true` iff at least one overridable op has a user rule.
+    ///
+    /// Single relaxed atomic load + zero compare. Used as an O(1) fast exit
+    /// on the dispatch path: if the bitset is zero, no expression can have
+    /// an overridden op, so the whole expression-tree walk can be skipped.
+    #[inline(always)]
+    pub fn any_overridden(&self) -> bool {
+        self.overridden.load(Ordering::Relaxed) != 0
+    }
+
     /// Called from `add_rule` after a rule with head `id` is inserted.
     ///
     /// Sets the override bit when transitioning from 0 → 1 user rules.

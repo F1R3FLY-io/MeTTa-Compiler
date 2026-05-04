@@ -163,9 +163,12 @@ fn get_child_owned<V: MettaValueTrait + Clone>(value: &V, idx: usize) -> Option<
 }
 
 /// Check if an atom name is a variable (starts with $, &, or ').
+///
+/// Excludes the `$_` wildcard (treated as a match-anything, no-binding atom).
 #[inline]
 fn is_var_name(name: &str) -> bool {
     name.len() > 1
+        && name != "$_"
         && (name.starts_with('$')
             || name.starts_with('\'')
             || (name.starts_with('&') && name != "&" && name != "&self" && name != "&kb" && name != "&stack"))
@@ -635,7 +638,7 @@ impl EnhancedMatcher {
                 }
                 return true;
             }
-            if atom == "_" {
+            if atom == "_" || atom == "$_" {
                 return true; // Wildcard — no check
             }
             atom_checks.push(ECheck::Atom {

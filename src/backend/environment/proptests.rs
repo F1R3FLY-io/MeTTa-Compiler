@@ -804,10 +804,13 @@ mod regression_tests {
 
             // Use match_rules_native — this is the actual code path used by the evaluator
             // (not the legacy get_matching_rules_for_expr trie traversal path)
+            // Phase 5: test path, no outer bindings.
+            let empty_outer = crate::backend::GenericBindings::<MettaValue>::new();
             let matching = env.match_rules_native(
                 &lhs,
                 |v: &MettaValue, _: &crate::backend::GenericBindings<MettaValue>,
                  _: &crate::backend::models::GcFactory| v.clone(),
+                &empty_outer,
             );
             assert!(!matching.is_empty(), "Iteration {}: should find rule", i);
         }

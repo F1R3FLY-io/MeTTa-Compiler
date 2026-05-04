@@ -277,7 +277,14 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     ///
     /// See `super::dispatch_overrides` for the design rationale and the
     /// full list of overridable names.
-    pub(crate) dispatch_overrides: super::dispatch_overrides::DispatchOverrides,
+    /// 2026-04-23: Arc-wrapped so `make_owned()` / `fork_for_nondeterminism()`
+    /// share the same atomic overridden-bits state. Previously a bare struct
+    /// whose `.snapshot()` produced an INDEPENDENT copy — a user rule
+    /// `(= (car-atom $list) …)` noted on one env was invisible to the later
+    /// dispatch check on another env (verified via debug-print Arc-pointer
+    /// addresses showing two distinct instances). Map-atom's test happened
+    /// to survive the split; car-atom's did not.
+    pub(crate) dispatch_overrides: Arc<super::dispatch_overrides::DispatchOverrides>,
 }
 
 /// Byte length of the MORK-serialized rule prefix: `[Arity(3)] + [SymbolSize(8)] + [8 symbol ID bytes]`.
@@ -410,7 +417,7 @@ where
             // Phase 10.1: Inferred function return types (initially empty)
             inferred_fn_types: DashMap::new(),
             // Override bitset starts empty — no user rules yet
-            dispatch_overrides: super::dispatch_overrides::DispatchOverrides::default(),
+            dispatch_overrides: Arc::new(super::dispatch_overrides::DispatchOverrides::default()),
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
@@ -575,8 +582,10 @@ where
             inferred_fn_types: DashMap::from_iter(
                 self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
             ),
-            // Snapshot override bits — owned env mutates independently
-            dispatch_overrides: self.shared.dispatch_overrides.snapshot(),
+            // Share override bits — all env clones see the same atomic state
+            // so `note_user_rule_added` is visible to subsequent
+            // `is_overridden` checks across CoW env handoffs.
+            dispatch_overrides: Arc::clone(&self.shared.dispatch_overrides),
         });
 
         // Register new shared state as GC root provider
@@ -633,8 +642,10 @@ where
             inferred_fn_types: DashMap::from_iter(
                 self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
             ),
-            // Snapshot override bits for the fork (independent state)
-            dispatch_overrides: self.shared.dispatch_overrides.snapshot(),
+            // Share override bits across the fork — all nondet branches see
+            // the same atomic state (rules added by one branch are visible to
+            // others, matching the globally-shared rule_index above).
+            dispatch_overrides: Arc::clone(&self.shared.dispatch_overrides),
         });
 
         // Register forked shared state as GC root provider
@@ -938,7 +949,10 @@ where
             // Override bits: take self's snapshot, then bump for each of
             // other's user rules whose head is in the overridable set.
             // The merged rule_index above already contains other's rules,
-            // so the bits stay consistent with the merged index.
+            // so the bits stay consistent with the merged index. The result
+            // is wrapped in a fresh Arc — the merged env owns a distinct
+            // state from either parent; subsequent env clones share this
+            // new Arc via Arc::clone.
             dispatch_overrides: {
                 let merged = self.shared.dispatch_overrides.snapshot();
                 for entry in other.shared.rule_index.read().get_all_rules() {
@@ -948,7 +962,7 @@ where
                         }
                     }
                 }
-                merged
+                Arc::new(merged)
             },
         });
 
@@ -1350,7 +1364,8 @@ where
             },
             // Override bits: take self's snapshot, then bump for each rule
             // from every `other` env whose head is in the overridable set.
-            // Mirrors the merged rule_index above.
+            // Mirrors the merged rule_index above. Wrapped in a fresh Arc
+            // so subsequent env clones share this merged state.
             dispatch_overrides: {
                 let merged = self.shared.dispatch_overrides.snapshot();
                 for other_env in others {
@@ -1362,7 +1377,7 @@ where
                         }
                     }
                 }
-                merged
+                Arc::new(merged)
             },
         });
 

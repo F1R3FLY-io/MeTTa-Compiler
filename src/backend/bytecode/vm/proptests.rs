@@ -2380,32 +2380,38 @@ proptest! {
 }
 
 // =============================================================================
-// Overflow Tests
+// Wrap-on-Overflow Tests (MeTTa spec §13.2 + §C.7g)
 // =============================================================================
 
 #[cfg(test)]
 mod overflow_tests {
     use super::*;
 
-    /// Abs of i64::MIN overflows
+    /// abs(i64::MIN) wraps to i64::MIN per spec §13.2
+    /// (was formerly an Error; Plan C migrated to wrapping_abs.)
     #[test]
-    fn test_abs_overflow() {
-        let result = run_vm_unary_op_value(MettaValue::Long(i64::MIN), Opcode::Abs);
-        assert!(result.is_err());
+    fn test_abs_wraps() {
+        let result = run_vm_unary_op_value(MettaValue::Long(i64::MIN), Opcode::Abs)
+            .expect("abs(i64::MIN) should wrap, not error");
+        assert_eq!(result, MettaValue::Long(i64::MIN));
     }
 
-    /// Division i64::MIN / -1 overflows
+    /// (/ i64::MIN -1) wraps to i64::MIN per spec §13.2 + §C.7g
+    /// (was formerly an Error; Plan C migrated to wrapping_div.)
     #[test]
-    fn test_div_overflow() {
-        let result = run_vm_binary_op(i64::MIN, -1, Opcode::Div);
-        assert!(result.is_err());
+    fn test_div_wraps() {
+        let result = run_vm_binary_op(i64::MIN, -1, Opcode::Div)
+            .expect("(/ i64::MIN -1) should wrap, not error");
+        assert_eq!(result, MettaValue::Long(i64::MIN));
     }
 
-    /// Modulo i64::MIN % -1 overflows
+    /// (% i64::MIN -1) wraps to 0 per spec §13.2 + §C.7g
+    /// (was formerly an Error; Plan C migrated to wrapping_rem.)
     #[test]
-    fn test_mod_overflow() {
-        let result = run_vm_binary_op(i64::MIN, -1, Opcode::Mod);
-        assert!(result.is_err());
+    fn test_mod_wraps() {
+        let result = run_vm_binary_op(i64::MIN, -1, Opcode::Mod)
+            .expect("(% i64::MIN -1) should wrap, not error");
+        assert_eq!(result, MettaValue::Long(0));
     }
 }
 
@@ -3582,7 +3588,13 @@ proptest! {
         prop_assert!(result.is_err());
     }
 
-    /// Return on empty stack returns StackUnderflow
+    /// Return on empty stack at top-level yields empty results.
+    ///
+    /// Bytecode chunks for side-effect-only forms (e.g., `(= lhs rhs)` →
+    /// DefineRule + Pop) terminate with an empty value stack. Top-level
+    /// Return treats this as "no result" rather than an underflow error,
+    /// so the caller doesn't fall back to the trampoline and re-fire the
+    /// side-effect (e.g., double-adding the rule).
     #[test]
     fn prop_return_empty_underflow(_unit: ()) {
         let mut builder = ChunkBuilder::new("test");
@@ -3592,7 +3604,8 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_ok(), "expected Ok(empty), got {:?}", result);
+        prop_assert!(result.unwrap().is_empty());
     }
 }
 

@@ -30,7 +30,7 @@ macro_rules! trace_emit {
 #[macro_export]
 macro_rules! trace_emit_ctx {
     ($ctx:expr, $tier:expr, $depth:expr, $input:expr, $outputs:expr, $expr_span:expr, $kind:expr) => {
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             if let Some(tc) = $ctx.trace_collector() {
                 tc.emit($tier, $depth, $input, $outputs, $expr_span, $kind);
@@ -60,7 +60,7 @@ macro_rules! trace_emit_ctx {
 #[macro_export]
 macro_rules! trace_emit_timed_ctx {
     ($ctx:expr, $tier:expr, $depth:expr, $input:expr, $outputs:expr, $expr_span:expr, $kind:expr, $start_ns:expr, $duration_ns:expr, $span_id:expr) => {
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             if let Some(tc) = $ctx.trace_collector() {
                 tc.emit_timed(

@@ -485,6 +485,9 @@ pub unsafe extern "C" fn jit_runtime_numeric_div(a: u64, b: u64) -> u64 {
     let a_mv = a_jv.to_metta();
     let b_mv = b_jv.to_metta();
 
+    // Spec §13.2: integer / 0 → DivisionByZero error; otherwise wrapping_div
+    // (so i64::MIN / -1 wraps to i64::MIN). Float / 0.0 → IEEE 754 (±Inf or NaN),
+    // no error.
     match (a_mv.view(), b_mv.view()) {
         (ValueView::Long(x), ValueView::Long(y)) => {
             if y == 0 {
@@ -493,21 +496,12 @@ pub unsafe extern "C" fn jit_runtime_numeric_div(a: u64, b: u64) -> u64 {
             box_long(x.wrapping_div(y))
         }
         (ValueView::Float(x), ValueView::Float(y)) => {
-            if y == 0.0 {
-                return super::helpers::make_jit_error("Division by zero");
-            }
             metta_to_jit(&MettaValue::Float(x / y)).to_bits()
         }
         (ValueView::Long(x), ValueView::Float(y)) => {
-            if y == 0.0 {
-                return super::helpers::make_jit_error("Division by zero");
-            }
             metta_to_jit(&MettaValue::Float(x as f64 / y)).to_bits()
         }
         (ValueView::Float(x), ValueView::Long(y)) => {
-            if y == 0 {
-                return super::helpers::make_jit_error("Division by zero");
-            }
             metta_to_jit(&MettaValue::Float(x / y as f64)).to_bits()
         }
         _ => {
@@ -528,32 +522,22 @@ pub unsafe extern "C" fn jit_runtime_numeric_mod(a: u64, b: u64) -> u64 {
     let a_mv = a_jv.to_metta();
     let b_mv = b_jv.to_metta();
 
+    // Spec §13.2: integer % 0 → DivisionByZero error; otherwise wrapping_rem
+    // (so i64::MIN % -1 wraps to 0). Float % 0.0 → NaN per IEEE/HE, no error.
     match (a_mv.view(), b_mv.view()) {
         (ValueView::Long(x), ValueView::Long(y)) => {
             if y == 0 {
                 return super::helpers::make_jit_error("Modulo by zero");
             }
-            match x.checked_rem(y) {
-                Some(r) => box_long(r),
-                None => super::helpers::make_jit_error("Modulo overflow"),
-            }
+            box_long(x.wrapping_rem(y))
         }
         (ValueView::Float(x), ValueView::Float(y)) => {
-            if y == 0.0 {
-                return super::helpers::make_jit_error("Modulo by zero");
-            }
             metta_to_jit(&MettaValue::Float(x % y)).to_bits()
         }
         (ValueView::Long(x), ValueView::Float(y)) => {
-            if y == 0.0 {
-                return super::helpers::make_jit_error("Modulo by zero");
-            }
             metta_to_jit(&MettaValue::Float(x as f64 % y)).to_bits()
         }
         (ValueView::Float(x), ValueView::Long(y)) => {
-            if y == 0 {
-                return super::helpers::make_jit_error("Modulo by zero");
-            }
             metta_to_jit(&MettaValue::Float(x % y as f64)).to_bits()
         }
         _ => {
@@ -563,7 +547,9 @@ pub unsafe extern "C" fn jit_runtime_numeric_mod(a: u64, b: u64) -> u64 {
     }
 }
 
-/// Numeric negation with type promotion: Long->Long, Float->Float
+/// Numeric negation with type promotion: Long->Long, Float->Float.
+///
+/// Spec §13.2: silent two's-complement wrap. -(i64::MIN) → i64::MIN.
 ///
 /// # Safety
 /// Input must be a valid NaN-boxed value.
@@ -573,7 +559,7 @@ pub unsafe extern "C" fn jit_runtime_numeric_neg(a: u64) -> u64 {
     let mv = jv.to_metta();
 
     match mv.view() {
-        ValueView::Long(x) => box_long(-x),
+        ValueView::Long(x) => box_long(x.wrapping_neg()),
         ValueView::Float(x) => metta_to_jit(&MettaValue::Float(-x)).to_bits(),
         _ => {
             signal_jit_type_error();
@@ -582,7 +568,10 @@ pub unsafe extern "C" fn jit_runtime_numeric_neg(a: u64) -> u64 {
     }
 }
 
-/// Numeric absolute value with type promotion and i64::MIN overflow check
+/// Numeric absolute value with type promotion and wrap on overflow.
+///
+/// Spec is silent on abs(i64::MIN); wrapping_abs returns i64::MIN for
+/// tier-consistency with bytecode VM and trampoline (no error).
 ///
 /// # Safety
 /// Input must be a valid NaN-boxed value.
@@ -592,12 +581,7 @@ pub unsafe extern "C" fn jit_runtime_numeric_abs(a: u64) -> u64 {
     let mv = jv.to_metta();
 
     match mv.view() {
-        ValueView::Long(x) => {
-            if x == i64::MIN {
-                return super::helpers::make_jit_error("Arithmetic overflow: abs(i64::MIN)");
-            }
-            box_long(x.abs())
-        }
+        ValueView::Long(x) => box_long(x.wrapping_abs()),
         ValueView::Float(x) => metta_to_jit(&MettaValue::Float(x.abs())).to_bits(),
         _ => {
             signal_jit_type_error();

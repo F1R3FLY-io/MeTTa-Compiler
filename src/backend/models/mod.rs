@@ -33,7 +33,10 @@ pub use gc_allocator::{
 pub use gc_cron::{GcCronSingleton, CronHandle};
 pub use task_scheduler::TaskSchedulerSingleton;
 pub use bindings::SmartBindings as Bindings;
-pub use generic_bindings::{GenericBindings, GenericBindingsIter};
+pub use generic_bindings::{
+    allocate_scope_id, GenericBindings, GenericBindingsFullIter, GenericBindingsIter,
+    ScopeId, ROOT_SCOPE,
+};
 pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;
 pub use metta_value::{escape_json, serialize_tags};

@@ -23,8 +23,10 @@ pub struct ErrorFuncRefs {
     pub type_error: FuncRef,
     /// Division by zero handler: fn(ctx, ip) -> ()
     pub div_by_zero: FuncRef,
-    /// Arithmetic overflow handler: fn(ctx, ip) -> ()
-    pub overflow: FuncRef,
+    // Note: arithmetic overflow handler removed. Per MeTTa spec §13.2 + §C.7g,
+    // integer arithmetic must wrap silently rather than emit Error atoms.
+    // The dead `guard_not_i64_min` / `emit_overflow_bailout` machinery has been
+    // removed alongside this field's former `overflow` member.
 }
 
 /// Code generation context wrapping a Cranelift FunctionBuilder
@@ -333,29 +335,6 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         Ok(())
     }
 
-    /// Emit a guard that checks if value is not i64::MIN (for abs overflow)
-    pub fn guard_not_i64_min(&mut self, val: Value, ip: usize) -> JitResult<()> {
-        let i64_min = self.builder.ins().iconst(types::I64, i64::MIN);
-        let is_not_min = self.builder.ins().icmp(IntCC::NotEqual, val, i64_min);
-
-        let continue_block = self.builder.create_block();
-        let bailout_block = self.builder.create_block();
-
-        self.builder
-            .ins()
-            .brif(is_not_min, continue_block, &[], bailout_block, &[]);
-
-        self.builder.switch_to_block(bailout_block);
-        self.builder.seal_block(bailout_block);
-        self.emit_overflow_bailout(ip);
-
-        self.builder.switch_to_block(continue_block);
-        self.builder.seal_block(continue_block);
-        self.clear_terminated(); // Reset flag for new unterminated block
-
-        Ok(())
-    }
-
     // =========================================================================
     // Bailout Emission
     // =========================================================================
@@ -405,28 +384,6 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         } else {
             // Fallback: use trap (may cause SIGILL but backwards compatible)
             self.builder.ins().trap(TrapCode::unwrap_user(2));
-        }
-        self.terminated = true;
-    }
-
-    /// Emit code for arithmetic overflow bailout
-    ///
-    /// If error FuncRefs are available, calls the runtime error handler and returns.
-    /// Otherwise falls back to trap() which generates ud2 (may cause SIGILL).
-    fn emit_overflow_bailout(&mut self, ip: usize) {
-        if let Some(error_refs) = self.error_func_refs {
-            // Call jit_runtime_stack_overflow(ctx, ip) - reused for arithmetic overflow
-            let ctx = self.ctx_ptr;
-            let ip_val = self.builder.ins().iconst(types::I64, ip as i64);
-
-            self.builder.ins().call(error_refs.overflow, &[ctx, ip_val]);
-
-            // Return from function - VM will check bailout flag
-            let zero = self.builder.ins().iconst(types::I64, 0);
-            self.builder.ins().return_(&[zero]);
-        } else {
-            // Fallback: use trap (may cause SIGILL but backwards compatible)
-            self.builder.ins().trap(TrapCode::unwrap_user(3));
         }
         self.terminated = true;
     }

@@ -230,7 +230,7 @@ memchr = "2"
 
 # postcard — fast, compact binary serde format for evaluation traces (optional)
 postcard = { version = "1", features = ["alloc"], optional = true }
-# trace-format - Shared trace event types (optional, enabled by eval-trace feature)
+# trace-format - Shared trace event types (optional, enabled by trace feature)
 trace-format = { path = "trace-format", optional = true }
 
 [features]
@@ -247,8 +247,8 @@ symbol-interning = ["lasso"]
 # Evaluation trace: binary tracing of every rewrite, type check, error,
 # bailout, and tier transition with full source location provenance.
 # Zero cost when disabled (no branches, no dead code, no rkyv dep).
-# Enable with: cargo build --release --features eval-trace
-eval-trace = ["dep:postcard", "dep:trace-format"]
+# Enable with: cargo build --release --features trace
+trace = ["dep:postcard", "dep:trace-format"]
 
 # Diagnostic statistics tracking: atomic counters for --gc-stats, --tier-stats, --pool-stats.
 # Zero overhead when disabled (no atomic increments on hot paths).
@@ -329,9 +329,9 @@ debug-assertions = true
 
 [profile.release-traced]
 inherits = "release"
-# Pure release optimizations with eval-trace instrumentation.
+# Pure release optimizations with trace instrumentation.
 # Cargo cannot auto-enable features per profile, so pass --features:
-#   cargo build --profile release-traced --features eval-trace
+#   cargo build --profile release-traced --features trace
 # Binary: target/release-traced/mettatron
 
 # Debian package metadata

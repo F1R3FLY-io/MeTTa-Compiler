@@ -2121,9 +2121,11 @@ mod tests {
 
         let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit.to_bits(), atom_jit.to_bits(), 0) };
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_bool());
+        // Plan A Phase 4 (Bug 2b): jit_runtime_space_remove returns Unit per
+        // HE / spec §9.2 (the boolean removed-flag is discarded).
+        assert!(jv.is_unit(), "remove-atom should return Unit, got {jv:?}");
 
-        // Verify atom was removed
+        // Verify atom was removed (post-condition still proves the side effect).
         let atoms = space.collapse();
         assert_eq!(atoms.len(), 1);
         assert_eq!(atoms[0], MettaValue::Long(2));
@@ -2146,8 +2148,8 @@ mod tests {
 
         let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit.to_bits(), atom_jit.to_bits(), 0) };
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_bool());
-        // Result should indicate removal failed (false)
+        // Plan A: returns Unit even when atom is not found (no-op success).
+        assert!(jv.is_unit(), "remove-atom missing should return Unit, got {jv:?}");
     }
 
     #[test]
@@ -2828,9 +2830,19 @@ mod tests {
 
         let result = unsafe { jit_runtime_space_add(&mut ctx, not_space, atom_jit, 0) };
 
-        // Still returns Unit (graceful handling)
+        // Plan A Bug 5: type-error path now returns a proper Error value
+        // instead of silently returning Unit.
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_unit());
+        let is_heap_error = if jv.is_heap() {
+            let mv = unsafe { jv.to_metta() };
+            matches!(mv.view(), crate::backend::models::ValueView::Error(_, _))
+        } else {
+            false
+        };
+        assert!(
+            jv.is_error() || is_heap_error,
+            "add-atom on non-Space should return Error, got {jv:?}"
+        );
     }
 
     #[test]
@@ -2850,12 +2862,11 @@ mod tests {
 
         let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit, atom_jit, 0) };
 
-        // Returns true
+        // Plan A Phase 4 (Bug 2b): returns Unit per HE / spec §9.2.
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_bool());
-        assert!(jv.as_bool());
+        assert!(jv.is_unit(), "remove-atom should return Unit, got {jv:?}");
 
-        // Verify atom was removed
+        // Verify atom was removed (post-condition still proves the side effect).
         let atoms = space.collapse();
         assert_eq!(atoms.len(), 0);
     }
@@ -2874,10 +2885,9 @@ mod tests {
 
         let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit, atom_jit, 0) };
 
-        // Returns false
+        // Plan A: missing atom is a no-op; still returns Unit.
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_bool());
-        assert!(!jv.as_bool());
+        assert!(jv.is_unit(), "remove-atom missing should return Unit, got {jv:?}");
     }
 
     #[test]
@@ -2893,10 +2903,18 @@ mod tests {
 
         let result = unsafe { jit_runtime_space_remove(&mut ctx, not_space, atom_jit, 0) };
 
-        // Returns false (type error)
+        // Plan A Bug 5: type-error path now returns a proper Error value.
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_bool());
-        assert!(!jv.as_bool());
+        let is_heap_error = if jv.is_heap() {
+            let mv = unsafe { jv.to_metta() };
+            matches!(mv.view(), crate::backend::models::ValueView::Error(_, _))
+        } else {
+            false
+        };
+        assert!(
+            jv.is_error() || is_heap_error,
+            "remove-atom on non-Space should return Error, got {jv:?}"
+        );
     }
 
     #[test]

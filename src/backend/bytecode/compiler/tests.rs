@@ -1347,16 +1347,26 @@ fn test_compile_float_division_by_zero_no_fold() {
 }
 
 #[test]
-fn test_compile_abs_i64_min_no_fold() {
-    // (abs -9223372036854775808) should NOT fold (i64::MIN has no positive representation)
+fn test_compile_abs_i64_min_folds_to_wrap() {
+    // (abs i64::MIN) folds to i64::MIN per spec §13.2 (silent two's-complement
+    // wrap; abs(MIN) wraps because |MIN| > i64::MAX). Plan C migrated the
+    // folder to wrapping_abs, so the literal expression is fully folded.
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("abs".to_string()),
         MettaValue::Long(i64::MIN),
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    // Should emit abs opcode, not fold
-    assert!(disasm.contains("abs"), "abs(i64::MIN) should emit abs opcode: {}", disasm);
+    assert!(
+        !disasm.contains("abs"),
+        "abs(i64::MIN) should fold (wrap) per spec §13.2, no opcode: {}",
+        disasm,
+    );
+    assert!(
+        disasm.contains("-9223372036854775808"),
+        "abs(i64::MIN) should fold to i64::MIN constant: {}",
+        disasm,
+    );
 }
 
 // ========================================================================
@@ -1943,8 +1953,10 @@ fn test_fold_pow_math_alias() {
 }
 
 #[test]
-fn test_fold_pow_overflow_no_fold() {
-    // (pow 2 63) would overflow i64 - should NOT fold (checked_pow returns None)
+fn test_fold_pow_overflow_wraps() {
+    // (pow 2 63) overflows i64; per spec §13.2 it wraps silently. Plan C
+    // migrated the folder to wrapping_pow, so the literal expression folds
+    // to i64::MIN (1 << 63 in two's complement).
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("pow".to_string()),
         MettaValue::Long(2),
@@ -1952,8 +1964,16 @@ fn test_fold_pow_overflow_no_fold() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    // 2^63 overflows i64, so should emit pow opcode
-    assert!(disasm.contains("pow"), "pow overflow should emit opcode: {}", disasm);
+    assert!(
+        !disasm.contains("\npow\n") && !disasm.contains(" pow "),
+        "pow overflow should fold (wrap) per spec §13.2, no opcode: {}",
+        disasm,
+    );
+    assert!(
+        disasm.contains("-9223372036854775808"),
+        "(pow 2 63) should fold to i64::MIN: {}",
+        disasm,
+    );
 }
 
 #[test]

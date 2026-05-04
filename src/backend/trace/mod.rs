@@ -1,6 +1,6 @@
 //! Evaluation trace system for MeTTaTron.
 //!
-//! When the `eval-trace` feature is enabled, this module provides a
+//! When the `trace` feature is enabled, this module provides a
 //! production-quality binary tracing system that records every rewrite,
 //! type check, error, bailout, and optimization with full source location
 //! provenance.

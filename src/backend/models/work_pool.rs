@@ -94,11 +94,11 @@ const MIN_WALL_DELTA_NS: u64 = 1_000_000; // 1ms
 // ============================================================================
 
 /// Global counter of completed eval tasks (for throughput tracking).
-#[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+#[cfg(any(feature = "trace", feature = "track-stats"))]
 pub static WORK_EVAL_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Read the global eval completion count.
-#[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+#[cfg(any(feature = "trace", feature = "track-stats"))]
 #[inline]
 pub fn work_eval_count() -> u64 {
     WORK_EVAL_COUNT.load(Ordering::Relaxed)
@@ -112,7 +112,7 @@ pub fn work_eval_count() -> u64 {
 ///
 /// The work pool doesn't have access to an `EvalContext`, so we stash a `Weak`
 /// reference here. Set once per session from `eval_with_trace()`.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 static WORK_POOL_TRACE_COLLECTOR: OnceLock<std::sync::Weak<crate::backend::trace::TraceCollector>> =
     OnceLock::new();
 
@@ -120,7 +120,7 @@ static WORK_POOL_TRACE_COLLECTOR: OnceLock<std::sync::Weak<crate::backend::trace
 ///
 /// Called from `eval_with_trace()` on the first traced evaluation. Uses
 /// `OnceLock` so it is safe to call multiple times — only the first call wins.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 pub fn set_work_pool_trace_collector(
     collector: &std::sync::Arc<crate::backend::trace::TraceCollector>,
 ) {
@@ -130,7 +130,7 @@ pub fn set_work_pool_trace_collector(
 /// Execute a closure with the work pool trace collector, if available.
 ///
 /// No-op if no collector was registered or it has been dropped.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 #[inline]
 fn with_work_pool_trace(f: impl FnOnce(&crate::backend::trace::TraceCollector)) {
     if let Some(weak) = WORK_POOL_TRACE_COLLECTOR.get() {
@@ -148,14 +148,14 @@ fn with_work_pool_trace(f: impl FnOnce(&crate::backend::trace::TraceCollector)) 
 ///
 /// Used by `ParallelBranchContext` to hold a strong reference to the trace
 /// collector for the duration of parallel branch evaluation.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 #[inline]
 pub fn get_work_pool_trace_collector() -> Option<std::sync::Arc<crate::backend::trace::TraceCollector>> {
     WORK_POOL_TRACE_COLLECTOR.get().and_then(|weak| weak.upgrade())
 }
 
 /// Map a `TaskTypeId` to a human-readable task kind string for trace events.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 fn task_type_kind_str(task_type: &TaskTypeId) -> &'static str {
     match task_type {
         TaskTypeId::Eval(_) => "eval",
@@ -168,7 +168,7 @@ fn task_type_kind_str(task_type: &TaskTypeId) -> &'static str {
 ///
 /// Used by the worker loop to include pool-level stats in trace events
 /// without threading additional parameters through `spawn_all_workers`.
-#[cfg(feature = "eval-trace")]
+#[cfg(feature = "trace")]
 fn global_eval_pool_stats() -> (u32, u32) {
     let pool = &*GLOBAL_EVAL_POOL;
     (pool.active_workers() as u32, pool.max_threads() as u32)
@@ -539,7 +539,7 @@ impl WorkPool {
         let task = PriorityTask::new(Box::new(f), priority, task_type, sequence);
         self.queue.push(task);
 
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             let queue_depth = self.queue.len() as u32;
             let active_workers = self.active_workers() as u32;
@@ -590,7 +590,7 @@ impl WorkPool {
         );
         self.queue.push(task);
 
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             let queue_depth = self.queue.len() as u32;
             let active_workers = self.active_workers() as u32;
@@ -630,7 +630,7 @@ impl WorkPool {
         if self.queue.len() >= MAX_QUEUE_SIZE {
             trace!("WorkPool: compile task dropped (queue backpressure)");
 
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 let queue_depth = self.queue.len() as u32;
                 let active_workers = self.active_workers() as u32;
@@ -657,7 +657,7 @@ impl WorkPool {
         let task = PriorityTask::new(Box::new(f), priority, task_type, sequence);
         self.queue.push(task);
 
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             let queue_depth = self.queue.len() as u32;
             let active_workers = self.active_workers() as u32;
@@ -692,7 +692,7 @@ impl WorkPool {
         let task = PriorityTask::new(Box::new(f), priority, task_type, sequence);
         self.queue.push(task);
 
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             let queue_depth = self.queue.len() as u32;
             let active_workers = self.active_workers() as u32;
@@ -1139,7 +1139,7 @@ fn overflow_worker_loop(
                     }
                     cpu_state.publish();
 
-                    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+                    #[cfg(any(feature = "trace", feature = "track-stats"))]
                     if matches!(task_type, TaskTypeId::Eval(_)) {
                         WORK_EVAL_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1220,7 +1220,7 @@ fn work_pool_worker_loop(
 
     // Track whether this worker was parked at the end of the previous iteration,
     // so we can detect park→unpark and unpark→park transitions for trace events.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut was_parked = park.is_parked();
 
     loop {
@@ -1230,7 +1230,7 @@ fn work_pool_worker_loop(
         }
 
         // Detect parking: if we're about to block, emit a WorkPoolWorkerParked event.
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             let currently_parked = park.is_parked();
             if currently_parked && !was_parked {
@@ -1257,7 +1257,7 @@ fn work_pool_worker_loop(
         park.wait_if_parked_timeout(Duration::from_secs(5));
 
         // Detect resumption: if we were parked and now aren't, emit WorkPoolWorkerResumed.
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             let currently_parked = park.is_parked();
             if was_parked && !currently_parked {
@@ -1316,7 +1316,7 @@ fn work_pool_worker_loop(
                     cpu_state.publish();
 
                     // Emit WorkPoolTaskCompleted trace event
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     {
                         let (active_workers, _max) = global_eval_pool_stats();
                         let queue_depth = queue.len() as u32;
@@ -1339,7 +1339,7 @@ fn work_pool_worker_loop(
                     }
 
                     // Track eval completions for throughput monitoring
-                    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+                    #[cfg(any(feature = "trace", feature = "track-stats"))]
                     if matches!(task_type, TaskTypeId::Eval(_)) {
                         WORK_EVAL_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1699,7 +1699,7 @@ impl WorkerCpuSnapshot {
 /// function minimized by a HillClimber to decide when to park/unpark workers.
 struct WorkMonitorState {
     /// Previous eval count snapshot (for delta computation).
-    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+    #[cfg(any(feature = "trace", feature = "track-stats"))]
     prev_eval_count: u64,
     /// Previous sample timestamp.
     prev_sample_time: Instant,
@@ -1726,7 +1726,7 @@ struct WorkMonitorState {
 impl WorkMonitorState {
     fn new(pool: &WorkPool) -> Self {
         Self {
-            #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+            #[cfg(any(feature = "trace", feature = "track-stats"))]
             prev_eval_count: work_eval_count(),
             prev_sample_time: Instant::now(),
             ema_throughput: Ema::new(WORK_EMA_ALPHA),
@@ -1771,7 +1771,7 @@ impl WorkMonitorState {
                 // Transition: was blocked, now parked → treat as unblocked
                 if snap.prev_blocked {
                     snap.prev_blocked = false;
-                    #[cfg(feature = "eval-trace")]
+                    #[cfg(feature = "trace")]
                     {
                         let worker_id = i as u32;
                         with_work_pool_trace(|tc| {
@@ -1848,7 +1848,7 @@ impl WorkMonitorState {
             }
 
             // Emit per-worker transition events
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 if is_blocked && !snap.prev_blocked {
                     // Transition: unblocked → blocked
@@ -1931,7 +1931,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     }
 
     // Sample throughput: delta evals / elapsed time
-    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+    #[cfg(any(feature = "trace", feature = "track-stats"))]
     let (throughput_raw, delta_evals_raw, current_eval_count) = {
         let current_eval_count = work_eval_count();
         let delta_evals_raw = current_eval_count.wrapping_sub(state.prev_eval_count);
@@ -1949,9 +1949,9 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     // When idle, freeze EMAs (preserve last active signal) and skip all
     // scaling phases. This prevents EMA decay during idle periods from
     // confusing the hill climber into parking workers.
-    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+    #[cfg(any(feature = "trace", feature = "track-stats"))]
     let is_idle = delta_evals_raw == 0 && queue_len_raw == 0;
-    #[cfg(not(any(feature = "eval-trace", feature = "track-stats")))]
+    #[cfg(not(any(feature = "trace", feature = "track-stats")))]
     let is_idle = queue_len_raw == 0;
 
     // Sample memory pressure signals
@@ -1959,7 +1959,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     let rss_p = rss_pressure(state.page_size, state.rss_limit);
 
     // Emit WorkPoolMonitorTick — raw samples before any EMA/decision processing
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         // current_eval_count is available via any(eval-trace, track-stats) gate
         let trace_eval_count = current_eval_count;
@@ -1986,7 +1986,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     // When idle: skip EMA updates and all scaling phases.
     // Still run housekeeping (respawns + overflow reaping).
     if is_idle {
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             let active_workers_after = pool.active_workers() as u32;
             let instantaneous_qd = pool.queue_len() as u32;
@@ -2042,9 +2042,9 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     }
 
     // Update all EMAs (only when active — frozen during idle to preserve signal)
-    #[cfg(any(feature = "eval-trace", feature = "track-stats"))]
+    #[cfg(any(feature = "trace", feature = "track-stats"))]
     let ema_tp = state.ema_throughput.update(throughput_raw);
-    #[cfg(not(any(feature = "eval-trace", feature = "track-stats")))]
+    #[cfg(not(any(feature = "trace", feature = "track-stats")))]
     let ema_tp = state.ema_throughput.value(); // no throughput data, use current EMA
     let ema_qd = state.ema_queue_depth.update(queue_depth);
     let ema_slab = state.ema_slab_pressure.update(slab_p);
@@ -2067,23 +2067,23 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     let term_rss_pressure = RSS_PRESSURE_WEIGHT * ema_rss;
 
     // Snapshot hill climber state BEFORE any mutations (used for trace emission)
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let hc_direction = state.climber.direction();
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let hc_cooldown = state.climber.cooldown_remaining();
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let hc_prev_obj = state.climber.prev_objective();
 
     // ====================================================================
     // Phase 1: Blocked-worker detection
     // ====================================================================
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let blocked_indices = state.detect_blocked_workers(pool);
-    #[cfg(not(feature = "eval-trace"))]
+    #[cfg(not(feature = "trace"))]
     state.detect_blocked_workers(pool);
 
     // Emit WorkPoolBlockedWorkersDetected when any workers are blocked
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         if state.blocked_worker_count > 0 {
             let active_workers = pool.active_workers() as u32;
@@ -2118,22 +2118,22 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     let queue_len = pool.queue_len();
 
     // Track compensatory actions for trace emission
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut comp_core_unparked: u32 = 0;
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut comp_overflow_spawned: u32 = 0;
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut comp_overflow_drained: u32 = 0;
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut comp_deficit: u32 = 0;
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut comp_rss_veto = false;
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let mut comp_any_action = false;
 
     if queue_len == 0 {
         if overflow > 0 {
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 comp_overflow_drained = overflow as u32;
                 comp_any_action = true;
@@ -2146,7 +2146,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
         }
     } else if total_unblocked < target {
         let deficit = target - total_unblocked;
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             comp_deficit = deficit as u32;
         }
@@ -2159,14 +2159,14 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                 break;
             }
         }
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             comp_core_unparked = compensated as u32;
         }
 
         let remaining = deficit - compensated;
         let overflow_allowed = rss_p < 2.0;
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             comp_rss_veto = !overflow_allowed;
         }
@@ -2176,7 +2176,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
             let to_spawn = remaining.min(can_spawn);
             if to_spawn > 0 {
                 pool.spawn_overflow(to_spawn);
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     comp_overflow_spawned = to_spawn as u32;
                 }
@@ -2189,7 +2189,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                 );
             }
         }
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             comp_any_action = true;
         }
@@ -2198,7 +2198,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     // Drain excess overflow when blocking resolves
     if overflow > 0 && total_unblocked > target {
         let excess = (total_unblocked - target).min(overflow);
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             comp_overflow_drained = excess as u32;
             comp_any_action = true;
@@ -2207,7 +2207,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     }
 
     // Emit WorkPoolCompensatoryAction when any compensatory action was taken
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         if comp_any_action {
             with_work_pool_trace(|tc| {
@@ -2239,11 +2239,11 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
     let decision = state.climber.step(objective);
 
     // Compute improvement after step
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let hc_improvement = hc_prev_obj - objective;
 
     // Determine action string for trace event
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     let action_str = match decision.action {
         ScaleAction::Unpark => "unpark",
         ScaleAction::Park => "park",
@@ -2292,7 +2292,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
 
     // Emit WorkPoolScaleEvent for every tick (including Hold) so the full
     // timeline of the monitor's decision-making is visible in the trace.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     {
         let active_workers_after = pool.active_workers() as u32;
         let instantaneous_qd = pool.queue_len() as u32;

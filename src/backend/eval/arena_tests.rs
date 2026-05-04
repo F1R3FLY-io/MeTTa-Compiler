@@ -136,7 +136,11 @@ mod tests {
     eval_test!(if_nested_else, "!(if False 0 (+ 1 2))", &["3"]);
     eval_test!(if_deeply_nested, "!(if True (if True (if True deep outer) outer2) outer3)", &["deep"]);
     eval_test!(if_lazy_eval_true, "!(if True 1 (/ 1 0))", &["1"]);
-    // MeTTa HE: non-boolean conditions return unreduced (if cond then else)
+    // Non-boolean conditions return the unreduced (if cond then else) as
+    // a residual normal form. Spec §11.2.1's "non-Bool → NotReducible"
+    // rule is satisfied as a residual: the unreduced expression matches
+    // no equation, so callers get the equivalent "no further reduction"
+    // signal. See eval_loop.rs ProcessIfCondition non-boolean branch.
     eval_test!(if_non_bool_number, "!(if 1 yes no)", &["(if 1 yes no)"]);
     eval_test!(if_with_atom_condition, "!(if foo then else)", &["(if foo then else)"]);
     // MeTTa HE: Unit is NOT boolean — returns unreduced (if () then else)
@@ -684,11 +688,12 @@ mod tests {
     );
 
     // /safe division with valid divisor → normal result
+    // Spec §02 canonical float: "2.0" not "2"
     eval_test!(
         safe_div_valid,
         "(= (/safe $A $B) (if (> $B 0.0) (/ $A $B) (empty)))
          !(/safe 1.0 0.5)",
-        &["2"]
+        &["2.0"]
     );
 
     // Arithmetic with empty-producing arg → zero results (branch annihilation)

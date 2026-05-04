@@ -2170,23 +2170,40 @@ impl Compiler {
                 Ok(Some(()))
             }
             "add-atom" => {
+                // Per MeTTa spec / HE: the atom argument is taken UNEVALUATED
+                // (kept as syntactic data). Use CompileQuoted for arg[1] so
+                // expressions like `(add-atom &self (= (foo) 42))` register
+                // the rule shape rather than evaluating the rule body. The
+                // space arg is evaluated normally so `&self` / token-named
+                // spaces resolve to a Space handle. (Plan A Phase 1.)
                 self.check_arity("add-atom", args.len(), 2)?;
-                work_stack.push(CompileWork::CompileBinaryOp {
-                    op: BinaryOp::SpaceAdd,
-                    left: args[0].clone(),
-                    right: args[1].clone(),
-                    folded: None,
+                work_stack.push(CompileWork::EmitOpcode {
+                    opcode: Opcode::SpaceAdd,
+                });
+                work_stack.push(CompileWork::CompileQuoted {
+                    expr: args[1].clone(),
+                    cont_id: 0,
+                });
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[0].clone(),
+                    in_tail_position: false,
                     cont_id,
                 });
                 Ok(Some(()))
             }
             "remove-atom" => {
+                // Same unevaluated-atom semantics as add-atom (Plan A Phase 1).
                 self.check_arity("remove-atom", args.len(), 2)?;
-                work_stack.push(CompileWork::CompileBinaryOp {
-                    op: BinaryOp::SpaceRemove,
-                    left: args[0].clone(),
-                    right: args[1].clone(),
-                    folded: None,
+                work_stack.push(CompileWork::EmitOpcode {
+                    opcode: Opcode::SpaceRemove,
+                });
+                work_stack.push(CompileWork::CompileQuoted {
+                    expr: args[1].clone(),
+                    cont_id: 0,
+                });
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[0].clone(),
+                    in_tail_position: false,
                     cont_id,
                 });
                 Ok(Some(()))
@@ -3064,7 +3081,7 @@ impl Compiler {
                             self.builder.emit_u16(Opcode::StoreLocalWide, slot);
                         }
                     }
-                    ValueView::Atom(name) if name == "_" => {
+                    ValueView::Atom(name) if name == "_" || name == "$_" => {
                         self.builder.emit(Opcode::Pop);
                     }
                     ValueView::SExpr(items) => {

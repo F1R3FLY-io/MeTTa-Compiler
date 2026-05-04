@@ -155,7 +155,7 @@ impl HybridExecutor {
             }
 
             // Trace: JitBailout event
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                 with_thread_trace_collector(|tc| {
@@ -321,7 +321,7 @@ impl HybridExecutor {
             }
 
             // Trace: JitBailout event
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                 with_thread_trace_collector(|tc| {

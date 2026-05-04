@@ -43,20 +43,41 @@ pub trait EvalContext {
     /// Called every 4096 trampoline iterations. Returns `true` if the evaluator
     /// should pause, register trampoline roots, release the EvalGuard, and
     /// allow the quiescent GC to fire.
+    ///
+    /// Default honors `gc_allocator::is_gc_requested()` — when GC has
+    /// explicitly asked for cooperation, every production context should
+    /// respond, regardless of its own per-thread alloc-delta. Contexts
+    /// that need richer accounting (per-worker alloc-delta tracking,
+    /// cancel-token observation) should override; contexts that should
+    /// never safepoint (tests, static no-op adapters) can override to
+    /// always return `false`.
     #[inline]
     fn should_safepoint(&self) -> bool {
-        false
+        crate::backend::models::gc_allocator::is_gc_requested()
     }
 
     /// Perform a GC safepoint with the provided roots from trampoline state.
     ///
-    /// Default implementation is a no-op. Override in production contexts.
-    fn perform_safepoint(&self, _roots: Vec<MettaValue>) {
-        // no-op by default — non-production contexts don't safepoint
+    /// Default runs the canonical quiescent protocol:
+    /// 1. Register `roots` as temporary GC roots (held until the function returns).
+    /// 2. Drop our `EvalGuard` so `ACTIVE_EVALUATORS` decrements toward 0.
+    /// 3. Set `gc_requested` so a quiescent GC fires once everyone parks.
+    /// 4. Park on the quiescence condvar (10ms timeout) until either the GC
+    ///    cycle completes or the timeout elapses.
+    /// 5. Re-acquire the `EvalGuard` (blocks if a GC cycle is in flight).
+    ///
+    /// Override only when a context needs additional steps (e.g. tracing,
+    /// cancellation observation, deferred-drop drain).
+    fn perform_safepoint(&self, roots: Vec<MettaValue>) {
+        let _root_handle = crate::backend::models::register_temporary_roots(roots);
+        crate::backend::models::drop_eval_guard_for_safepoint();
+        crate::backend::models::request_gc();
+        crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
+        crate::backend::models::reacquire_eval_guard_after_safepoint();
     }
 
     /// Get the trace collector for emitting evaluation trace events.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     #[inline]
     fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
         None
@@ -195,6 +216,9 @@ impl EvalContext for StaticEvalContext {
     fn factory(&self) -> &GcFactory {
         &self.factory
     }
+
+    // should_safepoint / perform_safepoint inherit the trait defaults
+    // (honor `is_gc_requested()`, run the canonical quiescent protocol).
 }
 
 // ============================================================================
@@ -271,9 +295,14 @@ pub struct ParallelBranchContext {
     /// Alloc count at this worker's last safepoint check.
     /// `Cell` for interior mutability — `should_safepoint` takes `&self`.
     last_safepoint_allocs: Cell<u64>,
+    /// Optional cancellation token. Set by `with_cancel(...)` when the
+    /// worker is spawned by a parallel-dispatch under bounded `Demand`.
+    /// Workers observe `is_satisfied()` in `should_safepoint` and bail at
+    /// the next safepoint via the `BranchCancelled` panic-unwind mechanism.
+    cancel_token: Option<std::sync::Arc<crate::backend::eval::cesk::coroutine::CancelToken>>,
     /// Upgraded `Arc<TraceCollector>` from `WORK_POOL_TRACE_COLLECTOR`.
     /// Held as `Arc` to keep the collector alive for the context's lifetime.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     trace_collector_arc: Option<std::sync::Arc<crate::backend::trace::TraceCollector>>,
 }
 
@@ -291,9 +320,38 @@ impl ParallelBranchContext {
         Self {
             factory: global_factory(),
             last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
-            #[cfg(feature = "eval-trace")]
+            cancel_token: None,
+            #[cfg(feature = "trace")]
             trace_collector_arc: crate::backend::models::work_pool::get_work_pool_trace_collector(),
         }
+    }
+
+    /// Variant of `get()` that attaches a cancellation token. Used by
+    /// `parallel_branch_eval` and `parallel_collapse_eval` when invoked
+    /// with bounded demand — once any sibling satisfies the demand, the
+    /// token's `satisfied` flag flips and this worker observes it at its
+    /// next safepoint.
+    #[inline]
+    pub fn with_cancel(
+        cancel_token: std::sync::Arc<crate::backend::eval::cesk::coroutine::CancelToken>,
+    ) -> Self {
+        Self {
+            factory: global_factory(),
+            last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
+            cancel_token: Some(cancel_token),
+            #[cfg(feature = "trace")]
+            trace_collector_arc: crate::backend::models::work_pool::get_work_pool_trace_collector(),
+        }
+    }
+
+    /// Borrow the optional cancellation token. Used by external callers
+    /// (e.g., the worker closure in `parallel_branch_eval`) to record
+    /// branch-completion eligibility against the token.
+    #[inline]
+    pub fn cancel_token(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::backend::eval::cesk::coroutine::CancelToken>> {
+        self.cancel_token.as_ref()
     }
 }
 
@@ -303,8 +361,20 @@ impl EvalContext for ParallelBranchContext {
         &self.factory
     }
 
-    /// Check whether this worker should safepoint, based on the global
-    /// alloc-count delta since this worker's last safepoint.
+    /// Check whether this worker should safepoint, based on cancellation,
+    /// pending GC request, or the alloc-count delta since this worker's
+    /// last safepoint.
+    ///
+    /// Returns `true` when ANY of:
+    /// 1. A sibling worker has satisfied the cancellation token (fast bail)
+    /// 2. The GC has explicitly requested cooperation via `is_gc_requested()`
+    ///    (pressure-driven). This generalizes the safepoint mechanism to
+    ///    hot paths that allocate small-but-often: such workloads can
+    ///    inflate `committed_bytes` past `gc_threshold` while individual
+    ///    workers stay below `parallel_safepoint_threshold()` per-iteration,
+    ///    starving GC indefinitely. Honoring `is_gc_requested()` ensures
+    ///    cooperation regardless of per-thread allocation cadence.
+    /// 3. The per-worker alloc-count delta crossed the per-thread threshold
     ///
     /// Mirrors `SessionContext::should_safepoint` but uses a per-worker
     /// Cell so each thread tracks its own crossings independently. Workers
@@ -315,9 +385,31 @@ impl EvalContext for ParallelBranchContext {
     /// `ACTIVE_EVALUATORS` to converge to 0.
     #[inline]
     fn should_safepoint(&self) -> bool {
+        // Cancellation observation: if a sibling worker has satisfied the
+        // demand, we want to safepoint ASAP so `perform_safepoint` can
+        // raise the `BranchCancelled` marker and bail out of the trampoline
+        // cooperatively. Checking here (rather than in the hot trampoline
+        // loop) means observation is folded into the existing 4096-iter
+        // GC cadence — zero hot-path cost, ~microsecond latency to bail.
+        if let Some(token) = &self.cancel_token {
+            if token.is_satisfied() {
+                return true;
+            }
+        }
         if !parallel_gc_coop_enabled() {
             return false;
         }
+        // Pressure-driven path: GC has explicitly asked for cooperation.
+        // A single Acquire load; negligible cost when no GC is pending.
+        // This generalizes safepoint cooperation to hot paths whose per-
+        // iteration allocation rate stays below the per-thread alloc-delta
+        // threshold but whose aggregate allocation drives `committed_bytes`
+        // past `gc_threshold`.
+        if crate::backend::models::gc_allocator::is_gc_requested() {
+            self.last_safepoint_allocs.set(alloc_count_snapshot());
+            return true;
+        }
+        // Alloc-delta path.
         let current = alloc_count_snapshot();
         let last = self.last_safepoint_allocs.get();
         if current.wrapping_sub(last) >= parallel_safepoint_threshold() {
@@ -340,21 +432,44 @@ impl EvalContext for ParallelBranchContext {
     /// 5. Re-acquire the guard, blocking briefly if `GC_IN_PROGRESS` is
     ///    still set from a concurrent cycle.
     /// 6. The `_root_handle` drops here, unregistering temporary roots.
+    ///
+    /// Cancellation: if `cancel_token.is_satisfied()`, raise via
+    /// `panic::resume_unwind(Box::new(BranchCancelled))` *after* the GC
+    /// dance completes. The worker closure in `parallel_branch_eval`
+    /// catches the marker via `catch_unwind` and treats it as "this
+    /// branch was preempted — set its slot to None and decrement the
+    /// remaining counter." Doing the GC dance first ensures we don't
+    /// leave roots held across the unwind.
     fn perform_safepoint(&self, roots: Vec<MettaValue>) {
-        if !parallel_gc_coop_enabled() {
-            return;
+        let cancelled = self
+            .cancel_token
+            .as_ref()
+            .map_or(false, |t| t.is_satisfied());
+
+        if parallel_gc_coop_enabled() {
+            // Clear pointer-keyed caches before GC may free slots — see
+            // `clear_aba_sensitive_caches` for the ABA hazard rationale.
+            super::eval_loop::clear_aba_sensitive_caches();
+            let _root_handle = register_temporary_roots(roots);
+            drop_eval_guard_for_safepoint();
+            request_gc();
+            safepoint_wait_for_quiescence();
+            reacquire_eval_guard_after_safepoint();
         }
-        // Clear pointer-keyed caches before GC may free slots — see
-        // `clear_aba_sensitive_caches` for the ABA hazard rationale.
-        super::eval_loop::clear_aba_sensitive_caches();
-        let _root_handle = register_temporary_roots(roots);
-        drop_eval_guard_for_safepoint();
-        request_gc();
-        safepoint_wait_for_quiescence();
-        reacquire_eval_guard_after_safepoint();
+
+        if cancelled {
+            // Bail cooperatively. The marker is caught by the worker
+            // closure boundary in `parallel_branch_eval`; the `Resume`
+            // path in the wait loop sets results[slot] = None and
+            // decrements `remaining`. Budget release happens once at
+            // the end of `parallel_branch_eval` regardless.
+            std::panic::resume_unwind(Box::new(
+                crate::backend::eval::cesk::coroutine::BranchCancelled,
+            ));
+        }
     }
 
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     #[inline]
     fn trace_collector(&self) -> Option<&crate::backend::trace::TraceCollector> {
         self.trace_collector_arc.as_deref()

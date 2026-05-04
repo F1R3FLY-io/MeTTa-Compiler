@@ -90,6 +90,10 @@ impl EvalContext for VmEvalContext {
     fn factory(&self) -> &crate::backend::models::GcFactory {
         &self.factory
     }
+
+    // should_safepoint / perform_safepoint inherit the EvalContext trait
+    // defaults: honor `is_gc_requested()` and run the canonical quiescent
+    // protocol so the bytecode VM cooperates with the slab GC.
 }
 
 /// Get or create a memo cache for a generic VM instance.
@@ -1136,33 +1140,22 @@ where
             Opcode::Sub => self.op_binary_num(|a, b| a.wrapping_sub(b), |a, b| a - b)?,
             Opcode::Mul => self.op_binary_num(|a, b| a.wrapping_mul(b), |a, b| a * b)?,
             Opcode::Div => {
+                // Spec §13.2: integer / 0 → DivisionByZero; otherwise wrapping_div
+                // (so i64::MIN / -1 wraps to i64::MIN, no SIGFPE/error).
+                // Float / 0.0 → IEEE 754 (±Inf or NaN), no error.
                 let b = self.pop()?;
                 let a = self.pop()?;
                 match (a.as_long(), b.as_long()) {
                     (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
-                    (Some(x), Some(y)) => match x.checked_div(y) {
-                        Some(r) => self.push(self.make_long(r)),
-                        None => return Err(VmError::ArithmeticOverflow),
-                    },
+                    (Some(x), Some(y)) => self.push(self.make_long(x.wrapping_div(y))),
                     _ => match (a.as_float(), b.as_float()) {
-                        (Some(x), Some(y)) => {
-                            if y == 0.0 {
-                                return Err(VmError::DivisionByZero);
-                            }
-                            self.push(self.make_float(x / y));
-                        }
+                        (Some(x), Some(y)) => self.push(self.make_float(x / y)),
                         _ => {
-                            // Mixed Long/Float type promotion
+                            // Mixed Long/Float type promotion → IEEE 754
                             match (a.as_long(), b.as_float()) {
-                                (Some(x), Some(y)) => {
-                                    if y == 0.0 { return Err(VmError::DivisionByZero); }
-                                    self.push(self.make_float(x as f64 / y));
-                                }
+                                (Some(x), Some(y)) => self.push(self.make_float(x as f64 / y)),
                                 _ => match (a.as_float(), b.as_long()) {
-                                    (Some(x), Some(y)) => {
-                                        if y == 0 { return Err(VmError::DivisionByZero); }
-                                        self.push(self.make_float(x / y as f64));
-                                    }
+                                    (Some(x), Some(y)) => self.push(self.make_float(x / y as f64)),
                                     _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
                                 }
                             }
@@ -1171,31 +1164,24 @@ where
                 }
             }
             Opcode::Mod => {
+                // Spec §13.2: integer % 0 → DivisionByZero; otherwise wrapping_rem
+                // (so i64::MIN % -1 wraps to 0). Float % 0.0 → NaN per IEEE/HE.
                 let b = self.pop()?;
                 let a = self.pop()?;
                 match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
                     (Some(_), _, Some(0), _) => return Err(VmError::DivisionByZero),
-                    (Some(x), _, Some(y), _) => match x.checked_rem(y) {
-                        Some(r) => self.push(self.make_long(r)),
-                        None => return Err(VmError::ArithmeticOverflow),
-                    },
-                    (_, Some(_), _, Some(y)) if y == 0.0 => return Err(VmError::DivisionByZero),
+                    (Some(x), _, Some(y), _) => self.push(self.make_long(x.wrapping_rem(y))),
                     (_, Some(x), _, Some(y)) => self.push(self.make_float(x % y)),
-                    (Some(x), _, _, Some(y)) => {
-                        if y == 0.0 { return Err(VmError::DivisionByZero); }
-                        self.push(self.make_float(x as f64 % y));
-                    }
-                    (_, Some(x), Some(y), _) => {
-                        if y == 0 { return Err(VmError::DivisionByZero); }
-                        self.push(self.make_float(x % y as f64));
-                    }
+                    (Some(x), _, _, Some(y)) => self.push(self.make_float(x as f64 % y)),
+                    (_, Some(x), Some(y), _) => self.push(self.make_float(x % y as f64)),
                     _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
                 }
             }
             Opcode::Neg => {
+                // Spec §13.2: unary minus wraps; -(i64::MIN) → i64::MIN.
                 let a = self.pop()?;
                 if let Some(x) = a.as_long() {
-                    self.push(self.make_long(-x));
+                    self.push(self.make_long(x.wrapping_neg()));
                 } else if let Some(x) = a.as_float() {
                     self.push(self.make_float(-x));
                 } else {
@@ -1203,13 +1189,12 @@ where
                 }
             }
             Opcode::Abs => {
+                // Spec is silent on abs(i64::MIN); choose wrapping_abs for tier-consistency
+                // with trampoline + JIT: abs(i64::MIN) → i64::MIN (mathematically negative,
+                // but bit-pattern matches i64::MIN), no error.
                 let a = self.pop()?;
                 if let Some(x) = a.as_long() {
-                    // i64::MIN.abs() overflows because |i64::MIN| > i64::MAX
-                    if x == i64::MIN {
-                        return Err(VmError::ArithmeticOverflow);
-                    }
-                    self.push(self.make_long(x.abs()));
+                    self.push(self.make_long(x.wrapping_abs()));
                 } else if let Some(x) = a.as_float() {
                     self.push(self.make_float(x.abs()));
                 } else {
@@ -1217,12 +1202,15 @@ where
                 }
             }
             Opcode::FloorDiv => {
+                // Spec §13.2: floor-div wraps on overflow per §C.7g.
+                // wrapping_div_euclid handles i64::MIN.div_euclid(-1) → i64::MIN cleanly
+                // in both debug and release builds.
                 let b = self.pop()?;
                 let a = self.pop()?;
                 match (a.as_long(), b.as_long()) {
                     (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
                     (Some(x), Some(y)) => {
-                        self.push(self.make_long(x.div_euclid(y)));
+                        self.push(self.make_long(x.wrapping_div_euclid(y)));
                     }
                     _ => match (a.as_float(), b.as_float()) {
                         (Some(x), Some(y)) if y != 0.0 => {
@@ -1249,11 +1237,13 @@ where
                 }
             }
             Opcode::Pow => {
+                // Spec §13.2: integer pow wraps on overflow.
+                // i64::wrapping_pow handles overflow without panicking.
                 let b = self.pop()?;
                 let a = self.pop()?;
                 match (a.as_long(), b.as_long()) {
                     (Some(x), Some(y)) if y >= 0 => {
-                        self.push(self.make_long(x.pow(y as u32)));
+                        self.push(self.make_long(x.wrapping_pow(y as u32)));
                     }
                     _ => match (a.as_float(), b.as_float()) {
                         (Some(x), Some(y)) => self.push(self.make_float(x.powf(y))),
@@ -1653,7 +1643,7 @@ where
             Opcode::Trace => self.op_trace()?,
             Opcode::Halt => {
                 // Trace: BytecodeHalt
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                     with_thread_trace_collector(|tc| {
@@ -2076,6 +2066,23 @@ where
 
     fn op_return(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         trace!(target: "mettatron::vm::call", ip = self.ip, "return");
+        // Empty stack at top-level Return means the chunk had a side-effect-only
+        // terminator (e.g., `(= lhs rhs)` → DefineRule + Pop). Treat as "no
+        // result" and finalize: without this the caller falls through to the
+        // trampoline, which re-evaluates the expression and re-fires the
+        // side-effect (double-add for rule defs).
+        if self.call_stack.is_empty() && self.value_stack.is_empty() {
+            if self.yield_on_top_return && !self.choice_points.is_empty() {
+                if !self.collapse_bind_frames.is_empty() {
+                    return self.op_fail_within_collapse_bind();
+                }
+                if !self.collapse_frames.is_empty() {
+                    return self.op_fail_within_collapse();
+                }
+                return self.op_fail();
+            }
+            return Ok(ControlFlow::Break(std::mem::take(&mut self.results)));
+        }
         let value = self.pop()?;
         if let Some(frame) = self.call_stack.pop() {
             // Return to caller - restore chunk/ip
@@ -3642,6 +3649,8 @@ where
                 GenericAlternative::RuleMatch { chunk, bindings } => {
                     // Bug-fix 2026-04-follow-up: stash caller's locals_base.
                     let caller_locals_base = self.locals_base;
+                    let caller_locals_len_snap = self.locals.len();
+                    let caller_trail_len_snap = self.trail.len();
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -3650,6 +3659,8 @@ where
                         yield_on_return: false,
                         saved_bindings: self.current_bindings.clone(),
                         locals_base: caller_locals_base,
+                        caller_locals_len: caller_locals_len_snap,
+                        caller_trail_len: caller_trail_len_snap,
                     });
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
@@ -4053,6 +4064,8 @@ where
                     // Push call frame for compiled RHS (mirrors op_fail logic).
                     // Bug-fix 2026-04-follow-up: stash caller's locals_base.
                     let caller_locals_base = self.locals_base;
+                    let caller_locals_len_snap = self.locals.len();
+                    let caller_trail_len_snap = self.trail.len();
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -4061,6 +4074,8 @@ where
                         yield_on_return: false,
                         saved_bindings: self.current_bindings.clone(),
                         locals_base: caller_locals_base,
+                        caller_locals_len: caller_locals_len_snap,
+                        caller_trail_len: caller_trail_len_snap,
                     });
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
@@ -4752,7 +4767,7 @@ where
         }
 
         // Trace: NondeterministicFork
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
             with_thread_trace_collector(|tc| {
@@ -4856,6 +4871,8 @@ where
                     // The RHS returns normally and the calling chunk continues.
                     // Bug-fix 2026-04-follow-up: stash caller's locals_base.
                     let caller_locals_base = self.locals_base;
+                    let caller_locals_len_snap = self.locals.len();
+                    let caller_trail_len_snap = self.trail.len();
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -4863,6 +4880,8 @@ where
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
                         saved_bindings: self.current_bindings.clone(),
+                        caller_locals_len: caller_locals_len_snap,
+                        caller_trail_len: caller_trail_len_snap,
                         locals_base: caller_locals_base,
                     });
                     // Push new binding frame (don't pollute existing frames)
@@ -5107,7 +5126,7 @@ where
         match call_result {
             Ok(result) => {
                 // Trace: GroundedOp success
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                     use crate::backend::trace::trace_value_generic;
@@ -5147,7 +5166,7 @@ where
             }
             Err(e) => {
                 // Trace: GroundedOpError
-                #[cfg(feature = "eval-trace")]
+                #[cfg(feature = "trace")]
                 {
                     use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                     use crate::backend::trace::trace_value_generic;
@@ -5343,6 +5362,71 @@ where
         Ok(())
     }
 
+    /// Compute choice-point coordinates that correctly resume at the OUTER
+    /// chunk's post-dispatch position when the CP is being installed inside
+    /// an active compiled-RHS call frame.
+    ///
+    /// **Why this exists.** When `op_dispatch_rules` is executing inside a
+    /// compiled-RHS chunk (entered via the fast path at lines ~5688-5753) and
+    /// installs a `BoundValue` choice point, naively using `self.ip` /
+    /// `self.chunk` and `self.call_stack.len()` would resume INTO the inner
+    /// chunk on backtrack, fire its `op_return` on every alt, and route
+    /// `BoundValue` alternatives to the top-level Return branch — leaking
+    /// them as `self.results` and bypassing `CollapseBindEnd`'s pair
+    /// encoding (failing `within_query_cache_isolation_contract`).
+    ///
+    /// **Fix.** When inside a callee frame, snapshot the *outer* frame's
+    /// resume coordinates and pre-pop the frame as part of backtrack
+    /// (`call_stack_height = self.call_stack.len() - 1`). The truncate in
+    /// `op_fail*` then drops the inner frame; execution resumes at the
+    /// outer chunk's post-dispatch position with the BoundValue on the
+    /// value stack — exactly as if the inner chunk had returned that alt
+    /// directly.
+    ///
+    /// Returns `(cp_ip, cp_chunk, cp_call_stack_height,
+    ///          cp_value_stack_height, cp_bindings_stack_height,
+    ///          cp_locals_base_at_cp, cp_locals_height, cp_trail_height)`.
+    fn cp_install_coords_for_bound_value(
+        &self,
+    ) -> (
+        usize,
+        Arc<GenericBytecodeChunk<V>>,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    ) {
+        if let Some(top) = self.call_stack.last() {
+            // Inside a compiled-RHS callee. Backtrack must pre-pop this frame
+            // and resume at the outer chunk's post-dispatch position.
+            (
+                top.return_ip,
+                Arc::clone(&top.return_chunk),
+                self.call_stack.len() - 1,
+                top.base_ptr,
+                top.bindings_base + 1,
+                top.locals_base,
+                top.caller_locals_len,
+                top.caller_trail_len,
+            )
+        } else {
+            // Top level — current chunk is the outer; current ip is the
+            // resume point. Existing behavior preserved verbatim.
+            (
+                self.ip,
+                Arc::clone(&self.chunk),
+                0,
+                self.value_stack.len(),
+                self.bindings_stack.len(),
+                self.locals_base,
+                self.locals.len(),
+                self.trail.len(),
+            )
+        }
+    }
+
     fn op_dispatch_rules(&mut self) -> VmResult<()> {
         trace!(target: "mettatron::vm::rules", ip = self.ip, "dispatch_rules (generic)");
 
@@ -5502,7 +5586,21 @@ where
         };
 
         // Use native byte-level matching via RuleIndex + extract_data
-        let matches = env.match_rules_native(&expr, apply_bindings_generic);
+        // VM-tier bidirectional-unify fallback: when structural matching fails
+        // for a free-variable query (e.g. `(father $who b)` against rule
+        // `(father a b)`), engage Prolog-style unification to produce matches
+        // with full caller-side bindings. Mirrors the trampoline tier's Step
+        // 3.5 (`step/sexpr.rs:2442-2478`) but emits `RuleMatchResult` with
+        // `original_bindings` populated for `BindingFrame` lookup, AND with
+        // `compiled_rhs = None` so the unify-instantiated RHS flows through
+        // `eval_sub_expr_vm` rather than re-executing stale bytecode.
+        // Phase 5 (Bug 1): thread caller-side bindings so `apply_bindings_with_rename_scoped`
+        // can resolve caller variables in captured rule bodies (e.g.
+        // `(uncle $a $b)` substituted into `$C` via the `=>` template).
+        let mut matches = env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
+        if matches.is_empty() && expr.has_variables_fast() {
+            matches = env.match_rules_via_unify(&expr);
+        }
 
         // Phase 9.2/9.3: expected_type branch pruning — filter out rule matches
         // whose rhs_type is incompatible with the expected return type.
@@ -5521,7 +5619,7 @@ where
         self.expected_type = None; // Clear after use
 
         // Trace: Emit RuleMatchSet for all matching rules
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
             use crate::backend::trace::trace_value_generic;
@@ -5624,7 +5722,7 @@ where
             let result = matches.into_iter().next().expect("matches has 1 element");
 
             // Trace: RuleApplication for single match
-            #[cfg(feature = "eval-trace")]
+            #[cfg(feature = "trace")]
             {
                 use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                 use crate::backend::trace::trace_value_generic;
@@ -5654,25 +5752,62 @@ where
             if let Some(compiled_arc) = result.compiled_rhs {
                 // Downcast from Arc<dyn Any + Send + Sync> to Arc<GenericBytecodeChunk<V>>
                 if let Ok(rhs_chunk) = compiled_arc.downcast::<GenericBytecodeChunk<V>>() {
+                    // P2 follow-up: compose the rule-match's scope-tagged
+                    // alias bindings into `current_bindings` BEFORE we snapshot
+                    // it into the call frame's `saved_bindings`. Without this
+                    // step, caller-side aliases like
+                    // `(dispatch_scope, $rule_var) → $caller_var` are visible
+                    // only in the bare-name `BindingFrame` populated below
+                    // (used by PushVariable lookups), and vanish on return —
+                    // breaking collapse-bind sidecar projection of caller-typed
+                    // query vars (e.g. Direct.metta `(? (grandfather $who c))`).
+                    if !result.bindings.is_empty() {
+                        let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &self.current_bindings,
+                            &result.bindings,
+                            &self.factory,
+                        );
+                        let conflict = composed.is_empty()
+                            && !self.current_bindings.is_empty()
+                            && !result.bindings.is_empty();
+                        if conflict {
+                            return Err(VmError::Runtime(
+                                "op_dispatch_rules: rule-match bindings conflict with current_bindings".to_string()
+                            ));
+                        }
+                        self.current_bindings = composed;
+                    }
                     // Push call frame to save current execution state.
                     // Bug-fix 2026-04-follow-up: stash caller's locals_base, bump ours.
                     let caller_locals_base = self.locals_base;
+                    let caller_locals_len_snap = self.locals.len();
+                    let caller_trail_len_snap = self.trail.len();
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
                         base_ptr: self.value_stack.len(),
                         bindings_base: self.bindings_stack.len().saturating_sub(1),
                         yield_on_return: false,
+                        caller_locals_len: caller_locals_len_snap,
+                        caller_trail_len: caller_trail_len_snap,
                         saved_bindings: self.current_bindings.clone(),
                         locals_base: caller_locals_base,
                     });
 
                     // Push new binding frame with match bindings.
+                    //
                     // PushVariable opcodes in the compiled chunk resolve through
-                    // this frame (searching innermost to outermost).
+                    // this frame (searching innermost to outermost) using
+                    // bare-name lookup against ORIGINAL rule-LHS variable
+                    // names. `compiled_rhs` was built at rule-insertion time
+                    // against `entry.rhs` (original names), so we MUST seed
+                    // with `result.original_bindings` (pre-freshen, pre-scope-
+                    // tag, ROOT_SCOPE-keyed). `result.bindings` carries the
+                    // freshened + scope-tagged form for the trampoline tier
+                    // and is NOT compatible with the compiled bytecode here.
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
-                    for (name, value) in result.bindings.iter() {
+                    for (name, value) in result.original_bindings.iter() {
                         frame.set(name.to_string(), value.clone());
                     }
                     self.bindings_stack.push(frame);
@@ -5702,20 +5837,182 @@ where
                 return Ok(());
             }
 
-            // Evaluate the RHS through the trampoline for full reduction.
-            // Handles user-defined functions whose RHS bodies contain
-            // further function calls or special forms.
+            // P2 follow-up: compose rule-match alias bindings into
+            // `current_bindings` before invoking the trampoline. The
+            // trampoline-evaluated RHS may emit bindings for renamed body-
+            // local atoms; the matcher's caller-side aliases must already
+            // be present in `current_bindings` so apply_chain post-compose
+            // can resolve `$caller_var → $rule_renamed → ground` for the
+            // caller. Without this, e.g. Direct.metta `(? (grandfather $who c))`
+            // produces a result with no `($who a)` projection.
+            if !result.bindings.is_empty() {
+                let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                    &self.current_bindings,
+                    &result.bindings,
+                    &self.factory,
+                );
+                let conflict = composed.is_empty()
+                    && !self.current_bindings.is_empty()
+                    && !result.bindings.is_empty();
+                if conflict {
+                    return Err(VmError::Runtime(
+                        "op_dispatch_rules: rule-match bindings conflict with current_bindings".to_string()
+                    ));
+                }
+                self.current_bindings = composed;
+            }
+
+            // Evaluate the RHS through the trampoline. Use the
+            // bindings-preserving variant so nondeterministic alternatives
+            // are surfaced as `BoundValue` choice points rather than
+            // truncated to the first result (Defect B fix). Single-result
+            // case still composes the sub-expr's bindings into
+            // `current_bindings` (matching the prior `eval_sub_expr_vm`
+            // semantics for deterministic callers).
             let epoch_before = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
             let env = self.env.as_ref()
                 .expect("op_dispatch_rules requires env").clone();
-            let evaluated = self.eval_sub_expr_vm(rhs, env)?;
-            // Only cache if no mutation occurred (the expression is pure).
-            // Impure expressions (change-state!, add-atom, etc.) must re-execute
-            // on each call to preserve side effects.
-            if crate::backend::eval::trampoline::dispatch_hints::mutation_epoch() == epoch_before {
-                self.dispatch_memo.insert(expr_hash, (epoch_before, vec![evaluated.clone()]));
+            let saved_outer_bindings = self.current_bindings.clone();
+            let sub_outcomes =
+                self.eval_sub_expr_vm_all_with_bindings(rhs.clone(), env);
+
+            if sub_outcomes.is_empty() {
+                // No reduction — push the unevaluated RHS as a data
+                // constructor. Matches prior `eval_sub_expr_vm` "no results"
+                // arm.
+                if crate::backend::eval::trampoline::dispatch_hints::mutation_epoch()
+                    == epoch_before
+                {
+                    self.dispatch_memo
+                        .insert(expr_hash, (epoch_before, vec![rhs.clone()]));
+                }
+                self.push(rhs);
+                return Ok(());
             }
-            self.push(evaluated);
+
+            if sub_outcomes.len() == 1 {
+                let (v, sub_b) = sub_outcomes.into_iter().next().expect("len==1");
+                if !sub_b.is_empty() {
+                    let mut composed =
+                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &self.current_bindings,
+                            &sub_b,
+                            &self.factory,
+                        );
+                    if composed.is_empty()
+                        && !self.current_bindings.is_empty()
+                        && !sub_b.is_empty()
+                    {
+                        return Err(VmError::Runtime(
+                            "op_dispatch_rules: ground/ground binding conflict (branch inconsistent)".to_string(),
+                        ));
+                    }
+                    crate::backend::eval::bindings::apply_chain_generic(
+                        &mut composed,
+                        &self.factory,
+                    );
+                    self.current_bindings = composed;
+                }
+                if crate::backend::eval::trampoline::dispatch_hints::mutation_epoch()
+                    == epoch_before
+                {
+                    self.dispatch_memo
+                        .insert(expr_hash, (epoch_before, vec![v.clone()]));
+                }
+                self.push(v);
+                return Ok(());
+            }
+
+            // Multiple inner results — install a BoundValue choice point.
+            // Each per-alt bindings = caller's saved_outer_bindings ∘ sub_b.
+            let mut merged_outcomes: Vec<(V, crate::backend::models::GenericBindings<V>)> =
+                Vec::with_capacity(sub_outcomes.len());
+            for (v, sub_b) in sub_outcomes {
+                let merged = if sub_b.is_empty() {
+                    saved_outer_bindings.clone()
+                } else if saved_outer_bindings.is_empty() {
+                    sub_b
+                } else {
+                    let composed =
+                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &saved_outer_bindings,
+                            &sub_b,
+                            &self.factory,
+                        );
+                    if composed.is_empty()
+                        && !saved_outer_bindings.is_empty()
+                        && !sub_b.is_empty()
+                    {
+                        // Per-alt branch inconsistent — drop, do not poison siblings.
+                        continue;
+                    }
+                    composed
+                };
+                merged_outcomes.push((v, merged));
+            }
+
+            if merged_outcomes.is_empty() {
+                self.unreduced = true;
+                self.push(rhs);
+                return Ok(());
+            }
+
+            if crate::backend::eval::trampoline::dispatch_hints::mutation_epoch()
+                == epoch_before
+            {
+                let cache_values: Vec<V> =
+                    merged_outcomes.iter().map(|(v, _)| v.clone()).collect();
+                self.dispatch_memo
+                    .insert(expr_hash, (epoch_before, cache_values));
+            }
+
+            if merged_outcomes.len() == 1 {
+                let (v, b) = merged_outcomes.into_iter().next().expect("len==1");
+                self.current_bindings = b;
+                self.push(v);
+                return Ok(());
+            }
+
+            let mut iter = merged_outcomes.into_iter();
+            let (first_v, first_b) = iter.next().expect("non-empty");
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = iter
+                .map(|(v, b)| GenericAlternative::BoundValue {
+                    value: v,
+                    bindings: b,
+                })
+                .collect();
+            if !alternatives.is_empty() {
+                // Pre-pop the active compiled-RHS callee frame on backtrack
+                // so BoundValue alts resume at the OUTER chunk's
+                // post-dispatch position (not the inner chunk's op_return,
+                // which would leak alts to the top-level Return branch and
+                // break collapse-bind pair encoding).
+                let (
+                    cp_ip,
+                    cp_chunk,
+                    cp_call_stack_height,
+                    cp_value_stack_height,
+                    cp_bindings_stack_height,
+                    cp_locals_base_at_cp,
+                    cp_locals_height,
+                    cp_trail_height,
+                ) = self.cp_install_coords_for_bound_value();
+                self.choice_points.push(GenericChoicePoint {
+                    ip: cp_ip,
+                    chunk: cp_chunk,
+                    value_stack_height: cp_value_stack_height,
+                    call_stack_height: cp_call_stack_height,
+                    bindings_stack_height: cp_bindings_stack_height,
+                    alternatives,
+                    saved_unreduced: self.unreduced,
+                    trail_height: cp_trail_height,
+                    saved_current_bindings: saved_outer_bindings.clone(),
+                    locals_height: cp_locals_height,
+                    locals_base_at_cp: cp_locals_base_at_cp,
+                });
+            }
+    self.current_bindings = first_b;
+            self.push(first_v);
             return Ok(());
         }
 
@@ -5726,7 +6023,7 @@ where
         // and avoids re-executing shared sub-expressions.
 
         // Trace: NondeterministicFork for multiple matches
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         {
             use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
             use crate::backend::trace::trace_value_generic;
@@ -5742,64 +6039,153 @@ where
             });
         }
 
-        // Eagerly evaluate all matched RHS bodies and collect results.
+        // Eagerly evaluate all matched RHS bodies and collect (value, bindings)
+        // outcomes. Mirrors `op_dispatch_rules_multi_combo`'s per-iteration
+        // bindings discipline: snapshot the outer `current_bindings`, compose
+        // each match's rule-match aliases, evaluate, then merge sub-result
+        // bindings on top — restoring the snapshot before the next match so
+        // per-match outcomes stay isolated.
         let env = self.env.as_ref().expect("op_dispatch_rules requires env").clone();
+        let saved_outer_bindings = self.current_bindings.clone();
 
         let epoch_before_multi = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
-        let mut all_results: Vec<V> = Vec::new();
+        let mut all_outcomes: Vec<(V, crate::backend::models::GenericBindings<V>)> =
+            Vec::new();
+
         for result in matches {
-            // Evaluate the instantiated RHS through the trampoline, which
-            // handles nested nondeterminism via continuation-based forking.
-            let sub_results = self.eval_sub_expr_vm_all(
+            // Restore the outer ambient before each iteration so prior matches
+            // don't leak into this one.
+            self.current_bindings = saved_outer_bindings.clone();
+
+            // Compose this match's rule-match alias bindings into
+            // `current_bindings` BEFORE invoking the trampoline. Mirrors the
+            // single-match path. Without this, caller-typed query vars
+            // (e.g. `(? (grandfather $who c))`) see no projection.
+            let per_match_ambient = if !result.bindings.is_empty() {
+                let composed =
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &self.current_bindings,
+                        &result.bindings,
+                        &self.factory,
+                    );
+                let conflict = composed.is_empty()
+                    && !self.current_bindings.is_empty()
+                    && !result.bindings.is_empty();
+                if conflict {
+                    // Skip this match — caller-side aliases inconsistent
+                    // with ambient. HE-faithful pruning, not hard error.
+                    continue;
+                }
+                self.current_bindings = composed.clone();
+                composed
+            } else {
+                self.current_bindings.clone()
+            };
+
+            // Evaluate the instantiated RHS through the trampoline,
+            // preserving each sub-result's bindings.
+            let sub_results = self.eval_sub_expr_vm_all_with_bindings(
                 result.instantiated_rhs,
                 env.clone(),
             );
-            all_results.extend(sub_results);
+            if sub_results.is_empty() {
+                continue;
+            }
+
+            for (v, sub_b) in sub_results {
+                let merged = if sub_b.is_empty() {
+                    per_match_ambient.clone()
+                } else if per_match_ambient.is_empty() {
+                    sub_b
+                } else {
+                    let composed =
+                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &per_match_ambient,
+                            &sub_b,
+                            &self.factory,
+                        );
+                    if composed.is_empty()
+                        && !per_match_ambient.is_empty()
+                        && !sub_b.is_empty()
+                    {
+                        // Sub-result inconsistent — drop, don't poison siblings.
+                        continue;
+                    }
+                    composed
+                };
+                all_outcomes.push((v, merged));
+            }
         }
 
-        // Cache multi-match results for re-dispatch memoization.
-        // On backtracking, the same expression may be re-dispatched;
-        // the memo returns cached results without re-matching + re-evaluating.
-        // Only cache if no mutation occurred during evaluation.
-        if !all_results.is_empty()
-            && crate::backend::eval::trampoline::dispatch_hints::mutation_epoch() == epoch_before_multi
+        // Restore the outer ambient. The chosen alternative below
+        // overwrites `current_bindings` with its own per-alt bindings.
+        self.current_bindings = saved_outer_bindings.clone();
+
+        // Cache values-only for re-dispatch memoization. Per the
+        // `within_query_cache_isolation_contract` test, caches MUST NOT
+        // carry bindings — each retrieving caller layers its own
+        // `current_bindings` on hit. Discard per-outcome bindings here.
+        if !all_outcomes.is_empty()
+            && crate::backend::eval::trampoline::dispatch_hints::mutation_epoch()
+                == epoch_before_multi
         {
-            self.dispatch_memo.insert(expr_hash, (epoch_before_multi, all_results.clone()));
+            let cache_values: Vec<V> =
+                all_outcomes.iter().map(|(v, _)| v.clone()).collect();
+            self.dispatch_memo
+                .insert(expr_hash, (epoch_before_multi, cache_values));
         }
 
-        // Push results: single result goes on stack (normal path).
-        // Multiple results go on stack as first + alternatives in choice points.
-        // The choice points are pre-evaluated (all RHS bodies are already
-        // fully reduced via trampoline), so backtracking just pops values
-        // without re-executing any code.
-        if all_results.len() == 1 {
-            self.push(all_results.into_iter().next().expect("len==1"));
-        } else if !all_results.is_empty() {
-            let mut iter = all_results.into_iter();
-            let first = iter.next().expect("non-empty");
+        if all_outcomes.len() == 1 {
+            let (v, b) = all_outcomes.into_iter().next().expect("len==1");
+            self.current_bindings = b;
+            self.push(v);
+        } else if !all_outcomes.is_empty() {
+            // Multiple outcomes — push first, expose the rest as
+            // BoundValue alternatives. `op_fail`'s BoundValue arm
+            // restores the per-alt bindings on backtrack.
+            let mut iter = all_outcomes.into_iter();
+            let (first_v, first_b) = iter.next().expect("non-empty");
 
-            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
-                iter.map(GenericAlternative::Value).collect();
+            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = iter
+                .map(|(v, b)| GenericAlternative::BoundValue {
+                    value: v,
+                    bindings: b,
+                })
+                .collect();
 
             if !alternatives.is_empty() {
+                // Pre-pop the active compiled-RHS callee frame on backtrack
+                // so BoundValue alts resume at the OUTER chunk's
+                // post-dispatch position (see cp_install_coords_for_bound_value).
+                let (
+                    cp_ip,
+                    cp_chunk,
+                    cp_call_stack_height,
+                    cp_value_stack_height,
+                    cp_bindings_stack_height,
+                    cp_locals_base_at_cp,
+                    cp_locals_height,
+                    cp_trail_height,
+                ) = self.cp_install_coords_for_bound_value();
                 self.choice_points.push(GenericChoicePoint {
-                    ip: self.ip,
-                    chunk: Arc::clone(&self.chunk),
-                    value_stack_height: self.value_stack.len(),
-                    call_stack_height: self.call_stack.len(),
-                    bindings_stack_height: self.bindings_stack.len(),
+                    ip: cp_ip,
+                    chunk: cp_chunk,
+                    value_stack_height: cp_value_stack_height,
+                    call_stack_height: cp_call_stack_height,
+                    bindings_stack_height: cp_bindings_stack_height,
                     alternatives,
                     saved_unreduced: self.unreduced,
-                    trail_height: self.trail.len(),
-                    saved_current_bindings: self.current_bindings.clone(),
-                    locals_height: self.locals.len(),
-                    locals_base_at_cp: self.locals_base,
+                    trail_height: cp_trail_height,
+                    saved_current_bindings: saved_outer_bindings.clone(),
+                    locals_height: cp_locals_height,
+                    locals_base_at_cp: cp_locals_base_at_cp,
                 });
             }
 
-            self.push(first);
+            self.current_bindings = first_b;
+            self.push(first_v);
         }
-        // If no results, push nothing (expression is irreducible)
+        // If no outcomes, push nothing (expression is irreducible)
 
         Ok(())
     }
@@ -5851,7 +6237,13 @@ where
             // next iteration so combinations don't leak into each other.
             self.current_bindings = combo_b.clone();
 
-            let matches = env.match_rules_native(&combo_expr, apply_bindings_generic);
+            // VM-tier bidirectional-unify fallback (mirrors single-combo path
+            // at line ~5526) — see commentary there for rationale.
+            // Phase 5 (Bug 1): thread caller-side outer bindings.
+            let mut matches = env.match_rules_native(&combo_expr, apply_bindings_generic, &self.current_bindings);
+            if matches.is_empty() && combo_expr.has_variables_fast() {
+                matches = env.match_rules_via_unify(&combo_expr);
+            }
             // Phase 9.2/9.3 expected_type pruning
             let matches = if let Some(ref expected) = self.expected_type {
                 use crate::backend::eval::types::types_match_generic;
@@ -5933,18 +6325,31 @@ where
             .map(|(v, b)| GenericAlternative::BoundValue { value: v, bindings: b })
             .collect();
         if !alternatives.is_empty() {
+            // Pre-pop the active compiled-RHS callee frame on backtrack
+            // so BoundValue alts resume at the OUTER chunk's
+            // post-dispatch position (see cp_install_coords_for_bound_value).
+            let (
+                cp_ip,
+                cp_chunk,
+                cp_call_stack_height,
+                cp_value_stack_height,
+                cp_bindings_stack_height,
+                cp_locals_base_at_cp,
+                cp_locals_height,
+                cp_trail_height,
+            ) = self.cp_install_coords_for_bound_value();
             self.choice_points.push(GenericChoicePoint {
-                ip: self.ip,
-                chunk: Arc::clone(&self.chunk),
-                value_stack_height: self.value_stack.len(),
-                call_stack_height: self.call_stack.len(),
-                bindings_stack_height: self.bindings_stack.len(),
+                ip: cp_ip,
+                chunk: cp_chunk,
+                value_stack_height: cp_value_stack_height,
+                call_stack_height: cp_call_stack_height,
+                bindings_stack_height: cp_bindings_stack_height,
                 alternatives,
                 saved_unreduced: self.unreduced,
-                trail_height: self.trail.len(),
+                trail_height: cp_trail_height,
                 saved_current_bindings: saved_bindings.clone(),
-                locals_height: self.locals.len(),
-                locals_base_at_cp: self.locals_base,
+                locals_height: cp_locals_height,
+                locals_base_at_cp: cp_locals_base_at_cp,
             });
         }
         self.current_bindings = first_b;
@@ -6454,39 +6859,125 @@ where
     // === Space Operations ===
 
     /// Add an atom to a space.
+    ///
     /// Stack: [space, atom] -> [Unit]
+    ///
+    /// Three resolution paths matching the trampoline reference at
+    /// `eval/trampoline/eval_loop.rs::eval_add_atom_*`:
+    ///   1. `Space(handle)` → if module-space or `&self`, route through env's
+    ///      PathMap (`env.add_to_space`) so rule definitions populate
+    ///      RuleIndex; else write to the SpaceHandle directly.
+    ///   2. `Atom("&self")` (un-evaluated form) → same env path.
+    ///   3. `Atom(name)` → resolve token; recurse on the resolved Space.
+    ///   4. Otherwise → TypeError.
     fn op_space_add(&mut self) -> VmResult<()> {
         let atom = self.pop()?;
         let space = self.pop()?;
+
         if let Some(handle) = space.as_space() {
-            handle.add_atom_generic(&atom);
+            if handle.is_module_space() || handle.name == "self" {
+                let env = self.env.as_mut().ok_or_else(|| {
+                    VmError::Runtime("add-atom: no environment for &self/module space".to_string())
+                })?;
+                env.add_to_space(&atom);
+            } else {
+                handle.add_atom_generic(&atom);
+            }
             crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
             self.push(self.make_unit());
-            Ok(())
-        } else {
-            Err(VmError::TypeError {
-                expected: "Space",
-                got: space.type_name(),
-            })
+            return Ok(());
         }
+
+        if let Some(name) = space.as_atom() {
+            if name == "&self" {
+                let env = self.env.as_mut().ok_or_else(|| {
+                    VmError::Runtime("add-atom: no environment for &self".to_string())
+                })?;
+                env.add_to_space(&atom);
+                crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                self.push(self.make_unit());
+                return Ok(());
+            }
+            if let Some(env) = self.env.as_ref() {
+                if let Some(resolved) = env.lookup_token_generic(name, &self.factory) {
+                    if let Some(handle) = resolved.as_space() {
+                        if handle.is_module_space() || handle.name == "self" {
+                            // Rare: a token resolves to a module/self handle.
+                            let env_mut = self.env.as_mut().expect("env present");
+                            env_mut.add_to_space(&atom);
+                        } else {
+                            handle.add_atom_generic(&atom);
+                        }
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        self.push(self.make_unit());
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        Err(VmError::TypeError {
+            expected: "Space",
+            got: space.type_name(),
+        })
     }
 
     /// Remove an atom from a space.
-    /// Stack: [space, atom] -> [Bool]
+    ///
+    /// Stack: [space, atom] -> [Unit]
+    ///
+    /// Returns `Unit` per HE / spec §9.2 (the boolean removed-flag is discarded —
+    /// HE's `RemoveAtomOp::execute` ignores it). Same three resolution paths as
+    /// `op_space_add`.
     fn op_space_remove(&mut self) -> VmResult<()> {
         let atom = self.pop()?;
         let space = self.pop()?;
+
         if let Some(handle) = space.as_space() {
-            let removed = handle.remove_atom_generic(&atom);
+            if handle.is_module_space() || handle.name == "self" {
+                let env = self.env.as_mut().ok_or_else(|| {
+                    VmError::Runtime("remove-atom: no environment for &self/module space".to_string())
+                })?;
+                env.remove_from_space(&atom);
+            } else {
+                let _removed = handle.remove_atom_generic(&atom);
+            }
             crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
-            self.push(self.make_bool(removed));
-            Ok(())
-        } else {
-            Err(VmError::TypeError {
-                expected: "Space",
-                got: space.type_name(),
-            })
+            self.push(self.make_unit());
+            return Ok(());
         }
+
+        if let Some(name) = space.as_atom() {
+            if name == "&self" {
+                let env = self.env.as_mut().ok_or_else(|| {
+                    VmError::Runtime("remove-atom: no environment for &self".to_string())
+                })?;
+                env.remove_from_space(&atom);
+                crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                self.push(self.make_unit());
+                return Ok(());
+            }
+            if let Some(env) = self.env.as_ref() {
+                if let Some(resolved) = env.lookup_token_generic(name, &self.factory) {
+                    if let Some(handle) = resolved.as_space() {
+                        if handle.is_module_space() || handle.name == "self" {
+                            let env_mut = self.env.as_mut().expect("env present");
+                            env_mut.remove_from_space(&atom);
+                        } else {
+                            let _removed = handle.remove_atom_generic(&atom);
+                        }
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        self.push(self.make_unit());
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        Err(VmError::TypeError {
+            expected: "Space",
+            got: space.type_name(),
+        })
     }
 
     /// Get all atoms from a space (collapse).
@@ -6708,7 +7199,7 @@ where
     /// Check if pattern matches value using trait methods.
     fn pattern_matches_generic(&self, pattern: &V, value: &V) -> bool {
         match pattern.view() {
-            ValueView::Atom(s) if s.starts_with('$') || s == "_" => true,
+            ValueView::Atom(s) if s.starts_with('$') || s == "_" || s == "$_" => true,
             ValueView::SExpr(_) => {
                 if let Some(v_items) = value.as_sexpr() {
                     let p_items = pattern.as_sexpr().expect("matched SExpr");
@@ -6740,11 +7231,13 @@ where
         bindings: &mut Vec<(String, V)>,
     ) -> bool {
         match pattern.view() {
+            // Wildcards (both `_` and `$_`) match anything without binding.
+            // Check wildcards FIRST so `$_` doesn't fall into the variable arm.
+            ValueView::Atom(s) if s == "_" || s == "$_" => true,
             ValueView::Atom(s) if s.starts_with('$') => {
                 bindings.push((s.to_string(), value.clone()));
                 true
             }
-            ValueView::Atom(s) if s == "_" => true,
             ValueView::SExpr(_) => {
                 if let Some(v_items) = value.as_sexpr() {
                     let p_items = pattern.as_sexpr().expect("matched SExpr");

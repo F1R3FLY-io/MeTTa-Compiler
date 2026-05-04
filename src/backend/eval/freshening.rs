@@ -17,6 +17,7 @@
 //! `$__fr_{epoch}_{name}` where epoch is a globally unique counter. Non-variable
 //! atoms (`&self`, `&kb`, `&stack`, literals) pass through unchanged.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,15 +88,36 @@ pub fn allocate_epoch() -> u64 {
 ///
 /// Wildcards `_` and `$_` are preserved unchanged per MeTTaTron's
 /// wildcard extension.
-#[derive(Copy, Clone, Debug)]
+///
+/// Owns a per-dispatch `atom_cache` that memoizes `factory.atom(renamed)`
+/// results keyed on the interned `&'static str` returned by `rename()`.
+/// Lifetime is bounded to the rule dispatch (the `CachingRename` instance),
+/// so cached values stay rooted by the live work-stack throughout the
+/// dispatch and the cache drops with it — no thread-local GC concerns.
+/// Values are type-erased via `Box<dyn Any>` to keep the struct
+/// non-generic at the API boundary; downcast on lookup is `O(1)`
+/// (TypeId comparison + clone of the cached `V`).
 pub struct CachingRename {
     epoch: u64,
+    atom_cache: RefCell<HashMap<&'static str, Box<dyn Any>>>,
+}
+
+impl std::fmt::Debug for CachingRename {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachingRename")
+            .field("epoch", &self.epoch)
+            .field("atom_cache_len", &self.atom_cache.borrow().len())
+            .finish()
+    }
 }
 
 impl CachingRename {
     #[inline]
     pub fn new(epoch: u64) -> Self {
-        Self { epoch }
+        Self {
+            epoch,
+            atom_cache: RefCell::new(HashMap::with_capacity(8)),
+        }
     }
 
     #[inline]
@@ -119,6 +141,40 @@ impl CachingRename {
         }
         let bare = &name[1..]; // strip leading '$'; inherits 'static from name
         intern_fresh_name(self.epoch, bare)
+    }
+
+    /// Allocate (or retrieve from the per-dispatch cache) the freshened
+    /// atom value `V` for `name`.
+    ///
+    /// Equivalent to `factory.atom(self.rename(name))`, but caches the
+    /// resulting `V` keyed on the interned `&'static str`. Repeated
+    /// freshenings of the same variable within one rule dispatch
+    /// (e.g. `$x` appearing 5× in the RHS) bypass `factory.atom()`'s
+    /// `alloc_str` + `alloc_value` slab allocations after the first hit,
+    /// returning the cached `V` via cheap `Clone`. This is the dominant
+    /// allocation-rate driver in HE-bisimilar per-invocation freshening
+    /// (`engine.rs:818-849`); reducing it lowers the rate at which
+    /// `committed_bytes` grows past `gc_threshold` and helps the safepoint
+    /// alloc-delta path stay below `SAFEPOINT_ALLOC_THRESHOLD` per worker.
+    ///
+    /// Caller must ensure `name` is a $-prefixed variable and not `$_`.
+    #[inline]
+    pub fn fresh_atom<V, F>(&self, name: &'static str, factory: &F) -> V
+    where
+        V: MettaValueTrait + Clone + 'static,
+        F: MettaValueFactory<V>,
+    {
+        let interned = self.rename(name);
+        if let Some(boxed) = self.atom_cache.borrow().get(interned) {
+            if let Some(v) = boxed.downcast_ref::<V>() {
+                return v.clone();
+            }
+        }
+        let value = factory.atom(interned);
+        self.atom_cache
+            .borrow_mut()
+            .insert(interned, Box::new(value.clone()));
+        value
     }
 }
 
@@ -165,7 +221,7 @@ const FRESH_NAME_CACHE_CAP: usize = 1024;
 /// values flow back into rule RHS templates (e.g., via runtime
 /// rule construction or substitution into recursive proof terms).
 #[inline]
-fn intern_fresh_name(epoch: u64, bare_name: &'static str) -> &'static str {
+pub fn intern_fresh_name(epoch: u64, bare_name: &'static str) -> &'static str {
     if bare_name.starts_with("__fr_") {
         // Already freshened — return $-prefixed unchanged. Cache by
         // (0, bare_name) to amortize the alloc_str call across
@@ -362,6 +418,13 @@ where
     while let Some(work) = work_stack.pop() {
         match work {
             FreshenWork::Process(val) => {
+                // Structural sharing: subtrees with no variables cannot
+                // produce any rename, so the original pointer is identical
+                // to the rewritten result.
+                if !val.has_variables_fast() {
+                    result_stack.push(val.clone());
+                    continue;
+                }
                 if let Some(name) = val.as_atom() {
                     // `$_` is a wildcard, not a variable — each occurrence
                     // matches independently and never binds. Passing it

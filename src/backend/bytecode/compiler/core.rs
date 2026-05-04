@@ -863,14 +863,20 @@ where
             "add-atom" => {
                 self.check_arity("add-atom", args.len(), 2)?;
                 self.compile(&args[0])?;
-                self.compile(&args[1])?;
+                // MeTTa HE: add-atom's atom arg is unevaluated data. Compiling
+                // as a literal prevents sub-expressions like `(= lhs rhs)` from
+                // being re-fired as rule definitions (which would double-add
+                // the rule under bytecode + trampoline fallback).
+                self.compile_quoted(&args[1])?;
                 self.builder.emit(Opcode::SpaceAdd);
                 Ok(Some(()))
             }
             "remove-atom" => {
                 self.check_arity("remove-atom", args.len(), 2)?;
                 self.compile(&args[0])?;
-                self.compile(&args[1])?;
+                // MeTTa HE: remove-atom's atom arg is unevaluated data. See
+                // add-atom above for the rationale.
+                self.compile_quoted(&args[1])?;
                 self.builder.emit(Opcode::SpaceRemove);
                 Ok(Some(()))
             }
@@ -1480,8 +1486,8 @@ where
                 }
                 return Ok(());
             }
-            // Wildcard - just pop the value
-            if name == "_" {
+            // Wildcard - just pop the value (both `_` and `$_`)
+            if name == "_" || name == "$_" {
                 self.builder.emit(Opcode::Pop);
                 return Ok(());
             }

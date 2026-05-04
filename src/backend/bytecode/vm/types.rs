@@ -313,6 +313,25 @@ where
     /// split locals into `self.locals` — the parallel of how `base_ptr` isolates
     /// the operand portion of `value_stack` across calls.
     pub locals_base: usize,
+    /// Bug-fix 2026-05 (within-query cache leak): `self.locals.len()` AT
+    /// the moment this frame was pushed. When a `BoundValue` choice
+    /// point installed inside this frame backtracks via the
+    /// "pre-pop frame" path (`cp_install_coords_for_bound_value`), the
+    /// CP's `locals_height` must drop everything the callee added —
+    /// which is exactly this snapshot, NOT `self.locals.len()` at the
+    /// time the CP was installed (callee locals were added after frame
+    /// push). Without this, callee local slots survive backtrack and
+    /// pollute the outer chunk's local namespace.
+    pub caller_locals_len: usize,
+    /// Bug-fix 2026-05: `self.trail.len()` at frame push time. CP backtrack
+    /// past this frame must rewind the trail to here so all bindings
+    /// the callee made are undone — mirroring what `op_return`'s
+    /// composition of `frame.saved_bindings ∘ self.current_bindings`
+    /// would have done conceptually for non-conflicting bindings, but
+    /// for CP-on-backtrack we replace the inner with the per-alt's
+    /// own bindings, so the trail entries from inner execution are
+    /// stale.
+    pub caller_trail_len: usize,
 }
 
 /// Generic choice point for nondeterminism.

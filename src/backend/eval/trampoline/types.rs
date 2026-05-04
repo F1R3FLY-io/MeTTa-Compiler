@@ -237,16 +237,16 @@ pub enum Continuation {
         /// set without reading the thread-local.
         tracked_vars_hint: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>>,
         /// Span correlation ID for the current branch (format v2).
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         branch_span_id: u64,
         /// Start timestamp of the current branch (format v2).
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         branch_start_ns: u64,
         /// Index of the current branch (0-based).
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         branch_index: u32,
         /// Total number of nondeterministic branches.
-        #[cfg(feature = "eval-trace")]
+        #[cfg(feature = "trace")]
         total_branches: u32,
     },
 
@@ -1782,7 +1782,7 @@ impl Continuation {
     /// Return a stable static name for this continuation variant.
     /// Used by eval-trace binding-flow instrumentation to label
     /// `ContinuationEnter` / `Emit` events.
-    #[cfg(feature = "eval-trace")]
+    #[cfg(feature = "trace")]
     pub fn discriminant_name(&self) -> &'static str {
         match self {
             Self::Done => "Done",

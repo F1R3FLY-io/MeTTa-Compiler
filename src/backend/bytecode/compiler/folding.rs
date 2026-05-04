@@ -97,14 +97,19 @@ pub fn try_fold_binary_arith_values(
     b: &MettaValue,
 ) -> Option<MettaValue> {
     match (a.view(), b.view()) {
+        // Spec §13.2 + §C.7g: silent two's-complement wrap on overflow.
+        // The folder mirrors the VM and trampoline runtimes so a literal
+        // expression folded at compile time produces the same value as runtime.
+        // Division and modulo by zero return None (no fold; runtime raises
+        // DivisionByZero).
         (ValueView::Long(x), ValueView::Long(y)) => match op {
             "+" => Some(MettaValue::Long(x.wrapping_add(y))),
             "-" => Some(MettaValue::Long(x.wrapping_sub(y))),
             "*" => Some(MettaValue::Long(x.wrapping_mul(y))),
-            "/" if y != 0 => x.checked_div(y).map(MettaValue::Long),
-            "%" | "mod" if y != 0 => x.checked_rem(y).map(MettaValue::Long),
-            "pow" | "pow-math" if y >= 0 => x.checked_pow(y as u32).map(MettaValue::Long),
-            "floor-div" if y != 0 => Some(MettaValue::Long(x.div_euclid(y))),
+            "/" if y != 0 => Some(MettaValue::Long(x.wrapping_div(y))),
+            "%" | "mod" if y != 0 => Some(MettaValue::Long(x.wrapping_rem(y))),
+            "pow" | "pow-math" if y >= 0 => Some(MettaValue::Long(x.wrapping_pow(y as u32))),
+            "floor-div" if y != 0 => Some(MettaValue::Long(x.wrapping_div_euclid(y))),
             _ => None,
         },
         (ValueView::Float(x), ValueView::Float(y)) => match op {
@@ -144,23 +149,17 @@ pub fn try_fold_binary_arith_values(
     }
 }
 
-/// Try to fold a unary arithmetic operation at compile time
+/// Try to fold a unary arithmetic operation at compile time.
+///
+/// Spec §13.2: silent two's-complement wrap. abs(i64::MIN) wraps to i64::MIN;
+/// neg(i64::MIN) wraps to i64::MIN.
 pub fn try_fold_unary_arith(op: &str, a: &MettaValue) -> Option<MettaValue> {
     match a.view() {
-        ValueView::Long(x) => {
-            match op {
-                "abs" | "abs-math" => {
-                    // i64::MIN.abs() overflows - let runtime handle the error
-                    if x == i64::MIN {
-                        None
-                    } else {
-                        Some(MettaValue::Long(x.abs()))
-                    }
-                }
-                "neg" => Some(MettaValue::Long(-x)),
-                _ => None,
-            }
-        }
+        ValueView::Long(x) => match op {
+            "abs" | "abs-math" => Some(MettaValue::Long(x.wrapping_abs())),
+            "neg" => Some(MettaValue::Long(x.wrapping_neg())),
+            _ => None,
+        },
         ValueView::Float(x) => match op {
             "abs" | "abs-math" => Some(MettaValue::Float(x.abs())),
             "neg" => Some(MettaValue::Float(-x)),

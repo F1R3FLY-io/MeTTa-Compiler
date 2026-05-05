@@ -270,6 +270,13 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// time by checking the inferred RHS type. Functions with monadic
     /// effects must not be memoized — repeated calls must re-execute.
     pub has_monadic_effect: bool,
+    /// **H8 (2026-05-05)**: Whether this rule's RHS calls `(decons-atom ...)` on
+    /// a value that's the LHS first-arg variable. Such rules are structurally
+    /// guaranteed to produce empty results when the caller's first arg is `()`.
+    /// Set at rule insertion time. Filtered at `get_candidates_filtered` to
+    /// skip these rules when the caller's first arg is empty sexpr —
+    /// projected 78.7% wall savings on mmverify per Audit #7a.
+    pub requires_non_empty_first_arg: bool,
 }
 
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
@@ -794,6 +801,18 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         use crate::backend::models::gc_allocator::global_allocator;
         let interned: &'static str = global_allocator().alloc_str(head);
 
+        // H8 (2026-05-05): detect if the caller's first arg is empty `()`.
+        // If so, skip rules whose RHS unconditionally calls `(decons-atom $first-arg)`
+        // — those rules are structurally guaranteed to produce empty branches.
+        // Audit #7a projected 78.7% wall savings on mmverify by eliminating
+        // 1065/2013 wasted match-atom branches.
+        let first_arg_is_empty = expr
+            .as_sexpr()
+            .and_then(|items| items.get(1))
+            .and_then(|first_arg| first_arg.as_sexpr())
+            .map(|inner| inner.is_empty())
+            .unwrap_or(false);
+
         let mut result = SmallVec::new();
 
         if let Some(group) = self.by_head_arity.get(&(interned, arity)) {
@@ -806,12 +825,22 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                         continue;
                     }
                 }
+                // H8: skip empty-branch-guaranteed rules when first arg is `()`.
+                if first_arg_is_empty && entry.requires_non_empty_first_arg {
+                    continue;
+                }
                 result.push(entry);
             }
         }
 
         // Wildcard rules are always included — they're not in any group's disc tree
-        result.extend(self.wildcard.iter());
+        // (also skip empty-branch-guaranteed wildcard rules)
+        for entry in self.wildcard.iter() {
+            if first_arg_is_empty && entry.requires_non_empty_first_arg {
+                continue;
+            }
+            result.push(entry);
+        }
         result
     }
 
@@ -1790,6 +1819,51 @@ fn unfreshen_name(name: &str) -> Option<String> {
     Some(out)
 }
 
+/// H8 (2026-05-05): Detect whether a rule body would produce only empty
+/// branches when invoked with an empty-sexpr first argument.
+///
+/// Returns `true` if the LHS's first arg is a variable AND the RHS contains
+/// `(decons-atom ...)` anywhere. Such rules iterate over a list-shape input
+/// via decons-atom; when the input is `()`, decons-atom returns 0 results
+/// and the chain produces `(empty)` — wasted work.
+///
+/// Used by `get_candidates_filtered` to elide structurally-empty branches
+/// at dispatch time. Audit #7a: 1065/2013 (53%) of mmverify's match-atom
+/// fork:3 branches are structurally empty without this filter.
+pub(crate) fn rule_requires_non_empty_first_arg<V: MettaValueTrait>(lhs: &V, rhs: &V) -> bool {
+    let lhs_items = match lhs.as_sexpr() {
+        Some(items) if items.len() >= 2 => items,
+        _ => return false,
+    };
+    // First arg must be a variable for this rule to fire on empty `()`.
+    let first_arg_is_var = lhs_items[1]
+        .as_atom()
+        .map(|s| s.starts_with('$'))
+        .unwrap_or(false);
+    if !first_arg_is_var {
+        return false;
+    }
+    fn rhs_uses_decons_atom<V: MettaValueTrait>(v: &V, depth: u32) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        if let Some(items) = v.as_sexpr() {
+            if let Some(head) = items.first().and_then(|h| h.as_atom()) {
+                if head == "decons-atom" {
+                    return true;
+                }
+            }
+            for item in items {
+                if rhs_uses_decons_atom(item, depth - 1) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    rhs_uses_decons_atom(rhs, 16)
+}
+
 /// PLN-fix 2026-04: Detect whether a type expression contains any freshened
 /// variable (atom name starting with `$__fr_`). Used by `run_type_fixpoint`
 /// (and any other type-registry update site) to gate `register_inferred_type`
@@ -2386,6 +2460,8 @@ where
                 let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
                     t.is_monadic_type() || t.is_arrow_returning_monadic()
                 });
+                // H8: detect rules whose RHS does (decons-atom $first-arg-var).
+                let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
                     rhs_has_variables: rhs.contains_variables(),
@@ -2403,6 +2479,7 @@ where
                     global_rule_index: 0, // Assigned by RuleIndex::add_rule
                     compiled_rhs,
                     has_monadic_effect,
+                    requires_non_empty_first_arg,
                 };
                 // Phase 4a: Pre-seed tiered cache so first RHS evaluation
                 // immediately triggers bytecode compilation (no warmup delay)
@@ -2480,6 +2557,7 @@ where
             let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
                 t.is_monadic_type() || t.is_arrow_returning_monadic()
             });
+            let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
             let entry = RuleEntry {
                 lhs: lhs.clone(),
                 rhs_has_variables: rhs.contains_variables(),
@@ -2497,6 +2575,7 @@ where
                 global_rule_index: 0, // Assigned by RuleIndex::add_rule
                 compiled_rhs,
                 has_monadic_effect,
+                requires_non_empty_first_arg,
             };
             // Phase 4a: Pre-seed tiered cache for wide MORK path
             crate::backend::bytecode::tiered_cache::global_tiered_cache()
@@ -4301,6 +4380,7 @@ impl MettaEnvironment {
                         let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
                             t.is_monadic_type() || t.is_arrow_returning_monadic()
                         });
+                        let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
                         let entry = RuleEntry {
                             lhs: lhs.clone(),
                             rhs_has_variables: rhs.contains_variables(),
@@ -4318,6 +4398,7 @@ impl MettaEnvironment {
                             global_rule_index: 0, // Assigned by RuleIndex::add_rule
                             compiled_rhs,
                             has_monadic_effect,
+                            requires_non_empty_first_arg,
                         };
 
                         // Phase 4a: Pre-seed tiered cache for bulk path

@@ -37,27 +37,32 @@ where
         if !elements.is_empty() {
             return vec![elements[0].clone()];
         }
-        // Empty sexpr — nondeterministic failure (branch pruning).
-        // When both a base-case rule (fn () ...) and a general-case rule (fn $x ...)
-        // match (), the general case calls car-atom on (). Returning empty prunes this
-        // branch, leaving only the base-case result. Matches decons-atom's semantics.
-        return vec![];
+        // H3 (2026-05-05) hard-cut: empty sexpr → HE-bisimilar Error atom.
+        // Per HE stdlib.metta:570-579, car-atom desugars to chain+decons+unify
+        // and the unify-failure branch produces:
+        //   (Error (car-atom $atom) "car-atom expects a non-empty expression as an argument")
+        return vec![factory.error(
+            "car-atom expects a non-empty expression as an argument",
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
-    // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
-    if expr.is_quoted() {
-        return vec![factory.atom("quote")];
-    }
+    // H3 hard-cut: quoted-transparency extension removed (not in HE).
+    // Quoted args fall through to the same Error path as non-expressions.
 
     if expr.is_unit() {
-        // Unit — nondeterministic failure (same rationale as empty sexpr above)
-        return vec![];
+        // H3 hard-cut: Unit treated identically to empty sexpr.
+        return vec![factory.error(
+            "car-atom expects a non-empty expression as an argument",
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
-    // Not an expression
+    // Not an expression — same HE Error message for all non-expr inputs
+    // (consistency with empty/Unit per HE's chain-desugar semantics).
     vec![factory.error(
-        "car-atom: expected expression. Usage: (car-atom expr)",
-        expr.clone(),
+        "car-atom expects a non-empty expression as an argument",
+        factory.sexpr(items.to_vec()),
     )]
 }
 
@@ -85,25 +90,27 @@ where
             let tail: Vec<V> = elements[1..].to_vec();
             return vec![factory.sexpr(tail)];
         }
-        // Empty sexpr — nondeterministic failure (branch pruning).
-        // See car-atom rationale above.
-        return vec![];
+        // H3 (2026-05-05) hard-cut: empty sexpr → HE-bisimilar Error atom.
+        // Per HE stdlib.metta:587-590.
+        return vec![factory.error(
+            "cdr-atom expects a non-empty expression as an argument",
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
-    // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
-    if let Some(inner) = expr.as_quoted() {
-        return vec![factory.sexpr(vec![inner])];
-    }
+    // H3 hard-cut: quoted-transparency extension removed (not in HE).
 
     if expr.is_unit() {
-        // Unit — nondeterministic failure (same rationale as empty sexpr above)
-        return vec![];
+        return vec![factory.error(
+            "cdr-atom expects a non-empty expression as an argument",
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
-    // Not an expression
+    // Not an expression — same HE Error message
     vec![factory.error(
-        "cdr-atom: expected expression. Usage: (cdr-atom expr)",
-        expr.clone(),
+        "cdr-atom expects a non-empty expression as an argument",
+        factory.sexpr(items.to_vec()),
     )]
 }
 
@@ -169,19 +176,28 @@ where
             let tail = factory.sexpr(elements[1..].to_vec());
             return vec![factory.sexpr(vec![head, tail])];
         }
-        // Empty sexpr - nondeterministic failure (return nothing)
-        return vec![];
+        // H3 (2026-05-05) hard-cut: empty sexpr → HE-bisimilar Error atom.
+        // Per HE interpreter.rs:843-856 `decons_atom`: arg must be a
+        // non-empty Expression; otherwise emit:
+        //   (Error <call> "expected: (decons-atom (: <expr> Expression)), found: <call>")
+        return vec![factory.error(
+            "expected: (decons-atom (: <expr> Expression)), found: empty expression",
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
-    if expr.is_unit() || expr.is_unit() {
-        // Empty/Unit - nondeterministic failure (return nothing)
-        return vec![];
+    if expr.is_unit() {
+        // H3 hard-cut: Unit treated identically to empty sexpr.
+        return vec![factory.error(
+            "expected: (decons-atom (: <expr> Expression)), found: Unit",
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
-    // Not an expression
+    // Not an expression — HE-bisimilar Error.
     vec![factory.error(
-        "decons-atom: expected expression. Usage: (decons-atom expr)",
-        expr.clone(),
+        "expected: (decons-atom (: <expr> Expression)), found: non-expression",
+        factory.sexpr(items.to_vec()),
     )]
 }
 

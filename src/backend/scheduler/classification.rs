@@ -84,6 +84,46 @@ fn is_known_head(head: &str) -> bool {
     is_pure_head(head) || is_impure_head(head) || is_arithmetic_head(head)
 }
 
+/// **H2 (2026-05-05)**: Detect whether a body expression transitively contains
+/// any side-effecting head, for branch-serialization decisions at parallel
+/// dispatch gates.
+///
+/// Returns `true` if the body — walked to `max_depth` (default 8) — contains
+/// any S-expression whose head is in `IMPURE_HEADS` (`add-atom`, `remove-atom`,
+/// `change-state!`, `bind!`, `import!`, `pragma!`, `println!`, etc.).
+///
+/// Optimistic: only returns `true` when the walk PROVES impurity by finding
+/// an `IMPURE_HEADS` symbol. Unknown user-defined heads are treated as pure
+/// (false negative is acceptable for performance; mmverify's
+/// `assign_f_hyp_to_var` body is `(unify ... (let () (remove-atom &kb ...) ...))`
+/// which the walker DOES find at depth ≥ 3).
+///
+/// PLN/Robot pure-functional rule bodies (no `add-atom`/`remove-atom` in their
+/// transitive call structure) remain parallel-eligible. Bodies that do
+/// transitively call IMPURE_HEADS within `max_depth` levels become serial,
+/// preserving HE bisimilarity per spec §5.6.1 [N, sub-profile ST].
+///
+/// Used by the 3 parallel-dispatch gates in `eval_loop.rs` (rule-match,
+/// ProcessLet body dispatch, StartAmb/superpose).
+pub fn body_contains_impure(body: &MettaValue, max_depth: u32) -> bool {
+    if max_depth == 0 {
+        return false;
+    }
+    if let Some(items) = body.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            if is_impure_head(head) {
+                return true;
+            }
+        }
+        for child in items {
+            if body_contains_impure(child, max_depth - 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Recursively check if an expression's children contain calls to unknown
 /// user-defined functions (heads not in any known-head list). Bounded to
 /// `max_depth` levels to prevent O(n) blowup on deep expressions.

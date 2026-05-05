@@ -714,10 +714,18 @@ fn dispatch_rule_matches<C: EvalContext>(
 
     let wfst_allows_parallel = if matches.len() >= min_parallel_branches() {
         let scheduler = crate::backend::scheduler::global_scheduler();
-        matches.iter().any(|(rhs, _)| {
+        let degree_ok = matches.iter().any(|(rhs, _)| {
             let (_, action) = scheduler.classify_and_transduce(rhs);
             action.parallelism_degree > 1
-        })
+        });
+        // H2 (2026-05-05): branch-purity gate per spec §5.6.1 [N, sub-profile ST].
+        // Side-effecting branches (containing add-atom/remove-atom/change-state!/
+        // bind!/...) must serialize to preserve HE branch-ordering semantics.
+        // mmverify's filter'/assign_f_hyp_to_var race demonstrated the corruption.
+        let all_pure = matches.iter().all(|(rhs, _)| {
+            !crate::backend::scheduler::classification::body_contains_impure(rhs, 8)
+        });
+        degree_ok && all_pure
     } else {
         false
     };
@@ -3841,10 +3849,15 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // justify the dispatch overhead.
                             let wfst_allows = if alternatives.len() >= 2 {
                                 let scheduler = crate::backend::scheduler::global_scheduler();
-                                alternatives.iter().any(|alt| {
+                                let degree_ok = alternatives.iter().any(|alt| {
                                     let (_, action) = scheduler.classify_and_transduce(alt);
                                     action.parallelism_degree > 1
-                                })
+                                });
+                                // H2: branch-purity gate (spec §5.6.1).
+                                let all_pure = alternatives.iter().all(|alt| {
+                                    !crate::backend::scheduler::classification::body_contains_impure(alt, 8)
+                                });
+                                degree_ok && all_pure
                             } else {
                                 false
                             };
@@ -6450,10 +6463,15 @@ fn process_continuation<C: EvalContext>(
                     let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
                     let wfst_allows_match = if instantiated_bodies.len() >= 2 {
                         let scheduler = crate::backend::scheduler::global_scheduler();
-                        instantiated_bodies.iter().any(|body| {
+                        let degree_ok = instantiated_bodies.iter().any(|body| {
                             let (_, action) = scheduler.classify_and_transduce(body);
                             action.parallelism_degree > 1
-                        })
+                        });
+                        // H2: branch-purity gate (spec §5.6.1).
+                        let all_pure = instantiated_bodies.iter().all(|body| {
+                            !crate::backend::scheduler::classification::body_contains_impure(body, 8)
+                        });
+                        degree_ok && all_pure
                     } else {
                         false
                     };

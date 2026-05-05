@@ -188,99 +188,46 @@ pub fn compile_comparison_op<'a, 'b>(
         }
 
         Opcode::Eq => {
-            // Equality uses bit-level identity check as fast-path, then
-            // runtime numeric_eq for cross-type comparison (e.g., Long(2) == Float(2.0))
+            // H4 (2026-05-05) hard-cut: removed raw-bit-eq fast-path.
+            // The fast-true on `a == b` (raw bit equality) leaks NaN-equals-itself:
+            // identical NaN bit patterns would short-circuit to true even though
+            // IEEE 754 says NaN != NaN. The runtime `numeric_eq` (now strict) does
+            // the right thing including NaN handling. The only potential cost is
+            // skipping the fast-path for atom-identity equality, but
+            // `numeric_eq`'s structural match already short-circuits at the
+            // `inner_ptr` level for identical heap pointers.
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            // Fast path: identical NaN-boxed bits → definitely equal
-            let raw_eq = codegen.builder.ins().icmp(IntCC::Equal, a, b);
-
-            let fast_true = codegen.builder.create_block();
-            let slow_check = codegen.builder.create_block();
-            let merge_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .append_block_param(merge_block, types::I64);
-
-            codegen
-                .builder
-                .ins()
-                .brif(raw_eq, fast_true, &[], slow_check, &[]);
-
-            // === Fast true ===
-            codegen.builder.switch_to_block(fast_true);
-            let true_val = codegen.builder.ins().iconst(types::I64, 1);
-            let boxed_true = codegen.box_bool(true_val);
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(boxed_true)]);
-
-            // === Slow check (runtime numeric_eq) ===
-            codegen.builder.switch_to_block(slow_check);
             let func_ref = ctx
                 .module
                 .declare_func_in_func(ctx.numeric_eq_func_id, codegen.builder.func);
             let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
-            let rt_result = codegen.builder.inst_results(call_inst)[0];
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(rt_result)]);
-
-            // === Merge ===
-            codegen.builder.switch_to_block(merge_block);
-            codegen.builder.seal_block(fast_true);
-            codegen.builder.seal_block(slow_check);
-            codegen.builder.seal_block(merge_block);
-
-            let result = codegen.builder.block_params(merge_block)[0];
+            let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
             Ok(())
         }
 
         Opcode::Ne => {
-            // Ne: bit-level identity check → definitely not-equal is false.
-            // Otherwise call runtime numeric_eq and negate.
+            // H4 hard-cut: removed raw-bit-eq fast-false. Same NaN reasoning
+            // as Eq above. Call runtime numeric_eq and negate.
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            let raw_eq = codegen.builder.ins().icmp(IntCC::Equal, a, b);
-
-            let fast_false = codegen.builder.create_block();
-            let slow_check = codegen.builder.create_block();
-            let merge_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .append_block_param(merge_block, types::I64);
-
-            codegen
-                .builder
-                .ins()
-                .brif(raw_eq, fast_false, &[], slow_check, &[]);
-
-            // === Fast false (same bits → equal → != is false) ===
-            codegen.builder.switch_to_block(fast_false);
-            let false_val = codegen.builder.ins().iconst(types::I64, 0);
-            let boxed_false = codegen.box_bool(false_val);
-            codegen
-                .builder
-                .ins()
-                .jump(merge_block, &[BlockArg::Value(boxed_false)]);
-
-            // === Slow check ===
-            codegen.builder.switch_to_block(slow_check);
             let func_ref = ctx
                 .module
                 .declare_func_in_func(ctx.numeric_eq_func_id, codegen.builder.func);
             let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
             let eq_result = codegen.builder.inst_results(call_inst)[0];
-            // Negate: extract bool, xor with 1, rebox
             let eq_bool = codegen.extract_bool(eq_result);
             let one = codegen.builder.ins().iconst(types::I64, 1);
             let neq_bool = codegen.builder.ins().bxor(eq_bool, one);
             let boxed_neq = codegen.box_bool(neq_bool);
+            // Use the merge_block-style return for consistency with prior code.
+            let merge_block = codegen.builder.create_block();
+            codegen
+                .builder
+                .append_block_param(merge_block, types::I64);
             codegen
                 .builder
                 .ins()
@@ -288,8 +235,6 @@ pub fn compile_comparison_op<'a, 'b>(
 
             // === Merge ===
             codegen.builder.switch_to_block(merge_block);
-            codegen.builder.seal_block(fast_false);
-            codegen.builder.seal_block(slow_check);
             codegen.builder.seal_block(merge_block);
 
             let result = codegen.builder.block_params(merge_block)[0];

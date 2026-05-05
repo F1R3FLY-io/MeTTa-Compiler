@@ -95,7 +95,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AddOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::NoReduce)
+                                return GroundedWork::Error(ExecError::IncorrectArgument("+ requires Number arguments".to_string()))
                             }
                         }
                     }
@@ -209,7 +209,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SubOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::NoReduce)
+                                return GroundedWork::Error(ExecError::IncorrectArgument("- requires Number arguments".to_string()))
                             }
                         }
                     }
@@ -289,7 +289,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for MulOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::NoReduce)
+                                return GroundedWork::Error(ExecError::IncorrectArgument("* requires Number arguments".to_string()))
                             }
                         }
                     }
@@ -380,7 +380,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for DivOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::NoReduce)
+                                return GroundedWork::Error(ExecError::IncorrectArgument("/ requires Number arguments".to_string()))
                             }
                         }
                     }
@@ -470,7 +470,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ModOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::NoReduce)
+                                return GroundedWork::Error(ExecError::IncorrectArgument("% requires Number arguments".to_string()))
                             }
                         }
                     }

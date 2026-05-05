@@ -401,33 +401,34 @@ mod tests {
     }
 
     #[test]
-    fn mul_type_mismatch_returns_unreduced() {
-        // MeTTa HE semantics: type mismatch returns unreduced expression, not error
+    fn mul_type_mismatch_returns_error() {
+        // H5 (2026-05-05) hard-cut: spec §13.2 line 43-44 — non-Number arg
+        // returns (Error msg IncorrectArgument). Previously this produced
+        // an unreduced sexpr (NoReduce); the trampoline now wraps the
+        // ExecError::IncorrectArgument as a MeTTa Error atom for
+        // debuggability (user-authorized hard-cut).
         let results = run_eval("!(* True 5)");
         assert!(!results.is_empty(), "Type mismatch should return a result");
-        assert!(!results[0].contains("Error"),
-            "Type mismatch should return unreduced expression, not error. Got: {}", results[0]);
-        assert!(results[0].contains("*"), "Should contain the operator");
+        assert!(results[0].contains("Error") && results[0].contains("IncorrectArgument"),
+            "Type mismatch should return (Error _ IncorrectArgument). Got: {}", results[0]);
     }
 
     #[test]
-    fn sub_type_mismatch_returns_unreduced() {
-        // MeTTa HE semantics: type mismatch returns unreduced expression, not error
+    fn sub_type_mismatch_returns_error() {
+        // H5 (2026-05-05) hard-cut: see mul_type_mismatch_returns_error.
         let results = run_eval("!(- \"hello\" 2)");
         assert!(!results.is_empty(), "Type mismatch should return a result");
-        assert!(!results[0].contains("Error"),
-            "Type mismatch should return unreduced expression, not error. Got: {}", results[0]);
-        assert!(results[0].contains("-"), "Should contain the operator");
+        assert!(results[0].contains("Error") && results[0].contains("IncorrectArgument"),
+            "Type mismatch should return (Error _ IncorrectArgument). Got: {}", results[0]);
     }
 
     #[test]
-    fn div_type_mismatch_returns_unreduced() {
-        // MeTTa HE semantics: type mismatch returns unreduced expression, not error
+    fn div_type_mismatch_returns_error() {
+        // H5 (2026-05-05) hard-cut: see mul_type_mismatch_returns_error.
         let results = run_eval("!(/ 10 \"x\")");
         assert!(!results.is_empty(), "Type mismatch should return a result");
-        assert!(!results[0].contains("Error"),
-            "Type mismatch should return unreduced expression, not error. Got: {}", results[0]);
-        assert!(results[0].contains("/"), "Should contain the operator");
+        assert!(results[0].contains("Error") && results[0].contains("IncorrectArgument"),
+            "Type mismatch should return (Error _ IncorrectArgument). Got: {}", results[0]);
     }
 
     #[test]

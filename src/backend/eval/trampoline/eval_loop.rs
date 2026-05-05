@@ -3035,7 +3035,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             let error_value = match e {
                                                 ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
                                                 ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                                                ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
+                                                ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("IncorrectArgument")),
                                                 ExecError::NoReduce => unreachable!(),
                                             };
                                             work_stack.push(WorkItem::Resume {
@@ -5887,7 +5887,7 @@ fn process_continuation<C: EvalContext>(
                                 let error_value = match e {
                                     ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
                                     ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                                    ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
+                                    ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("IncorrectArgument")),
                                     ExecError::NoReduce => unreachable!(),
                                 };
                                 work_stack.push(WorkItem::Resume {
@@ -6030,7 +6030,7 @@ fn process_continuation<C: EvalContext>(
                                     let error_value = match e {
                                         ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
                                         ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                                        ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArityError")),
+                                        ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("IncorrectArgument")),
                                         ExecError::NoReduce => unreachable!(),
                                     };
                                     work_stack.push(WorkItem::Resume {

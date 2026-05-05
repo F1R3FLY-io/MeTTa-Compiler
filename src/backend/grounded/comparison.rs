@@ -202,7 +202,11 @@ where
                             if a.is_empty() || b.is_empty() {
                                 continue;
                             }
-                            return GroundedWork::Error(ExecError::NoReduce)
+                            // H5 (2026-05-05): spec §13.3 line 124-125 — non-Number arg
+                            // returns IncorrectArgument (HE's `def_binary_number_op`).
+                            return GroundedWork::Error(ExecError::IncorrectArgument(
+                                format!("{} requires Number arguments", op_name),
+                            ));
                         }
                     }
                 }

@@ -1444,46 +1444,51 @@ where
                 self.push(self.make_bool(is_symbol));
             }
             Opcode::GetHead => {
+                // H3 (2026-05-05) hard-cut: empty/non-expr → push HE Error atom,
+                // do NOT halt VM. Quoted-transparency extension removed.
                 let a = self.pop()?;
                 if let Some(items) = a.as_sexpr() {
                     if let Some(first) = items.first() {
                         self.push(first.clone());
                     } else {
-                        return Err(VmError::TypeError {
-                            expected: "non-empty S-expression",
-                            got: "other",
-                        });
+                        let call = self.make_sexpr(vec![self.make_atom("car-atom"), a.clone()]);
+                        let err = self.make_error(
+                            "car-atom expects a non-empty expression as an argument",
+                            call,
+                        );
+                        self.push(err);
                     }
-                } else if a.is_quoted() {
-                    // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
-                    self.push(self.make_atom("quote"));
                 } else {
-                    return Err(VmError::TypeError {
-                        expected: "non-empty S-expression",
-                        got: "other",
-                    });
+                    let call = self.make_sexpr(vec![self.make_atom("car-atom"), a.clone()]);
+                    let err = self.make_error(
+                        "car-atom expects a non-empty expression as an argument",
+                        call,
+                    );
+                    self.push(err);
                 }
             }
             Opcode::GetTail => {
+                // H3 hard-cut: same shape as GetHead.
                 let a = self.pop()?;
                 if let Some(items) = a.as_sexpr() {
                     if !items.is_empty() {
                         let tail: Vec<V> = items[1..].to_vec();
                         self.push(self.make_sexpr(tail));
                     } else {
-                        return Err(VmError::TypeError {
-                            expected: "non-empty S-expression",
-                            got: "other",
-                        });
+                        let call = self.make_sexpr(vec![self.make_atom("cdr-atom"), a.clone()]);
+                        let err = self.make_error(
+                            "cdr-atom expects a non-empty expression as an argument",
+                            call,
+                        );
+                        self.push(err);
                     }
-                } else if let Some(inner) = a.as_quoted() {
-                    // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
-                    self.push(self.make_sexpr(vec![inner]));
                 } else {
-                    return Err(VmError::TypeError {
-                        expected: "non-empty S-expression",
-                        got: "other",
-                    });
+                    let call = self.make_sexpr(vec![self.make_atom("cdr-atom"), a.clone()]);
+                    let err = self.make_error(
+                        "cdr-atom expects a non-empty expression as an argument",
+                        call,
+                    );
+                    self.push(err);
                 }
             }
             Opcode::StructuralHead => {
@@ -2564,25 +2569,23 @@ where
     }
 
     fn op_decons_atom(&mut self) -> VmResult<()> {
+        // H3 (2026-05-05) hard-cut: empty/non-expr → push HE Error atom,
+        // do NOT halt VM.
         let value = self.pop()?;
         if let Some(items) = value.as_sexpr() {
-            if items.is_empty() {
-                return Err(VmError::TypeError {
-                    expected: "non-empty S-expression",
-                    got: "empty or non-expression",
-                });
+            if !items.is_empty() {
+                let head = items[0].clone();
+                let tail = self.make_sexpr(items[1..].to_vec());
+                self.push(self.factory.sexpr(vec![head, tail]));
+                return Ok(());
             }
-            let head = items[0].clone();
-            let tail = self.make_sexpr(items[1..].to_vec());
-            // Return (head tail) pair as S-expression
-            self.push(self.factory.sexpr(vec![head, tail]));
-        } else {
-            // Empty or non-expression: nondeterministic failure
-            return Err(VmError::TypeError {
-                expected: "non-empty S-expression",
-                got: "empty or non-expression",
-            });
         }
+        let call = self.make_sexpr(vec![self.make_atom("decons-atom"), value.clone()]);
+        let err = self.make_error(
+            "expected: (decons-atom (: <expr> Expression)), found: empty or non-expression",
+            call,
+        );
+        self.push(err);
         Ok(())
     }
 
@@ -6594,52 +6597,39 @@ where
     /// pre-evaluated) value, push the head onto the VM stack. Mirrors the
     /// `GetHead` arm at line 1345 of `step` and the quoted-transparency case.
     fn push_head_of(&mut self, a: V) -> VmResult<()> {
+        // H3 (2026-05-05) hard-cut: empty/non-expr → push HE Error,
+        // do NOT halt VM. Quoted-transparency extension removed.
         if let Some(items) = a.as_sexpr() {
             if let Some(first) = items.first() {
                 self.push(first.clone());
-                Ok(())
-            } else {
-                Err(VmError::TypeError {
-                    expected: "non-empty S-expression",
-                    got: "other",
-                })
+                return Ok(());
             }
-        } else if a.is_quoted() {
-            // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
-            self.push(self.make_atom("quote"));
-            Ok(())
-        } else {
-            Err(VmError::TypeError {
-                expected: "non-empty S-expression",
-                got: "other",
-            })
         }
+        let call = self.make_sexpr(vec![self.make_atom("car-atom"), a.clone()]);
+        let err = self.make_error(
+            "car-atom expects a non-empty expression as an argument",
+            call,
+        );
+        self.push(err);
+        Ok(())
     }
 
-    /// Shared implementation of `cdr-atom` semantics. Mirrors the `GetTail`
-    /// arm at line 1366 of `step` including quoted-transparency.
+    /// Shared implementation of `cdr-atom` semantics. H3 hard-cut: same shape.
     fn push_tail_of(&mut self, a: V) -> VmResult<()> {
         if let Some(items) = a.as_sexpr() {
             if !items.is_empty() {
                 let tail: Vec<V> = items[1..].to_vec();
                 self.push(self.make_sexpr(tail));
-                Ok(())
-            } else {
-                Err(VmError::TypeError {
-                    expected: "non-empty S-expression",
-                    got: "other",
-                })
+                return Ok(());
             }
-        } else if let Some(inner) = a.as_quoted() {
-            // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
-            self.push(self.make_sexpr(vec![inner]));
-            Ok(())
-        } else {
-            Err(VmError::TypeError {
-                expected: "non-empty S-expression",
-                got: "other",
-            })
         }
+        let call = self.make_sexpr(vec![self.make_atom("cdr-atom"), a.clone()]);
+        let err = self.make_error(
+            "cdr-atom expects a non-empty expression as an argument",
+            call,
+        );
+        self.push(err);
+        Ok(())
     }
 
     /// Evaluate a sub-expression using the full trampoline evaluator.

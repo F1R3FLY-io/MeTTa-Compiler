@@ -3286,7 +3286,7 @@ fn test_vm_xor_non_bool() {
 
 #[test]
 fn test_vm_get_head_empty_sexpr() {
-    // GetHead on empty S-expr should fail
+    // H3 hard-cut: GetHead on empty S-expr now produces Error atom on stack.
     let mut builder = ChunkBuilder::new("test");
     builder.emit(Opcode::PushEmpty);
     builder.emit(Opcode::GetHead);
@@ -3294,15 +3294,14 @@ fn test_vm_get_head_empty_sexpr() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    // Empty S-expr has no head
-    assert!(result.is_err());
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 #[test]
 fn test_vm_get_head_non_sexpr() {
-    // GetHead on non-S-expr should fail
+    // H3 hard-cut: GetHead on non-S-expr now produces Error atom on stack.
     let mut builder = ChunkBuilder::new("test");
     builder.emit_byte(Opcode::PushLongSmall, 42);
     builder.emit(Opcode::GetHead);
@@ -3310,14 +3309,14 @@ fn test_vm_get_head_non_sexpr() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(matches!(result, Err(VmError::TypeError { .. })));
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 #[test]
 fn test_vm_get_tail_non_sexpr() {
-    // GetTail on non-S-expr should fail
+    // H3 hard-cut: GetTail on non-S-expr now produces Error atom on stack.
     let mut builder = ChunkBuilder::new("test");
     builder.emit(Opcode::PushTrue);
     builder.emit(Opcode::GetTail);
@@ -3325,9 +3324,9 @@ fn test_vm_get_tail_non_sexpr() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(matches!(result, Err(VmError::TypeError { .. })));
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 #[test]
@@ -3939,7 +3938,7 @@ fn test_vm_guard_type_error() {
 
 #[test]
 fn test_vm_get_head_empty_phase3d() {
-    // GetHead on empty S-expression
+    // H3 hard-cut: GetHead on empty S-expr → Error atom on stack.
     let mut builder = ChunkBuilder::new("test");
     let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
@@ -3948,16 +3947,16 @@ fn test_vm_get_head_empty_phase3d() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(matches!(result, Err(VmError::TypeError { .. })));
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 // Note: test_vm_get_head_non_sexpr already exists at line 3437
 
 #[test]
 fn test_vm_get_tail_empty_phase3d() {
-    // GetTail on empty S-expression
+    // H3 hard-cut: GetTail on empty S-expr → Error atom on stack.
     let mut builder = ChunkBuilder::new("test");
     let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
@@ -3966,9 +3965,9 @@ fn test_vm_get_tail_empty_phase3d() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(matches!(result, Err(VmError::TypeError { .. })));
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 // Note: test_vm_get_tail_non_sexpr already exists at line 3452
@@ -4128,7 +4127,7 @@ fn test_vm_max_atom_no_numbers() {
 
 #[test]
 fn test_vm_decons_atom_empty_phase3d() {
-    // DeconsAtom on empty S-expression
+    // H3 hard-cut: DeconsAtom on empty S-expr → Error atom on stack.
     let mut builder = ChunkBuilder::new("test");
     let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
@@ -4137,14 +4136,14 @@ fn test_vm_decons_atom_empty_phase3d() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(matches!(result, Err(VmError::TypeError { .. })));
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 #[test]
 fn test_vm_decons_atom_non_sexpr() {
-    // DeconsAtom on non-S-expression
+    // H3 hard-cut: DeconsAtom on non-S-expr → Error atom on stack.
     let mut builder = ChunkBuilder::new("test");
     builder.emit_byte(Opcode::PushLongSmall, 42);
     builder.emit(Opcode::DeconsAtom);
@@ -4152,9 +4151,9 @@ fn test_vm_decons_atom_non_sexpr() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(matches!(result, Err(VmError::TypeError { .. })));
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 // --- Arithmetic Edge Cases (MeTTa spec §13.2 + §C.7g: silent wrap) ---
@@ -5910,7 +5909,7 @@ fn test_vm_begin_end_nondet() {
 // Phase 5A: VM Core Operations - Expression Ops Tests
 // =============================================================================
 
-/// Test GetHead with empty S-expression fails.
+/// H3 hard-cut: GetHead with empty S-expr → Error atom on stack.
 #[test]
 fn test_vm_get_head_empty() {
     let mut builder = ChunkBuilder::new("test_get_head_empty");
@@ -5922,14 +5921,12 @@ fn test_vm_get_head_empty() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(err, VmError::TypeError { expected: "non-empty S-expression", .. }));
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
-/// Test GetHead with non-S-expression fails.
+/// H3 hard-cut: GetHead with non-S-expr → Error atom on stack.
 #[test]
 fn test_vm_get_head_non_sexpr_5a() {
     let mut builder = ChunkBuilder::new("test_get_head_non_sexpr");
@@ -5940,12 +5937,12 @@ fn test_vm_get_head_non_sexpr_5a() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(result.is_err());
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
-/// Test GetTail with empty S-expression fails.
+/// H3 hard-cut: GetTail with empty S-expr → Error atom on stack.
 #[test]
 fn test_vm_get_tail_empty() {
     let mut builder = ChunkBuilder::new("test_get_tail_empty");
@@ -5957,9 +5954,9 @@ fn test_vm_get_tail_empty() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(result.is_err());
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 /// Test GetTail returns rest of S-expression.
@@ -6063,7 +6060,7 @@ fn test_vm_decons_atom_success() {
     }
 }
 
-/// Test DeconsAtom with empty S-expression fails.
+/// H3 hard-cut: DeconsAtom with empty S-expr → Error atom on stack.
 #[test]
 fn test_vm_decons_atom_empty() {
     let mut builder = ChunkBuilder::new("test_decons_atom_empty");
@@ -6075,9 +6072,9 @@ fn test_vm_decons_atom_empty() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
-
-    assert!(result.is_err());
+    let result = vm.run().expect("H3 hard-cut: VM should produce Error atom");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_error());
 }
 
 /// Test ConsAtom prepends to S-expression.

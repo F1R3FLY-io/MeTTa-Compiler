@@ -1547,8 +1547,11 @@ proptest! {
         builder.emit(Opcode::GetHead);
         builder.emit(Opcode::Return);
 
-        let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        // H3 hard-cut: Error atom on stack.
+        let result = BytecodeVM::new(builder.build_arc()).run()
+            .expect("H3 hard-cut: VM should produce Error atom");
+        prop_assert_eq!(result.len(), 1);
+        prop_assert!(result[0].is_error());
     }
 
     /// get-head on non-S-expression fails
@@ -1560,8 +1563,11 @@ proptest! {
         builder.emit(Opcode::GetHead);
         builder.emit(Opcode::Return);
 
-        let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        // H3 hard-cut: Error atom on stack.
+        let result = BytecodeVM::new(builder.build_arc()).run()
+            .expect("H3 hard-cut: VM should produce Error atom");
+        prop_assert_eq!(result.len(), 1);
+        prop_assert!(result[0].is_error());
     }
 
     /// get-tail on non-empty S-expression succeeds
@@ -1591,8 +1597,11 @@ proptest! {
         builder.emit(Opcode::GetTail);
         builder.emit(Opcode::Return);
 
-        let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        // H3 hard-cut: Error atom on stack.
+        let result = BytecodeVM::new(builder.build_arc()).run()
+            .expect("H3 hard-cut: VM should produce Error atom");
+        prop_assert_eq!(result.len(), 1);
+        prop_assert!(result[0].is_error());
     }
 
     /// get-arity on S-expression returns correct length
@@ -1695,8 +1704,11 @@ proptest! {
         builder.emit(Opcode::DeconsAtom);
         builder.emit(Opcode::Return);
 
-        let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        // H3 hard-cut: Error atom on stack.
+        let result = BytecodeVM::new(builder.build_arc()).run()
+            .expect("H3 hard-cut: VM should produce Error atom");
+        prop_assert_eq!(result.len(), 1);
+        prop_assert!(result[0].is_error());
     }
 }
 

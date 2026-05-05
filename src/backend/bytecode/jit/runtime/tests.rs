@@ -3879,8 +3879,10 @@ mod tests {
 
         let result = unsafe { jit_runtime_get_head(&mut ctx, val, 0) };
 
-        // Should return nil for empty S-expression
-        assert_eq!(result, TAG_UNIT);
+        // H3 hard-cut: empty S-expr → Error atom (heap-allocated), not TAG_UNIT.
+        assert_ne!(result, TAG_UNIT, "H3: empty sexpr should produce Error atom");
+        let jit_val = JitValue::from_raw(result);
+        assert!(jit_val.is_heap(), "Error atom should be heap-allocated");
     }
 
     #[test]

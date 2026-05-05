@@ -52,38 +52,44 @@ pub unsafe extern "C" fn jit_runtime_push_empty() -> u64 {
 /// The inner pointer must be valid if val is TAG_PTR.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
+    // H3 (2026-05-05) hard-cut: empty/non-expr → return HE-bisimilar Error atom
+    // (NaN-boxed). Quoted-transparency extension removed.
     let jit_val = JitValue::from_raw(val);
 
-    // Check if it's a heap pointer
+    fn make_car_error(input_metta: &MettaValue) -> u64 {
+        let call = MettaValue::SExpr(vec![
+            MettaValue::Atom("car-atom"),
+            input_metta.clone(),
+        ]);
+        let err = MettaValue::Error(
+            "car-atom expects a non-empty expression as an argument",
+            call,
+        );
+        metta_to_jit(&err).to_bits()
+    }
+
     if !jit_val.is_heap() {
-        return TAG_UNIT;
+        // Non-heap (Long/Bool/Float/Unit/Empty inline) — emit Error.
+        let metta_val = MettaValue::Unit(); // Placeholder — original not reconstructable.
+        return make_car_error(&metta_val);
     }
 
     let inner_ptr = jit_val.as_inner_ptr();
     if inner_ptr.is_null() {
-        return TAG_UNIT;
+        return make_car_error(&MettaValue::Unit());
     }
 
     let metta_val = MettaValue::from_inner(&*inner_ptr);
     match metta_val.view() {
         ValueView::SExpr(items) => {
             if items.is_empty() {
-                TAG_UNIT
+                make_car_error(&metta_val)
             } else {
-                // Return the head element
                 let head = &items[0];
                 value_to_jit_generic(head).to_bits()
             }
         }
-        // Quoted is transparent to car-atom: (car-atom (quote X)) → quote
-        ValueView::Quoted(_) => {
-            let quote_atom = MettaValue::Atom("quote".to_string());
-            metta_to_jit(&quote_atom).to_bits()
-        }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) => TAG_UNIT,
+        _ => make_car_error(&metta_val),
     }
 }
 
@@ -103,40 +109,43 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
 /// The inner pointer must be valid if val is TAG_PTR.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
+    // H3 (2026-05-05) hard-cut: empty sexpr / non-expr → HE Error atom.
+    // Quoted-transparency extension removed.
     let jit_val = JitValue::from_raw(val);
 
-    // Check if it's a heap pointer
+    fn make_cdr_error(input_metta: &MettaValue) -> u64 {
+        let call = MettaValue::SExpr(vec![
+            MettaValue::Atom("cdr-atom"),
+            input_metta.clone(),
+        ]);
+        let err = MettaValue::Error(
+            "cdr-atom expects a non-empty expression as an argument",
+            call,
+        );
+        metta_to_jit(&err).to_bits()
+    }
+
     if !jit_val.is_heap() {
-        // Return unit for non-heap values (SExpr(vec![]) → unit via factory)
-        return JitValue::unit().to_bits();
+        return make_cdr_error(&MettaValue::Unit());
     }
 
     let inner_ptr = jit_val.as_inner_ptr();
     if inner_ptr.is_null() {
-        return JitValue::unit().to_bits();
+        return make_cdr_error(&MettaValue::Unit());
     }
 
     let metta_val = MettaValue::from_inner(&*inner_ptr);
     match metta_val.view() {
         ValueView::SExpr(items) => {
-            // Return tail (skip first element)
-            let tail: Vec<MettaValue> = if items.len() > 1 {
-                items[1..].to_vec()
+            if items.is_empty() {
+                make_cdr_error(&metta_val)
             } else {
-                Vec::new()
-            };
-            let expr = MettaValue::SExpr(tail);
-            value_to_jit_generic(&expr).to_bits()
+                let tail: Vec<MettaValue> = items[1..].to_vec();
+                let expr = MettaValue::SExpr(tail);
+                value_to_jit_generic(&expr).to_bits()
+            }
         }
-        // Quoted is transparent to cdr-atom: (cdr-atom (quote X)) → (X)
-        ValueView::Quoted(inner) => {
-            let tail = MettaValue::SExpr(vec![inner]);
-            value_to_jit_generic(&tail).to_bits()
-        }
-        _ => {
-            // Return unit for non-SExpr values (SExpr(vec![]) → unit via factory)
-            JitValue::unit().to_bits()
-        }
+        _ => make_cdr_error(&metta_val),
     }
 }
 

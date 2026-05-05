@@ -47,6 +47,7 @@ mod massif_correlate;
 mod gdb_parser;
 mod gdb_correlate;
 mod bindings;
+mod closure;
 
 use clap::{Parser, Subcommand};
 
@@ -264,6 +265,19 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Built-in dependency closure: distinct head symbols invoked during
+    /// evaluation, categorized by dispatch kind (kernel-op / special-form /
+    /// pseudo-event / operator), with per-parent call-graph for spec auditing.
+    Closure {
+        /// Path to the trace file (.mtrace)
+        file: String,
+        /// Maximum number of entries to display
+        #[arg(long, default_value_t = 200)]
+        top_n: usize,
+        /// Render the per-parent call graph
+        #[arg(long)]
+        show_graph: bool,
+    },
 }
 
 fn main() {
@@ -315,6 +329,8 @@ fn main() {
             });
             bindings::run(&file, drops_only, var_filter, cont_filter, limit)
         }
+        Commands::Closure { file, top_n, show_graph } =>
+            closure::run(&file, top_n, show_graph),
     };
 
     if let Err(e) = result {

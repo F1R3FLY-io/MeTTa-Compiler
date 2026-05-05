@@ -2818,32 +2818,47 @@ pub fn active_evaluator_count() -> u32 {
     ACTIVE_EVALUATORS.load(Ordering::Acquire)
 }
 
-/// Lightweight RAII guard that keeps `ACTIVE_EVALUATORS > 0`, preventing
-/// session-release GC from running. Unlike `EvalGuard`, does NOT touch
-/// `EVAL_GUARD_DEPTH` (not an actual eval). Use this to protect result
-/// values between `eval()` returning and result formatting/consumption.
+/// Counter of session-release inhibitors held by the runtime.
+///
+/// **H10 dual-counter protocol**: This counter gates ONLY session-release GC,
+/// not mark-sweep collection. `GcHoldGuard` increments this counter (instead
+/// of `ACTIVE_EVALUATORS`) so that mark-sweep can fire during long top-level
+/// expressions while still protecting result values from session-release
+/// sweeps that would invalidate thread-local caches.
+///
+/// Read by `gc_pool::execute_session_release` to defer session sweeps.
+/// Mark-sweep paths (`maybe_quiescent_gc`, `safepoint_wait_for_quiescence`)
+/// do NOT consult this counter — they only check `ACTIVE_EVALUATORS`.
+pub(super) static SESSION_RELEASE_INHIBITORS: AtomicU32 = AtomicU32::new(0);
+
+/// Notified when `SESSION_RELEASE_INHIBITORS` transitions to 0.
+pub(super) static INHIBITOR_MUTEX: Mutex<()> = Mutex::new(());
+pub(super) static INHIBITOR_CONDVAR: Condvar = Condvar::new();
+
+/// Lightweight RAII guard that inhibits **session-release** GC, allowing
+/// mark-sweep collection to continue. Unlike `EvalGuard`, does NOT touch
+/// `EVAL_GUARD_DEPTH` (not an actual eval) and does NOT increment
+/// `ACTIVE_EVALUATORS` (does not block mark-sweep).
+///
+/// **H10 fix (2026-05-05)**: Previously this guard incremented
+/// `ACTIVE_EVALUATORS`, conflating two distinct GC paths. For long-running
+/// PLN top-level expressions this caused the global counter to never drop
+/// to zero, blocking ALL GC for tens of seconds and producing OOM/hang
+/// (slab grew to 778× threshold). The fix decouples the counters:
+/// `GcHoldGuard` now increments `SESSION_RELEASE_INHIBITORS` only.
+/// `execute_session_release` waits for BOTH `ACTIVE_EVALUATORS == 0`
+/// AND `SESSION_RELEASE_INHIBITORS == 0`. Mark-sweep is unaffected.
+///
+/// Use this to protect result values between `eval()` returning and
+/// result formatting/consumption.
 pub struct GcHoldGuard;
 
 impl GcHoldGuard {
-    /// Increment ACTIVE_EVALUATORS, blocking briefly if GC snapshot is in progress.
+    /// Increment `SESSION_RELEASE_INHIBITORS`. No GC_IN_PROGRESS interlock
+    /// is needed because this guard does not block mark-sweep.
     #[inline]
     pub fn enter() -> Self {
-        const GC_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-        loop {
-            ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);
-            if !GC_IN_PROGRESS.load(Ordering::Acquire) {
-                break;
-            }
-            ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
-            let mut lock = GC_PROGRESS_MUTEX.lock();
-            while GC_IN_PROGRESS.load(Ordering::Acquire) {
-                let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
-                if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
-                    break;
-                }
-            }
-            drop(lock);
-        }
+        SESSION_RELEASE_INHIBITORS.fetch_add(1, Ordering::AcqRel);
         GcHoldGuard
     }
 }
@@ -2851,12 +2866,18 @@ impl GcHoldGuard {
 impl Drop for GcHoldGuard {
     #[inline]
     fn drop(&mut self) {
-        let prev = ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+        let prev = SESSION_RELEASE_INHIBITORS.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
-            let _lock = QUIESCENT_MUTEX.lock();
-            QUIESCENT_CONDVAR.notify_all();
+            let _lock = INHIBITOR_MUTEX.lock();
+            INHIBITOR_CONDVAR.notify_all();
         }
     }
+}
+
+/// Read-only accessor for `SESSION_RELEASE_INHIBITORS` (for `gc_pool` and diagnostics).
+#[inline]
+pub fn session_release_inhibitors() -> u32 {
+    SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire)
 }
 
 /// RAII guard that sets `GC_IN_PROGRESS = true` on creation and clears it on drop.

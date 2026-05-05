@@ -171,21 +171,30 @@ where
             None
         };
 
-        // Register updated rhs_type
+        // Register updated rhs_type.
+        // PLN-fix 2026-04: gate against freshened-var leakage (same as
+        // add_rule's phase-10.1 registration). Rule RHSes here are already
+        // freshened at load time; naive inference over them may produce a
+        // type containing `$__fr_*` atoms, which would poison the global
+        // type registry and break type-directed dispatch downstream.
         if let Some(ref rt) = rhs_type_opt {
             let old_types = env.get_inferred_fn_types(head);
-            if !old_types.contains(rt) {
+            if !old_types.contains(rt)
+                && !crate::backend::environment::rule_management::type_contains_freshened_var(rt)
+            {
                 env.register_inferred_type(head, rt);
                 changed = true;
             }
         }
 
-        // Re-synthesize arrow type
+        // Re-synthesize arrow type (PLN-fix: same gate).
         if let Some(arrow) =
             infer_arrow_type_from_rule(lhs, rhs, rhs_type_opt.as_ref(), factory, env)
         {
             let old_types = env.get_inferred_fn_types(head);
-            if !old_types.contains(&arrow) {
+            if !old_types.contains(&arrow)
+                && !crate::backend::environment::rule_management::type_contains_freshened_var(&arrow)
+            {
                 env.register_inferred_type(head, &arrow);
                 changed = true;
             }

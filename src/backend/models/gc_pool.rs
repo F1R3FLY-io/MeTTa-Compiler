@@ -534,6 +534,7 @@ const MAX_QUIESCENCE_RETRIES: u32 = 10;
 fn execute_session_release(context_ids: &[u32]) {
     use super::gc_allocator::{
         global_allocator, GcInProgressGuard, ACTIVE_EVALUATORS,
+        SESSION_RELEASE_INHIBITORS, INHIBITOR_MUTEX, INHIBITOR_CONDVAR,
         QUIESCENT_MUTEX, QUIESCENT_CONDVAR,
         GC_PROGRESS_MUTEX, GC_PROGRESS_CONDVAR, GC_IN_PROGRESS,
     };
@@ -563,6 +564,11 @@ fn execute_session_release(context_ids: &[u32]) {
         retries += 1;
 
         // === Wait for quiescent state (with timeout) ===
+        // H10 dual-counter protocol: session-release waits for BOTH
+        //   ACTIVE_EVALUATORS == 0 (no eval in progress)
+        //   SESSION_RELEASE_INHIBITORS == 0 (no main-thread result-protection holds)
+        // Mark-sweep checks only ACTIVE_EVALUATORS, so it can proceed during
+        // long top-level evals while session-release waits its turn.
         {
             let mut lock = QUIESCENT_MUTEX.lock();
             while ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
@@ -575,6 +581,22 @@ fn execute_session_release(context_ids: &[u32]) {
                     continue 'quiescence;
                 }
             }
+        }
+        {
+            let mut lock = INHIBITOR_MUTEX.lock();
+            while SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire) > 0 {
+                let result = INHIBITOR_CONDVAR.wait_for(&mut lock, QUIESCENCE_TIMEOUT);
+                if result.timed_out()
+                    && SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire) > 0
+                {
+                    continue 'quiescence;
+                }
+            }
+        }
+        // Re-verify ACTIVE_EVALUATORS is still 0 after waiting on inhibitors
+        // (an evaluator could have entered between the two waits).
+        if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
+            continue 'quiescence;
         }
 
         // === Acquire GC_IN_PROGRESS via RAII guard (CAS) ===

@@ -1790,6 +1790,29 @@ fn unfreshen_name(name: &str) -> Option<String> {
     Some(out)
 }
 
+/// PLN-fix 2026-04: Detect whether a type expression contains any freshened
+/// variable (atom name starting with `$__fr_`). Used by `run_type_fixpoint`
+/// (and any other type-registry update site) to gate `register_inferred_type`
+/// calls — freshened vars in a registered type would poison the global type
+/// registry and break type-directed dispatch downstream. Rule RHSes are
+/// freshened at load time, so naive inference over them may surface
+/// `$__fr_*` atoms in the inferred type.
+pub(crate) fn type_contains_freshened_var<V: MettaValueTrait>(t: &V) -> bool {
+    if let Some(name) = t.as_atom() {
+        if name.starts_with("$__fr_") {
+            return true;
+        }
+    }
+    if let Some(items) = t.as_sexpr() {
+        for item in items {
+            if type_contains_freshened_var(item) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn build_var_names_and_wildcards(
     ctx_var_names: &[String],
     lhs_var_count: usize,
@@ -2156,27 +2179,34 @@ where
         // Phase 10.1: Register inferred return type in function return type index.
         // Makes rhs_type queryable by infer_types_generic for user-defined functions
         // without explicit (: f (-> ...)) type declarations.
+        //
+        // PLN-fix 2026-04: gate against freshened-var leakage. Rule RHSes are
+        // freshened at load time; naive inference may produce a type containing
+        // `$__fr_*` atoms, which would poison the global type registry and
+        // break type-directed dispatch downstream.
         if let Some(ref rt) = rhs_type {
             if let Some(ref head) = head_owned {
-                self.register_inferred_type(head, rt);
+                if !type_contains_freshened_var(rt) {
+                    self.register_inferred_type(head, rt);
 
-                // Trace: InferredTypeRegistered (Phase 10.1)
-                #[cfg(feature = "trace")]
-                {
-                    crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
-                        tc.emit_converted(
-                            trace_format::TraceTier::TreeWalker,
-                            0,
-                            crate::backend::trace::trace_value_generic(rt),
-                            vec![],
-                            None,
-                            trace_format::TraceEventKind::InferredTypeRegistered {
-                                function_name: head.clone(),
-                                registered_type: crate::backend::trace::trace_value_generic(rt),
-                                source: "phase-10.1-rhs".to_string(),
-                            },
-                        );
-                    });
+                    // Trace: InferredTypeRegistered (Phase 10.1)
+                    #[cfg(feature = "trace")]
+                    {
+                        crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
+                            tc.emit_converted(
+                                trace_format::TraceTier::TreeWalker,
+                                0,
+                                crate::backend::trace::trace_value_generic(rt),
+                                vec![],
+                                None,
+                                trace_format::TraceEventKind::InferredTypeRegistered {
+                                    function_name: head.clone(),
+                                    registered_type: crate::backend::trace::trace_value_generic(rt),
+                                    source: "phase-10.1-rhs".to_string(),
+                                },
+                            );
+                        });
+                    }
                 }
             }
         }
@@ -2200,25 +2230,29 @@ where
                     &self.factory,
                     self,
                 ) {
-                    self.register_inferred_type(head, &arrow);
+                    // PLN-fix 2026-04: gate against freshened-var leakage
+                    // (same reasoning as the phase-10.1-rhs site above).
+                    if !type_contains_freshened_var(&arrow) {
+                        self.register_inferred_type(head, &arrow);
 
-                    // Trace: InferredTypeRegistered (Phase 10.4)
-                    #[cfg(feature = "trace")]
-                    {
-                        crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
-                            tc.emit_converted(
-                                trace_format::TraceTier::TreeWalker,
-                                0,
-                                crate::backend::trace::trace_value_generic(&arrow),
-                                vec![],
-                                None,
-                                trace_format::TraceEventKind::InferredTypeRegistered {
-                                    function_name: head.clone(),
-                                    registered_type: crate::backend::trace::trace_value_generic(&arrow),
-                                    source: "phase-10.4-arrow".to_string(),
-                                },
-                            );
-                        });
+                        // Trace: InferredTypeRegistered (Phase 10.4)
+                        #[cfg(feature = "trace")]
+                        {
+                            crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
+                                tc.emit_converted(
+                                    trace_format::TraceTier::TreeWalker,
+                                    0,
+                                    crate::backend::trace::trace_value_generic(&arrow),
+                                    vec![],
+                                    None,
+                                    trace_format::TraceEventKind::InferredTypeRegistered {
+                                        function_name: head.clone(),
+                                        registered_type: crate::backend::trace::trace_value_generic(&arrow),
+                                        source: "phase-10.4-arrow".to_string(),
+                                    },
+                                );
+                            });
+                        }
                     }
                 }
             }
@@ -4214,14 +4248,18 @@ impl MettaEnvironment {
                             if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
                         };
 
-                        // Phase 10.1: Register inferred return type (bulk path)
+                        // Phase 10.1: Register inferred return type (bulk path).
+                        // PLN-fix 2026-04: same freshened-var gate as the
+                        // single-rule path above.
                         if let Some(ref rt) = rhs_type {
                             if let Some(ref head) = head_owned {
-                                self.register_inferred_type(head, rt);
+                                if !type_contains_freshened_var(rt) {
+                                    self.register_inferred_type(head, rt);
+                                }
                             }
                         }
 
-                        // Phase 10.4: Synthesize arrow type (bulk path)
+                        // Phase 10.4: Synthesize arrow type (bulk path).
                         if let Some(ref head) = head_owned {
                             let has_declared_arrow = self.get_types_generic(head).iter().any(|t| {
                                 t.as_sexpr()
@@ -4237,7 +4275,10 @@ impl MettaEnvironment {
                                     &self.factory,
                                     self,
                                 ) {
-                                    self.register_inferred_type(head, &arrow);
+                                    // PLN-fix 2026-04: same gate.
+                                    if !type_contains_freshened_var(&arrow) {
+                                        self.register_inferred_type(head, &arrow);
+                                    }
                                 }
                             }
                         }

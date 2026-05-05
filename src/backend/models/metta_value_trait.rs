@@ -386,6 +386,125 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
         vars
     }
 
+    /// **H1 full (2026-05-05)**: Names introduced by binders inside this value.
+    ///
+    /// Collects variables that `let`, `let*`, `sealed`, `function`, `match`,
+    /// `case`, `chain`, and `unify` bind in their body scopes. Used by
+    /// `propagate_keys` derivation in `Continuation::ProcessMapAtom` /
+    /// `ProcessFilterAtom` to distinguish caller-scope vars (which may
+    /// thread across iterations) from binder-introduced local names
+    /// (which must NOT thread, lest they collide on iter (n+1)'s fresh
+    /// rebinding — see `test_state_mutation_inside_map_atom`).
+    ///
+    /// Note: structural collection is bounded by the literal binder forms
+    /// listed above. Other constructs that visually look like binders
+    /// (rule LHS, lambda) but use different scoping rules in MeTTaTron
+    /// are not included.
+    fn bound_variables(&self) -> smallvec::SmallVec<[&'static str; 4]> {
+        let mut out = smallvec::SmallVec::new();
+        self.collect_bound_variables(&mut out);
+        out
+    }
+
+    /// Helper for `bound_variables()`. Walks the structural binders.
+    fn collect_bound_variables(&self, out: &mut smallvec::SmallVec<[&'static str; 4]>) {
+        let items = match self.as_sexpr() {
+            Some(items) if !items.is_empty() => items,
+            _ => return,
+        };
+        let head = match items[0].as_atom() {
+            Some(s) => s,
+            None => {
+                // Head not an atom — recurse into all children.
+                for it in items {
+                    it.collect_bound_variables(out);
+                }
+                return;
+            }
+        };
+
+        // Collector for $/&/' variable names (deduped).
+        fn push_var<V: MettaValueTrait>(
+            v: &V,
+            out: &mut smallvec::SmallVec<[&'static str; 4]>,
+        ) {
+            if let Some(name) = v.as_atom() {
+                if name != "_"
+                    && name != "&"
+                    && name != "&self"
+                    && name != "&kb"
+                    && name != "&stack"
+                    && name.len() > 1
+                    && (name.starts_with('$')
+                        || name.starts_with('&')
+                        || name.starts_with('\''))
+                {
+                    if !out.contains(&name) {
+                        out.push(name);
+                    }
+                }
+            } else if let Some(inner) = v.as_sexpr() {
+                // Patterns can be S-exprs; collect all atom-vars within.
+                for it in inner {
+                    push_var(it, out);
+                }
+            }
+        }
+
+        match head {
+            // (let pat val body) — pat's vars bound in body
+            "let" if items.len() == 4 => {
+                push_var(&items[1], out);
+                items[3].collect_bound_variables(out);
+            }
+            // (let* (($v1 $e1) ...) body) — each $vN bound in body
+            "let*" if items.len() == 3 => {
+                if let Some(pairs) = items[1].as_sexpr() {
+                    for pair in pairs {
+                        if let Some(pair_items) = pair.as_sexpr() {
+                            if let Some(p0) = pair_items.first() {
+                                push_var(p0, out);
+                            }
+                        }
+                    }
+                }
+                items[2].collect_bound_variables(out);
+            }
+            // (sealed (vars...) body)
+            "sealed" if items.len() == 3 => {
+                if let Some(seal_list) = items[1].as_sexpr() {
+                    for v in seal_list {
+                        push_var(v, out);
+                    }
+                }
+                items[2].collect_bound_variables(out);
+            }
+            // (function body)
+            "function" if items.len() == 2 => {
+                items[1].collect_bound_variables(out);
+            }
+            // (chain expr $var body) — $var bound in body
+            "chain" if items.len() == 4 => {
+                push_var(&items[2], out);
+                items[3].collect_bound_variables(out);
+            }
+            // (unify pat scrutinee then else) — pat's vars bound in then
+            "unify" if items.len() == 5 => {
+                push_var(&items[1], out);
+                items[3].collect_bound_variables(out);
+                items[4].collect_bound_variables(out);
+            }
+            _ => {
+                // Generic recursion for other heads (case, match etc. are
+                // structurally similar but their pattern position varies;
+                // recurse and let inner binders self-describe).
+                for it in items {
+                    it.collect_bound_variables(out);
+                }
+            }
+        }
+    }
+
     /// Collect free variable names into the provided buffer.
     ///
     /// Helper for `free_variables()`. Avoids allocating intermediate SmallVecs

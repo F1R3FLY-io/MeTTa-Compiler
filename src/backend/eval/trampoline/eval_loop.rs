@@ -7031,7 +7031,42 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (mut result_values, result_env) = result;
 
-            // H1 (2026-05-05): per-iteration binding composition.
+            // H1 full (2026-05-05): propagate_keys-filtered binding composition.
+            // Compute the set of names that MAY thread across iterations:
+            //   propagate_keys = outer_carrying.keys
+            //                  ∪ free_vars(remaining_elements)
+            //                  ∪ (free_vars(template) - {var_name} - bound_vars(template))
+            // Local binder-introduced names (`let`, `let*`, `sealed`, `function`,
+            // `chain`, `unify`) are filtered out so iter-N's let* locals don't
+            // collide with iter-(N+1)'s fresh rebindings (see
+            // `test_state_mutation_inside_map_atom` which would fail without
+            // this filter).
+            let propagate_keys: smallvec::SmallVec<[&'static str; 16]> = {
+                let mut keys: smallvec::SmallVec<[&'static str; 16]> = smallvec::SmallVec::new();
+                for (name, _) in outer_carrying.iter() {
+                    if !keys.contains(&name) {
+                        keys.push(name);
+                    }
+                }
+                for item in remaining_elements.as_slice() {
+                    for v in item.free_variables() {
+                        if !keys.contains(&v) {
+                            keys.push(v);
+                        }
+                    }
+                }
+                let bound = template.bound_variables();
+                for v in template.free_variables() {
+                    if v != var_name.as_str()
+                        && !bound.contains(&v)
+                        && !keys.contains(&v)
+                    {
+                        keys.push(v);
+                    }
+                }
+                keys
+            };
+
             // Add first result from evaluation, threading its bindings into
             // acc_bindings (mirrors HE's `chain` binding-threading semantics).
             if result_values.is_empty() {
@@ -7046,18 +7081,32 @@ fn process_continuation<C: EvalContext>(
                     });
                     return;
                 }
-                // Compose the iteration's bindings into the accumulator.
-                // HE rule expansion: `chain (eval ...) $head-mapped (chain ...)`
-                // — bindings flow through chain. MeTTaTron mirrors this by
-                // composing per-iter bindings into acc_bindings. The composed
-                // result attaches at final emit.
+                // Filter per-iter bindings to propagate_keys, then compose.
                 if !first_result.1.is_empty() {
-                    let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &acc_bindings,
-                        &first_result.1,
-                        ctx.factory(),
-                    );
-                    acc_bindings = std::sync::Arc::new(composed);
+                    let mut filtered = crate::backend::models::GenericBindings::default();
+                    for (name, val) in first_result.1.iter() {
+                        if propagate_keys.contains(&name) {
+                            filtered.insert(name, val.clone());
+                        }
+                    }
+                    if !filtered.is_empty() {
+                        let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &acc_bindings,
+                            &filtered,
+                            ctx.factory(),
+                        );
+                        // Genuine ground/ground caller-scope conflict → kill branch.
+                        if composed.is_empty()
+                            && !acc_bindings.is_empty()
+                            && !filtered.is_empty()
+                        {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), result_env),
+                            });
+                            return;
+                        }
+                        acc_bindings = std::sync::Arc::new(composed);
+                    }
                 }
                 collected_results.push(first_result);
             }
@@ -7095,18 +7144,26 @@ fn process_continuation<C: EvalContext>(
                     &template, &var_name, &next_element, ctx.factory(),
                 );
 
-                // H1 (2026-05-05): each iter's `carrying_bindings` is the
-                // ORIGINAL outer_carrying (NOT acc_bindings). Threading acc
-                // would leak iter-N's let*-introduced names into iter-(N+1),
-                // breaking let* fresh-scope semantics
-                // (test_state_mutation_inside_map_atom).
-                //
-                // acc_bindings still accumulates per-iter bindings but those
-                // attach ONLY to the final emitted list (HE chain delivers
-                // the accumulated bindings to the caller, not to subsequent
-                // iterations of the same map). For full per-iter binding
-                // propagation matching HE rule expansion, a separate
-                // `propagate_keys`-filtered pass is needed (see H1 plan §6.3).
+                // H1 full (2026-05-05): thread acc_bindings to next iter's
+                // carrying via compose(outer_carrying, acc_bindings). The
+                // propagate_keys filter (above) ensures only caller-scope
+                // names enter acc_bindings, so let*-fresh-scope semantics
+                // are preserved.
+                let next_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if acc_bindings.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        acc_bindings.clone()
+                    } else {
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &outer_carrying,
+                                &acc_bindings,
+                                ctx.factory(),
+                            ),
+                        )
+                    };
+
                 continuations.push(Continuation::ProcessMapAtom {
                     remaining_elements,
                     var_name,
@@ -7125,7 +7182,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: next_carrying,
                 });
             }
         }

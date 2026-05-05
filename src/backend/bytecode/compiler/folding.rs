@@ -186,8 +186,11 @@ pub fn try_fold_comparison_values(op: &str, a: &MettaValue, b: &MettaValue) -> O
             "<=" => Some(MettaValue::Bool(x <= y)),
             ">" => Some(MettaValue::Bool(x > y)),
             ">=" => Some(MettaValue::Bool(x >= y)),
-            "==" => Some(MettaValue::Bool((x - y).abs() < f64::EPSILON)),
-            "!=" => Some(MettaValue::Bool((x - y).abs() >= f64::EPSILON)),
+            // H4 (2026-05-05) hard-cut: exact f64 == (matches numeric_equal_generic).
+            // NaN != NaN per IEEE 754, +0.0 == -0.0 per IEEE 754 — both inherit
+            // from Rust's f64 == operator. Tier-divergence avoided.
+            "==" => Some(MettaValue::Bool(x == y)),
+            "!=" => Some(MettaValue::Bool(x != y)),
             _ => None,
         }
     }

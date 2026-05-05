@@ -409,6 +409,12 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// H1 (2026-05-05): per-iteration bindings accumulator. Each iteration's
+        /// emitted bindings are composed into this register; on final emit the
+        /// result list is wrapped with `compose(outer_carrying, acc_bindings)`.
+        /// Mirrors HE's `chain (eval (sealed (V) B)) ... (cons-atom ...)` rule
+        /// expansion semantics where bindings flow through `chain`.
+        acc_bindings: SharedBindings,
     },
 
     /// Processing filter-atom iteration

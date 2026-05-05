@@ -248,6 +248,15 @@ pub enum Continuation {
         /// Total number of nondeterministic branches.
         #[cfg(feature = "trace")]
         total_branches: u32,
+        /// **H7 Stage 1 (2026-05-05)**: `true` when this continuation represents
+        /// a REAL nondeterministic-fork branch (paired with `BranchStart`/
+        /// `NondeterministicFork`). `false` for the single-match compose-shim
+        /// path (`eval_loop.rs:477-496`) which doesn't fork. Gates `BranchEnd`
+        /// emission at `eval_loop.rs:5418-5439` to prevent malformed events
+        /// (`start_ns=0`, `dur=elapsed-since-trace-start`) from polluting
+        /// trace-analyzer lints (branch-imbalance/speculative-waste/etc).
+        #[cfg(feature = "trace")]
+        is_real_fork: bool,
     },
 
     /// I-15: Lazy nondeterministic branch evaluation via coroutine.

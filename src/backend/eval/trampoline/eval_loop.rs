@@ -493,6 +493,9 @@ fn dispatch_rule_matches<C: EvalContext>(
                 branch_index: 0,
                 #[cfg(feature = "trace")]
                 total_branches: 1,
+                // H7 Stage 1: shim path is NOT a real fork — suppress BranchEnd.
+                #[cfg(feature = "trace")]
+                is_real_fork: false,
             });
         }
 
@@ -902,6 +905,9 @@ fn dispatch_rule_matches<C: EvalContext>(
             branch_index: 0,
             #[cfg(feature = "trace")]
             total_branches: _total_branches,
+            // H7 Stage 1: real fork (paired with BranchStart at line ~853)
+            #[cfg(feature = "trace")]
+            is_real_fork: true,
         });
 
         // Trace: RuleApplication (first match)
@@ -5374,6 +5380,8 @@ fn process_continuation<C: EvalContext>(
             branch_index,
             #[cfg(feature = "trace")]
             total_branches,
+            #[cfg(feature = "trace")]
+            is_real_fork,
         } => {
             #[cfg(feature = "trace")]
             let result_count = result.0.len() as u32;
@@ -5442,9 +5450,13 @@ fn process_continuation<C: EvalContext>(
             };
             results.extend(composed);
 
-            // Trace: BranchEnd for the branch that just completed
+            // Trace: BranchEnd for the branch that just completed.
+            // H7 Stage 1 (2026-05-05): only emit when this continuation
+            // represents a real fork (paired with BranchStart). Skip the
+            // single-match compose-shim path which has sentinel zeros that
+            // would produce malformed events (start_ns=0, dur=trace-lifetime).
             #[cfg(feature = "trace")]
-            {
+            if is_real_fork {
                 if let Some(tc) = ctx.trace_collector() {
                     let end_ns = tc.elapsed_ns();
                     let duration = end_ns.saturating_sub(branch_start_ns);
@@ -5578,6 +5590,10 @@ fn process_continuation<C: EvalContext>(
                     branch_index: _next_branch_index,
                     #[cfg(feature = "trace")]
                     total_branches,
+                    // H7 Stage 1: rotation site is a real fork (paired with
+                    // BranchStart for the new branch_index).
+                    #[cfg(feature = "trace")]
+                    is_real_fork: true,
                 });
 
                 // Trace: RuleApplication (tree-walker, subsequent match)

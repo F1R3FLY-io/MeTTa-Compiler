@@ -2547,7 +2547,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Also require should_memoize: impure expressions (those
                 // calling add-atom, change-state!, etc.) must not be tabled
                 // because repeated calls must re-execute their side effects.
+                // H9 (2026-05-05): track whether the subgoal-table path was taken.
+                // If so, the line-2780 MemoizeResult push is elided — CompleteSubgoal
+                // already writes the result to the canonical cache. Both gates use
+                // the same `should_memoize_with_env` predicate, so the writes are
+                // dominated by the subgoal-table path. Audit #7c: 5-8% wall savings.
+                let mut subgoal_path_taken = false;
                 if is_sexpr && depth >= 2 && !value.has_variables_fast() && should_memoize_with_env(&value, &*env) {
+                    subgoal_path_taken = true;
                     let tabling_hash = value.hash_value();
 
                     // Step 1: Cycle detection via active evaluation set.
@@ -2777,13 +2784,19 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Push MemoizeResult continuation if we got a cache miss on a
                 // memoizable expression. When the evaluation resolves, this
                 // continuation caches the results for future lookups.
+                //
+                // H9 (2026-05-05): elide when subgoal-table path already pushed
+                // CompleteSubgoal — that handler writes the same hash to the
+                // canonical SubgoalTable, dominating the EVAL_MEMO write.
                 if let Some(h) = memo_hash {
-                    continuations.push(Continuation::MemoizeResult {
-                        expr_hash: h,
-                        mutation_epoch: mutation_epoch(),
-                        env: env.clone(),
-                        depth,
-                    });
+                    if !subgoal_path_taken {
+                        continuations.push(Continuation::MemoizeResult {
+                            expr_hash: h,
+                            mutation_epoch: mutation_epoch(),
+                            env: env.clone(),
+                            depth,
+                        });
+                    }
                 }
 
                 // Save input pointer for fixpoint detection (Phase 9.5)

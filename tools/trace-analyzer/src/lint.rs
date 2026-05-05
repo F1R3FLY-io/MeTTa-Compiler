@@ -135,20 +135,54 @@ struct BranchEndRecord {
     thread_id: u32,
     duration_ns: Option<u64>,
     branch_index: u32,
+    /// **H7 Stage 2 (2026-05-05)**: span_id from the wrapping `TraceEvent`.
+    /// `None` means the emitter didn't pair this with a BranchStart (e.g.,
+    /// malformed shim-path emission, now suppressed by H7 Stage 1).
+    span_id: Option<u64>,
+}
+
+struct BranchStartRecord {
+    timestamp_ns: u64,
+    thread_id: u32,
+    branch_index: u32,
+    /// span_id correlation key for this branch.
+    span_id: u64,
 }
 
 struct BranchImbalanceAcc {
     forks: Vec<ForkRecord>,
     branch_ends: Vec<BranchEndRecord>,
+    /// H7 Stage 2: BranchStart records for span_id-based correlation.
+    /// When span_ids match between BranchStart and BranchEnd, lint groups
+    /// by span_id (precise). When span_id is missing, falls back to the
+    /// existing timestamp-nearest-preceding-fork heuristic.
+    branch_starts: Vec<BranchStartRecord>,
 }
 
 impl BranchImbalanceAcc {
     fn new() -> Self {
-        Self { forks: Vec::new(), branch_ends: Vec::new() }
+        Self {
+            forks: Vec::new(),
+            branch_ends: Vec::new(),
+            branch_starts: Vec::new(),
+        }
     }
 
     fn record_fork(&mut self, timestamp_ns: u64, thread_id: u32, branch_count: u32) {
         self.forks.push(ForkRecord { timestamp_ns, thread_id, branch_count });
+    }
+
+    fn record_branch_start(
+        &mut self,
+        timestamp_ns: u64,
+        thread_id: u32,
+        branch_index: u32,
+        span_id: u64,
+    ) {
+        if span_id != 0 {
+            self.branch_starts
+                .push(BranchStartRecord { timestamp_ns, thread_id, branch_index, span_id });
+        }
     }
 
     fn record_branch_end(
@@ -157,12 +191,30 @@ impl BranchImbalanceAcc {
         thread_id: u32,
         duration_ns: Option<u64>,
         branch_index: u32,
+        span_id: Option<u64>,
     ) {
-        self.branch_ends.push(BranchEndRecord { timestamp_ns, thread_id, duration_ns, branch_index });
+        self.branch_ends.push(BranchEndRecord {
+            timestamp_ns,
+            thread_id,
+            duration_ns,
+            branch_index,
+            span_id,
+        });
     }
 
     fn finalize(self) -> Vec<Finding> {
         let mut findings = Vec::new();
+
+        // H7 Stage 2 (2026-05-05): build span_id → BranchStart map for precise
+        // pairing. BranchEnds with a span_id that matches a BranchStart are
+        // grouped by their fork-anchor (the BranchStart's preceding fork);
+        // BranchEnds without span_id (legacy/malformed) fall back to the
+        // timestamp-partition heuristic.
+        let starts_by_span: HashMap<u64, &BranchStartRecord> = self
+            .branch_starts
+            .iter()
+            .map(|bs| (bs.span_id, bs))
+            .collect();
 
         // Build per-thread fork lists sorted by timestamp for binary search
         let mut forks_by_thread: HashMap<u32, Vec<&ForkRecord>> = HashMap::new();
@@ -173,20 +225,35 @@ impl BranchImbalanceAcc {
             forks.sort_by_key(|f| f.timestamp_ns);
         }
 
-        // Group branch ends to their nearest preceding fork on the same thread
-        // Key: (thread_id, fork_timestamp) → Vec<BranchEndRecord>
+        // Group branch ends to their nearest preceding fork on the same thread.
+        // Prefer span_id correlation: BranchEnd with span_id S → match BranchStart
+        // with same span_id, then look up that BranchStart's anchor fork.
         let mut fork_groups: HashMap<(u32, u64), (u32, Vec<&BranchEndRecord>)> = HashMap::new();
 
         for be in &self.branch_ends {
-            if let Some(forks) = forks_by_thread.get(&be.thread_id) {
-                // Find the nearest preceding fork via binary search
-                let idx = forks.partition_point(|f| f.timestamp_ns <= be.timestamp_ns);
-                if idx > 0 {
-                    let fork = forks[idx - 1];
-                    let key = (be.thread_id, fork.timestamp_ns);
-                    let entry = fork_groups.entry(key).or_insert_with(|| (fork.branch_count, Vec::new()));
-                    entry.1.push(be);
+            // H7 Stage 2: prefer span_id correlation
+            let anchor_ts = if let Some(span) = be.span_id {
+                if let Some(bs) = starts_by_span.get(&span) {
+                    if let Some(forks) = forks_by_thread.get(&bs.thread_id) {
+                        let idx = forks.partition_point(|f| f.timestamp_ns <= bs.timestamp_ns);
+                        if idx > 0 { Some(forks[idx - 1]) } else { None }
+                    } else { None }
+                } else {
+                    // span_id present but no matching BranchStart — drop this
+                    // event (it's an orphan, likely from an emission bug).
+                    continue;
                 }
+            } else if let Some(forks) = forks_by_thread.get(&be.thread_id) {
+                // Fallback: timestamp-partition heuristic
+                let idx = forks.partition_point(|f| f.timestamp_ns <= be.timestamp_ns);
+                if idx > 0 { Some(forks[idx - 1]) } else { None }
+            } else {
+                None
+            };
+            if let Some(fork) = anchor_ts {
+                let key = (fork.thread_id, fork.timestamp_ns);
+                let entry = fork_groups.entry(key).or_insert_with(|| (fork.branch_count, Vec::new()));
+                entry.1.push(be);
             }
         }
 
@@ -1725,15 +1792,21 @@ impl LintPass {
                 }
             }
 
-            TraceEventKind::BranchStart { .. } => {
+            TraceEventKind::BranchStart { branch_index, .. } => {
                 if let Some(acc) = &mut self.sequential_fan_out {
                     acc.record_branch_start(tid, seq);
+                }
+                // H7 Stage 2: record for span_id-based correlation.
+                if let Some(acc) = &mut self.branch_imbalance {
+                    if let Some(span_id) = event.span_id {
+                        acc.record_branch_start(ts, tid, *branch_index, span_id);
+                    }
                 }
             }
 
             TraceEventKind::BranchEnd { branch_index, result_count } => {
                 if let Some(acc) = &mut self.branch_imbalance {
-                    acc.record_branch_end(ts, tid, event.duration_ns, *branch_index);
+                    acc.record_branch_end(ts, tid, event.duration_ns, *branch_index, event.span_id);
                 }
                 if let Some(acc) = &mut self.sequential_fan_out {
                     acc.record_branch_end(tid, seq);

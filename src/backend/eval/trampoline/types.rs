@@ -1364,16 +1364,36 @@ impl Continuation {
                 }
             }
 
-            Self::ProcessMapAtom { remaining_elements, template, collected_results, .. } => {
+            Self::ProcessMapAtom {
+                remaining_elements,
+                template,
+                collected_results,
+                outer_carrying,
+                acc_bindings,
+                ..
+            } => {
                 out.extend(remaining_elements.as_slice().iter().copied());
                 out.push(*template);
                 for (v, bindings) in collected_results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk per-call binding registers.
+                // Both fields are Arc<GenericBindings<MettaValue>>, holding
+                // live MettaValue slab pointers. Pre-fix, GC freed these
+                // between iterations under H10's increased GC cadence.
+                collect_bindings_values(outer_carrying, out);
+                collect_bindings_values(acc_bindings, out);
             }
 
-            Self::ProcessFilterAtom { current_element, remaining_elements, predicate, filtered_results, .. } => {
+            Self::ProcessFilterAtom {
+                current_element,
+                remaining_elements,
+                predicate,
+                filtered_results,
+                outer_carrying,
+                ..
+            } => {
                 if let Some(elem) = current_element {
                     out.push(*elem);
                 }
@@ -1383,11 +1403,15 @@ impl Continuation {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessFoldlAtom { remaining_elements, operation, .. } => {
+            Self::ProcessFoldlAtom { remaining_elements, operation, acc_bindings, .. } => {
                 out.extend(remaining_elements.as_slice().iter().copied());
                 out.push(*operation);
+                // H14 (2026-05-05): root-walk accumulated fold bindings.
+                collect_bindings_values(acc_bindings, out);
             }
 
             Self::ProcessIfCondition { then_branch, else_branch, outer_bindings, .. } => {

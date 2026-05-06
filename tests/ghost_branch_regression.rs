@@ -634,3 +634,47 @@ fn chain_over_filter_atom_evaluates_before_bind() {
         r
     );
 }
+
+// ============================================================================
+// Bug fix (2026-05-06): ProcessOwned mode-leak through Spanned
+// ============================================================================
+//
+// Regression: `apply_bindings_with_rename_scoped_iterative`'s
+// `Work::ProcessOwned` arm at `bindings.rs:2250-2261` (and its non-scoped
+// sibling at `:987-991`) used to recurse through the top-level entry
+// `apply_bindings_with_rename_scoped` whenever the substituted value was
+// `Spanned`. The top-level entry restarts in `Work::ProcessTemplate` mode
+// — silently flipping owned (no-rename) to template (rename-on-miss).
+//
+// Result: caller-scope variables like `$who` inside a substituted
+// rule-LHS-bound value got renamed to `$__fr_E_who`, breaking downstream
+// binding lookup. PLN's `Direct.metta` `?` macro tests 2/3 hit this:
+// rule `(? $term)` matched query `(? (grandfather $who c))`, substituted
+// `$term → spanned((grandfather $who c))`, and `$who` got freshened —
+// a name the collapse-bind output `{$who → a}` could never match.
+//
+// Fix: peel the Spanned wrapper locally and re-push as
+// `Work::ProcessOwned` so the "owned, no-rename" semantic survives.
+// HE-faithful: HE's `make_variables_unique` only renames stored-side
+// vars before matching, never caller-side substituted contents.
+
+#[test]
+fn process_owned_preserves_caller_var_through_spanned() {
+    // Reproduces the PLN `?` macro shape: rule (? $term) matches
+    // (? (foo $who)), substitutes $term → spanned((foo $who)).
+    // $who must arrive at collapse-bind unchanged (NOT $__fr_*_who).
+    let source = r#"
+        (= (? $term) (collapse-bind $term))
+        (= (foo a) ok)
+        !(? (foo $who))
+    "#;
+    let results = eval_last(source);
+    assert!(!results.is_empty(), "expected at least one result");
+    let s = &results[0];
+    // The result should bind $who → a, NOT $__fr_*_who → a.
+    assert!(
+        !s.contains("$__fr_"),
+        "freshened var leaked into substituted-value position: {}",
+        s
+    );
+}

@@ -985,8 +985,26 @@ where
                     continue;
                 }
                 if val.is_spanned() {
-                    let result = apply_bindings_with_rename_generic(&val, bindings, rename, factory);
-                    result_stack.push(result);
+                    // Bug fix (2026-05-06): preserve owned-mode invariant
+                    // across Spanned peeling. Pre-fix, this arm recursed
+                    // into `apply_bindings_with_rename_generic` (the
+                    // top-level entry), which restarts in
+                    // `Work::ProcessTemplate` mode at the equivalent of
+                    // line 2172 — silently flipping owned (no-rename) to
+                    // template (rename-on-miss). The recursion would then
+                    // freshen any user-scope variable inside an "owned"
+                    // (caller-scope) substituted value, producing names
+                    // like `$__fr_E_who` that downstream binding lookups
+                    // can never match.
+                    //
+                    // Fix: peel the Spanned wrapper LOCALLY and re-push
+                    // as `Work::ProcessOwned` so the "owned, no rename"
+                    // semantic survives span boundaries. Span loss on
+                    // interior substituted values is safe (audited every
+                    // `is_spanned()` consumer; outer-template span on the
+                    // parent `BuildSExpr.original` survives, which is
+                    // the only span LSP/diagnostic consumers care about).
+                    work_stack.push(Work::ProcessOwned(val.strip_one_span()));
                     continue;
                 }
                 if let Some(name) = val.as_atom() {
@@ -2248,15 +2266,35 @@ where
                     continue;
                 }
                 if val.is_spanned() {
-                    let result = apply_bindings_with_rename_scoped(
-                        &val,
-                        bindings,
-                        scope_chain,
-                        rename.map_or(0, |r| r.epoch()),
-                        outer_carrying,
-                        factory,
-                    );
-                    result_stack.push(result);
+                    // Bug fix (2026-05-06): preserve owned-mode invariant
+                    // across Spanned peeling. Pre-fix, this arm recursed
+                    // into `apply_bindings_with_rename_scoped` (the
+                    // top-level entry), which restarts in
+                    // `Work::ProcessTemplate` mode at line 2172 — silently
+                    // flipping owned (no-rename) to template
+                    // (rename-on-miss). PLN's `?` macro
+                    // (`Direct.metta:32-59`) failed because
+                    // `(? (grandfather $who c))` matched rule
+                    // `(? $term)` → `{$term → spanned((grandfather $who c))}`,
+                    // and during instantiation the spanned value entered
+                    // this arm, was peeled via the leaky top-level call
+                    // in ProcessTemplate mode, and `$who` got renamed to
+                    // `$__fr_E_who` — a name the downstream
+                    // `{$who → a}` collapse-bind binding could never
+                    // match.
+                    //
+                    // Fix: peel the Spanned wrapper LOCALLY and re-push
+                    // as `Work::ProcessOwned` so the "owned, no rename"
+                    // semantic survives span boundaries. HE-faithful:
+                    // HE's `make_variables_unique` is only ever applied
+                    // to the stored side BEFORE matching, never to
+                    // caller-side substituted contents
+                    // (hyperon-experimental/hyperon-space/src/index/trie.rs:262).
+                    // Span loss on interior substituted values is safe
+                    // (audited every `is_spanned()` consumer; outer
+                    // template span survives via the parent
+                    // `BuildSExpr.original`).
+                    work_stack.push(Work::ProcessOwned(val.strip_one_span()));
                     continue;
                 }
                 if let Some(name) = val.as_atom() {

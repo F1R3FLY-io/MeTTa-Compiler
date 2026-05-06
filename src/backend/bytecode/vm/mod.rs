@@ -2661,7 +2661,7 @@ where
     /// after the iteration's value is collected; only the value
     /// flows into the mapped list.
     fn op_map_atom(&mut self) -> VmResult<()> {
-        use crate::backend::eval::bindings::apply_bindings_generic;
+        use crate::backend::eval::bindings::{apply_bindings_generic, apply_chain_generic, compose_outer_inner_generic};
 
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
@@ -2676,20 +2676,79 @@ where
             .get_chunk_constant(chunk_idx)
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
 
+        // H13 (2026-05-05) mirror — items' free variables are the
+        // caller-scope names that must thread across iterations.
+        let items_free_vars: Vec<&'static str> = {
+            let mut keys: Vec<&'static str> = Vec::new();
+            for item in items {
+                for v in item.free_variables() {
+                    if !keys.contains(&v) {
+                        keys.push(v);
+                    }
+                }
+            }
+            keys
+        };
+
         let mut results = Vec::with_capacity(items.len());
+        let mut acc_bindings: GenericBindings<V> = GenericBindings::new();
         let ambient = self.current_bindings.clone();
         for item in items {
-            let substituted_item = if ambient.is_empty() {
-                item.clone()
-            } else {
-                apply_bindings_generic(item, &ambient, &self.factory)
-            };
-            let (result, _tmpl_bindings) = self
+            // Apply both ambient (caller's bindings at fold start) and
+            // acc_bindings (per-iter threaded so far) before dispatch.
+            let mut effective = item.clone();
+            if !ambient.is_empty() {
+                effective = apply_bindings_generic(&effective, &ambient, &self.factory);
+            }
+            if !acc_bindings.is_empty() {
+                effective = apply_bindings_generic(&effective, &acc_bindings, &self.factory);
+            }
+            let (result, tmpl_bindings) = self
                 .execute_generic_template_with_binding(
                     Arc::clone(&template_chunk),
-                    substituted_item,
+                    effective,
                 )?;
             results.push(result);
+
+            // H13 mirror — filter per-iter bindings to caller-scope names
+            // and compose. Drops the template's per-invocation freshened
+            // pattern vars (`$__fr_*`) unless they appear as free vars in
+            // the items list — same coarse filter as op_foldl_atom.
+            let mut step_propagating: GenericBindings<V> = GenericBindings::new();
+            for (name, val) in tmpl_bindings.iter() {
+                let is_user = !name.starts_with("$__fr_");
+                let is_caller_freshened = items_free_vars.contains(&name);
+                if is_user || is_caller_freshened {
+                    step_propagating.insert_or_replace(name, val.clone());
+                }
+            }
+            if !step_propagating.is_empty() {
+                let mut composed = compose_outer_inner_generic(
+                    &acc_bindings,
+                    &step_propagating,
+                    &self.factory,
+                );
+                if composed.is_empty()
+                    && !acc_bindings.is_empty()
+                    && !step_propagating.is_empty()
+                {
+                    self.push(self.factory.empty());
+                    return Ok(());
+                }
+                apply_chain_generic(&mut composed, &self.factory);
+                acc_bindings = composed;
+            }
+        }
+
+        // Compose acc_bindings into VM's current_bindings so caller
+        // sees the threaded result (mirror op_foldl_atom).
+        if !acc_bindings.is_empty() {
+            self.current_bindings = compose_outer_inner_generic(
+                &self.current_bindings,
+                &acc_bindings,
+                &self.factory,
+            );
+            apply_chain_generic(&mut self.current_bindings, &self.factory);
         }
 
         self.push(self.factory.sexpr(results));
@@ -2708,7 +2767,7 @@ where
     /// matching HE's `FilterAtomOp` semantics where the filter
     /// preserves structural identity.
     fn op_filter_atom(&mut self) -> VmResult<()> {
-        use crate::backend::eval::bindings::apply_bindings_generic;
+        use crate::backend::eval::bindings::{apply_bindings_generic, apply_chain_generic, compose_outer_inner_generic};
 
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
@@ -2723,22 +2782,76 @@ where
             .get_chunk_constant(chunk_idx)
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
 
+        // H13 (2026-05-05) mirror — items' free variables are the
+        // caller-scope names that must thread across iterations.
+        let items_free_vars: Vec<&'static str> = {
+            let mut keys: Vec<&'static str> = Vec::new();
+            for item in items {
+                for v in item.free_variables() {
+                    if !keys.contains(&v) {
+                        keys.push(v);
+                    }
+                }
+            }
+            keys
+        };
+
         let mut results = Vec::new();
+        let mut acc_bindings: GenericBindings<V> = GenericBindings::new();
         let ambient = self.current_bindings.clone();
         for item in items {
-            let substituted_item = if ambient.is_empty() {
-                item.clone()
-            } else {
-                apply_bindings_generic(item, &ambient, &self.factory)
-            };
-            let (result, _pred_bindings) = self.execute_generic_template_with_binding(
+            let mut effective = item.clone();
+            if !ambient.is_empty() {
+                effective = apply_bindings_generic(&effective, &ambient, &self.factory);
+            }
+            if !acc_bindings.is_empty() {
+                effective = apply_bindings_generic(&effective, &acc_bindings, &self.factory);
+            }
+            let (result, pred_bindings) = self.execute_generic_template_with_binding(
                 Arc::clone(&predicate_chunk),
-                substituted_item,
+                effective,
             )?;
+
+            // H13 mirror — compose per-iter bindings BEFORE keep/drop test.
+            let mut step_propagating: GenericBindings<V> = GenericBindings::new();
+            for (name, val) in pred_bindings.iter() {
+                let is_user = !name.starts_with("$__fr_");
+                let is_caller_freshened = items_free_vars.contains(&name);
+                if is_user || is_caller_freshened {
+                    step_propagating.insert_or_replace(name, val.clone());
+                }
+            }
+            if !step_propagating.is_empty() {
+                let mut composed = compose_outer_inner_generic(
+                    &acc_bindings,
+                    &step_propagating,
+                    &self.factory,
+                );
+                if composed.is_empty()
+                    && !acc_bindings.is_empty()
+                    && !step_propagating.is_empty()
+                {
+                    self.push(self.factory.empty());
+                    return Ok(());
+                }
+                apply_chain_generic(&mut composed, &self.factory);
+                acc_bindings = composed;
+            }
+
             // Check if predicate returned true
             if result.as_bool() == Some(true) {
                 results.push(item.clone());
             }
+        }
+
+        // Compose acc_bindings into VM's current_bindings.
+        if !acc_bindings.is_empty() {
+            self.current_bindings = compose_outer_inner_generic(
+                &self.current_bindings,
+                &acc_bindings,
+                &self.factory,
+            );
+            apply_chain_generic(&mut self.current_bindings, &self.factory);
         }
 
         self.push(self.factory.sexpr(results));

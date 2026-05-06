@@ -437,6 +437,13 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// H13 (2026-05-05) — mirror of map-atom's H1 full per-iteration
+        /// bindings accumulator. Each iteration's emitted bindings are
+        /// composed into this register; on final emit the result list is
+        /// wrapped with `compose(outer_carrying, acc_bindings)`. Mirrors
+        /// HE's `chain (eval (sealed (V) F)) ... (cons-atom ...)` rule
+        /// expansion semantics where bindings flow through `chain`.
+        acc_bindings: SharedBindings,
     },
 
     /// Processing foldl-atom iteration
@@ -1420,6 +1427,7 @@ impl Continuation {
                 predicate,
                 filtered_results,
                 outer_carrying,
+                acc_bindings,
                 ..
             } => {
                 if let Some(elem) = current_element {
@@ -1433,6 +1441,8 @@ impl Continuation {
                 }
                 // H14 (2026-05-05): root-walk caller-scope bindings.
                 collect_bindings_values(outer_carrying, out);
+                // H13 (2026-05-05): root-walk per-call accumulator.
+                collect_bindings_values(acc_bindings, out);
             }
 
             Self::ProcessFoldlAtom { remaining_elements, operation, acc_bindings, .. } => {

@@ -3391,6 +3391,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 env: env.clone(),
                                 depth,
                                 outer_carrying: carrying_bindings.clone(),
+                                acc_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
                             });
 
                             // NO CONVERSION NEEDED - use generic substitute
@@ -7310,25 +7311,95 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth,
             outer_carrying,
+            mut acc_bindings,
         } => {
             let (mut result_values, result_env) = result;
 
+            // H13 (2026-05-05): mirror of map-atom's H1 full —
+            // propagate_keys-filtered binding composition.
+            //   propagate_keys = outer_carrying.keys
+            //                  ∪ free_vars(remaining_elements)
+            //                  ∪ (free_vars(predicate) - {var_name}
+            //                                          - bound_vars(predicate))
+            // Local binder-introduced names (`let`, `let*`, `sealed`, `function`,
+            // `chain`, `unify`) are filtered out so iter-N's let* locals don't
+            // collide with iter-(N+1)'s fresh rebindings. The accumulator
+            // `acc_bindings` flows binding emissions across iterations even
+            // when the keep/drop verdict differs — matching HE's
+            // `chain (eval (sealed (V) F)) ... (cons-atom ...)` binding flow.
+            let propagate_keys: smallvec::SmallVec<[&'static str; 16]> = {
+                let mut keys: smallvec::SmallVec<[&'static str; 16]> = smallvec::SmallVec::new();
+                for (name, _) in outer_carrying.iter() {
+                    if !keys.contains(&name) {
+                        keys.push(name);
+                    }
+                }
+                for item in remaining_elements.as_slice() {
+                    for v in item.free_variables() {
+                        if !keys.contains(&v) {
+                            keys.push(v);
+                        }
+                    }
+                }
+                let bound = predicate.bound_variables();
+                for v in predicate.free_variables() {
+                    if v != var_name.as_str()
+                        && !bound.contains(&v)
+                        && !keys.contains(&v)
+                    {
+                        keys.push(v);
+                    }
+                }
+                keys
+            };
+
             // Check predicate result and optionally include current element
             if !result_values.is_empty() {
-                let (first_result, _b) = result_values.swap_remove(0);
+                let first_result = result_values.swap_remove(0);
 
                 // Check for error propagation
-                if first_result.is_error() {
+                if first_result.0.is_error() {
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![bv(first_result)], result_env),
+                        result: (smallvec![first_result], result_env),
                     });
                     return;
                 }
 
-                let should_include = if let Some(b) = first_result.as_bool() {
+                // H13: filter per-iter bindings to propagate_keys, then compose.
+                // Composition occurs BEFORE the keep/drop test — bindings flow
+                // to the next iteration regardless of whether the predicate
+                // returned True or False (matching HE's chain semantics).
+                if !first_result.1.is_empty() {
+                    let mut filtered = crate::backend::models::GenericBindings::default();
+                    for (name, val) in first_result.1.iter() {
+                        if propagate_keys.contains(&name) {
+                            filtered.insert(name, val.clone());
+                        }
+                    }
+                    if !filtered.is_empty() {
+                        let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &acc_bindings,
+                            &filtered,
+                            ctx.factory(),
+                        );
+                        // Genuine ground/ground caller-scope conflict → kill branch.
+                        if composed.is_empty()
+                            && !acc_bindings.is_empty()
+                            && !filtered.is_empty()
+                        {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), result_env),
+                            });
+                            return;
+                        }
+                        acc_bindings = std::sync::Arc::new(composed);
+                    }
+                }
+
+                let should_include = if let Some(b) = first_result.0.as_bool() {
                     b
                 } else {
-                    !first_result.is_unit()
+                    !first_result.0.is_unit()
                 };
 
                 if should_include {
@@ -7340,12 +7411,24 @@ fn process_continuation<C: EvalContext>(
 
             if remaining_elements.len() == 0 {
                 // All elements processed - return filtered list.
-                // Phase 2 Part A fix (task #65): attach outer_carrying.
+                // H13: attach compose(outer_carrying, acc_bindings) so per-iter
+                // bindings flow back to the caller (mirror map-atom's H1 full).
                 let result_list = ctx.factory().sexpr(
                     filtered_results.into_iter().map(|(v, _)| v).collect()
                 );
+                let final_bindings = if acc_bindings.is_empty() {
+                    (*outer_carrying).clone()
+                } else if outer_carrying.is_empty() {
+                    (*acc_bindings).clone()
+                } else {
+                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &outer_carrying,
+                        &acc_bindings,
+                        ctx.factory(),
+                    )
+                };
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv_with(result_list, (*outer_carrying).clone())], result_env),
+                    result: (smallvec![bv_with(result_list, final_bindings)], result_env),
                 });
             } else {
                 // More elements to process
@@ -7356,6 +7439,22 @@ fn process_continuation<C: EvalContext>(
                     &predicate, &var_name, &next_element, ctx.factory(),
                 );
 
+                // H13: thread acc_bindings to next iter via compose.
+                let next_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if acc_bindings.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        acc_bindings.clone()
+                    } else {
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &outer_carrying,
+                                &acc_bindings,
+                                ctx.factory(),
+                            ),
+                        )
+                    };
+
                 continuations.push(Continuation::ProcessFilterAtom {
                     current_element: Some(next_element),
                     remaining_elements,
@@ -7365,6 +7464,7 @@ fn process_continuation<C: EvalContext>(
                     env: result_env.clone(),
                     depth,
                     outer_carrying: outer_carrying.clone(),
+                    acc_bindings,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -7374,7 +7474,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: next_carrying,
                 });
             }
         }

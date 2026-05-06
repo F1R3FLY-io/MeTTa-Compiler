@@ -69,6 +69,13 @@ static NORMAL_FORM_BLOOM_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Check if a value is memoized as being in normal form (Phase 9.5).
+///
+/// H12 (2026-05-05): Structural prefilter converts soft-correctness
+/// (bloom may have FPR or hash-cons aliasing artifacts) into
+/// hard-correctness (a reducible head is *never* normal form by
+/// definition). Cheap: one atom lookup + one match. The bloom is
+/// purely an optimization hint — wrong answers must never let us
+/// skip evaluation of an expression that has rules to apply.
 #[inline]
 pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
     // Fast path: if no entries have been inserted since the last clear,
@@ -76,9 +83,21 @@ pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
     if !NORMAL_FORM_BLOOM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
-    // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
-    if !NORMAL_FORM_BLOOM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
-        return false;
+    // H12 structural correctness gate — before trusting the bloom,
+    // verify the expression's head cannot itself be reducible. This
+    // protects against hash-cons aliasing (two structurally identical
+    // ground sexprs share the same `inner_ptr`; a freeze-tuple result
+    // may collide with a reducible expression in a later query) and
+    // against the bloom's intrinsic ~1% FPR.
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            if is_reducible_head(head) {
+                return false;
+            }
+            if head.starts_with('$') {
+                return false;
+            }
+        }
     }
     let ptr = value.inner_ptr() as usize;
     NORMAL_FORM_BLOOM.may_contain(&ptr.to_le_bytes())
@@ -87,6 +106,25 @@ pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
 /// Record a value as being in normal form (Phase 9.5).
 #[inline]
 pub fn memoize_normal_form<V: MettaValueTrait>(value: &V) {
+    // H12 (2026-05-05): debug-time canary for the bloom invariant.
+    // `memoize_normal_form` should only ever be called on expressions
+    // whose head is NOT reducible. Marking a reducible head poisons
+    // the bloom and (if the structural prefilter at lookup were
+    // missing) would cause us to skip evaluation of a rule-bearing
+    // expression. Keep this assertion to catch future regressions
+    // that try to memoize the wrong shape.
+    #[cfg(debug_assertions)]
+    {
+        if let Some(items) = value.as_sexpr() {
+            if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+                debug_assert!(
+                    !is_reducible_head(head),
+                    "memoize_normal_form called on reducible head '{}' — would poison bloom",
+                    head
+                );
+            }
+        }
+    }
     let ptr = value.inner_ptr() as usize;
     NORMAL_FORM_BLOOM.insert(&ptr.to_le_bytes());
     NORMAL_FORM_BLOOM_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -100,6 +138,28 @@ pub fn memoize_normal_form<V: MettaValueTrait>(value: &V) {
 pub fn invalidate_normal_form_memo() {
     // Only clear if the LazyLock has been initialized (avoid initializing
     // it just to clear it during early startup)
+    if LazyLock::get(&NORMAL_FORM_BLOOM).is_some() {
+        NORMAL_FORM_BLOOM.clear();
+        NORMAL_FORM_BLOOM_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// H12 (2026-05-05): clear the normal-form bloom at a top-level `!` query
+/// boundary, eliminating cross-query memo bleed.
+///
+/// Bloom entries record `inner_ptr`s that the runtime believed were normal
+/// form at *some* point during a particular query. With hash-cons aliasing
+/// (two ground sexprs share the same `inner_ptr` by content) and the bloom's
+/// intrinsic ~1% FPR, an entry inserted during query N can poison query N+1
+/// — most visibly with `freeze-tuple` outputs colliding with reducible
+/// expressions in later queries (Direct.metta / Toothbrush observed
+/// `(reduce (eval (grandfather a c)))` short-circuiting on a stale hit).
+///
+/// Called from `eval_loop.rs` alongside `increment_query_generation()` so
+/// that every top-level `!` invocation starts with a clean bloom. Within a
+/// single query, the bloom still optimizes repeated normal-form checks for
+/// `freeze-tuple` and friends — only cross-query reuse is sacrificed.
+pub fn clear_normal_form_memo_for_new_query() {
     if LazyLock::get(&NORMAL_FORM_BLOOM).is_some() {
         NORMAL_FORM_BLOOM.clear();
         NORMAL_FORM_BLOOM_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);

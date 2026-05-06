@@ -2274,6 +2274,11 @@ fn eval_trampoline_inner<C: EvalContext>(
         crate::backend::eval::cesk::clear_subgoal_table();
         crate::backend::eval::cesk::clear_thunk_table();
         crate::backend::eval::trampoline::dispatch_hints::increment_query_generation();
+        // H12 (2026-05-05): clear the normal-form bloom so freeze-tuple
+        // memoization from a prior top-level `!` cannot poison this query
+        // via hash-cons aliasing or bloom FPR. Within-query optimization
+        // is preserved — only cross-query reuse is sacrificed.
+        crate::backend::eval::trampoline::dispatch_hints::clear_normal_form_memo_for_new_query();
     }
 
     // Deferred environment drops: hold Arc clones to dying environments' shared

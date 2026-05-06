@@ -72,7 +72,10 @@ pub use engine::{
 // arena_engine::eval_trampoline which wraps it with SessionContext.
 
 // Phase 9.5: Normal-form memoization (check, insert, invalidate)
-pub use dispatch_hints::{invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form};
+pub use dispatch_hints::{
+    clear_normal_form_memo_for_new_query, invalidate_normal_form_memo, is_memoized_normal_form,
+    memoize_normal_form,
+};
 
 // Expression-level eval memoization (clear on space mutation)
 pub use dispatch_hints::clear_eval_memo;

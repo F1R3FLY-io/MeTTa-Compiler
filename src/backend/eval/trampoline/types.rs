@@ -1177,18 +1177,22 @@ impl WorkItem {
     /// temporary roots before dropping the EvalGuard.
     pub fn collect_values(&self, out: &mut Vec<MettaValue>) {
         match self {
-            Self::Eval { value, expected_type, .. } => {
+            Self::Eval { value, expected_type, carrying_bindings, .. } => {
                 out.push(*value);
                 if let Some(et) = expected_type {
                     out.push(*et);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(carrying_bindings, out);
             }
-            Self::EvalWithBindings { template, bindings, expected_type, .. } => {
+            Self::EvalWithBindings { template, bindings, expected_type, carrying_bindings, .. } => {
                 out.push(*template);
                 collect_bindings_values(bindings, out);
                 if let Some(et) = expected_type {
                     out.push(*et);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(carrying_bindings, out);
             }
             Self::Resume { result: (values, _), .. } => {
                 for (v, bindings) in values.iter() {
@@ -1248,7 +1252,7 @@ impl Continuation {
         match self {
             Self::Done => {}
 
-            Self::CollectSExpr { remaining, collected, .. } => {
+            Self::CollectSExpr { remaining, collected, outer_carrying, .. } => {
                 out.extend(remaining.as_slice().iter().copied());
                 for (vals, _env) in collected {
                     for (v, bindings) in vals.iter() {
@@ -1256,9 +1260,13 @@ impl Continuation {
                         collect_bindings_values(bindings, out);
                     }
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessRuleMatches { remaining_matches, results, .. } => {
+            Self::ProcessRuleMatches {
+                remaining_matches, results, current_branch_bindings, outer_carrying, ..
+            } => {
                 for (rhs, bindings) in remaining_matches.as_slice() {
                     out.push(*rhs);
                     collect_bindings_values(bindings, out);
@@ -1267,6 +1275,9 @@ impl Continuation {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk per-branch + caller-scope bindings.
+                collect_bindings_values(current_branch_bindings, out);
+                collect_bindings_values(outer_carrying, out);
             }
 
             Self::ProcessGroundedOp { state, arg_bindings, .. } => {
@@ -1293,7 +1304,9 @@ impl Continuation {
                 }
             }
 
-            Self::ProcessCombinations { combinations, results, pending_rule_matches, .. } => {
+            Self::ProcessCombinations {
+                combinations, results, pending_rule_matches, outer_carrying, ..
+            } => {
                 collect_cartesian_values(combinations, out);
                 for (v, bindings) in results.iter() {
                     out.push(*v);
@@ -1303,9 +1316,14 @@ impl Continuation {
                     out.push(*rhs);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessCombinationsBound { combinations, results, pending_rule_matches, pending_combo_bindings, .. } => {
+            Self::ProcessCombinationsBound {
+                combinations, results, pending_rule_matches, pending_combo_bindings,
+                outer_carrying, ..
+            } => {
                 // Iterator inputs: each alternative carries value + bindings
                 // (both need GC tracking to survive mark-sweep).
                 for input_vec in combinations.inputs() {
@@ -1326,9 +1344,13 @@ impl Continuation {
                     out.push(*rhs);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk variant's own outer_carrying.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessLet { pending_values, pattern, body, outer_bindings, results, .. } => {
+            Self::ProcessLet {
+                pending_values, pattern, body, outer_bindings, outer_carrying, results, ..
+            } => {
                 if let Some(pending) = pending_values {
                     for (v, bindings) in pending.iter() {
                         out.push(*v);
@@ -1344,9 +1366,11 @@ impl Continuation {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::CollectGroundedArg { items, evaluated_results, .. } => {
+            Self::CollectGroundedArg { items, evaluated_results, outer_carrying, .. } => {
                 out.extend(items.iter().copied());
                 for result_vec in evaluated_results {
                     for (v, bindings) in result_vec.iter() {
@@ -1354,14 +1378,18 @@ impl Continuation {
                         collect_bindings_values(bindings, out);
                     }
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::CollectApplicativeResults { remaining, results, .. } => {
+            Self::CollectApplicativeResults { remaining, results, outer_carrying, .. } => {
                 out.extend(remaining.as_slice().iter().copied());
                 for (v, bindings) in results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
             Self::ProcessMapAtom {
@@ -1414,39 +1442,49 @@ impl Continuation {
                 collect_bindings_values(acc_bindings, out);
             }
 
-            Self::ProcessIfCondition { then_branch, else_branch, outer_bindings, .. } => {
+            Self::ProcessIfCondition {
+                then_branch, else_branch, outer_bindings, outer_carrying, ..
+            } => {
                 out.push(*then_branch);
                 out.push(*else_branch);
                 if let Some(ref ob) = outer_bindings {
-                    for (_, v) in ob.iter() {
-                        out.push(*v);
-                    }
+                    collect_bindings_values(ob, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessCaseAtom { cases, outer_bindings, .. } => {
+            Self::ProcessCaseAtom { cases, outer_bindings, outer_carrying, .. } => {
                 out.push(*cases);
                 if let Some(ref ob) = outer_bindings {
-                    for (_, v) in ob.iter() {
-                        out.push(*v);
-                    }
+                    collect_bindings_values(ob, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessEvalEval { .. } => {}
-            Self::ProcessReturn { .. } => {}
+            Self::ProcessEvalEval { outer_carrying, .. } => {
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessReturn { outer_carrying, .. } => {
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
+            }
 
-            Self::ProcessChainExpr { var, body, outer_bindings, .. } => {
+            Self::ProcessChainExpr { var, body, outer_bindings, outer_carrying, .. } => {
                 out.push(*var);
                 out.push(*body);
                 if let Some(ref ob) = outer_bindings {
-                    for (_, v) in ob.iter() {
-                        out.push(*v);
-                    }
+                    collect_bindings_values(ob, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessChainBody { remaining_values, var, body, outer_bindings, results, .. } => {
+            Self::ProcessChainBody {
+                remaining_values, var, body, outer_bindings, outer_carrying, results, ..
+            } => {
                 for (v, bindings) in remaining_values.as_slice().iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1454,39 +1492,55 @@ impl Continuation {
                 out.push(*var);
                 out.push(*body);
                 if let Some(ref ob) = outer_bindings {
-                    for (_, v) in ob.iter() {
-                        out.push(*v);
-                    }
+                    collect_bindings_values(ob, out);
                 }
                 for (v, bindings) in results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessFunction { .. } => {}
-            Self::ProcessIsError { .. } => {}
+            Self::ProcessFunction { outer_carrying, .. } => {
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessIsError { outer_carrying, .. } => {
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
+            }
 
-            Self::ProcessCatch { default, .. } => {
+            Self::ProcessCatch { default, outer_carrying, .. } => {
                 out.push(*default);
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessConjunction { remaining_goals, accumulated_results, .. } => {
+            Self::ProcessConjunction {
+                remaining_goals, accumulated_results, outer_carrying, ..
+            } => {
                 out.extend(remaining_goals.as_slice().iter().copied());
                 for (v, bindings) in accumulated_results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk caller-scope bindings.
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessUnifyPattern1 { pattern2, success_body, failure_body, .. } => {
+            Self::ProcessUnifyPattern1 {
+                pattern2, success_body, failure_body, outer_carrying, ..
+            } => {
                 out.push(*pattern2);
                 out.push(*success_body);
                 out.push(*failure_body);
+                collect_bindings_values(outer_carrying, out);
             }
 
             Self::ProcessUnifyPattern1Iter {
-                remaining_pattern1_results, pattern2, success_body, failure_body, all_results, ..
+                remaining_pattern1_results, pattern2, success_body, failure_body, all_results,
+                outer_carrying, ..
             } => {
                 for (v, bindings) in remaining_pattern1_results.as_slice().iter() {
                     out.push(*v);
@@ -1499,27 +1553,38 @@ impl Continuation {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessUnifyPattern2 { val1, pattern2, success_body, failure_body, .. } => {
+            Self::ProcessUnifyPattern2 {
+                val1, pattern2, success_body, failure_body, outer_carrying, ..
+            } => {
                 out.push(*val1);
                 out.push(*pattern2);
                 out.push(*success_body);
                 out.push(*failure_body);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessUnifyBodies { remaining_bodies, results, .. } => {
+            Self::ProcessUnifyBodies { remaining_bodies, results, outer_carrying, .. } => {
                 out.extend(remaining_bodies.as_slice().iter().copied());
                 for (v, bindings) in results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessCollapse { .. } => {}
-            Self::ProcessCollapseBind { .. } => {}
+            Self::ProcessCollapse { outer_carrying, .. } => {
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessCollapseBind { outer_carrying, .. } => {
+                collect_bindings_values(outer_carrying, out);
+            }
 
-            Self::ProcessCollapseEvalResults { remaining_raw, evaluated, .. } => {
+            Self::ProcessCollapseEvalResults {
+                remaining_raw, evaluated, current_raw_bindings, ..
+            } => {
                 for (v, bindings) in remaining_raw.as_slice().iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1528,9 +1593,11 @@ impl Continuation {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                // H14 (2026-05-05): root-walk current iteration's bindings.
+                collect_bindings_values(current_raw_bindings, out);
             }
 
-            Self::ProcessAmb { remaining_alts, results, .. } => {
+            Self::ProcessAmb { remaining_alts, results, outer_carrying, .. } => {
                 for (v, bindings) in remaining_alts.as_slice().iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1539,130 +1606,167 @@ impl Continuation {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessGuard { .. } => {}
+            Self::ProcessGuard { outer_carrying, .. } => {
+                collect_bindings_values(outer_carrying, out);
+            }
 
-            Self::ProcessGetAtoms { space_ref, .. } => {
+            Self::ProcessGetAtoms { space_ref, outer_carrying, .. } => {
                 out.push(*space_ref);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMemoTable { memo_ref, expr, .. } => {
+            Self::ProcessMemoTable { memo_ref, expr, outer_carrying, .. } => {
                 out.push(*memo_ref);
                 out.push(*expr);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMemoExpr { expr, .. } => {
+            Self::ProcessMemoExpr { expr, outer_carrying, .. } => {
                 out.push(*expr);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessNewMemoName { name_arg, size_arg, .. } => {
+            Self::ProcessNewMemoName { name_arg, size_arg, outer_carrying, .. } => {
                 out.push(*name_arg);
                 if let Some(size) = size_arg {
                     out.push(*size);
                 }
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessNewMemoSize { size_arg, .. } => {
+            Self::ProcessNewMemoSize { size_arg, outer_carrying, .. } => {
                 out.push(*size_arg);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMemoOp { memo_ref, .. } => {
+            Self::ProcessMemoOp { memo_ref, outer_carrying, .. } => {
                 out.push(*memo_ref);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMatchSpace { space_arg, pattern, template, .. } => {
+            Self::ProcessMatchSpace { space_arg, pattern, template, outer_carrying, .. } => {
                 out.push(*space_arg);
                 out.push(*pattern);
                 out.push(*template);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMatchTemplates { remaining_templates, results, .. } => {
+            Self::ProcessMatchTemplates {
+                remaining_templates, results, outer_carrying, ..
+            } => {
                 out.extend(remaining_templates.as_slice().iter().copied());
                 for (v, bindings) in results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessAddAtomSpace { space_ref, atom, .. } => {
+            Self::ProcessAddAtomSpace { space_ref, atom, outer_carrying, .. } => {
                 out.push(*space_ref);
                 out.push(*atom);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessRemoveAtomSpace { space_ref, atom, .. } => {
+            Self::ProcessRemoveAtomSpace { space_ref, atom, outer_carrying, .. } => {
                 out.push(*space_ref);
                 out.push(*atom);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessNewState { initial_value, .. } => {
+            Self::ProcessNewState { initial_value, outer_carrying, .. } => {
                 out.push(*initial_value);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessGetState { state_ref, .. } => {
+            Self::ProcessGetState { state_ref, outer_carrying, .. } => {
                 out.push(*state_ref);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessChangeStateRef { state_ref, new_value, .. } => {
+            Self::ProcessChangeStateRef { state_ref, new_value, outer_carrying, .. } => {
                 out.push(*state_ref);
                 out.push(*new_value);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessChangeStateValue { state_value, new_value, .. } => {
+            Self::ProcessChangeStateValue { state_value, new_value, outer_carrying, .. } => {
                 out.push(*state_value);
                 out.push(*new_value);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessRepr { atom, .. } => {
+            Self::ProcessRepr { atom, outer_carrying, .. } => {
                 out.push(*atom);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessFormatArgsString { format_arg, args_arg, .. } => {
+            Self::ProcessFormatArgsString { format_arg, args_arg, outer_carrying, .. } => {
                 out.push(*format_arg);
                 out.push(*args_arg);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessFormatArgsArgs { args_arg, .. } => {
+            Self::ProcessFormatArgsArgs { args_arg, outer_carrying, .. } => {
                 out.push(*args_arg);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessPrintln { atom, .. } => {
+            Self::ProcessPrintln { atom, outer_carrying, .. } => {
                 out.push(*atom);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessTraceMessage { message, value_expr, .. } => {
+            Self::ProcessTraceMessage { message, value_expr, outer_carrying, .. } => {
                 out.push(*message);
                 out.push(*value_expr);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessTraceValue { value_expr, .. } => {
+            Self::ProcessTraceValue { value_expr, outer_carrying, .. } => {
                 out.push(*value_expr);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessGetMetatype { atom, .. } => {
+            Self::ProcessGetMetatype { atom, outer_carrying, .. } => {
                 out.push(*atom);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessBind { .. } => {}
+            Self::ProcessBind { outer_carrying, .. } => {
+                collect_bindings_values(outer_carrying, out);
+            }
 
-            Self::ProcessIfReducible { original_expr, then_branch, else_branch, .. } => {
+            Self::ProcessIfReducible {
+                original_expr, then_branch, else_branch, outer_carrying, ..
+            } => {
                 out.push(*original_expr);
                 out.push(*then_branch);
                 out.push(*else_branch);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMatchOrSpace { space_arg, pattern, default, template, .. } => {
+            Self::ProcessMatchOrSpace {
+                space_arg, pattern, default, template, outer_carrying, ..
+            } => {
                 out.push(*space_arg);
                 out.push(*pattern);
                 out.push(*default);
                 out.push(*template);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessSortTuple { sorted, unsorted, current, comparator, .. } => {
+            Self::ProcessSortTuple {
+                sorted, unsorted, current, comparator, outer_carrying, ..
+            } => {
                 out.extend(sorted.iter().copied());
                 out.extend(unsorted.iter().copied());
                 out.push(*current);
                 out.push(*comparator);
+                collect_bindings_values(outer_carrying, out);
             }
 
             Self::ProcessBestCandidate { best, remaining, current, rank_fn, .. } => {
@@ -1674,7 +1778,9 @@ impl Continuation {
                 out.push(*rank_fn);
             }
 
-            Self::ProcessCaseMultiResults { remaining_atoms, cases, collected, .. } => {
+            Self::ProcessCaseMultiResults {
+                remaining_atoms, cases, collected, outer_carrying, ..
+            } => {
                 for (v, bindings) in remaining_atoms.as_slice().iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1684,9 +1790,12 @@ impl Continuation {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessCaseEvalScrutineeResults { remaining_raw, evaluated, cases, .. } => {
+            Self::ProcessCaseEvalScrutineeResults {
+                remaining_raw, evaluated, cases, current_raw_bindings, outer_carrying, ..
+            } => {
                 for (v, bindings) in remaining_raw.as_slice().iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1696,6 +1805,8 @@ impl Continuation {
                     collect_bindings_values(bindings, out);
                 }
                 out.push(*cases);
+                collect_bindings_values(current_raw_bindings, out);
+                collect_bindings_values(outer_carrying, out);
             }
 
             Self::MemoizeResult { .. } => {
@@ -1712,12 +1823,16 @@ impl Continuation {
                 collect_bindings_values(accumulated_bindings, out);
             }
 
-            Self::ProcessRuleMatchesLazy { coroutine, results, .. } => {
+            Self::ProcessRuleMatchesLazy {
+                coroutine, results, current_branch_bindings, outer_carrying, ..
+            } => {
                 coroutine.collect_values(out);
                 for (v, bindings) in results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
                 }
+                collect_bindings_values(current_branch_bindings, out);
+                collect_bindings_values(outer_carrying, out);
             }
 
             Self::CompleteSubgoal { .. } => {
@@ -1728,7 +1843,7 @@ impl Continuation {
                 // No MettaValue values to collect — only stores a u64 hash key.
             }
 
-            Self::CollectFreezeArgs { args, evaluated_results, .. } => {
+            Self::CollectFreezeArgs { args, evaluated_results, outer_carrying, .. } => {
                 for v in args.iter() {
                     out.push(*v);
                 }
@@ -1738,6 +1853,7 @@ impl Continuation {
                         collect_bindings_values(bindings, out);
                     }
                 }
+                collect_bindings_values(outer_carrying, out);
             }
         }
     }

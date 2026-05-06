@@ -849,6 +849,16 @@ where
         // correctly reserve only the slots they need, at the right offset.
         self.ensure_locals_for_current_chunk();
 
+        // H11 (2026-05-05) note: a periodic cooperative GC safepoint hook
+        // here would let parallel-branch workers running in the bytecode
+        // VM surrender their EvalGuard so quiescence-driven GC can fire.
+        // Disabled for now: the bytecode VM holds live MettaValues on its
+        // operand stack, locals, and choice_points that are not registered
+        // as GC roots. Calling `worker_cooperative_safepoint(&[])` here
+        // causes UAF when the next Vm::step reads from those stack slots
+        // after a sweep. To enable safely, the helper must collect the
+        // VM's operand stack + locals + choice_point values as
+        // `extra_roots`. Tracked as a follow-up.
         loop {
             match self.step()? {
                 ControlFlow::Continue(()) => continue,

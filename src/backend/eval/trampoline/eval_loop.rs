@@ -34,6 +34,106 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 type SharedEnvArc = std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>;
 
+// ── H11 (2026-05-05) — Worker-side cooperative GC drop ─────────────────
+//
+// `IS_PARALLEL_WORKER` flags threads spawned by `parallel_branch_eval` /
+// `parallel_collapse_eval` so non-trampoline tiers (bytecode VM, JIT,
+// grounded ops) know when they're running inside a parallel worker and
+// must surrender the EvalGuard at tier-return edges to let GC fire.
+//
+// Pre-H11, only the trampoline's per-4096-iter safepoint cadence ever
+// surrendered ACTIVE_EVALUATORS. When a worker entered JIT/bytecode and
+// stayed there for tens of milliseconds, the parent's cooperative-drop
+// in the wait-loop (eval_loop.rs:1693+) saw ACTIVE_EVALUATORS stuck at
+// >=1 — `maybe_quiescent_gc` requires 0 — and the convergence loop
+// timed out. Under workloads with deep JIT/grounded spans (DeductionRevision,
+// FlyingRaven, RavenInduction), GC starvation drove `committed_bytes` to
+// 700×+ over threshold and the test budget expired.
+//
+// Tier-return hooks read this thread-local and call
+// `worker_cooperative_safepoint(roots)` when GC is requested. The helper
+// performs the same root-register / drop-guard / wait-quiescence /
+// reacquire dance as `ParallelBranchContext::perform_safepoint`.
+
+thread_local! {
+    /// True iff the current thread is a parallel-branch worker. Set by
+    /// `WorkerEvalScope::enter()` at the top of each worker closure;
+    /// reset to false in the scope's Drop impl.
+    pub(crate) static IS_PARALLEL_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// RAII guard that flips the thread-local `IS_PARALLEL_WORKER` flag for
+/// the lifetime of a parallel-branch worker closure.
+///
+/// MUST drop BEFORE the EvalGuard so the flag is reset before the
+/// thread can be reused for non-worker work (the work pool reuses
+/// threads across tasks).
+pub(crate) struct WorkerEvalScope {
+    prior: bool,
+}
+
+impl WorkerEvalScope {
+    #[inline]
+    pub(crate) fn enter() -> Self {
+        let prior = IS_PARALLEL_WORKER.with(|f| {
+            let p = f.get();
+            f.set(true);
+            p
+        });
+        Self { prior }
+    }
+}
+
+impl Drop for WorkerEvalScope {
+    fn drop(&mut self) {
+        IS_PARALLEL_WORKER.with(|f| f.set(self.prior));
+    }
+}
+
+/// H11: cooperative safepoint for parallel-branch workers in non-trampoline
+/// tiers. Called from JIT/bytecode/grounded tier-return edges when
+/// `is_gc_requested()` returns true.
+///
+/// Surrenders the worker's EvalGuard so `maybe_quiescent_gc` can fire,
+/// waits for the cycle to complete, then re-acquires the guard. Mirrors
+/// the existing trampoline-safepoint protocol used by
+/// `ParallelBranchContext::perform_safepoint`.
+///
+/// `extra_roots` are any tier-supplied "hot values" (e.g., the
+/// MettaValue currently being processed) that the caller knows are
+/// reachable but that the trampoline-level root walker cannot see while
+/// the call is parked outside the trampoline loop. Frame-chain roots
+/// are collected automatically.
+///
+/// CALLER OBLIGATIONS: every tier that hooks this MUST pass its full set
+/// of live MettaValues as `extra_roots`. The bytecode VM has its operand
+/// stack + locals + choice_points; the JIT runtime has its register file;
+/// grounded ops have their pending result. Calling with `&[]` while
+/// holding live unrooted values causes use-after-free when the next read
+/// hits a freed slab slot. Tier-edge hooks are NOT yet wired pending each
+/// tier's root-collection helper — reserved for a follow-up commit.
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
+    use crate::backend::models::gc_allocator;
+
+    // Fast path — no GC pressure, return immediately. One Relaxed load.
+    if !gc_allocator::is_gc_requested() {
+        return;
+    }
+    // Collect parent-class roots: walk the frame chain that this thread
+    // entered through (matches what the trampoline safepoint registers).
+    let mut roots: Vec<MettaValue> = Vec::with_capacity(extra_roots.len() + 16);
+    crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut roots);
+    roots.extend_from_slice(extra_roots);
+
+    clear_aba_sensitive_caches();
+    let _root_handle = gc_allocator::register_temporary_roots(roots);
+    gc_allocator::drop_eval_guard_for_safepoint();
+    gc_allocator::safepoint_wait_for_quiescence();
+    gc_allocator::reacquire_eval_guard_after_safepoint();
+}
+
 /// Clear all caches whose keys are slab pointers, before a GC sweep can run.
 ///
 /// Without this, the slab GC may free a slot whose pointer is still cached
@@ -1391,6 +1491,13 @@ fn parallel_branch_eval(
             // Track this parallel eval as active (prevents GC during evaluation)
             let _guard = EvalGuard::enter();
 
+            // H11 (2026-05-05): mark this thread as a parallel-branch worker
+            // so non-trampoline tiers (bytecode VM, JIT, grounded ops) can
+            // detect the context and surrender the EvalGuard cooperatively
+            // when GC is requested. MUST drop before _guard so the marker is
+            // cleared before the work-pool thread is reused for other tasks.
+            let _worker_marker = WorkerEvalScope::enter();
+
             // catch_unwind boundary: cooperative cancellation arrives via
             // `panic::resume_unwind(Box::new(BranchCancelled))` from
             // `ParallelBranchContext::perform_safepoint` when a sibling
@@ -1857,6 +1964,8 @@ fn parallel_collapse_eval(
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
 
             let _guard = EvalGuard::enter();
+            // H11 (2026-05-05): mark thread as parallel-branch worker.
+            let _worker_marker = WorkerEvalScope::enter();
             let ctx = ParallelBranchContext::get();
             let (eval_results, _new_env) =
                 eval_trampoline(item_expr, env, &ctx);

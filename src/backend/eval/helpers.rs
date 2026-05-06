@@ -93,8 +93,12 @@ pub fn is_eager_special_form(op: &str) -> bool {
 #[inline(always)]
 pub fn is_grounded_op(name: &str) -> bool {
     matches!(name,
-        // Basic arithmetic
-        "+" | "-" | "*" | "/" | "%" | "min" | "max"
+        // Basic arithmetic. Plan 1 audit (2026-05-06): `mod` is the bytecode-
+        // compiler synonym for `%` (`bytecode/compiler/core.rs:391`); `negate`
+        // is the JIT synonym for unary `-` (`bytecode/jit/runtime/call_support.rs:128`).
+        // Both must be visible to the tree-walker so cross-tier dispatch
+        // is consistent.
+        "+" | "-" | "*" | "/" | "%" | "mod" | "negate" | "min" | "max"
         // Math functions (short names)
         | "pow" | "abs" | "floor" | "ceil" | "round" | "sqrt"
         // Math functions (full names from try_eval_builtin)

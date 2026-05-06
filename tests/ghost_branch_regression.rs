@@ -584,3 +584,53 @@ fn conjunction_ghost_elimination_deterministic_20_runs() {
         base
     );
 }
+
+// ============================================================================
+// Plan 1 (2026-05-06): chain over map-atom/filter-atom/foldl-atom
+// ============================================================================
+//
+// Regression: Direct.metta's `?` macro shape:
+//     (chain (foldl-atom (filter-atom ...) ...) $evidence
+//       (let (stv $s $c) $evidence
+//         (if (== $c 0.0) (empty)
+//             (freeze-tuple $grounded $evidence))))
+//
+// produced unreduced `(foldl-atom ...)` literal in the freeze-tuple second
+// arg because `is_embedded_kernel_op` excluded these higher-order tuple ops.
+// StartChain at eval_loop.rs:3705 took the data branch and substituted
+// `$evidence` → literal expression everywhere in body. Only the let-position
+// occurrence got re-evaluated; the freeze-tuple-position occurrence was
+// frozen as-is. Fix at dispatch_hints.rs:842 — added these ops to the
+// allowlist so chain dispatches one kernel step instead.
+
+#[test]
+fn chain_over_foldl_atom_evaluates_before_bind() {
+    let r = eval_last(r#"!(chain (foldl-atom (1 2 3) 0 $a $i (+ $a $i)) $r $r)"#);
+    // foldl over (1 2 3) with init 0 and (+ $a $i) → 6.
+    assert_eq!(r.len(), 1);
+    assert!(r[0].contains('6'), "expected 6, got: {:?}", r);
+}
+
+#[test]
+fn chain_over_map_atom_evaluates_before_bind() {
+    let r = eval_last(r#"!(chain (map-atom (1 2 3) $x (+ $x 1)) $r $r)"#);
+    // map (+1) over (1 2 3) → (2 3 4).
+    assert_eq!(r.len(), 1);
+    assert!(
+        r[0].contains('2') && r[0].contains('3') && r[0].contains('4'),
+        "expected (2 3 4), got: {:?}",
+        r
+    );
+}
+
+#[test]
+fn chain_over_filter_atom_evaluates_before_bind() {
+    let r = eval_last(r#"!(chain (filter-atom (1 2 3 4) $x (> $x 2)) $r $r)"#);
+    // filter (>2) over (1 2 3 4) → (3 4).
+    assert_eq!(r.len(), 1);
+    assert!(
+        r[0].contains('3') && r[0].contains('4') && !r[0].contains("$r"),
+        "expected (3 4) without $r literal, got: {:?}",
+        r
+    );
+}

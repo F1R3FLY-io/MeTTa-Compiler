@@ -299,6 +299,16 @@ fn is_impure_head(head: &str) -> bool {
             | "pragma!"
             | "=" | ":" | ":<"
             | "ground-with-bindings" | "freeze-tuple"
+            // Plan 1 audit (2026-05-06): assertion + test ops have observable
+            // diagnostic output (println!-style); memoizing them suppresses
+            // diagnostic prints on repeat calls. `exec` is presumed
+            // side-effecting per its name.
+            | "test"
+            | "assertEqual" | "assertAlphaEqual"
+            | "assertEqualMsg" | "assertAlphaEqualMsg"
+            | "assertEqualToResult" | "assertAlphaEqualToResult"
+            | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg"
+            | "exec"
     )
 }
 
@@ -840,6 +850,29 @@ pub(crate) fn is_embedded_kernel_op(head: &str) -> bool {
         // S-expression and downstream `(eval $grounded)` / `freeze-tuple`
         // operations see unreduced data instead of the substituted template.
         | "ground-with-bindings" | "freeze-tuple"
+        // Plan 1 (2026-05-06): higher-order tuple ops are pure, bounded
+        // transforms over finite tuples (sexpr.rs:1100/1154/1216 dispatch
+        // them to native StartMapAtom/StartFilterAtom/StartFoldlAtom
+        // iterators). HE bisimulates these via stdlib rule lookup at
+        // hyperon-experimental/lib/src/metta/runner/stdlib/stdlib.metta:455,
+        // 475, 495 — its `chain` evaluates them eagerly via the rule.
+        // Without this MeTTaTron's chain takes the data branch and
+        // substitutes the literal expression into body, breaking PLN's
+        // `?` macro shape (`Direct.metta:32-59`):
+        //     (chain (foldl-atom (filter-atom ...) ...) $evidence
+        //       (let (stv $s $c) $evidence
+        //         (if (== $c 0.0) (empty)
+        //             (freeze-tuple $grounded $evidence))))
+        // — `$evidence` would carry the unreduced foldl-atom into
+        // freeze-tuple's second arg.
+        | "map-atom" | "filter-atom" | "foldl-atom"
+        // Plan 1 audit follow-up (2026-05-06): same shape as the higher-
+        // order tuple-op family. sort-tuple (`sexpr.rs:1539` →
+        // `StartSortTuple` at `eval_loop.rs:3458`) and best-candidate
+        // (`sexpr.rs:1597` → `StartBestCandidate` at `eval_loop.rs:3507`)
+        // are native iterators producing tuple/value results that chain
+        // bodies may structurally destructure. Adding for consistency.
+        | "sort-tuple" | "best-candidate"
     )
 }
 
@@ -896,7 +929,8 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg"
         | "pragma!"
         // === Grounded operations ===
-        | "+" | "-" | "*" | "/" | "%" | "min" | "max"
+        // Plan 1 audit (2026-05-06): mod/negate are bytecode/JIT synonyms.
+        | "+" | "-" | "*" | "/" | "%" | "mod" | "negate" | "min" | "max"
         | "<" | "<=" | ">" | ">=" | "==" | "!="
         | "and" | "or" | "not" | "xor"
         | "/safe" | "clamp"

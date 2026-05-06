@@ -165,6 +165,7 @@ unsafe fn jit_maybe_pre_eval_structural(
 ) -> MettaValue {
     use crate::backend::eval::{is_grounded_op, is_eager_special_form};
     use crate::backend::eval::step::should_pre_eval_by_type;
+    use crate::backend::eval::trampoline::dispatch_hints::is_embedded_kernel_op;
     use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
     use crate::backend::eval::trampoline::EvalContext;
     use crate::backend::models::{global_factory, GcFactory};
@@ -182,9 +183,17 @@ unsafe fn jit_maybe_pre_eval_structural(
     }
     let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
 
+    // Plan 1 audit (2026-05-06): the tree-walker's StartChain dispatches
+    // `is_embedded_kernel_op` heads through the kernel-step branch; the JIT
+    // structural pre-eval must mirror this so chain-bound results from
+    // map-atom/filter-atom/foldl-atom/etc. are reduced before the body is
+    // evaluated. Without this addition, the JIT path leaves the unreduced
+    // S-expr in place and downstream destructuring (let-pattern, freeze-tuple
+    // ...) sees the literal expression — same shape as the Direct.metta bug.
     let should_reduce = head.starts_with('$')
         || is_grounded_op(head)
         || is_eager_special_form(head)
+        || is_embedded_kernel_op(head)
         || should_pre_eval_by_type::<MettaValue, crate::backend::models::GcFactory>(head, env);
     if !should_reduce {
         return v;

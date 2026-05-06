@@ -834,6 +834,141 @@ where
         }
     }
 
+    /// Append every live `V` reachable from this VM's transient state into `out`.
+    ///
+    /// Plan 2 (2026-05-06): the slab GC cooperative drop protocol requires the
+    /// worker to surrender its `EvalGuard` while still holding live slab pointers
+    /// in stack/locals/choice-points. Without registering those values as
+    /// temporary roots, the next mark-sweep frees the slab slots whose pointers
+    /// we still hold, causing UAF on resume.
+    ///
+    /// Walks every `V`-bearing field of the VM exhaustively:
+    /// - `value_stack`, `locals`, `current_bindings`, `bindings_stack`
+    /// - `results`, `expected_type`
+    /// - `choice_points` and their `alternatives` (5 variant decode arms)
+    /// - `call_stack[i].saved_bindings`
+    /// - `collapse_frames[i].saved_results`
+    /// - `collapse_bind_frames[i].saved_results` + `saved_per_result_bindings`
+    /// - `per_result_bindings`
+    /// - `dispatch_memo` (HashMap values)
+    /// - `trail` `Rebinding.old_value` (skip `NewBinding`)
+    ///
+    /// Deliberately does NOT walk:
+    /// - `env`: registered as `RootProvider` separately via `try_register_env_roots`
+    /// - `native_registry`/`external_registry`: hold function pointers, no V values
+    /// - `memo_cache`: registered as `MemoCacheRoots` separately
+    pub(crate) fn collect_roots_into(&self, out: &mut Vec<V>) {
+        // Direct V-bearing fields
+        out.extend(self.value_stack.iter().cloned());
+        out.extend(self.locals.iter().cloned());
+        out.extend(self.results.iter().cloned());
+        if let Some(ref et) = self.expected_type {
+            out.push(et.clone());
+        }
+
+        // current_bindings: GenericBindings<V>
+        for (_name, val) in self.current_bindings.iter() {
+            out.push(val.clone());
+        }
+
+        // bindings_stack: Vec<GenericBindingFrame<V>>
+        for frame in self.bindings_stack.iter() {
+            for (_name, val) in frame.iter() {
+                out.push(val.clone());
+            }
+        }
+
+        // call_stack: Vec<GenericCallFrame<V, _>> — only saved_bindings holds V
+        for frame in self.call_stack.iter() {
+            for (_name, val) in frame.saved_bindings.iter() {
+                out.push(val.clone());
+            }
+        }
+
+        // choice_points: Vec<GenericChoicePoint<V, _>> — alternatives + saved_current_bindings
+        for cp in self.choice_points.iter() {
+            for alt in cp.alternatives.iter() {
+                match alt {
+                    GenericAlternative::Value(v) => out.push(v.clone()),
+                    GenericAlternative::Chunk(_) => {}
+                    GenericAlternative::Index(_) => {}
+                    GenericAlternative::RuleMatch { chunk: _, bindings } => {
+                        for (_name, val) in bindings.iter() {
+                            out.push(val.clone());
+                        }
+                    }
+                    GenericAlternative::BoundValue { value, bindings } => {
+                        out.push(value.clone());
+                        for (_name, val) in bindings.iter() {
+                            out.push(val.clone());
+                        }
+                    }
+                }
+            }
+            for (_name, val) in cp.saved_current_bindings.iter() {
+                out.push(val.clone());
+            }
+        }
+
+        // collapse_frames: saved_results
+        for frame in self.collapse_frames.iter() {
+            out.extend(frame.saved_results.iter().cloned());
+        }
+
+        // collapse_bind_frames: saved_results + saved_per_result_bindings
+        for frame in self.collapse_bind_frames.iter() {
+            out.extend(frame.saved_results.iter().cloned());
+            for bindings in frame.saved_per_result_bindings.iter() {
+                for (_name, val) in bindings.iter() {
+                    out.push(val.clone());
+                }
+            }
+        }
+
+        // per_result_bindings
+        for bindings in self.per_result_bindings.iter() {
+            for (_name, val) in bindings.iter() {
+                out.push(val.clone());
+            }
+        }
+
+        // dispatch_memo: HashMap values are (u64, Vec<V>)
+        for (_, vs) in self.dispatch_memo.values() {
+            out.extend(vs.iter().cloned());
+        }
+
+        // trail: only Rebinding entries hold V
+        for entry in self.trail.iter() {
+            if let TrailEntry::Rebinding { old_value, .. } = entry {
+                out.push(old_value.clone());
+            }
+        }
+    }
+
+    /// Plan 2 helper (2026-05-06): on a parallel-branch worker thread under
+    /// GC pressure, build the VM's roots into a `Vec<MettaValue>` and call
+    /// `worker_cooperative_safepoint`. TypeId-gated so the cost is paid only
+    /// for `V == MettaValue`; non-MettaValue monomorphizations dead-code-
+    /// eliminate the branch.
+    fn run_cooperative_safepoint(&self) {
+        use std::any::TypeId;
+        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+            return;
+        }
+        let mut buf: Vec<V> = Vec::with_capacity(
+            self.value_stack.len()
+                + self.locals.len()
+                + self.results.len()
+                + 64,
+        );
+        self.collect_roots_into(&mut buf);
+        // SAFETY: V == MettaValue verified via TypeId; Vec<V> and
+        // Vec<MettaValue> have identical layout. Same pattern as
+        // `get_or_create_memo_cache` at the top of mod.rs.
+        let buf_mv: Vec<MettaValue> = unsafe { std::mem::transmute::<Vec<V>, Vec<MettaValue>>(buf) };
+        crate::backend::eval::trampoline::eval_loop::worker_cooperative_safepoint(&buf_mv);
+    }
+
     /// Run the VM to completion, returning all results.
     ///
     /// This is the complete generic implementation that handles all opcodes
@@ -849,17 +984,24 @@ where
         // correctly reserve only the slots they need, at the right offset.
         self.ensure_locals_for_current_chunk();
 
-        // H11 (2026-05-05) note: a periodic cooperative GC safepoint hook
-        // here would let parallel-branch workers running in the bytecode
-        // VM surrender their EvalGuard so quiescence-driven GC can fire.
-        // Disabled for now: the bytecode VM holds live MettaValues on its
-        // operand stack, locals, and choice_points that are not registered
-        // as GC roots. Calling `worker_cooperative_safepoint(&[])` here
-        // causes UAF when the next Vm::step reads from those stack slots
-        // after a sweep. To enable safely, the helper must collect the
-        // VM's operand stack + locals + choice_point values as
-        // `extra_roots`. Tracked as a follow-up.
+        // Plan 2 (2026-05-06): periodic cooperative GC safepoint for parallel-
+        // branch workers in the bytecode VM tier. Every 256 instructions, check
+        // `IS_PARALLEL_WORKER && is_gc_requested()` and surrender the EvalGuard
+        // (with all live VM state registered as roots via `collect_roots_into`)
+        // so quiescence-driven GC can fire. Hot-path cost: 1 TLS load + 1
+        // Relaxed atomic load + branch (~2 cycles per 256-iter slot).
+        let mut iter_counter: u32 = 0;
         loop {
+            iter_counter = iter_counter.wrapping_add(1);
+            if iter_counter & 0xFF == 0 {
+                let is_worker = crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
+                    .with(|f| f.get());
+                if is_worker
+                    && crate::backend::models::gc_allocator::is_gc_requested()
+                {
+                    self.run_cooperative_safepoint();
+                }
+            }
             match self.step()? {
                 ControlFlow::Continue(()) => continue,
                 ControlFlow::Break(results) => return Ok(results),
@@ -3022,6 +3164,44 @@ where
         // returned separately and the caller's register is restored.
         let saved_current_bindings = std::mem::take(&mut self.current_bindings);
 
+        // Plan 2 (2026-05-06): protect `saved_current_bindings` from GC
+        // during the inner step loop. The saved bindings are a Rust stack
+        // local — `collect_roots_into` walks `self` only, so without an
+        // explicit frame the values are invisible to the mark phase. If
+        // a worker-thread safepoint fires inside the inner step loop and
+        // GC runs, the saved bindings' slab slots can be reaped, causing
+        // UAF when we restore them at the return points below.
+        // TypeId-gated to MettaValue (the only V where slab GC matters).
+        let _saved_bindings_guard = {
+            use std::any::TypeId;
+            if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
+                let materialized: Vec<V> = saved_current_bindings
+                    .iter()
+                    .map(|(_n, v)| v.clone())
+                    .collect();
+                // SAFETY: V == MettaValue verified via TypeId; Vec<V> and
+                // Vec<MettaValue> have identical layout. The guard ties
+                // the frame's lifetime to this scope, ensuring the Vec
+                // outlives any safepoint that might collect roots from it.
+                let materialized_mv: Vec<MettaValue> = unsafe {
+                    std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized)
+                };
+                let materialized_box = Box::new(materialized_mv);
+                let ptr = &*materialized_box as *const Vec<MettaValue>;
+                let guard = unsafe {
+                    crate::backend::eval::frame_chain::EvalFrameGuard::push_vec(
+                        crate::backend::eval::frame_chain::FrameLabel::Custom(
+                            "vm-template-saved-bindings",
+                        ),
+                        ptr,
+                    )
+                };
+                Some((guard, materialized_box))
+            } else {
+                None
+            }
+        };
+
         // Setup for template execution
         self.chunk = chunk;
         self.ip = 0;
@@ -3102,6 +3282,34 @@ where
         let saved_chunk = Arc::clone(&self.chunk);
         let saved_stack_base = self.value_stack.len();
         let saved_current_bindings = std::mem::take(&mut self.current_bindings);
+
+        // Plan 2 (2026-05-06): same EvalFrameGuard protection as
+        // execute_generic_template_with_binding above. See rationale there.
+        let _saved_bindings_guard = {
+            use std::any::TypeId;
+            if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
+                let materialized: Vec<V> = saved_current_bindings
+                    .iter()
+                    .map(|(_n, v)| v.clone())
+                    .collect();
+                let materialized_mv: Vec<MettaValue> = unsafe {
+                    std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized)
+                };
+                let materialized_box = Box::new(materialized_mv);
+                let ptr = &*materialized_box as *const Vec<MettaValue>;
+                let guard = unsafe {
+                    crate::backend::eval::frame_chain::EvalFrameGuard::push_vec(
+                        crate::backend::eval::frame_chain::FrameLabel::Custom(
+                            "vm-foldl-template-saved-bindings",
+                        ),
+                        ptr,
+                    )
+                };
+                Some((guard, materialized_box))
+            } else {
+                None
+            }
+        };
 
         // Setup for template execution
         self.chunk = chunk;

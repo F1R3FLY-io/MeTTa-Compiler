@@ -61,13 +61,21 @@ pub fn value_contains_var_with_prefix<V: MettaValueTrait + Clone>(
 /// through the given `bindings`.
 ///
 /// A variable is "live" if it appears free in `value` OR is the free var of
-/// some other live variable's resolved value. Used by ProcessRuleMatches'
-/// COMPOSE_MATCH live-vars trimming (Fix 4 of the mmverify hang plan):
-/// after composing child bindings into the current branch's bindings,
-/// freshened body-local rule variables (`$__fr_<epoch>_*`) that have no
-/// live referent can be dropped, capping memory growth across deep
-/// recursion. Caller-side and user variables stay regardless of liveness
-/// since they may be referenced by future composition steps.
+/// some other live variable's resolved value.
+///
+/// Historical note: this function was originally introduced for the "Fix 4"
+/// trim in `ProcessRuleMatches` (mmverify hang plan, defense-in-depth) at
+/// `eval_loop.rs:5540-5562`. That trim was REMOVED on 2026-05-06 because it
+/// dropped freshened bindings that were needed by sibling iterations of an
+/// enclosing foldl-atom (PLN Direct.metta tests 2/3). The proper
+/// iteration-boundary liveness gate is `filter_fold_propagating_bindings`
+/// at `eval_loop.rs:468-481`. Fix 1 at `engine.rs:649-680` is the actual
+/// mmverify-hang fix (partial-bind rejection at rule-match source).
+///
+/// This helper is retained as a utility (with unit tests) for any future
+/// caller that needs reachability semantics with the ProcessRuleMatches
+/// awareness limitation in mind.
+#[allow(dead_code)]
 pub fn transitive_live_vars_generic<V: MettaValueTrait + Clone>(
     value: &V,
     bindings: &GenericBindings<V>,

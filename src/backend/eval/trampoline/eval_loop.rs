@@ -5537,30 +5537,58 @@ fn process_continuation<C: EvalContext>(
                     //     None => composed,
                     // };
 
-                    // Fix 4 (mmverify hang plan, defense-in-depth): drop
-                    // body-local freshened bindings (`$__fr_<epoch>_*`) that
-                    // are no longer transitively reachable from the result
-                    // value. These are dead weight that accumulates linearly
-                    // with recursion depth. Caller-side / user variables are
-                    // preserved regardless of liveness since they may be
-                    // referenced by future composition steps. Caps memory
-                    // growth even if a partial-bind case slips Fix 1's guard
-                    // in `engine.rs::enumerate_rules_via_unification`.
-                    let live_vars = crate::backend::eval::bindings::transitive_live_vars_generic(
-                        &v, &composed,
-                    );
-                    let trimmed_composed = {
-                        let mut acc = crate::backend::models::GenericBindings::new();
-                        for (s, n, val) in composed.iter_full() {
-                            let is_freshened = n.starts_with("$__fr_");
-                            let dead = is_freshened && !live_vars.contains(n);
-                            if !dead {
-                                acc.insert_scoped(s, n, val.clone());
-                            }
-                        }
-                        acc
-                    };
-                    (v, trimmed_composed)
+                    // Removed (2026-05-06): the "Fix 4 mmverify hang plan,
+                    // defense-in-depth" trim that called
+                    // `transitive_live_vars_generic` and dropped freshened
+                    // bindings unreachable from `v`.
+                    //
+                    // Why removed: the trim was too aggressive when this
+                    // handler is dispatched from inside a foldl-atom
+                    // iteration. It had no visibility into sibling
+                    // iterations on the continuation stack, so it dropped
+                    // freshened bindings that ARE referenced by the next
+                    // iteration's items. Specifically, for a fold over
+                    // `((father b $__fr_182_b) (father $__fr_182_b c))`,
+                    // iteration 1's match against `(father b c)` produces
+                    // `$__fr_182_b → c`; the trim erased it because
+                    // `live_vars((stv 1 0.9))` is empty; iteration 2 then
+                    // re-bound `$__fr_182_b → b` against `(father b c)`,
+                    // yielding spurious `(grandfather b c)` for PLN's
+                    // Direct.metta tests 2/3.
+                    //
+                    // Why safe to remove: the actual mmverify-hang fix is
+                    // Fix 1 at `engine.rs:649-680` (partial-bind rejection
+                    // at rule-match source), per Fix 4's own docstring.
+                    // The proper iteration-boundary liveness gate is
+                    // `filter_fold_propagating_bindings` at
+                    // `eval_loop.rs:468-481` (called from ProcessFoldlAtom
+                    // at `:7600`, `:7643`, `:7748`). The lazy sibling
+                    // handler `ProcessRuleMatchesLazy` at `:5779-5821`
+                    // already takes this no-trim path — existence proof
+                    // that compose-without-trim is HE-bisimilar.
+                    //
+                    // HE bisimilarity: HE's `Bindings::merge` uses strict
+                    // rejection on inconsistent bindings; HE has no
+                    // analogous trim. This restoration matches HE.
+                    //
+                    // Memory bound: Fix 1 caps freshened-binding count at
+                    // per-rule var count (small constant). Debug-build
+                    // canary below catches regression.
+                    #[cfg(debug_assertions)]
+                    {
+                        let freshened_count = composed
+                            .iter()
+                            .filter(|(k, _)| k.starts_with("$__fr_"))
+                            .count();
+                        debug_assert!(
+                            freshened_count < 1024,
+                            "ProcessRuleMatches compose produced {} freshened-binding keys; \
+                             possible Fix 1 regression. Investigate \
+                             enumerate_rules_via_unification.",
+                            freshened_count
+                        );
+                    }
+                    (v, composed)
                 }).collect()
             };
             results.extend(composed);

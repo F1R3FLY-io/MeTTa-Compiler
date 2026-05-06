@@ -678,3 +678,66 @@ fn process_owned_preserves_caller_var_through_spanned() {
         s
     );
 }
+
+// ============================================================================
+// Bug fix (2026-05-06): ProcessRuleMatches over-aggressive trim
+// ============================================================================
+//
+// Regression: `Continuation::ProcessRuleMatches` at `eval_loop.rs:5540-5562`
+// had a "Fix 4 (mmverify hang plan, defense-in-depth)" trim that dropped
+// freshened bindings (`$__fr_*` prefixed names) that weren't transitively
+// reachable from the result value. This was too aggressive when the
+// handler was dispatched as part of an enclosing foldl-atom: the trim had
+// no visibility into sibling iterations on the continuation stack, so it
+// dropped bindings that the next iteration needed.
+//
+// Concrete failure: Direct.metta `(? (grandfather $who c))` evaluated a
+// rule body fold over `((father b $__fr_182_b) (father $__fr_182_b c))`.
+// Iteration 1 matched `(father b c)` producing `$__fr_182_b → c`. The
+// trim erased it because `live_vars((stv 1 0.9))` is empty. Iteration 2
+// then evaluated `(father $__fr_182_b c)` with `$__fr_182_b` UNBOUND,
+// matched against `(father b c)` with `$__fr_182_b → b`, and produced
+// the spurious `(grandfather b c)` result.
+//
+// Fix: Removed the trim. Trust the proper iteration-boundary liveness
+// gate at `ProcessFoldlAtom` (`filter_fold_propagating_bindings` at
+// `eval_loop.rs:468-481`) and Fix 1's partial-bind rejection at
+// rule-match source (`engine.rs:649-680`).
+//
+// HE bisimilarity: HE's `Bindings::merge` uses strict-rejection on
+// inconsistent bindings; HE has no analogous trim. The lazy sibling
+// `ProcessRuleMatchesLazy` (`eval_loop.rs:5779-5821`) was already
+// trim-free — proof that compose-without-trim is HE-bisimilar.
+
+#[test]
+fn foldl_atom_threads_freshened_var_through_rule_match_compose() {
+    // Mirrors the (chain (foldl-atom ((father b $b) (father $b c)) ...)
+    // shape that PLN Direct.metta's `?` macro decomposes into. The fold
+    // body contains a freshened thread variable; iteration 1 binds it
+    // via match against ground KB facts, and iteration 2 must see the
+    // bound value (NOT re-bind it via fresh unification against the same
+    // fact).
+    let source = r#"
+        (= (father b c) (stv 1.0 0.9))
+        (= (Truth_Op $a $b) (stv 1.0 0.9))
+        !(foldl-atom ((father b $bx) (father $bx c)) (stv 1 1) Truth_Op)
+    "#;
+    let results = eval_last(source);
+    // Expected: a single Truth_Op chain reduces because both items
+    // succeed under the consistent threading $bx → c. Iteration 1's
+    // (father b $bx) binds $bx=c; iteration 2's (father $bx c) becomes
+    // (father c c), which has no rule → fold dies cleanly. Pre-fix, the
+    // trim dropped $bx=c, so iteration 2 re-bound $bx=b, producing
+    // a spurious surviving fold result.
+    //
+    // Pin: result must NOT contain a leaked '$__fr_' freshened var name
+    // (which would indicate a completely-broken evaluation), AND must be
+    // a single value (not a multi-result fork suggesting the
+    // sibling-iteration re-bind).
+    let combined = results.join(" ");
+    assert!(
+        !combined.contains("$__fr_"),
+        "freshened thread-var leaked into output: {}",
+        combined
+    );
+}

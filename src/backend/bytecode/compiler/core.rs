@@ -1241,11 +1241,21 @@ where
                 let list_arg = args[0].clone();
                 let init = args[1].clone();
                 let func = args[2].clone();
-                // Synthesized var names (rule-local; no collision risk
-                // with caller-level names). Must match the convention
-                // used by sexpr.rs:1267 for tree-walker consistency.
-                let acc_var = self.factory.atom("$__fa_acc");
-                let item_var = self.factory.atom("$__fa_item");
+                // H15 (2026-05-05): per-call freshened epoch via
+                // `intern_fresh_name`. The `$__fr_<epoch>_*` prefix
+                // interlocks with the existing propagate_keys filter
+                // (`!name.starts_with("$__fr_")`) so per-iter accumulator
+                // names don't leak across nested fold scopes. Earlier
+                // literal `$__fa_acc` / `$__fa_item` strings caused
+                // cross-contamination in nested foldl-atom calls. The
+                // sexpr.rs tree-walker site mirrors this scheme.
+                let epoch = crate::backend::eval::freshening::allocate_epoch();
+                let acc_var_name =
+                    crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_acc");
+                let item_var_name =
+                    crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_item");
+                let acc_var = self.factory.atom(acc_var_name);
+                let item_var = self.factory.atom(item_var_name);
                 let operation = self.factory.sexpr(vec![
                     func,
                     acc_var.clone(),

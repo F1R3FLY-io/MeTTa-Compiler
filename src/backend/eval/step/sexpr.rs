@@ -1289,16 +1289,25 @@ where
                         Err(step) => return step,
                     };
 
-                    // Synthesized variable names. Use a `$__fa_` prefix
-                    // (foldl-atom) with `acc` / `item` suffixes. These are
-                    // scoped to a single StartFoldlAtom invocation so no
-                    // cross-contamination between nested folds.
-                    let acc_var_name = "$__fa_acc".to_string();
-                    let item_var_name = "$__fa_item".to_string();
+                    // H15 (2026-05-05): synthesized variable names use
+                    // a per-call freshened epoch via `intern_fresh_name`.
+                    // The `$__fr_<epoch>_*` prefix interlocks with the
+                    // existing propagate_keys filter at eval_loop.rs:7428
+                    // (`!name.starts_with("$__fr_")`), so per-iter accumulator
+                    // names don't leak across nested fold scopes. The earlier
+                    // literal `$__fa_acc` / `$__fa_item` strings caused
+                    // cross-contamination in nested foldl-atom calls.
+                    let epoch = crate::backend::eval::freshening::allocate_epoch();
+                    let acc_var_static =
+                        crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_acc");
+                    let item_var_static =
+                        crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_item");
+                    let acc_var_name = acc_var_static.to_string();
+                    let item_var_name = item_var_static.to_string();
                     let operation = ctx.factory().sexpr(vec![
                         func,
-                        ctx.factory().atom(&acc_var_name),
-                        ctx.factory().atom(&item_var_name),
+                        ctx.factory().atom(acc_var_static),
+                        ctx.factory().atom(item_var_static),
                     ]);
 
                     return GenericEvalStep::StartFoldlAtom {

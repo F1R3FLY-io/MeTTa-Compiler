@@ -85,10 +85,7 @@ pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
     }
     // H12 structural correctness gate — before trusting the bloom,
     // verify the expression's head cannot itself be reducible. This
-    // protects against hash-cons aliasing (two structurally identical
-    // ground sexprs share the same `inner_ptr`; a freeze-tuple result
-    // may collide with a reducible expression in a later query) and
-    // against the bloom's intrinsic ~1% FPR.
+    // protects against bloom collisions and the H12 ~1% FPR.
     if let Some(items) = value.as_sexpr() {
         if let Some(head) = items.first().and_then(|v| v.as_atom()) {
             if is_reducible_head(head) {
@@ -99,8 +96,20 @@ pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
             }
         }
     }
-    let ptr = value.inner_ptr() as usize;
-    NORMAL_FORM_BLOOM.may_contain(&ptr.to_le_bytes())
+    // Option B fix (2026-05-06): bloom keyed on content-hash, not
+    // `inner_ptr`. Pre-fix, `inner_ptr()` returned the OUTER
+    // MettaValueInner pointer including any Spanned wrapper. When a
+    // freeze-tuple-memoized value flowed through let/chain/Done/Resume
+    // continuations, it could pick up a Spanned wrapper or hash-cons
+    // alias to a different slab slot — producing a different `inner_ptr`
+    // that missed the bloom even though the value was structurally
+    // unchanged. Direct.metta test 2 hit this ~6.5% of runs (depending
+    // on parallel scheduler decisions). `hash_value` is fully Spanned-
+    // transparent (`metta_value.rs:212-214`) and content-stable across
+    // slab re-allocations, eliminating the leak. The thread-local
+    // VALUE_HASH_CACHE makes warm lookups near-O(1).
+    let key = value.hash_value();
+    NORMAL_FORM_BLOOM.may_contain(&key.to_le_bytes())
 }
 
 /// Record a value as being in normal form (Phase 9.5).
@@ -125,8 +134,10 @@ pub fn memoize_normal_form<V: MettaValueTrait>(value: &V) {
             }
         }
     }
-    let ptr = value.inner_ptr() as usize;
-    NORMAL_FORM_BLOOM.insert(&ptr.to_le_bytes());
+    // Option B fix (2026-05-06): bloom keyed on content-hash. See
+    // `is_memoized_normal_form` for rationale.
+    let key = value.hash_value();
+    NORMAL_FORM_BLOOM.insert(&key.to_le_bytes());
     NORMAL_FORM_BLOOM_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 

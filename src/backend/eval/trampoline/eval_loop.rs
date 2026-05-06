@@ -1966,9 +1966,27 @@ fn parallel_collapse_eval(
             let _guard = EvalGuard::enter();
             // H11 (2026-05-05): mark thread as parallel-branch worker.
             let _worker_marker = WorkerEvalScope::enter();
-            let ctx = ParallelBranchContext::get();
-            let (eval_results, _new_env) =
-                eval_trampoline(item_expr, env, &ctx);
+
+            // Option C (2026-05-06) — Amendment 1 (parallel-path
+            // symmetry per second-opinion review). HE-faithful re-eval
+            // skip: when the item is already in normal form (memoized
+            // by freeze-tuple or recognized by the structural test),
+            // emit it verbatim instead of re-evaluating. This is the
+            // PARALLEL counterpart of the sequential gate at the
+            // StartCollapse handler. Critical for the Direct.metta
+            // test 2 flake fix because the parallel scheduler's
+            // non-determinism was the symptom-trigger for the
+            // freeze-tuple memo leak.
+            let eval_results: smallvec::SmallVec<
+                [crate::backend::eval::trampoline::types::BoundValue; 2],
+            > = if crate::backend::eval::trampoline::is_memoized_normal_form(&item_expr) {
+                smallvec::smallvec![bv(item_expr.clone())]
+            } else {
+                let ctx = ParallelBranchContext::get();
+                let (results, _new_env) =
+                    eval_trampoline(item_expr.clone(), env, &ctx);
+                results
+            };
 
             // Store result in pre-allocated slot with bindings preserved.
             {
@@ -1994,14 +2012,19 @@ fn parallel_collapse_eval(
         );
     }
 
-    // Evaluate item 0 locally
+    // Evaluate item 0 locally — Option C symmetry: skip re-eval when
+    // item is already in normal form (mirrors the worker closure logic).
     let item0_results = {
-        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
-        let ctx = ParallelBranchContext::get();
-        let (eval_results, _new_env) =
-            eval_trampoline(items[0].0.clone(), env.clone(), &ctx);
-        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
-        eval_results
+        if crate::backend::eval::trampoline::is_memoized_normal_form(&items[0].0) {
+            smallvec::smallvec![bv(items[0].0.clone())]
+        } else {
+            PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
+            let ctx = ParallelBranchContext::get();
+            let (eval_results, _new_env) =
+                eval_trampoline(items[0].0.clone(), env.clone(), &ctx);
+            PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
+            eval_results
+        }
     };
 
     // Store item 0 results with bindings preserved.
@@ -10179,15 +10202,31 @@ fn process_continuation<C: EvalContext>(
                     tracked_vars_hint: None,
                 });
 
-                work_stack.push(WorkItem::Eval {
-                    value: first_raw,
-                    env: result_env,
-                    depth: depth + 1,
-                    is_tail_call: false,
-                    expected_type: None,
-                    demand: None,
-                    carrying_bindings: outer_carrying.clone(),
-                });
+                // Option C (2026-05-06) — HE-faithful re-eval skip:
+                // HE's `collapse_bind_ret` (interpreter.rs:767-792) appends
+                // already-driven raws verbatim — it does NOT re-evaluate.
+                // The kernel's `Demand::All` path drives every value to a
+                // Done step before pushing onto `expr_results`, so re-eval
+                // is purely defensive and merely re-confirms fixpoint.
+                // For values verifiably in normal form (freeze-tuple
+                // outputs, ground sexprs whose head is non-reducible),
+                // skip the re-eval and Resume directly with the raw —
+                // matching HE.
+                if crate::backend::eval::trampoline::is_memoized_normal_form(&first_raw) {
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(first_raw)], result_env),
+                    });
+                } else {
+                    work_stack.push(WorkItem::Eval {
+                        value: first_raw,
+                        env: result_env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                        demand: None,
+                        carrying_bindings: outer_carrying.clone(),
+                    });
+                }
             }
         }
 
@@ -10420,15 +10459,24 @@ fn process_continuation<C: EvalContext>(
                     tracked_vars_hint,
                 });
 
-                work_stack.push(WorkItem::Eval {
-                    value: next_raw,
-                    env: result_env,
-                    depth: depth + 1,
-                    is_tail_call: false,
-                    expected_type: None,
-                    demand: None,
-                    carrying_bindings: current_raw_bindings_for_eval,
-                });
+                // Option C (2026-05-06) — same HE-faithful re-eval skip
+                // as ProcessCollapse sequential branch. See rationale at
+                // the StartCollapse handler.
+                if crate::backend::eval::trampoline::is_memoized_normal_form(&next_raw) {
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(next_raw)], result_env),
+                    });
+                } else {
+                    work_stack.push(WorkItem::Eval {
+                        value: next_raw,
+                        env: result_env,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                        demand: None,
+                        carrying_bindings: current_raw_bindings_for_eval,
+                    });
+                }
             } else {
                 // All results evaluated — assemble the tuple
                 let result_list = if is_bind {

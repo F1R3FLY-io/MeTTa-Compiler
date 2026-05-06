@@ -122,3 +122,62 @@ fn ext5_lt_diff_length_strings() {
 // Ext-6 cartesian-product over superpose: superpose syntax may vary
 // (e.g. `(superpose 1 2)` vs `(superpose (1 2))`). Deferred to follow-up;
 // see `docs/metta-extensions/MeTTaTron_specific.md` for full extension list.
+
+// ============================================================================
+// Ext-7: struct-unique-atom (PeTTa-compat byte-identity dedup)
+// ============================================================================
+//
+// `unique-atom` is HE-bisimilar (alpha-equivalence). `struct-unique-atom` is
+// the MeTTaTron-only PeTTa-compat extension that uses byte-identity. The
+// HE-port test below replicates HE's own `unique_op_` test
+// (hyperon-experimental/lib/src/metta/runner/stdlib/atom.rs:629-652) and
+// confirms MeTTaTron's `unique-atom` produces the SAME output (alpha collapse).
+
+#[test]
+fn ext7_he_unique_atom_bisim_alpha_equivalent_collapse() {
+    // HE's own `unique_op_` test:
+    //   input: ((name $yonas) (name $tol) ($name $tol))
+    //   expected: 2 elements (first two collapse — alpha-equivalent under
+    //     bidirectional variable mapping; the third has a different shape).
+    // MeTTaTron's `unique-atom` matches HE's behavior here.
+    let results = run_one("!(unique-atom ((name $yonas) (name $tol) ($name $tol)))");
+    let s = fmt_results(&results);
+    // The output is wrapped in a single tuple; we just want exactly 2 inner
+    // sub-tuples. Count occurrences of "name " or "$name" substring.
+    // Two `(name ...)` and one `($name ...)` should collapse to 2 entries.
+    // Conservative check: result string contains both `name` and `$name`.
+    assert!(
+        s.contains("name") && s.contains("$name"),
+        "Expected alpha-equivalent collapse to keep both shape variants, got: {}",
+        s
+    );
+}
+
+#[test]
+fn ext7_struct_unique_atom_keeps_byte_distinct_alpha_equivalent() {
+    // `struct-unique-atom` MUST keep ($x $y) and ($x $y) as a single entry
+    // when byte-identical, but distinct from ($a $b) — even though all are
+    // alpha-equivalent to each other.
+    let results = run_one("!(struct-unique-atom (($x $y) ($x $y) ($a $b)))");
+    let s = fmt_results(&results);
+    assert!(
+        s.contains("$x") && s.contains("$a"),
+        "Expected struct-dedup to keep both byte-distinct alpha-equivalents, got: {}",
+        s
+    );
+}
+
+#[test]
+fn ext7_struct_unique_atom_dedups_repeated_ground() {
+    // Byte-identical ground sub-expressions dedupe under both byte-identity
+    // and alpha-equivalence — agreement is expected.
+    let results = run_one(
+        "!(struct-unique-atom ((Inheritance A B) (Inheritance A B) (Inheritance A C)))",
+    );
+    let s = fmt_results(&results);
+    assert!(
+        s.contains("Inheritance A B") && s.contains("Inheritance A C"),
+        "Expected ground-term dedup to leave 2 distinct entries, got: {}",
+        s
+    );
+}

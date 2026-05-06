@@ -81,6 +81,26 @@ non-determinism through arithmetic.
 **Motivation:** Co-introduced with wrapping arithmetic (commit `8fd3a9a`). Lets callers compose arithmetic with `superpose` without explicit `chain` boilerplate.
 **Tests:** `tests/mettatron_extensions_regression.rs::ext6_*`
 
+### Ext-7. `struct-unique-atom` (PeTTa-compat byte-identity dedup)
+**Spec:** [§12.5 unique-atom](../../../metta-specification/spec/12-stdlib-atoms.md) defines only `unique-atom` (alpha-equivalence, HE-faithful). MeTTaTron exposes BOTH `unique-atom` (HE-bisimilar, alpha) and `struct-unique-atom` (PeTTa-compat, byte-identity).
+**MeTTaTron:** `struct-unique-atom` dedupes via byte-identity (`Atom::PartialEq`). Two atoms `($x $y)` are kept distinct (different variable names byte-wise) even though they are alpha-equivalent.
+**HE:** No equivalent. HE's stdlib has only `UniqueAtomOp`, which uses `atoms_are_equivalent` (alpha-equivalence) — see `hyperon-experimental/lib/src/metta/runner/stdlib/atom.rs:30-42`.
+**Source:** `src/backend/eval/set_ops.rs:191-236` (`eval_struct_unique_atom_generic`).
+**Motivation:** Enables porting from PeTTa, where structural-dedup is the local idiom. PLN (`PLN/examples/Direct.metta:33,41`) deliberately mixes `unique-atom` (HE-alpha for confidence aggregation) and `struct-unique-atom` (byte-identity for term identity).
+**Tests:** `tests/mettatron_extensions_regression.rs::ext7_*` (added 2026-05-05).
+**Note:** `unique-atom` itself is NOT a MeTTaTron extension — it follows HE's `atoms_are_equivalent` (alpha) exactly. See `set_ops.rs:1-49` for the comparison table.
+
+## Spec vs. HE-implementation drift (informative)
+
+The `metta-specification/spec/12-stdlib-atoms.md:98` describes
+`unique-atom` as using "structural equality (`eq`, not α-equivalence)."
+This contradicts HE's actual source (`hyperon-experimental/lib/src/metta/runner/stdlib/atom.rs:30-42`),
+which calls `atoms_are_equivalent` (alpha-equivalence). Per the policy
+stated in this document's preamble (the spec is "derived from MeTTa HE
+and remains the authoritative reference"), MeTTaTron follows HE's
+source, NOT the spec text where they diverge. An upstream issue against
+the metta-specification repo should reconcile this discrepancy.
+
 ## Tier-specific divergence (informative)
 
 The bytecode VM and JIT runtime paths at `src/backend/bytecode/jit/runtime/arithmetic.rs`, `…/handlers/arithmetic.rs`, and `…/handlers/comparison.rs` do NOT currently mirror Ext-3, Ext-5, or Ext-6 (no `is_empty()` guards, no string fallback, no Cartesian loop). When those paths encounter the relevant inputs, they bail with `VmError::TypeError` and fall through to the trampoline tier, where the extension behavior applies.

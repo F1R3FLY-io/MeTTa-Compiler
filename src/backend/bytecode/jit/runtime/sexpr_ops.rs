@@ -170,6 +170,21 @@ unsafe fn jit_maybe_pre_eval_structural(
     use crate::backend::eval::trampoline::EvalContext;
     use crate::backend::models::{global_factory, GcFactory};
 
+    // Plan 3 hook H-2 (2026-05-06): cooperative GC safepoint before
+    // JIT→trampoline re-entry. Same pattern as `jit_pre_eval_arg`.
+    {
+        let is_worker = crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
+            .with(|f| f.get());
+        if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
+            let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
+            roots.push(v.clone());
+            crate::backend::bytecode::jit::runtime::gc_roots::collect_jit_roots_into(
+                ctx_ref, &mut roots,
+            );
+            crate::backend::eval::trampoline::eval_loop::worker_cooperative_safepoint(&roots);
+        }
+    }
+
     let items = match v.as_sexpr() {
         Some(s) => s,
         None => return v,

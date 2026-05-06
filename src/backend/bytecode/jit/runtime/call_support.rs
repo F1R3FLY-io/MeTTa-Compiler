@@ -152,6 +152,24 @@ unsafe fn try_grounded_fast_path(head: &str, args_ptr: *const u64, arity: usize)
 /// # Safety
 /// `ctx_ref.env_ptr` must point to a valid `MettaEnvironment` (or be null).
 unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<MettaValue> {
+    // Plan 3 hook H-1 (2026-05-06): cooperative GC safepoint at JIT
+    // tier-return edge. Parallel-branch workers entering the trampoline
+    // from JIT must surrender their EvalGuard so quiescence-driven GC
+    // can fire. The walker registers JitContext slab roots + the local
+    // `arg` value before the safepoint protocol runs.
+    {
+        let is_worker = crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
+            .with(|f| f.get());
+        if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
+            let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
+            roots.push(arg.clone());
+            crate::backend::bytecode::jit::runtime::gc_roots::collect_jit_roots_into(
+                ctx_ref, &mut roots,
+            );
+            crate::backend::eval::trampoline::eval_loop::worker_cooperative_safepoint(&roots);
+        }
+    }
+
     if ctx_ref.env_ptr.is_null() {
         return None;
     }

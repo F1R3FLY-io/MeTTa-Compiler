@@ -52,6 +52,7 @@ pub mod expression_ops;
 pub mod global_ops;
 pub mod helpers;
 pub mod higher_order;
+pub mod gc_roots;
 pub mod mork_ops;
 pub mod multi_value;
 pub mod nondeterminism;

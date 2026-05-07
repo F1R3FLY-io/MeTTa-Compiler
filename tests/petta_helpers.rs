@@ -140,8 +140,11 @@ fn msort_already_sorted() {
 
 #[test]
 fn msort_floats() {
+    // Spec §02 canonical float form (commit 8fd3a9a): whole-number floats
+    // emit `.0` so `parse(format(v))` round-trips to `Float(v)`, not
+    // `Long(v as i64)`. Pre-spec-alignment, this expected `(0.5 1.5 2)`.
     let r = run_one("!(msort (1.5 2.0 0.5))");
-    assert_eq!(r, vec!["(0.5 1.5 2)"]);
+    assert_eq!(r, vec!["(0.5 1.5 2.0)"]);
 }
 
 // =============================================================================

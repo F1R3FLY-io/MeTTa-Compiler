@@ -1331,15 +1331,8 @@ impl MettaValue {
             MettaValueInner::Bool(true) => "True".to_string(),
             MettaValueInner::Bool(false) => "False".to_string(),
             MettaValueInner::Long(n) => n.to_string(),
-            MettaValueInner::Float(f) => {
-                let s = f.to_string();
-                // Ensure float representation is unambiguous
-                if s.contains('.') || s.contains('e') || s.contains('E') {
-                    s
-                } else {
-                    format!("{}.0", s)
-                }
-            }
+            // Spec §02: canonical float form. Single source of truth.
+            MettaValueInner::Float(f) => float_canonical(*f),
             MettaValueInner::String(s) => format!("\"{}\"", escape_metta_string(s)),
             MettaValueInner::SExpr(items) => {
                 let inner = items
@@ -1498,6 +1491,28 @@ pub fn escape_json(s: &str) -> String {
         .replace('\t', r"\t")
 }
 
+/// Spec §02 canonical float formatting: whole-number floats emit `.0`
+/// so `parse(format(v))` round-trips to `Float(v)`, not `Long(v as i64)`.
+///
+/// Single source of truth used by every MeTTa-text float formatter:
+/// - `Display::fmt` (`metta_value.rs:1568`)
+/// - `to_metta_string` (`metta_value.rs:1334`)
+/// - Stack-based stringifiers (`metta_value.rs:2139, 2261`)
+/// - REPL `format_result` (`main.rs:221`)
+///
+/// **Deliberately NOT used by `to_mork_string` (`metta_value.rs:1398`)**
+/// because that function produces MORK index keys; changing the format
+/// would change the keys and break match outcomes. MORK key formatting
+/// is a separate concern with its own backwards-compatibility requirements.
+#[inline]
+pub fn float_canonical(f: f64) -> String {
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e16 {
+        format!("{}.0", f as i64)
+    } else {
+        f.to_string()
+    }
+}
+
 /// Escape string content for MeTTa string literals.
 /// Reverses the logic in the parser's unescape_string().
 /// Supports: \n, \t, \r, \\, \", \x##, \u{...}
@@ -1564,14 +1579,8 @@ impl fmt::Display for MettaValue {
             MettaValueInner::Long(n) => write!(f, "{}", n),
             // Spec §02: canonical float form preserves `.0` for whole-number
             // floats (e.g., `1500.0`, not `1500`) so parser round-trip yields
-            // Float, not Long.
-            MettaValueInner::Float(v) => {
-                if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e16 {
-                    write!(f, "{}.0", *v as i64)
-                } else {
-                    write!(f, "{}", v)
-                }
-            }
+            // Float, not Long. Single source of truth: `float_canonical`.
+            MettaValueInner::Float(v) => write!(f, "{}", float_canonical(*v)),
             // Spec §01.2: strings canonical-escape `\n`, `\t`, `\r`, `\\`, `\"`.
             MettaValueInner::String(s) => {
                 write!(f, "\"")?;
@@ -2136,7 +2145,7 @@ impl MettaValueTrait for MettaValue {
                     }
                     match val.inner_ref() {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
-                    MettaValueInner::Float(f) => result_stack.push(f.to_string()),
+                    MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
                     MettaValueInner::Bool(b) => {
                         result_stack.push(if *b { "True" } else { "False" }.to_string());
                     }
@@ -2258,7 +2267,7 @@ impl MettaValueTrait for MettaValue {
                     }
                     match val.inner_ref() {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
-                    MettaValueInner::Float(f) => result_stack.push(f.to_string()),
+                    MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
                     MettaValueInner::Bool(b) => {
                         result_stack.push(if *b { "True" } else { "False" }.to_string());
                     }

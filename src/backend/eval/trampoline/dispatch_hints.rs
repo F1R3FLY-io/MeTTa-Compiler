@@ -68,6 +68,35 @@ static NORMAL_FORM_BLOOM: LazyLock<AtomicBloomFilter> =
 static NORMAL_FORM_BLOOM_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Debug-only counter incremented every time `memoize_normal_form` silently
+/// rejects a value because its head is reducible (or a variable).
+///
+/// Replaces the H12 `debug_assert!` panic at the same site: VM and JIT
+/// dispatch paths legitimately pass reducible-head expressions through
+/// `op_dispatch_rules` → `memoize_normal_form` (e.g., `(map-atom ...)`,
+/// `(first-from-pair ...)`), and the writer-side filter mirrors the
+/// reader-side filter at `is_memoized_normal_form` so the bloom never
+/// receives them. The counter exists for regression detection: tests
+/// can sample it to confirm rejections are happening (canary at the
+/// bottom of this file).
+#[cfg(debug_assertions)]
+static NORMAL_FORM_REJECT_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Read the current rejection count (debug-only). Used by the canary
+/// regression test.
+#[cfg(test)]
+pub(crate) fn normal_form_reject_count() -> u64 {
+    #[cfg(debug_assertions)]
+    {
+        NORMAL_FORM_REJECT_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
 /// Check if a value is memoized as being in normal form (Phase 9.5).
 ///
 /// H12 (2026-05-05): Structural prefilter converts soft-correctness
@@ -113,24 +142,32 @@ pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
 }
 
 /// Record a value as being in normal form (Phase 9.5).
+///
+/// Writer-side structural guard (mirrors `is_memoized_normal_form`'s
+/// reader-side filter at `dispatch_hints.rs:86-98`). When the head is
+/// reducible OR is a variable, silently no-op — the bloom is purely
+/// advisory and the read side rejects the entry anyway. Restores
+/// writer/reader symmetry without changing observable behavior at any
+/// tier (VM, JIT, trampoline).
+///
+/// Originally added (H12) as a panic-on-bug `debug_assert!` canary, but
+/// VM/JIT dispatch paths (`bytecode/vm/mod.rs:6036, 6045`,
+/// `bytecode/jit/runtime/call_support.rs:370, 590, 704, 812`) legitimately
+/// pass reducible-head expressions through `op_dispatch_rules` and could
+/// not be converted to per-caller gates without duplicating logic across
+/// 6 call sites + 4 freeze-tuple sites. The single writer-side guard is
+/// total, symmetric, and cannot be violated by a missing caller-side check.
+/// Debug-only `NORMAL_FORM_REJECT_COUNT` provides the regression-canary
+/// signal that the panic used to provide.
 #[inline]
 pub fn memoize_normal_form<V: MettaValueTrait>(value: &V) {
-    // H12 (2026-05-05): debug-time canary for the bloom invariant.
-    // `memoize_normal_form` should only ever be called on expressions
-    // whose head is NOT reducible. Marking a reducible head poisons
-    // the bloom and (if the structural prefilter at lookup were
-    // missing) would cause us to skip evaluation of a rule-bearing
-    // expression. Keep this assertion to catch future regressions
-    // that try to memoize the wrong shape.
-    #[cfg(debug_assertions)]
-    {
-        if let Some(items) = value.as_sexpr() {
-            if let Some(head) = items.first().and_then(|v| v.as_atom()) {
-                debug_assert!(
-                    !is_reducible_head(head),
-                    "memoize_normal_form called on reducible head '{}' — would poison bloom",
-                    head
-                );
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            if is_reducible_head(head) || head.starts_with('$') {
+                #[cfg(debug_assertions)]
+                NORMAL_FORM_REJECT_COUNT
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return;
             }
         }
     }
@@ -1123,5 +1160,53 @@ mod tests {
             );
             assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing generic grounded op: {}", op);
         }
+    }
+
+    /// Canary regression test for the writer-side structural guard in
+    /// `memoize_normal_form`. Replaces the H12 `debug_assert!` panic.
+    ///
+    /// VM/JIT dispatch paths legitimately pass reducible-head expressions
+    /// through `op_dispatch_rules` → `memoize_normal_form` (e.g.,
+    /// `(map-atom ...)`, `(first-from-pair ...)`). The guard at lines
+    /// 117-141 silently rejects such values and increments
+    /// `NORMAL_FORM_REJECT_COUNT`. This test confirms:
+    ///   1. The rejection counter increments on a reducible-head call.
+    ///   2. The bloom does NOT contain the rejected value (reader returns
+    ///      `false`).
+    ///
+    /// If a future regression re-introduces the H12 invariant violation
+    /// (e.g., the writer-side guard is removed), the bloom would receive
+    /// a poisoned entry but the reader's structural prefilter would still
+    /// reject it on read — so this test instead exercises the WRITER's
+    /// rejection signal.
+    #[test]
+    fn canary_reducible_head_rejected_silently() {
+        use crate::backend::models::{global_factory, MettaValueFactory};
+
+        let pre = normal_form_reject_count();
+        let factory = global_factory();
+        let v = factory.sexpr(vec![factory.atom("map-atom"), factory.atom("$x")]);
+        memoize_normal_form(&v);
+        // Counter only increments in debug builds.
+        #[cfg(debug_assertions)]
+        assert!(
+            normal_form_reject_count() > pre,
+            "rejection counter should increment for reducible head"
+        );
+        // In both debug and release: bloom must NOT contain the value
+        // (writer rejected; even if it didn't, the reader's structural
+        // prefilter at line 86-98 would reject the lookup).
+        assert!(
+            !is_memoized_normal_form(&v),
+            "reducible-head value must NOT be reported as in normal form"
+        );
+        // Sanity: a non-reducible-head value DOES enter the bloom and
+        // is reported on lookup.
+        let plain = factory.sexpr(vec![factory.atom("FooData"), factory.atom("a")]);
+        memoize_normal_form(&plain);
+        assert!(
+            is_memoized_normal_form(&plain),
+            "non-reducible-head value should be memoized"
+        );
     }
 }

@@ -13,6 +13,7 @@ use rustyline::Editor;
 
 use mettatron::backend::*;
 use mettatron::backend::models::ValueView;
+use mettatron::backend::models::metta_value::float_canonical;
 use mettatron::repl::{MettaHelper, QueryHighlighter};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -218,7 +219,7 @@ fn format_result(value: &MettaValue) -> String {
     match value.view() {
         ValueView::Bool(b) => if b { "True".to_string() } else { "False".to_string() },
         ValueView::Long(n) => n.to_string(),
-        ValueView::Float(f) => f.to_string(),
+        ValueView::Float(f) => float_canonical(f),
         ValueView::Unit => "()".to_string(),
         ValueView::Empty => "Empty".to_string(),
         ValueView::Atom(s) => s.to_string(),

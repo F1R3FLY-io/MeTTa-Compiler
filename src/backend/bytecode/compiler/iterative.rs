@@ -1785,6 +1785,32 @@ impl Compiler {
                 });
                 Ok(Some(()))
             }
+            // X.5e — binary min/max desugar to (MinAtom (MakeSExpr 2 a b)).
+            // LIFO ordering: push items in reverse execution order.
+            "min" | "max" => {
+                self.check_arity(op, args.len(), 2)?;
+                let final_op = if op == "min" {
+                    Opcode::MinAtom
+                } else {
+                    Opcode::MaxAtom
+                };
+                work_stack.push(CompileWork::EmitOpcode { opcode: final_op });
+                work_stack.push(CompileWork::EmitOpcodeU8 {
+                    opcode: Opcode::MakeSExpr,
+                    operand: 2,
+                });
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[1].clone(),
+                    in_tail_position: false,
+                    cont_id: 0,
+                });
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[0].clone(),
+                    in_tail_position: false,
+                    cont_id: 0,
+                });
+                Ok(Some(()))
+            }
 
             // ================================================================
             // Set operations

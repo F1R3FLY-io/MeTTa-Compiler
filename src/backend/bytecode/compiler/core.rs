@@ -1099,6 +1099,27 @@ where
                 self.builder.emit(Opcode::MaxAtom);
                 Ok(Some(()))
             }
+            // X.5e — binary min/max compiled by wrapping operands in a 2-tuple
+            // and reusing MinAtom/MaxAtom. T0 has dedicated MinOp/MaxOp at
+            // grounded/arithmetic.rs:498-660 with the same shape; T1 had only
+            // the tuple form. Wrapping is cheap (one MakeSExpr) and yields
+            // identical results across tiers.
+            "min" => {
+                self.check_arity("min", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit_byte(Opcode::MakeSExpr, 2);
+                self.builder.emit(Opcode::MinAtom);
+                Ok(Some(()))
+            }
+            "max" => {
+                self.check_arity("max", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit_byte(Opcode::MakeSExpr, 2);
+                self.builder.emit(Opcode::MaxAtom);
+                Ok(Some(()))
+            }
 
             // Set operations
             "unique-atom" => {

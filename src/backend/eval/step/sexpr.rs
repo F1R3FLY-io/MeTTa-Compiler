@@ -279,6 +279,18 @@ where
                     ));
                 }
 
+                // noreduce - returns the entire S-expression unevaluated
+                // (Workstream X.5c — MTT-FN-NOREDUCE). Quote-like sentinel
+                // that preserves the (noreduce X) wrapper. MeTTaTron-only
+                // extension; HE has only the related noreduce-eq operator
+                // (stdlib.metta:966-967).
+                "noreduce" => {
+                    return GenericEvalStep::Done((
+                        smallvec![ctx.factory().sexpr(items)],
+                        env,
+                    ));
+                }
+
                 // Unquote - unwraps Quoted variant, returns inner value
                 "unquote" => {
                     if items.len() != 2 {

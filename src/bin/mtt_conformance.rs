@@ -139,6 +139,28 @@ fn discover_fixtures(dir: &Path, module_filter: Option<&str>) -> Vec<(PathBuf, P
     fixtures
 }
 
+/// Extract the leading S-expression "kind" prefix from an atom string.
+///
+/// Maps atoms to their type-prefix for host-dependent fixture comparison:
+/// - `(Memo 1 "my-cache")` → `(Memo`
+/// - `(Memo 99 "")` → `(Memo`
+/// - `(Error msg detail)` → `(Error`
+/// - `42` → `42` (no kind prefix; literals compare directly)
+/// - `(foo bar baz)` → `(foo`
+///
+/// Returns the full string if no parenthesised head is present.
+fn atom_kind_prefix(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix('(') {
+        let head: String = rest
+            .chars()
+            .take_while(|c| !c.is_whitespace() && *c != ')')
+            .collect();
+        format!("({}", head)
+    } else {
+        s.to_string()
+    }
+}
+
 /// Canonical multiset comparison: sort results lexicographically, dropping Empty.
 fn canonicalize(results: &[MettaValue]) -> Vec<String> {
     let mut s: Vec<String> = results
@@ -318,18 +340,56 @@ fn run_fixture(metta_path: &Path, yaml_path: &Path) -> Result<FixtureOutcome, St
     }
     let actual = canonicalize(&all);
 
-    // host-dependent fixtures (e.g. file-not-found errors with platform-specific
-    // text) — pass iff the actual output contains an Error atom, since the
-    // exact message is host-specific. Per agent audit categorization A.
+    // host-dependent fixtures: two acceptance modes.
+    //
+    // (a) Strict kind-match (preferred when expected has parenthesised heads
+    //     like `(Memo`, `(State`, `(Space`): accept iff each actual atom's
+    //     leading S-expression head matches the expected. This accepts
+    //     host-dependent IDs (Memo 1 vs Memo 2) while still requiring the
+    //     same atom *kind*.
+    //
+    // (b) Lenient Error-presence (legacy, kicks in when expected has no
+    //     parenthesised heads or none was parseable): accept iff any Error
+    //     atom is present in actual. Used for fixtures whose host-dependent
+    //     bit only flags the error message format / arity / category text.
     if let Some(status) = read_status(yaml_path) {
         if status == "host-dependent" {
-            let has_error = actual.iter().any(|s| s.starts_with("(Error"));
-            return Ok(if has_error {
+            let expected_kinds: Vec<String> = parse_expected_results(yaml_path)
+                .map(|groups| {
+                    groups
+                        .into_iter()
+                        .flat_map(|g| g.into_iter())
+                        .map(|s| atom_kind_prefix(&strip_yaml_quotes(s)))
+                        .filter(|s| s.starts_with('('))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let actual_kinds: Vec<String> = actual
+                .iter()
+                .map(|s| atom_kind_prefix(s))
+                .filter(|s| s.starts_with('('))
+                .collect();
+            let kinds_match = if expected_kinds.is_empty() {
+                // Lenient: accept iff any Error atom is present
+                actual.iter().any(|s| s.starts_with("(Error"))
+            } else {
+                // Strict: kind-multiset must match
+                let mut e = expected_kinds.clone();
+                let mut a = actual_kinds.clone();
+                e.sort();
+                a.sort();
+                e == a
+            };
+            return Ok(if kinds_match {
                 FixtureOutcome::HostDependent
             } else {
                 FixtureOutcome::Mismatch {
-                    expected: vec!["<any Error atom>".to_string()],
-                    actual,
+                    expected: if expected_kinds.is_empty() {
+                        vec!["<any Error atom>".to_string()]
+                    } else {
+                        expected_kinds
+                    },
+                    actual: actual_kinds,
                 }
             });
         }

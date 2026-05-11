@@ -221,8 +221,8 @@ impl<'src> MettaParser<'src> {
         // - whitespace (space, tab, newline, etc.)
         // - comment (`;`)
         // - closing delimiters (`)`, `]`, `}`)
-        // - quote (`"`) — ambiguous, but in practice `!"string"` is a prefix
-        // Opening delimiters (`(`, `[`, `{`) start the argument expression.
+        // Opening delimiters (`(`, `[`, `{`) and quote (`"`) start the argument
+        // expression (prefix form).
         if self.pos >= self.src.len() {
             let span = Span::new(
                 Position::new(start_line, start_col, start_byte),
@@ -245,7 +245,35 @@ impl<'src> MettaParser<'src> {
             return Ok(emitter.emit_atom(op, span));
         }
 
-        // Parse the argument expression
+        // X.5f / MTT-FN-NEQ-PARSER: when the leading `!` is immediately
+        // followed by another regular atom character (CLS_OTHER), treat the
+        // whole token as a single atom (`!=`, `!<`, `!>`, etc.). Only the
+        // bang sigil has this disambiguation, because `!` is overloaded as
+        // both the force-eval prefix (`!(expr)`) AND the leading char of
+        // comparison operators (`!=`). The `?` and `'` sigils retain pure
+        // prefix semantics (`?query` -> `(? query)`, `'foo` -> `(quote foo)`)
+        // because they don't participate in multi-char operator names.
+        if op == "!" && next_class == CLS_OTHER {
+            let atom_start = start_byte;
+            while self.pos < self.src.len() && !is_delimiter(self.src[self.pos]) {
+                if self.src[self.pos] & 0xC0 != 0x80 {
+                    self.col += 1;
+                }
+                self.pos += 1;
+            }
+            let atom_bytes = &self.src[atom_start..self.pos];
+            let span = Span::new(
+                Position::new(start_line, start_col, start_byte),
+                Position::new(self.line, self.col, self.pos),
+            );
+            let s = std::str::from_utf8(atom_bytes).map_err(|_| {
+                self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom")
+            })?;
+            return Ok(emitter.emit_atom(s, span));
+        }
+
+        // Parse the argument expression (CLS_OPEN/CLS_OPEN_SQ/CLS_OPEN_BR/CLS_QUOTE
+        // for `!`, or any non-delimiter for `?`/`'` retaining old behavior)
         let arg = self.parse_expr(emitter)?;
 
         let full_span = Span::new(

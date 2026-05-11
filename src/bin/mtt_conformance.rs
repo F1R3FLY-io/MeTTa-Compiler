@@ -420,25 +420,47 @@ fn split_yaml_list_inner(inner: &str) -> Vec<String> {
     atoms
 }
 
-/// YAML-style string normalization: strip outer single or double quotes.
+/// YAML-style string normalization: strip outer single or double quotes
+/// and decode common backslash escapes inside double-quoted strings.
+///
 /// Necessary because `["True", "False"]` parses each atom with quotes
 /// included, whereas `format_value` emits booleans without quotes.
+///
+/// Decoded escapes inside double quotes: `\n`, `\t`, `\r`, `\\`, `\"`.
+/// Single-quoted strings are taken verbatim per YAML 1.2 (no escaping).
 fn strip_yaml_quotes(s: String) -> String {
     let t = s.trim();
-    if (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
-        || (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
-    {
+    if t.starts_with('"') && t.ends_with('"') && t.len() >= 2 {
         let inner = &t[1..t.len() - 1];
-        // Re-quote if it's actually a string literal (e.g., "\"hello\"" in spec).
-        // Heuristic: if inner contains backslash-escaped quote, treat as string.
-        // Otherwise treat as scalar.
-        if inner.contains("\\\"") {
-            // Spec wrote it as a quoted scalar containing escaped quotes —
-            // strip outer YAML quotes but preserve inner Rust string literal.
-            inner.replace("\\\"", "\"")
-        } else {
-            inner.to_string()
+        // Decode YAML double-quoted escapes: \n \t \r \\ \"
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('\\') => out.push('\\'),
+                    Some('"') => out.push('"'),
+                    Some(other) => {
+                        // Unknown escape — preserve verbatim (forward-compat
+                        // with YAML's \u{HHHH} unicode escapes which we don't
+                        // currently emit from format_value).
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            } else {
+                out.push(c);
+            }
         }
+        out
+    } else if t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2 {
+        // YAML 1.2 single-quoted strings: only `''` doubles as an escape for `'`.
+        let inner = &t[1..t.len() - 1];
+        inner.replace("''", "'")
     } else {
         t.to_string()
     }

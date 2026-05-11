@@ -660,6 +660,75 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for MaxOp {
     }
 }
 
+/// TCO Absolute-value operation: (abs a) — Workstream X.5d MTT-FN-ABS-T0.
+///
+/// Mirrors T1's `Opcode::Abs` (`bytecode/vm/mod.rs:1488-1503`) and HE
+/// `lib/src/metta/runner/stdlib/math.rs:62-86` (AbsMathOp). Uses
+/// `i64::wrapping_abs` so `abs(i64::MIN)` is consistent with T1 (rather
+/// than panicking on overflow).
+pub struct AbsOp;
+
+impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AbsOp {
+    fn name(&self) -> &str {
+        "abs"
+    }
+
+    fn execute_step<F: MettaValueFactory<V>>(
+        &self,
+        state: &mut GroundedState<V>,
+        factory: &F,
+    ) -> GroundedWork<V> {
+        match state.step {
+            0 => {
+                if state.args.len() != 1 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "abs requires 1 argument, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
+                if let Some(err) = find_error(a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                let mut results = Vec::with_capacity(a_results.len());
+                for a in a_results {
+                    match (a.as_long(), a.as_float()) {
+                        (Some(x), _) => {
+                            // Long abs (wrapping; matches T1 Opcode::Abs)
+                            results.push((factory.long(x.wrapping_abs()), None));
+                        }
+                        (_, Some(x)) => {
+                            // Float abs
+                            results.push((factory.float(x.abs()), None));
+                        }
+                        _ => {
+                            // MeTTa HE: Empty sentinel -> skip (branch annihilation)
+                            if a.is_empty() {
+                                continue;
+                            }
+                            return GroundedWork::Error(ExecError::IncorrectArgument(
+                                format!(
+                                    "abs requires Number argument, got {}",
+                                    a.friendly_type_name()
+                                ),
+                            ));
+                        }
+                    }
+                }
+                GroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for AbsOp", state.step),
+        }
+    }
+}
+
 /// TCO Safe Division operation: (/safe A B)
 /// Returns A/B if B > 0.0, else zero results (empty = branch annihilation).
 /// PLN uses this for safe division: (if (> $B 0.0) (/ $A $B) (empty))

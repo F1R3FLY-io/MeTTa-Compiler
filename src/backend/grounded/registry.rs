@@ -36,7 +36,7 @@
 
 use std::collections::HashMap;
 
-use super::arithmetic::{AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
+use super::arithmetic::{AbsOp, AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
 use super::comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
 use super::logical::{AndOp, NotOp, OrOp, XorOp};
 use super::state::{GroundedState, GroundedWork};
@@ -84,6 +84,7 @@ where
         "%" => Some(ModOp.execute_step(state, factory)),
         "min" => Some(MinOp.execute_step(state, factory)),
         "max" => Some(MaxOp.execute_step(state, factory)),
+        "abs" => Some(AbsOp.execute_step(state, factory)),
         // Comparison operations
         "<" => Some(LessOp.execute_step(state, factory)),
         "<=" => Some(LessEqOp.execute_step(state, factory)),
@@ -127,6 +128,7 @@ pub fn has_grounded_op(name: &str) -> bool {
             | "%"
             | "min"
             | "max"
+            | "abs"
             | "<"
             | "<="
             | ">"

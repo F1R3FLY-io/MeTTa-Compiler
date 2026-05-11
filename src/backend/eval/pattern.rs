@@ -5,7 +5,7 @@
 
 use tracing::trace;
 
-use crate::backend::models::{Bindings, MettaValue, ValueView};
+use crate::backend::models::{Bindings, MettaValue, MettaValueFactory, ValueView};
 
 /// Match a pattern against a value, returning variable bindings if successful.
 ///
@@ -136,8 +136,36 @@ pub(crate) fn pattern_match_impl(
                 true
             }
 
-            // S-expressions: push children onto work stack (replaces recursion)
+            // S-expressions: push children onto work stack (replaces recursion).
+            //
+            // Dotted-pair pattern support (2026-05-11): `($x . $rest)` patterns
+            // bind $x to the first value and $rest to an SExpr of the rest.
+            // The pattern is recognized by `.` at position n-2 in p_items.
             (ValueView::SExpr(p_items), ValueView::SExpr(v_items)) => {
+                if p_items.len() >= 2
+                    && p_items[p_items.len() - 2].as_atom() == Some(".")
+                {
+                    let head_len = p_items.len() - 2;
+                    if v_items.len() < head_len {
+                        return false;
+                    }
+                    // Push head matches in reverse for LIFO order.
+                    for i in (0..head_len).rev() {
+                        work_stack.push((p_items[i], v_items[i]));
+                    }
+                    // Build the rest SExpr from v_items[head_len..] and push
+                    // a match against the rest-var pattern.
+                    let rest_pattern = p_items[p_items.len() - 1];
+                    let rest_value = if v_items.len() == head_len {
+                        // Zero remaining → empty SExpr.
+                        crate::backend::models::global_factory().sexpr(Vec::new())
+                    } else {
+                        crate::backend::models::global_factory()
+                            .sexpr(v_items[head_len..].to_vec())
+                    };
+                    work_stack.push((rest_pattern, rest_value));
+                    return true;
+                }
                 if p_items.len() != v_items.len() {
                     return false; // Early exit on length mismatch
                 }

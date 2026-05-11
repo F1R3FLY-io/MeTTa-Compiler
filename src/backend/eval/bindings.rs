@@ -332,10 +332,70 @@ pub fn pattern_match_generic<V: MettaValueTrait + Clone>(
     value: &V,
 ) -> Option<GenericBindings<V>> {
     let mut bindings = GenericBindings::new();
-    if pattern_match_generic_impl(pattern, value, &mut bindings) {
+    if pattern_match_generic_impl::<V, NoFactory<V>>(pattern, value, &mut bindings, None) {
         Some(bindings)
     } else {
         None
+    }
+}
+
+/// Variant of [`pattern_match_generic`] that supports dotted-pair patterns
+/// like `($x . $rest)`. The factory is used solely to construct the SExpr
+/// value bound to the rest-var; for non-dotted-pair patterns it's unused.
+pub fn pattern_match_generic_with_factory<V, F>(
+    pattern: &V,
+    value: &V,
+    factory: &F,
+) -> Option<GenericBindings<V>>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    let mut bindings = GenericBindings::new();
+    if pattern_match_generic_impl(pattern, value, &mut bindings, Some(factory)) {
+        Some(bindings)
+    } else {
+        None
+    }
+}
+
+/// Type stand-in used when calling `pattern_match_generic_impl` without a
+/// factory. The `None` factory parameter disables dotted-pair pattern
+/// support (the only place a factory is needed during matching).
+enum NoFactory<V: MettaValueTrait> {
+    _Phantom(std::marker::PhantomData<V>),
+}
+impl<V: MettaValueTrait + Clone> MettaValueFactory<V> for NoFactory<V> {
+    fn atom(&self, _s: &str) -> V { unreachable!("NoFactory::atom invoked") }
+    fn bool(&self, _b: bool) -> V { unreachable!("NoFactory::bool invoked") }
+    fn long(&self, _n: i64) -> V { unreachable!("NoFactory::long invoked") }
+    fn float(&self, _f: f64) -> V { unreachable!("NoFactory::float invoked") }
+    fn string(&self, _s: &str) -> V { unreachable!("NoFactory::string invoked") }
+    fn sexpr(&self, _items: Vec<V>) -> V { unreachable!("NoFactory::sexpr invoked") }
+    fn sexpr_from_slice(&self, _items: &[V]) -> V {
+        unreachable!("NoFactory::sexpr_from_slice invoked")
+    }
+    fn error(&self, _msg: &str, _details: V) -> V { unreachable!("NoFactory::error invoked") }
+    fn type_value(&self, _t: V) -> V { unreachable!("NoFactory::type_value invoked") }
+    fn conjunction(&self, _goals: Vec<V>) -> V { unreachable!("NoFactory::conjunction invoked") }
+    fn space(&self, _h: crate::backend::models::SpaceHandle) -> V {
+        unreachable!("NoFactory::space invoked")
+    }
+    fn state(&self, _id: u64) -> V { unreachable!("NoFactory::state invoked") }
+    fn memo(&self, _h: crate::backend::models::MemoHandle) -> V {
+        unreachable!("NoFactory::memo invoked")
+    }
+    fn quote(&self, _v: V) -> V { unreachable!("NoFactory::quote invoked") }
+    fn unit(&self) -> V { unreachable!("NoFactory::unit invoked") }
+    fn empty(&self) -> V { unreachable!("NoFactory::empty invoked") }
+    fn conjunction_from_slice(&self, _goals: &[V]) -> V {
+        unreachable!("NoFactory::conjunction_from_slice invoked")
+    }
+    fn spanned(&self, _v: V, _span: crate::ir::Span) -> V {
+        unreachable!("NoFactory::spanned invoked")
+    }
+    fn deserialize(&self, _bytes: &[u8]) -> Result<(V, usize), String> {
+        unreachable!("NoFactory::deserialize invoked")
     }
 }
 
@@ -346,11 +406,16 @@ pub fn pattern_match_generic<V: MettaValueTrait + Clone>(
 /// BUG-T0-006 repeated-variable path can push the previously-bound value
 /// back onto the stack for iterative unification (no recursion). `V: Clone`
 /// is cheap (Copy for `MettaValue`, refcount-inc for Arc-backed V).
-fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
+fn pattern_match_generic_impl<V, F>(
     pattern: &V,
     value: &V,
     bindings: &mut GenericBindings<V>,
-) -> bool {
+    factory: Option<&F>,
+) -> bool
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
     // Work stack: owned (pattern, value) pairs to match.
     let mut work_stack: Vec<(V, V)> = Vec::with_capacity(16);
     work_stack.push((pattern.clone(), value.clone()));
@@ -477,6 +542,26 @@ fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
 
             // Non-empty S-expr must match non-empty S-expr
             if let Some(v_items) = val.as_sexpr() {
+                // Dotted-pair pattern support (2026-05-11): `($x . $rest)` etc.
+                // Requires a factory to build the rest-var binding; if factory
+                // is None we fall through to strict length matching.
+                if let Some(f) = factory {
+                    if p_items.len() >= 2
+                        && p_items[p_items.len() - 2].as_atom() == Some(".")
+                    {
+                        let head_len = p_items.len() - 2;
+                        if v_items.len() < head_len {
+                            return false;
+                        }
+                        for i in (0..head_len).rev() {
+                            work_stack.push((p_items[i].clone(), v_items[i].clone()));
+                        }
+                        let rest_pattern = p_items[p_items.len() - 1].clone();
+                        let rest_value = f.sexpr_from_slice(&v_items[head_len..]);
+                        work_stack.push((rest_pattern, rest_value));
+                        continue;
+                    }
+                }
                 if p_items.len() != v_items.len() {
                     return false;
                 }

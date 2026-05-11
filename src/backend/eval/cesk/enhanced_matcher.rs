@@ -609,8 +609,15 @@ impl EnhancedMatcher {
             value.clone()
         };
 
-        // S-expression: arity check + recurse children
+        // S-expression: arity check + recurse children.
+        //
+        // Dotted-pair pattern detection (2026-05-11): patterns of the form
+        // `(a1 ... a_{n-2} . $rest)` are not supported by the EnhancedMatcher
+        // (which assumes exact arity). Bail to pattern_match fallback.
         if let Some(items) = value.as_sexpr() {
+            if items.len() >= 2 && items[items.len() - 2].as_atom() == Some(".") {
+                return false;
+            }
             arity_checks.push(ECheck::Arity {
                 path: path.clone(),
                 expected: items.len() as u16,

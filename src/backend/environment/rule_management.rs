@@ -1168,6 +1168,13 @@ impl StructuralMatcher {
             if path.len >= 8 {
                 return false; // Depth overflow — bail to MORK
             }
+            // Dotted-pair pattern detection (2026-05-11): patterns of the form
+            // `(a1 ... a_{n-2} . $rest)` are not supported by the structural
+            // matcher (which assumes exact arity). Bail to the pattern_match
+            // fallback path which handles cons-list head/tail binding.
+            if items.len() >= 2 && items[items.len() - 2].as_atom() == Some(".") {
+                return false;
+            }
             checks.push(StructuralCheck::Arity {
                 path,
                 expected: items.len() as u16,
@@ -3643,8 +3650,13 @@ where
                             None
                         }
                     } else {
-                        // Structural pattern match fallback for MORK-only candidates
-                        crate::backend::eval::bindings::pattern_match_generic(&entry.lhs, expr)
+                        // Structural pattern match fallback for MORK-only candidates.
+                        // Use the _with_factory variant so dotted-pair patterns
+                        // `($x . $rest)` (rejected by StructuralMatcher) can
+                        // bind the rest-var to an SExpr of remaining elements.
+                        crate::backend::eval::bindings::pattern_match_generic_with_factory(
+                            &entry.lhs, expr, &self.factory,
+                        )
                     };
 
                     if let Some(bindings) = matched_bindings {
@@ -3825,6 +3837,28 @@ where
                             hits.push(MatchHit { entry, is_wide: false, precomputed_bindings: Some(bindings) });
                         }
                         // Structural matcher is authoritative — skip MORK
+                    } else if entry.enhanced_matcher.is_none()
+                        && crate::backend::eval::bindings::pattern_match_generic_with_factory(
+                            &entry.lhs,
+                            expr,
+                            &self.factory,
+                        )
+                        .is_some()
+                    {
+                        // Dotted-pair / non-structural pattern fallback (2026-05-11).
+                        // Patterns that StructuralMatcher and EnhancedMatcher both
+                        // rejected — e.g. `($x . $rest)` — are routed through
+                        // pattern_match_generic which understands cons-list head/tail
+                        // binding. We re-compute bindings below via the standard
+                        // extraction; here we just record the match for hits.
+                        let bindings = crate::backend::eval::bindings::pattern_match_generic_with_factory(
+                            &entry.lhs,
+                            expr,
+                            &self.factory,
+                        );
+                        if let Some(b) = bindings {
+                            hits.push(MatchHit { entry, is_wide: false, precomputed_bindings: Some(b) });
+                        }
                     } else if !entry.lhs_debruijn.is_empty() {
                         // MORK narrow path fallback (arity < 64)
                         if let Err(reserved) = maybe_byte_item(entry.lhs_debruijn[0]) {

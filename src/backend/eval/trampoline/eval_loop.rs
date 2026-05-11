@@ -208,6 +208,7 @@ use crate::backend::models::metta_value::is_variable_str;
 use crate::backend::models::work_pool::global_eval_pool;
 use crate::backend::models::{
     EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValue, MettaValueFactory, MettaValueTrait,
+    SpaceHandle,
 };
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
@@ -5891,6 +5892,45 @@ fn eval_trampoline_inner<C: EvalContext>(
     // Return final result as EvalOutcome::Complete
     let (results, final_env) = final_result.unwrap_or_else(|| (SmallVec::new(), Arc::new(env)));
     crate::backend::eval::cesk::EvalOutcome::Complete(results, (*final_env).clone())
+}
+
+/// Resolve a value to a `SpaceHandle`, auto-binding `&name` atom references
+/// to a fresh empty SpaceHandle on first use.
+///
+/// Mirrors HE's implicit space initialization semantics where `(add-atom &foo
+/// ...)` on an unbound `&foo` lazily creates the space. The bind is registered
+/// in `env_after` so subsequent references resolve to the same handle.
+///
+/// Returns:
+/// - `Some(handle)` when `value` is already a Space, OR when it's an unbound
+///   `&name` atom (auto-creates + binds).
+/// - `None` for reserved names (`&`, `&self`, `&kb`, `&stack`), non-atom
+///   values, and atoms not starting with `&`.
+fn resolve_space_or_autobind<C: EvalContext>(
+    value: &MettaValue,
+    env_after: &mut SharedEnv,
+    ctx: &C,
+) -> Option<SpaceHandle> {
+    if let Some(handle) = value.as_space() {
+        return Some(handle.clone());
+    }
+    let name = value.as_atom()?;
+    if !name.starts_with('&')
+        || name == "&"
+        || name == "&self"
+        || name == "&kb"
+        || name == "&stack"
+    {
+        return None;
+    }
+    // Auto-bind: lazy SpaceHandle creation and env registration.
+    let env_mut = Arc::make_mut(env_after);
+    let id = env_mut.create_named_space(name);
+    let handle = SpaceHandle::new(id, name.to_string());
+    let space_val = ctx.factory().space(handle.clone());
+    env_mut.register_token(name, space_val);
+    increment_mutation_epoch();
+    Some(handle)
 }
 
 /// Process a continuation with generic value types.
@@ -12058,7 +12098,7 @@ fn process_continuation<C: EvalContext>(
             depth: _,
             outer_carrying,
         } => {
-            let (space_results, result_env) = result;
+            let (space_results, mut result_env) = result;
 
             if space_results.is_empty() {
                 let err = ctx
@@ -12069,7 +12109,9 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 let (first, _) = &space_results[0];
-                if let Some(handle) = first.as_space() {
+                // Auto-bind `&name` atoms; transparent for already-resolved Space values.
+                let resolved_handle = resolve_space_or_autobind(first, &mut result_env, ctx);
+                if let Some(handle) = resolved_handle.as_ref() {
                     // X.6 followup: for `&self` / module spaces, query the
                     // environment's atom space (where add-atom &self routes
                     // its writes per ProcessAddAtomSpace handler). The
@@ -12116,7 +12158,7 @@ fn process_continuation<C: EvalContext>(
             depth,
             outer_carrying,
         } => {
-            let (space_results, env_after) = result;
+            let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
                 let err = ctx
@@ -12127,7 +12169,9 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 let (first, _) = &space_results[0];
-                if let Some(handle) = first.as_space() {
+                // Auto-bind `&name` atoms; transparent for already-resolved Space values.
+                let resolved_handle = resolve_space_or_autobind(first, &mut env_after, ctx);
+                if let Some(handle) = resolved_handle.as_ref() {
                     if handle.is_module_space() || handle.name == "self" {
                         // Phase 8.4: Type-aware match optimization.
                         // If pattern is (: $var TypeName), use the types HashMap as a
@@ -12382,7 +12426,9 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 let (first, _) = &space_results[0];
-                if let Some(handle) = first.as_space() {
+                // Auto-bind `&name` atoms; transparent for already-resolved Space values.
+                let resolved_handle = resolve_space_or_autobind(first, &mut env_after, ctx);
+                if let Some(handle) = resolved_handle.as_ref() {
                     // MeTTa HE semantics: add the UNEVALUATED atom to the space.
                     // The atom is NOT evaluated — per HE docs: "Adds atom into the
                     // atomspace without reducing it".
@@ -12472,7 +12518,9 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 let (first, _) = &space_results[0];
-                if let Some(handle) = first.as_space() {
+                // Auto-bind `&name` atoms; transparent for already-resolved Space values.
+                let resolved_handle = resolve_space_or_autobind(first, &mut env_after, ctx);
+                if let Some(handle) = resolved_handle.as_ref() {
                     // MeTTa HE semantics: remove the UNEVALUATED atom from the space.
                     // The atom is NOT evaluated — mirrors add-atom behavior.
                     let is_self_space = handle.is_module_space() || handle.name == "self";

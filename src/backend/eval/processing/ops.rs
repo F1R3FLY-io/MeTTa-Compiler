@@ -296,20 +296,22 @@ pub fn process_single_combination_generic(
     // At depth == 0 (top level), we retain the old ADD-mode behavior of
     // adding to space and returning the data — user programs rely on this
     // for their own data constructors.
-    if depth > 0 {
-        if let Some(head) = sexpr.get_head_symbol() {
-            let arity = sexpr.get_arity();
-            let has_any_rules = unified_env
-                .shared
-                .rule_index
-                .read()
-                .get_candidates(head, arity, None)
-                .next()
-                .is_some();
-            if has_any_rules {
-                // Function with no matching rules → empty (HE semantics).
-                return GenericProcessedSExpr::Done((SmallVec::new(), unified_env));
-            }
+    // X-followup (2026-05-11): HE pattern-fail semantics apply at every
+    // depth, not only depth > 0. Previously the depth gate caused top-level
+    // `!(specific 6)` (where `specific` has rules but 6 doesn't match) to
+    // return the unreduced expression instead of Empty.
+    if let Some(head) = sexpr.get_head_symbol() {
+        let arity = sexpr.get_arity();
+        let has_any_rules = unified_env
+            .shared
+            .rule_index
+            .read()
+            .get_candidates(head, arity, None)
+            .next()
+            .is_some();
+        if has_any_rules {
+            // Function with no matching rules → empty (HE semantics).
+            return GenericProcessedSExpr::Done((SmallVec::new(), unified_env));
         }
     }
 

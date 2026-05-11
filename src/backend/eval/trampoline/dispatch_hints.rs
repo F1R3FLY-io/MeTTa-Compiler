@@ -987,6 +987,7 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "exec" | "coalg" | "lookup" | "rulify"
         | "=alpha"
         | "unique-atom" | "alpha-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        | "unique" | "union" | "intersection" | "subtraction"
         | "test"
         | "assertEqual" | "assertAlphaEqual"
         | "assertEqualMsg" | "assertAlphaEqualMsg"

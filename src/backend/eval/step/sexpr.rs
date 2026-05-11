@@ -2360,6 +2360,30 @@ where
                     return crate::backend::eval::set_ops::eval_set_op_generic(items, env, ctx);
                 }
 
+                // Bare set-op aliases (Workstream X.5b — MTT-FN-SET-BARE)
+                //
+                // Desugar `(unique X)` -> `(unique-atom (collapse X))` etc.
+                // HE stdlib.metta:629-663 wraps with an extra `superpose` to
+                // re-emit multi-results; MeTTaTron returns a single tuple per
+                // the M09f fixture convention (M09f/004: `(unique (superpose
+                // (1 1 2)))` -> `(1 2)`, single tuple result).
+                "unique" | "union" | "intersection" | "subtraction" => {
+                    let mut new_items: Vec<MettaValue> = Vec::with_capacity(items.len());
+                    let op_atom = format!("{}-atom", op);
+                    new_items.push(ctx.factory().atom(&op_atom));
+                    let collapse_sym = ctx.factory().atom("collapse");
+                    for arg in items.into_iter().skip(1) {
+                        new_items.push(
+                            ctx.factory().sexpr(vec![collapse_sym.clone(), arg]),
+                        );
+                    }
+                    return GenericEvalStep::EvalSExpr {
+                        items: new_items,
+                        env,
+                        depth,
+                    };
+                }
+
                 // Alpha equivalence — (=alpha expr1 expr2) → Bool
                 "=alpha" => {
                     return crate::backend::eval::testing_ops::eval_testing_op_generic(

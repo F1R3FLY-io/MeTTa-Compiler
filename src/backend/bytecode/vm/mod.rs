@@ -3951,7 +3951,11 @@ where
         let pattern = self.pop()?;
         let space_ref = self.pop()?;
 
-        let Some(handle) = space_ref.as_space() else {
+        // X.6 MTT-FN-SPACE-RESOLVE: resolve env-bound atom names like
+        // `&space` (introduced via `(bind! &space (new-space))`) to their
+        // SpaceHandle. Without this, the bare `as_space()` branch fails and
+        // a TypeError leaks instead of dispatching to the bound handle.
+        let Some(handle) = self.resolve_to_space_handle_owned(&space_ref) else {
             // Not a space — signal unreduced for tree-walker fallback.
             self.unreduced = true;
             self.push(self.make_sexpr(vec![]));
@@ -4027,7 +4031,8 @@ where
         let pattern = self.pop()?;
         let space_ref = self.pop()?;
 
-        let Some(handle) = space_ref.as_space() else {
+        // X.6 MTT-FN-SPACE-RESOLVE: resolve env-bound atom names like `&space`.
+        let Some(handle) = self.resolve_to_space_handle_owned(&space_ref) else {
             self.unreduced = true;
             self.push(default);
             return Ok(());
@@ -7879,7 +7884,9 @@ where
         let pattern = self.pop()?;
         let space = self.pop()?;
 
-        if let Some(handle) = space.as_space() {
+        // X.6 MTT-FN-SPACE-RESOLVE: resolve env-bound atom names like
+        // `&space` to their SpaceHandle (mirror of resolve_to_state_id).
+        if let Some(handle) = self.resolve_to_space_handle_owned(&space) {
             let atoms: Vec<V> = handle.collapse_generic(&self.factory);
             let mut results = Vec::new();
 
@@ -7896,10 +7903,14 @@ where
             self.push(self.make_sexpr(results));
             Ok(())
         } else {
-            Err(VmError::TypeError {
-                expected: "Space",
-                got: space.type_name(),
-            })
+            // Per T1.A errors-as-values pattern: push an Error atom rather
+            // than returning VmError, so downstream opcodes can short-circuit.
+            let err = self.factory.error(
+                "match: first argument must be a space",
+                space,
+            );
+            self.push(err);
+            Ok(())
         }
     }
 
@@ -7980,6 +7991,29 @@ where
             if let Some(env) = self.env.as_ref() {
                 if let Some(resolved) = env.lookup_token_generic(name, &self.factory) {
                     return resolved.as_state();
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a stack value to an owned SpaceHandle, looking up env-bound atoms.
+    ///
+    /// X.6 MTT-FN-SPACE-RESOLVE: mirror of `resolve_to_state_id` for
+    /// `op_match_external`, `op_match_external_or`, `op_space_match`. When a
+    /// user `bind!`s a fresh space (e.g. `(bind! &space (new-space))`) the
+    /// downstream match opcodes pop the bound atom name rather than the
+    /// Space value; without an inline env lookup the bare `as_space()` fails
+    /// and a TypeError leaks instead of dispatching to the bound handle.
+    /// `SpaceHandle` derives `Clone` (cheap Arc share) so we return owned.
+    fn resolve_to_space_handle_owned(&self, space_ref: &V) -> Option<SpaceHandle> {
+        if let Some(handle) = space_ref.as_space() {
+            return Some(handle.clone());
+        }
+        if let Some(name) = space_ref.as_atom() {
+            if let Some(env) = self.env.as_ref() {
+                if let Some(resolved) = env.lookup_token_generic(name, &self.factory) {
+                    return resolved.as_space().cloned();
                 }
             }
         }

@@ -221,7 +221,7 @@ pub fn process_collected_sexpr_generic(
 /// Operates on concrete `MettaValue` / `GcFactory` types.
 pub fn process_single_combination_generic(
     evaled_items: Vec<MettaValue>,
-    mut unified_env: MettaEnvironment,
+    unified_env: MettaEnvironment,
     depth: usize,
     factory: &GcFactory,
 ) -> GenericProcessedSExpr<MettaValue, GcFactory> {
@@ -313,10 +313,14 @@ pub fn process_single_combination_generic(
         }
     }
 
-    // Data constructor OR top-level add — return unreduced sexpr.
-    if depth == 0 {
-        unified_env.add_to_space(&sexpr);
-    }
+    // X.6 MTT-TI-029: top-level auto-add removed from T0 trampoline. The
+    // T1 op_dispatch_rules path (vm/mod.rs:6539-6546) is the single source
+    // of truth for data-constructor / top-level fact auto-add, and it
+    // already has match_space_exists dedup. T0 originally double-added when
+    // tier promotion ran the same expression in both tiers, producing
+    // duplicate match results (M04/002).
+    //
+    // Previously: `if depth == 0 { unified_env.add_to_space(&sexpr); }`
     GenericProcessedSExpr::Done((smallvec![sexpr], unified_env))
 }
 
@@ -639,7 +643,7 @@ pub fn process_collected_sexpr_bound_generic(
 pub fn process_single_combination_bound_generic(
     evaled_items: Vec<MettaValue>,
     combo_bindings: GenericBindings<MettaValue>,
-    mut unified_env: MettaEnvironment,
+    unified_env: MettaEnvironment,
     depth: usize,
     factory: &GcFactory,
 ) -> GenericProcessedSExprBound<MettaValue, GcFactory> {
@@ -734,10 +738,8 @@ pub fn process_single_combination_bound_generic(
         }
     }
 
-    // Data constructor OR top-level add: return with combo bindings.
-    if depth == 0 {
-        unified_env.add_to_space(&sexpr);
-    }
+    // X.6 MTT-TI-029: top-level auto-add removed (see comment above the
+    // earlier process_single_combination_generic exit path).
     GenericProcessedSExprBound::Done((smallvec![bv_with(sexpr, combo_bindings)], unified_env))
 }
 

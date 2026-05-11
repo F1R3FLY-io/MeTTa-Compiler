@@ -1625,8 +1625,9 @@ mod tests {
 
     #[test]
     fn test_match_nested_structure() {
+        // X.6 (2026-05-11) — explicit add-atom for &self after auto-add removal.
         let input = r#"
-            ((nested value) result)
+            !(add-atom &self ((nested value) result))
             !(match &self (($x $y) result) (found $x and $y))
         "#;
 

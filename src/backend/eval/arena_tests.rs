@@ -1171,13 +1171,13 @@ mod tests {
 
     eval_test!(
         test_data_constructor_in_match_result,
-        // (Pair 1 2) is a bare fact — returned as-is (unreduced).
-        // The match query then finds it in space and swaps the elements.
+        // X.6 (2026-05-11) — top-level facts no longer auto-add to &self;
+        // use explicit (add-atom &self ...) to put the fact in space.
         r#"
-            (Pair 1 2)
+            !(add-atom &self (Pair 1 2))
             !(match &self (Pair $a $b) (Pair $b $a))
         "#,
-        &["(Pair 1 2)", "(Pair 2 1)"]
+        &["()", "(Pair 2 1)"]
     );
 
     // --- Typed Functions with Arrow Types (SHOULD be pre-evaluated) ---
@@ -1277,17 +1277,15 @@ mod tests {
 
     eval_test_unordered!(
         test_fixpoint_data_constructor_no_infinite_loop,
-        // S has facts but NO rewrite rules for arity 1 as a head.
-        // Bloom filter may flag it → pre-eval → fixpoint → data.
-        // Facts are returned as-is (unreduced), then match finds them.
-        // match (number (S $x)) with (number (S Z)) → $x=Z → template (S $x) = (S Z)
-        // match (number (S $x)) with (number (S (S Z))) → $x=(S Z) → template (S $x) = (S (S Z))
+        // X.6 — explicit add-atom for &self after auto-add removal.
+        // Bloom-filter / fixpoint behavior is independent of auto-add;
+        // we just put the facts in &self ourselves.
         r#"
-            (number (S Z))
-            (number (S (S Z)))
+            !(add-atom &self (number (S Z)))
+            !(add-atom &self (number (S (S Z))))
             !(match &self (number (S $x)) (S $x))
         "#,
-        &["(number (S Z))", "(number (S (S Z)))", "(S Z)", "(S (S Z))"]
+        &["()", "()", "(S Z)", "(S (S Z))"]
     );
 
     eval_test!(
@@ -1536,11 +1534,12 @@ mod tests {
     // Note: run_eval captures results from ALL expressions; (A B) as a fact returns (A B)
     eval_test!(
         match_or_found,
+        // X.6 — explicit add-atom for &self after auto-add removal.
         r#"
-            (A B)
+            !(add-atom &self (A B))
             !(match-or &self (A $x) default-val $x)
         "#,
-        &["(A B)", "B"]
+        &["()", "B"]
     );
 
     // No match → default value returned
@@ -1564,24 +1563,26 @@ mod tests {
     );
 
     // Multiple matches: all returned (match-or is nondeterministic when matches exist)
+    // X.6 — explicit add-atom for &self after auto-add removal.
     eval_test_unordered!(
         match_or_multiple_matches,
         r#"
-            (color red)
-            (color blue)
+            !(add-atom &self (color red))
+            !(add-atom &self (color blue))
             !(match-or &self (color $x) no-color $x)
         "#,
-        &["(color blue)", "(color red)", "blue", "red"]
+        &["()", "()", "blue", "red"]
     );
 
     // Match with complex template
+    // X.6 — explicit add-atom for &self after auto-add removal.
     eval_test!(
         match_or_complex_template,
         r#"
-            (pair 3 4)
+            !(add-atom &self (pair 3 4))
             !(match-or &self (pair $a $b) 0 (+ $a $b))
         "#,
-        &["(pair 3 4)", "7"]
+        &["()", "7"]
     );
 
     // Named space (owned) — bind! and add-atom each return ()
@@ -1756,11 +1757,12 @@ mod tests {
 
     eval_test!(
         if_reducible_with_match_or,
+        // X.6 — explicit add-atom for &self after auto-add removal.
         r#"
-            (color red)
+            !(add-atom &self (color red))
             !(if-reducible (+ 1 2) (match-or &self (color $x) none $x) fallback)
         "#,
-        &["(color red)", "red"]
+        &["()", "red"]
     );
 
     eval_test!(

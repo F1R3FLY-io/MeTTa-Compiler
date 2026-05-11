@@ -269,7 +269,12 @@ mod tests {
         &["Variable"]
     );
     eval_test!(metatype_symbol, "!(get-metatype foo)", &["Symbol"]);
-    eval_test!(metatype_grounded, "!(get-metatype 42)", &["Grounded"]);
+    // X.3 (2026-05-11): HE-aligned metatypes for typed literals — Bool/Number/String
+    // (was "Grounded" for all). Single source of truth: ValueView::metatype().
+    eval_test!(metatype_number_long, "!(get-metatype 42)", &["Number"]);
+    eval_test!(metatype_number_float, "!(get-metatype 3.14)", &["Number"]);
+    eval_test!(metatype_bool_true, "!(get-metatype True)", &["Bool"]);
+    eval_test!(metatype_string_lit, "!(get-metatype \"hi\")", &["String"]);
 
     // Gap 2: dependent type reduction (structural)
     eval_test!(

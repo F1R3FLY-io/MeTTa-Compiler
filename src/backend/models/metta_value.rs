@@ -513,6 +513,32 @@ pub enum ValueView {
     Quoted(MettaValue),
 }
 
+impl ValueView {
+    /// Map a `ValueView` to its MeTTa metatype string (HE-aligned).
+    ///
+    /// Single source of truth for `get-metatype` across T0 trampoline, T1
+    /// bytecode VM, and T2/T3 JIT. Spanned layers are already stripped by
+    /// `view()`. Matches HE `lib/src/metta/types.rs::get_meta_type`.
+    pub fn metatype(&self) -> &'static str {
+        match self {
+            ValueView::Bool(_) => "Bool",
+            ValueView::Long(_) | ValueView::Float(_) => "Number",
+            ValueView::Unit => "Unit",
+            ValueView::Empty => "Grounded",
+            ValueView::Quoted(_) | ValueView::SExpr(_) => "Expression",
+            ValueView::Atom(s) if s.starts_with('$') => "Variable",
+            ValueView::Atom(_) => "Symbol",
+            ValueView::String(_) => "String",
+            ValueView::Error(..) => "Error",
+            ValueView::State(_) => "State",
+            ValueView::Type(_)
+            | ValueView::Conjunction(_)
+            | ValueView::Space(_)
+            | ValueView::Memo(_) => "Grounded",
+        }
+    }
+}
+
 // ==========================================================================
 // Static singletons for inline values accessed via inner_ref()
 // ==========================================================================

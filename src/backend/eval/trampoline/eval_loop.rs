@@ -207,8 +207,7 @@ use crate::backend::grounded::{execute_grounded_op, ExecError, GroundedWork};
 use crate::backend::models::metta_value::is_variable_str;
 use crate::backend::models::work_pool::global_eval_pool;
 use crate::backend::models::{
-    EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValue, MettaValueFactory, MettaValueInner,
-    MettaValueTrait,
+    EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValue, MettaValueFactory, MettaValueTrait,
 };
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
@@ -12892,33 +12891,9 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 let (first, _) = &atom_results[0];
-                let metatype = match first.inner_raw() {
-                    MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
-                    MettaValueInner::Atom(s) if is_variable_str(s) => "Variable",
-                    MettaValueInner::Atom(_) => "Symbol",
-                    MettaValueInner::Bool(_)
-                    | MettaValueInner::Long(_)
-                    | MettaValueInner::Float(_)
-                    | MettaValueInner::String(_) => "Grounded",
-                    MettaValueInner::Error(..) => "Error",
-                    MettaValueInner::Spanned(..) => {
-                        let stripped = first.strip_one_span();
-                        // Re-dispatch on the stripped value
-                        match stripped.inner_raw() {
-                            MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
-                            MettaValueInner::Atom(s) if is_variable_str(s) => "Variable",
-                            MettaValueInner::Atom(_) => "Symbol",
-                            MettaValueInner::Bool(_)
-                            | MettaValueInner::Long(_)
-                            | MettaValueInner::Float(_)
-                            | MettaValueInner::String(_) => "Grounded",
-                            MettaValueInner::Error(..) => "Error",
-                            _ => "Undefined",
-                        }
-                    }
-                    _ => "Undefined",
-                };
-
+                // Delegate to shared ValueView::metatype() — single source of
+                // truth across T0/T1/T2-T3, HE-aligned. view() strips Spanned.
+                let metatype = first.view().metatype();
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(ctx.factory().atom(metatype))], env_after),
                 });

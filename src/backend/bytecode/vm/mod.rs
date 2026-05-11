@@ -8309,24 +8309,12 @@ fn structurally_unify<V: MettaValueTrait + Clone>(a: &V, b: &V) -> bool {
 
 /// Map a `ValueView` to its MeTTa metatype string.
 ///
-/// Used by `op_get_metatype` (VM). Spanned layers are already stripped by `view()`.
+/// Thin wrapper over `ValueView::metatype()` (the single source of truth shared
+/// with the T0 trampoline). Kept as a free function for the existing call site
+/// at `op_get_metatype` to minimize diff churn.
+#[inline]
 fn metatype_of_view(view: ValueView) -> &'static str {
-    match view {
-        ValueView::Bool(_) => "Bool",
-        ValueView::Long(_) | ValueView::Float(_) => "Number",
-        ValueView::Unit => "Unit",
-        ValueView::Empty => "Grounded",
-        ValueView::Quoted(_) | ValueView::SExpr(_) => "Expression",
-        ValueView::Atom(s) if s.starts_with('$') => "Variable",
-        ValueView::Atom(_) => "Symbol",
-        ValueView::String(_) => "String",
-        ValueView::Error(..) => "Error",
-        ValueView::State(_) => "State",
-        ValueView::Type(_)
-        | ValueView::Conjunction(_)
-        | ValueView::Space(_)
-        | ValueView::Memo(_) => "Grounded",
-    }
+    view.metatype()
 }
 
 // ============================================================================

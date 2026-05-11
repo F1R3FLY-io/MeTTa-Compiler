@@ -50,7 +50,7 @@ use crate::backend::eval::types::{
     eval_check_type_generic, eval_get_type_generic, types_match_generic,
 };
 use crate::backend::grounded::{has_grounded_op, GroundedState};
-use crate::backend::models::metta_value::MettaValueInner;
+use crate::backend::models::metta_value::{MettaValueInner, ValueView};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 
 /// Generic S-expression step evaluation.
@@ -2477,6 +2477,23 @@ where
                     // Uses static dispatch - works with any V: MettaValueTrait
                     if has_grounded_op(op) {
                         let args: Vec<MettaValue> = items[1..].to_vec();
+                        // X.4 — HE Empty annihilation (MTT-EMPTY-ANNIHILATION).
+                        // If any argument is the Empty sentinel OR the literal
+                        // `Empty` symbol, short-circuit to Empty per HE's
+                        // `interpret_tuple` return_on_error (lib/src/metta/
+                        // interpreter.rs:1406). Catches the literal-Empty
+                        // case in initial args; arg-evaluation-produces-Empty
+                        // is handled by per-op is_empty() checks inside
+                        // GroundedOperationTCO::execute_step.
+                        if args.iter().any(|a| {
+                            a.is_empty()
+                                || matches!(a.view(), ValueView::Atom(s) if s == "Empty")
+                        }) {
+                            return GenericEvalStep::Done((
+                                smallvec![ctx.factory().empty()],
+                                env,
+                            ));
+                        }
                         // Phase 8.8: Pre-validate ground-type args against arrow signature.
                         // Returns clear type error instead of NoReduce → unreduced expression.
                         if let Some(type_error) =

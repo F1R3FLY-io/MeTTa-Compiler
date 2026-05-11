@@ -1420,7 +1420,11 @@ where
                 let b = self.pop()?;
                 let a = self.pop()?;
                 // BUG-T0-T1-003: Empty annihilation per spec §14.1.1 Ext-3.
-                if a.is_empty() || b.is_empty() {
+                // X.4 MTT-EMPTY-ANNIHILATION: recognise the literal `Empty`
+                // symbol in addition to the Empty sentinel (HE
+                // interpret_tuple return_on_error semantics).
+                if a.is_empty() || b.is_empty()
+                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
                     self.push(self.factory.empty());
                 } else {
                 match (a.as_long(), b.as_long()) {
@@ -1453,7 +1457,11 @@ where
                 let b = self.pop()?;
                 let a = self.pop()?;
                 // BUG-T0-T1-003: Empty annihilation per spec §14.1.1 Ext-3.
-                if a.is_empty() || b.is_empty() {
+                // X.4 MTT-EMPTY-ANNIHILATION: recognise the literal `Empty`
+                // symbol in addition to the Empty sentinel (HE
+                // interpret_tuple return_on_error semantics).
+                if a.is_empty() || b.is_empty()
+                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
                     self.push(self.factory.empty());
                 } else {
                     match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
@@ -1551,7 +1559,11 @@ where
                 let b = self.pop()?;
                 let a = self.pop()?;
                 // BUG-T0-T1-003: Empty annihilation per spec §14.1.1 Ext-3.
-                if a.is_empty() || b.is_empty() {
+                // X.4 MTT-EMPTY-ANNIHILATION: recognise the literal `Empty`
+                // symbol in addition to the Empty sentinel (HE
+                // interpret_tuple return_on_error semantics).
+                if a.is_empty() || b.is_empty()
+                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
                     self.push(self.factory.empty());
                 } else {
                     match (a.as_long(), b.as_long()) {
@@ -2129,7 +2141,12 @@ where
         // expression yields no result (branch annihilation), matching T0's
         // canonical behavior in `src/backend/grounded/arithmetic.rs:94-97`.
         // Push Empty so downstream handlers propagate the annihilation.
-        if a.is_empty() || b.is_empty() {
+        //
+        // X.4 MTT-EMPTY-ANNIHILATION: also recognise the literal `Empty`
+        // symbol (HE interpret_tuple return_on_error semantics).
+        if a.is_empty() || b.is_empty()
+            || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty")
+        {
             self.push(self.factory.empty());
             return Ok(());
         }
@@ -2199,7 +2216,10 @@ where
             return Ok(());
         }
         // BUG-T0-T1-003: Empty annihilation in comparisons per spec §14.2.1.
-        if a.is_empty() || b.is_empty() {
+        // X.4 MTT-EMPTY-ANNIHILATION: also recognise the literal `Empty` symbol.
+        if a.is_empty() || b.is_empty()
+            || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty")
+        {
             self.push(self.factory.empty());
             return Ok(());
         }

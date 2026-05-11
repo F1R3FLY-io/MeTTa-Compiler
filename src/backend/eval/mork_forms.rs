@@ -147,7 +147,7 @@ fn extract_conjunction_goals<V: MettaValueTrait + Clone>(value: &V) -> Option<Ve
 /// No MettaValue <-> MettaValue conversion required.
 pub fn eval_exec_generic<V, F>(
     items: Vec<V>,
-    mut env: GenericEnvironment<V, F>,
+    env: GenericEnvironment<V, F>,
     factory: &F,
 ) -> GenericMorkResult<V, F>
 where
@@ -168,9 +168,11 @@ where
     let antecedent = &args[1];
     let consequent = &args[2];
 
-    // Store exec as a fact for dynamic exec generation
-    let exec_fact = factory.sexpr(items.clone());
-    env.add_to_space(&exec_fact);
+    // X-followup (2026-05-11): the previous implementation added the exec
+    // S-expression itself to env.space via `env.add_to_space(&exec_fact)`,
+    // making (get-atoms &self) report the exec call alongside the genuine
+    // facts. HE's `exec` does not self-store; remove the add. Dynamic
+    // re-firing of exec rules is tracked separately via the rule registry.
 
     // Extract antecedent goals
     let antecedent_goals = match extract_conjunction_goals(antecedent) {

@@ -133,29 +133,27 @@ where
             vec![factory.atom("Empty")]
         }
         MettaValueInner::Atom(name) => {
-            // Check if it's a variable (starts with $, &, or ')
-            if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
+            // X-followup (2026-05-11): variable / sigil atoms ($x, &name, 'z)
+            // have no declared concrete type in HE — return %Undefined% rather
+            // than the previously-emitted Type(name) wrapper, which was not
+            // HE-aligned and caused M15/002 (get-type &rho-channel) to render
+            // as Type(&rho-channel) instead of %Undefined%.
+            //
+            // The variable arm and the symbol arm both fall through to env
+            // type lookup, and both miss to %Undefined%, so they share a path.
+            let types = env.get_types_generic(name);
+            if types.is_empty() {
                 #[cfg(feature = "trace")]
                 {
-                    _trace_source = "variable";
+                    _trace_source = "fallback-undefined";
                 }
-                vec![factory.type_value(factory.atom(name))]
+                vec![factory.atom("%Undefined%")]
             } else {
-                // Look up ALL types in environment (nondeterministic)
-                let types = env.get_types_generic(name);
-                if types.is_empty() {
-                    #[cfg(feature = "trace")]
-                    {
-                        _trace_source = "fallback-undefined";
-                    }
-                    vec![factory.atom("%Undefined%")]
-                } else {
-                    #[cfg(feature = "trace")]
-                    {
-                        _trace_source = "env-atom-types";
-                    }
-                    types
+                #[cfg(feature = "trace")]
+                {
+                    _trace_source = "env-atom-types";
                 }
+                types
             }
         }
         MettaValueInner::SExpr(_) => {

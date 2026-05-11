@@ -245,15 +245,18 @@ impl<'src> MettaParser<'src> {
             return Ok(emitter.emit_atom(op, span));
         }
 
-        // X.5f / MTT-FN-NEQ-PARSER: when the leading `!` is immediately
-        // followed by another regular atom character (CLS_OTHER), treat the
-        // whole token as a single atom (`!=`, `!<`, `!>`, etc.). Only the
-        // bang sigil has this disambiguation, because `!` is overloaded as
-        // both the force-eval prefix (`!(expr)`) AND the leading char of
-        // comparison operators (`!=`). The `?` and `'` sigils retain pure
-        // prefix semantics (`?query` -> `(? query)`, `'foo` -> `(quote foo)`)
-        // because they don't participate in multi-char operator names.
-        if op == "!" && next_class == CLS_OTHER {
+        // X.5f / MTT-FN-NEQ-PARSER: disambiguate `!=` (single atom — MeTTa
+        // comparison operator) from `!(expr)` / `!$var` / `!atom` (force-eval
+        // prefix). `!` is overloaded — it's both the force-eval prefix and
+        // the leading char of `!=`. The only multi-char `!`-prefixed atom
+        // name in standard MeTTa is `!=`; restrict the single-atom path to
+        // exactly `!=` and `!=`-prefixed variants (e.g. `!==`) by checking
+        // the byte immediately after `!`. Other `!`-prefixed forms (`!$x`,
+        // `!atom`, `!(expr)`) retain pure prefix semantics.
+        //
+        // `?` and `'` sigils never participate in this disambiguation;
+        // they always parse as pure prefixes (`?query` -> `(? query)`).
+        if op == "!" && self.src[self.pos] == b'=' {
             let atom_start = start_byte;
             while self.pos < self.src.len() && !is_delimiter(self.src[self.pos]) {
                 if self.src[self.pos] & 0xC0 != 0x80 {

@@ -983,7 +983,7 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "bind!" | "println!" | "trace!" | "nop"
         | "repr" | "format-args"
         | "empty" | "get-metatype"
-        | "include" | "import!" | "git-import!" | "mod-space!" | "print-mods!"
+        | "include" | "import!" | "git-import!" | "mod-space!" | "print-mods!" | "get-modules"
         | "exec" | "coalg" | "lookup" | "rulify"
         | "=alpha"
         | "unique-atom" | "alpha-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"

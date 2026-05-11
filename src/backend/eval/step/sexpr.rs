@@ -37,7 +37,8 @@ use crate::backend::eval::list_ops::ops::{
 };
 // Generic module operations - used directly (no boundary conversion)
 use crate::backend::eval::modules::{
-    eval_import_generic, eval_include_generic, eval_mod_space_generic, eval_print_mods_generic,
+    eval_get_modules_generic, eval_import_generic, eval_include_generic, eval_mod_space_generic,
+    eval_print_mods_generic,
 };
 // Generic MORK operations - used directly (no boundary conversion)
 use crate::backend::environment::dispatch_overrides::{overridable_op_id, OverridableOpId};
@@ -2303,6 +2304,12 @@ where
                 }
                 "print-mods!" => {
                     let (results, new_env) = eval_print_mods_generic(items, env, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
+                // Workstream X.5g — MTT-FN-GETMODULES.
+                "get-modules" => {
+                    let (results, new_env) =
+                        eval_get_modules_generic(items, env, ctx.factory());
                     return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
                 }
 

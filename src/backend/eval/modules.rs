@@ -428,6 +428,32 @@ where
     (vec![result], env)
 }
 
+/// Generic eval_get_modules: return loaded module names as a tuple.
+///
+/// (Workstream X.5g — MTT-FN-GETMODULES). Walks `env.shared.module_registry`
+/// via `ModuleRegistry::iter()` (`modules/loader.rs:268`), collecting each
+/// module's name (`MettaMod::name()`) into an SExpr tuple. Class is
+/// `mettatron-environmental-extension` — the exact module list is host-
+/// dependent (depends on `--module-dir` and prior `import!` invocations).
+pub fn eval_get_modules_generic<V, F>(
+    _items: Vec<V>,
+    env: ContextEnv2<V, F>,
+    factory: &F,
+) -> (Vec<V>, ContextEnv2<V, F>)
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    let registry = env.shared.module_registry.read();
+    let mut names: Vec<V> = Vec::with_capacity(registry.module_count());
+    for m in registry.iter() {
+        names.push(factory.atom(m.name()));
+    }
+    let result = factory.sexpr(names);
+    drop(registry);
+    (vec![result], env)
+}
+
 /// Type alias for non-context module operations (mod-space!, print-mods!)
 /// that don't need force-eval and still use the old V, F generic parameters.
 type ContextEnv2<V, F> = crate::backend::environment::GenericEnvironment<V, F>;
